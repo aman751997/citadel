@@ -63,7 +63,7 @@ The codebases make this call differently in different places, correctly:
 - **Unscoped queries fail closed.** A reporting datasource with no tenant column is **refused**
   rather than run without a tenant filter. Better to serve an error than another hospital's data.
 - **The stub engine fails open, and that's a bug** — see
-  [flagged findings](/citadel/war/lld/inventory/#flagged-findings). A missing property serves canned data
+  [flagged findings](/citadel/lld/war/inventory/#flagged-findings). A missing property serves canned data
   as real reporting.
 
 **The rule:** fail open when the failure costs *convenience*; fail closed when it costs

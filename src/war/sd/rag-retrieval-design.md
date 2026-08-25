@@ -135,7 +135,7 @@ Two things to notice. **Payload indexes on `patient_id`** — retrieval is alway
 patient, so this is a pre-filter, not a post-filter; getting that wrong means scoring vectors you
 will then throw away, and worse, risking cross-patient leakage. And **the text is not in the
 vector store** — it holds an S3 key. That keeps PHI in one auditable place; see
-[PII and blind indexes](/citadel/war/sd/pii-and-blind-index/).
+[PII and blind indexes](/citadel/sd/war/pii-and-blind-index/).
 
 ## Answering it in an interview
 

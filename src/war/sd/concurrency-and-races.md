@@ -99,7 +99,7 @@ surprising number of "how do you make this thread-safe" questions.
 
 ## Race 4 — unsafe lazy initialisation
 
-The anti-example, [from the codebase](/citadel/war/lld/inventory/#flagged-findings):
+The anti-example, [from the codebase](/citadel/lld/war/inventory/#flagged-findings):
 
 ```java
 private Map<K,V> map;                 // not final, not volatile

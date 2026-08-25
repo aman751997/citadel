@@ -44,6 +44,12 @@
 - Pattern lessons forged (1–8, user directive 2026-08-17): **two-pointers, sliding-window, prefix-sum, intervals, linked-lists, binary-search, stacks, heaps** — Act I DSA surface fully covered. Drill-design rule still governs RECOGNITION drills (taught-in-session patterns only); lessons ahead of reps are reference, teach before drilling.
 - Queue: patterns 9–20 (Trees DFS/BFS → Graphs → Backtracking → DP → Tries → Math/Bit → Greedy → Hashing → Matrix) — forge as Act II/III weeks open, enrich with real bugs.
 
+## LLD status — wing opened 2026-08-25
+
+- `/lld/` wing live: 4 planned theory modules (foundations/SOLID, pattern arsenal, Java concurrency, machine-coding playbook) — all 🛠️ queued, forge on demand.
+- War Room (battle-tested, from prod code): patterns-why (18 dossiers), inventory, build-drills, cheatsheet — ✅ live at `/lld/war/…`. SD wing got its own War Room: 6 case studies at `/sd/war/…`. Doctrine: theory first, War Room pages are the live examples.
+- Forge queue: OOP mechanics → SOLID problem-first → creational → structural → behavioral → Java concurrency → 90-min protocol → classic problems (parking lot, Splitwise, BookMyShow, LRU, rate limiter).
+
 ## Coverage map
 `src/bank.ts` (46 SD questions) → all map to forged theory; 17 walkthroughs queued. `src/dsa.ts` (144 problems) → 8/20 pattern lessons forged (all of Act I). DSA page now has click-to-mark solves + copy-progress (localStorage overlay; baked flags stay the synced truth).
 

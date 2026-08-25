@@ -56,7 +56,7 @@ de-identified at once, which is the only sane way to implement "right to erasure
 services.
 
 **Cost:** a remote call in the registration path, and — as the
-[compensation story](/citadel/war/lld/patterns-why/) (entry 11) shows — a side effect that
+[compensation story](/citadel/lld/war/patterns-why/) (entry 11) shows — a side effect that
 `@Transactional` cannot undo.
 
 ## Layer 3 — the blind index (the actual answer)

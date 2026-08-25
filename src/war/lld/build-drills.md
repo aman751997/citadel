@@ -50,7 +50,7 @@ does ordering live, and what happens when two handlers both claim position 2?
 **Done when:** adding a fourth gateway touches exactly one new file.
 
 **Then break it on purpose:** make the registry lazy and non-volatile, and explain the JMM
-publication hazard out loud. That's finding #2 from the [inventory](/citadel/war/lld/inventory/).
+publication hazard out loud. That's finding #2 from the [inventory](/citadel/lld/war/inventory/).
 
 ---
 

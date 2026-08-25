@@ -133,7 +133,7 @@ SecurityContext is already populated."* Each clears its ThreadLocal in a `finall
 extensible. → **Chain of Responsibility.**
 
 > **Rebuild this one by hand.** You get no `FilterChain` in an interview. See
-> [build drills](/citadel/war/lld/build-drills/) — Drill 1.
+> [build drills](/citadel/lld/war/build-drills/) — Drill 1.
 
 ---
 
@@ -193,7 +193,7 @@ the admin case?" follow-up, pre-answered.
 → **Proxy / interception**, not discipline.
 
 > **The cost, which you should volunteer:** AOP binds advice to target through *a string*. No
-> compiler checks it. See the [real bug this caused](/citadel/war/lld/inventory/#flagged-findings).
+> compiler checks it. See the [real bug this caused](/citadel/lld/war/inventory/#flagged-findings).
 
 ---
 
@@ -350,7 +350,7 @@ concatenation — with user input — reachable from the front desk.
 **Evidence.** Predicates are added **only for non-null filters**, so the null case never reaches
 SQL and the Criteria API binds each enum with its real type. Search is delegated to derived
 columns — a `nameSearchKey` and a `phoneSearchHash`: searchable derivations of unsearchable data.
-That's a blind index; see [PII and blind indexes](/citadel/war/sd/pii-and-blind-index/).
+That's a blind index; see [PII and blind indexes](/citadel/sd/war/pii-and-blind-index/).
 
 **Trigger.** Optional filters composed at runtime, where absent ≠ null-matching. →
 **Specification** — accumulate predicates, then `AND` them.

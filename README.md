@@ -1,10 +1,13 @@
 # 🏰 The Citadel
 
-Personal interview prep portal — two wings:
+Personal interview prep portal — three wings, one per interview pillar:
 
-- **`/sd/` — System Design**: 12 pattern-first modules, gated lessons with quizzes + Mermaid diagrams, question bank, delivery-framework cheat sheet.
+- **`/sd/` — System Design (HLD)**: 12 pattern-first modules, gated lessons with quizzes + Mermaid diagrams, question bank, delivery-framework cheat sheet, plus a War Room of 6 production case studies.
 - **`/dsa/` — DSA Arsenal**: 20 patterns, 144 problems with LeetCode/LintCode links + done flags, Grimoire-style pattern lessons (Java).
-- **`/war/` — War Room**: case files reverse-engineered from two production codebases — 18 LLD pattern dossiers, 6 system-design deep dives, interview stories.
+- **`/lld/` — LLD**: machine-coding wing — theory modules (forge queue), plus a War Room of 18 pattern dossiers, build drills, and cheatsheet from production code.
+- **`/stories/`** — cross-wing interview stories (what to say out loud, honest claims).
+
+War Room = battle-tested material reverse-engineered from two production codebases; each wing's theory comes first, War Room pages are the live examples.
 
 Live: https://aman751997.github.io/citadel/
 
@@ -19,6 +22,7 @@ npm run dev
 
 - **SD lesson**: MDX in `src/lessons/` (frontmatter: `title`, `description`, `module` 1–12, `order`, `minutes`). Remove matching planned entry in `src/modules.ts`.
 - **DSA pattern lesson**: MDX in `src/dsa-lessons/` (frontmatter: `title`, `description`, `order`, `minutes`). Link it via `lesson:` slug in `src/dsa.ts`.
-- **War Room page**: plain Markdown in `src/war/` (`lld/`, `sd/`, or root; frontmatter: `title`, `description`, `order`, `minutes`). Section derives from the subfolder.
+- **War Room page**: plain Markdown in `src/war/` (`lld/` → `/lld/war/…`, `sd/` → `/sd/war/…`; frontmatter: `title`, `description`, `order`, `minutes`). Wing derives from the subfolder.
+- **LLD theory lesson**: planned modules live inline in `src/pages/lld/index.astro`; when forging starts, promote to an MDX collection like the SD wing.
 - **Question data**: SD bank in `src/bank.ts`, DSA problems in `src/dsa.ts` (keep done flags in sync with Notion).
 - Forge queue + protocol: `CURRICULUM.md`. Push to `main` → auto-deploy via GitHub Actions.

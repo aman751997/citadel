@@ -22,4 +22,14 @@ const dsa = defineCollection({
   }),
 });
 
-export const collections = { lessons, dsa };
+const war = defineCollection({
+  loader: glob({ pattern: '**/*.md', base: './src/war' }),
+  schema: z.object({
+    title: z.string(),
+    description: z.string(),
+    order: z.number(),
+    minutes: z.number(),
+  }),
+});
+
+export const collections = { lessons, dsa, war };

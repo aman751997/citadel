@@ -1,0 +1,155 @@
+---
+title: 'SOLID, Problem-First'
+description: 'Each principle introduced by the mess you get without it — with the refactor, the Java, and the pattern that embodies it. No acronym recitation.'
+module: 1
+order: 2
+minutes: 30
+---
+import Quiz from '../components/Quiz.astro';
+import Mermaid from '../components/Mermaid.astro';
+
+## How to use SOLID in an interview
+
+Never recite the acronym. Instead, **violate-then-fix**: when your first-draft class starts collecting a second reason to change, *say it out loud* — "this is drifting toward two responsibilities, let me split it" — and refactor live. Interviewers grade the detection reflex far higher than the definition. Each section below is one principle as: the mess → the detection cue → the fix → the pattern that industrializes it.
+
+## S — one reason to change
+
+**The mess.** A `ReportService` that fetches data, computes totals, formats PDF, and emails the result. Four teams now file tickets against one class: finance changes the totals, design changes the PDF, ops changes SMTP. Every change risks the other three; the test file is 900 lines and mocks half the app.
+
+**Detection cue.** Describe the class in one sentence. If the sentence contains "and" — `fetches AND formats AND sends` — it has multiple reasons to change. Second cue: fields that cluster (three fields used only by formatting methods, two only by emailing) are two classes sharing a body.
+
+**The fix.** Split along the *reasons for change*, not along "big class → smaller classes":
+
+```java
+class ReportData     { /* query + aggregate */ }
+class PdfRenderer    { byte[] render(ReportData d) { ... } }
+class ReportMailer   { void send(byte[] pdf, Recipient to) { ... } }
+class ReportFlow     { // thin orchestrator — its ONE job is the sequence
+    Report run(ReportRequest req) { return mailer.send(renderer.render(data.load(req))); }
+}
+```
+
+The orchestrator is allowed to exist! "One responsibility" for `ReportFlow` *is* coordination. SRP doesn't ban composition roots; it bans classes that both decide and do everything.
+
+## O — extend without editing
+
+**The mess.** Pricing with an `if/else` ladder: `if (type == BIKE) ... else if (type == CAR) ... else if (type == EV)`. Every new vehicle type edits this method — and every other ladder like it scattered through the codebase. Each edit re-tests old behavior and risks it.
+
+**Detection cue.** The follow-up question. Machine-coding rounds are *designed* around one: "now add surge pricing", "now add a truck". If the follow-up lands as **a new class**, you win the round; if it lands as new branches in five methods, the design failed its only exam.
+
+**The fix** is Strategy + a registry, which you'll build properly in the behavioral lesson:
+
+```java
+interface FeeStrategy { Money calculate(Ticket t); }
+Map<VehicleType, FeeStrategy> strategies = Map.of(
+    BIKE, new HourlyFee(Money.rupees(10)),
+    CAR,  new HourlyFee(Money.rupees(20)),
+    EV,   new HourlyPlusChargingFee(...)
+);   // new vehicle type = one new entry + one new class. Zero edits elsewhere.
+```
+
+**Honesty clause** — say this too: OCP applies to the axis of change you *expect*. Making everything pluggable is speculative generality (a worse disease). Choose the axis the interviewer signaled, close that one, and hard-code the rest. The production codebase made exactly this bet: [five payment gateways behind one Strategy seam](/citadel/lld/war/patterns-why/#1-strategy--five-payment-gateways), everything else concrete.
+
+## L — substitutable, or not a subtype
+
+**The mess.** `class ReadOnlyRepo extends Repo` that throws `UnsupportedOperationException` from `save()`. Every caller of `Repo` must now know which subtype it *really* has — the abstraction is a lie, and the `instanceof` checks it breeds are the symptom.
+
+**Detection cue.** A subclass that: throws where the parent succeeded, weakens a guarantee (parent's `find` never returns null, child's does), or needs callers to check its concrete type. All three mean the is-a claim is false under some operation.
+
+**The fix.** Split the contract so every implementor can honor all of what it claims:
+
+```java
+interface Reader  { Optional<Entity> find(Id id); }
+interface Writer  { void save(Entity e); }
+class JpaRepo implements Reader, Writer { ... }
+class ReplicaRepo implements Reader { ... }   // never claimed save(); nothing to throw
+```
+
+LSP is the *test* for every inheritance decision from the previous lesson: substitutable under all operations, or compose instead.
+
+## I — no client forced to depend on what it doesn't use
+
+**The mess.** One `NotificationService` interface with 14 methods (sms, email, push, whatsapp, retry policy, template mgmt…). The SMS team's mock implements 14 methods to test one. Every new method breaks every implementor — a fat interface makes *everyone* fragile.
+
+**Detection cue.** Implementations full of empty methods or `throw new UnsupportedOperationException()` — the implementor is telling you the interface bundled strangers together.
+
+**The fix.** Role interfaces, one per client need — `SmsSender`, `EmailSender`, `PushSender`. A class may implement several; no client sees methods it doesn't call. This is the same split as LSP's, arrived at from the caller's side. (The production system's [marker interface dossier](/citadel/lld/war/patterns-why/#17-marker-interface--the-empty-interface-that-isnt-a-smell) is the degenerate-but-legit extreme: an interface with *zero* methods, used purely as a compile-time role tag.)
+
+## D — depend on the seam, not the concrete
+
+**The mess.** `OrderService` does `new StripeClient()` inside its constructor. Now: tests hit real Stripe or don't run; swapping gateways edits `OrderService`; the domain layer imports an SDK. The dependency arrow points from your stable business rule to a volatile vendor detail.
+
+**Detection cue.** The word `new` applied to anything that does I/O, inside a class that makes business decisions. Also: domain code importing framework/vendor packages.
+
+**The fix.** Invert the arrow — the domain *defines* the port; the edge implements it; the composition root wires it:
+
+```java
+interface PaymentGateway { PaymentResult charge(Money m, PaymentMethod pm); }  // owned by domain
+
+class OrderService {
+    private final PaymentGateway gateway;               // seam, not vendor
+    OrderService(PaymentGateway gateway) { this.gateway = gateway; }
+}
+// main() / Spring wires: new OrderService(new StripeAdapter(new StripeClient(...)))
+```
+
+<Mermaid code={`flowchart LR
+    subgraph domain [stable domain]
+      OS[OrderService] --> PG[[PaymentGateway port]]
+    end
+    subgraph edge [volatile edge]
+      SA[StripeAdapter] -.implements.-> PG
+      SA --> SDK[Stripe SDK]
+    end`} />
+
+Constructor injection, final fields, no framework required — "DI" is a `main()` method before it's a container. This is the principle the whole [Adapter dossier](/citadel/lld/war/patterns-why/#8-adapter--so-a-swap-is-config-not-a-release) runs on: the seam made a vendor swap a config change instead of a release.
+
+## The map — principles to patterns
+
+| Principle | One-line detection cue | Pattern that industrializes it |
+|---|---|---|
+| SRP | class description needs "and" | Facade (one job: simplify), extracted services |
+| OCP | follow-up feature edits old methods | Strategy, Decorator, Chain |
+| LSP | subclass throws / weakens / needs instanceof | favor composition; split hierarchies |
+| ISP | implementors with empty methods | role interfaces; Adapter trims fat contracts |
+| DIP | `new` + I/O inside business logic | Adapter behind a port; DI at the root |
+
+<Quiz questions={[
+  {
+    q: 'Grader asks "now add weekend surge pricing". Your fee logic is an if/else ladder over vehicle type inside ParkingLot. What does the request expose?',
+    options: [
+      'Nothing — one more else-if is fine at this scale',
+      'OCP violation on the axis the round was designed to test: pricing variation should be a strategy object, so the feature lands as a new class, not edits',
+      'SRP violation — ParkingLot should not compute fees at all',
+      'Both B and C',
+    ],
+    answer: 3,
+    why: 'Both: fee calculation is a separate responsibility (SRP) AND the variation axis should be open (OCP). The ladder inside ParkingLot fails twice. Extract FeeStrategy; ParkingLot asks, strategies decide.',
+  },
+  {
+    q: 'A CachedUserRepo extends DbUserRepo but its find() can return stale users, where DbUserRepo documented "always current". Which principle is violated and why?',
+    options: [
+      'DIP — the cache should be injected',
+      'LSP — the subclass weakens a guarantee callers rely on, so substitution silently changes program behavior',
+      'ISP — the interface is too fat',
+      'None — caching is an implementation detail',
+    ],
+    answer: 1,
+    why: 'The parent promised currency; the child delivers staleness. Callers substituting the child get different semantics without a compile error — the definition of an LSP break. Fix: make staleness part of the contract (separate CachedReader port) or compose the cache in front.',
+  },
+  {
+    q: 'Why is "new StripeClient() inside OrderService" worse than verbose — what concretely breaks?',
+    options: [
+      'Performance: constructing SDK clients is slow',
+      'Tests cannot replace the gateway, vendor swap edits domain code, and the stable layer now depends on the volatile one — the dependency arrow points the wrong way',
+      'Stripe forbids direct construction in its ToS',
+      'Nothing breaks if StripeClient is stateless',
+    ],
+    answer: 1,
+    why: 'DIP is about the direction of the arrow: business rules should not know vendor names. Define a PaymentGateway port in the domain, adapt Stripe at the edge, wire in main(). Testability is the visible symptom; the arrow is the disease.',
+  },
+]} />
+
+## Hand-off
+
+Foundations done. Next: **Module 2, the Pattern Arsenal** — creational first. From here every lesson links its patterns to the [War Room dossiers](/citadel/lld/war/patterns-why/) — theory here, production scar tissue there.

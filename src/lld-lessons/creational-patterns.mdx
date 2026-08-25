@@ -1,0 +1,164 @@
+---
+title: 'Creational Patterns — When Making the Object Is the Problem'
+description: 'Factory method, abstract factory, builder, singleton done right — each from its forcing problem, plus the modern answer (DI) that replaces half of them.'
+module: 2
+order: 1
+minutes: 30
+---
+import Quiz from '../components/Quiz.astro';
+import Mermaid from '../components/Mermaid.astro';
+
+## The shared forcing problem
+
+Every creational pattern answers one question: **`new` hard-codes a concrete class at the call site — what do you do when the call site shouldn't know it?** Shouldn't know *which* class (factory), shouldn't wrestle *how* to assemble it (builder), shouldn't create it *at all* because exactly one must exist (singleton). Pick by which of those three you have.
+
+## Factory Method — the decision moved to one place
+
+**Problem.** Callers write `new UpiProcessor()` / `new CardProcessor()` all over. The choice logic (which processor for which payment mode) duplicates at every call site, and adding a mode means a codebase-wide hunt.
+
+**Fix.** Centralize the decision behind a method that returns the *interface*:
+
+```java
+interface PaymentProcessor { PaymentResult process(PaymentRequest r); }
+
+class ProcessorFactory {
+    PaymentProcessor forMode(PaymentMode mode) {
+        return switch (mode) {
+            case UPI    -> new UpiProcessor(upiConfig);
+            case CARD   -> new CardProcessor(cardVault);
+            case WALLET -> new WalletProcessor(walletApi);
+        };  // exhaustive switch over enum: compiler yells when a new mode is added. That's a feature.
+    }
+}
+```
+
+One honest subtlety worth saying aloud: a `switch` inside a factory is **not** an OCP violation worth losing sleep over — the variation is *contained in one place whose single job is choosing*. The upgrade, when implementations register themselves and the switch disappears entirely, is the **registry** — a map from key to implementation. That's the production system's answer to webhook routing: [the Registry dossier](/citadel/lld/war/patterns-why/#2-registry--the-inbound-webhook-routing-problem), where each strategy announces its own key and the factory becomes `map.get(key)`.
+
+**Static factory methods** (the small sibling, worth dropping in passing): `Money.rupees(10)`, `Duration.ofMinutes(5)` — named constructors that validate, cache, or return subtypes. *Effective Java* item 1; free polish.
+
+## Abstract Factory — families that must not mix
+
+**Problem.** Objects come in **consistent families**: a sandbox `PaymentGateway` must pair with a sandbox `RefundClient` and a sandbox `WebhookVerifier`. Constructing them independently lets someone mix live charging with sandbox verification — a bug type systems can prevent.
+
+**Fix.** One factory interface per *family*, one implementation per *environment*:
+
+```java
+interface GatewaySuite {           // the family contract
+    PaymentGateway gateway();
+    RefundClient refunds();
+    WebhookVerifier verifier();
+}
+class SandboxSuite implements GatewaySuite { ... }
+class LiveSuite    implements GatewaySuite { ... }
+// Wiring picks ONE suite; mixing members across environments is now unrepresentable.
+```
+
+Recognition cue: the word **"family"** or "these three must always match". If there's no family — just one product — you wanted plain factory method; don't upgrade for ceremony.
+
+## Builder — constructors past four parameters
+
+**Problem.** `new Booking(patientId, doctorId, slot, null, null, true, false, null)` — the telescoping constructor. Nobody can read which `null` means what; adding an optional field breaks every caller; `boolean, boolean` transpositions compile fine and corrupt data.
+
+**Fix.**
+
+```java
+Booking booking = Booking.builder()
+    .patient(patientId)
+    .doctor(doctorId)
+    .slot(slot)
+    .teleconsult(true)
+    .build();   // build() validates the COMPLETE object: required fields present, invariants hold
+```
+
+The part that separates a gold answer from a Lombok reflex: **`build()` is where cross-field invariants live** (slot within doctor's schedule, teleconsult excludes room assignment). A builder that just sets fields is syntax; a builder whose `build()` can refuse is an invariant gate — it restores the "constructed ⇒ valid" guarantee from the object-modeling lesson, which telescoping constructors were quietly providing.
+
+When asked "when builder over factory?": factory chooses **which class**, builder assembles **one complex object step-by-step**. Different questions; they compose (a factory can return builders).
+
+## Singleton — done right, and mostly not done at all
+
+**Problem.** Exactly one instance must exist *and be globally reachable*: a config registry, a connection pool, a metrics collector.
+
+**The Java answers, in interview-ranking order:**
+
+```java
+// 1. Enum — serialization-safe, reflection-safe, lazy, one line. Effective Java's answer.
+enum MetricsRegistry { INSTANCE; void record(String k, long v) { ... } }
+
+// 2. Holder idiom — lazy without locks: class-loading is thread-safe by JLS guarantee.
+class Config {
+    private Config() {}
+    private static class Holder { static final Config I = new Config(); }
+    static Config get() { return Holder.I; }
+}
+
+// 3. Double-checked locking — the classic exam answer. volatile is NOT optional:
+class Pool {
+    private static volatile Pool instance;              // without volatile, a thread can see
+    static Pool get() {                                 // a non-null but PARTIALLY constructed Pool
+        if (instance == null) {                         // (write reordering) — the famous JMM bug
+            synchronized (Pool.class) {
+                if (instance == null) instance = new Pool();
+            }
+        }
+        return instance;
+    }
+}
+```
+
+Then the sentence that shows senior judgment: **in real systems, singletons are a scope, not a pattern** — the DI container (or your `main()`) constructs one instance and injects it everywhere. Same one-ness, none of the global-state damage: tests can substitute it, and the hidden-dependency problem disappears. The [War Room inventory](/citadel/lld/war/inventory/) grades it exactly this way — Spring supplies singleton scope for free, so hand-rolling one in a Spring codebase is a smell, not a skill.
+
+Related production variant worth knowing: the [copy-on-write registry](/citadel/lld/war/patterns-why/#15-copy-on-write-registry--two-maps-that-must-swap-together) — a singleton whose *contents* must swap atomically; rebuild into new maps, then swap references in one assignment.
+
+## Prototype — thirty seconds
+
+Clone a pre-configured exemplar instead of rebuilding from scratch. In Java, prefer **copy constructors or `toBuilder()`** over `Cloneable` (broken by design: no constructor call, shallow by default, checked exception). Comes up rarely; know the one-liner, move on.
+
+## Recognition table
+
+| You hear | Reach for |
+|---|---|
+| "callers shouldn't know which implementation" | Factory method → registry when implementations self-register |
+| "these N objects must always be consistent / same environment" | Abstract factory |
+| "constructor has 6 params, half optional" | Builder with validating `build()` |
+| "exactly one, shared everywhere" | DI-scoped instance; enum if you truly need a hand-rolled one |
+| "copy this template object" | Prototype (copy constructor) |
+
+<Quiz questions={[
+  {
+    q: 'Double-checked locking without volatile: what exactly can a second thread observe?',
+    options: [
+      'null forever — the write never publishes',
+      'A non-null reference to a partially constructed object, because the reference write can reorder before field initialization completes',
+      'A deadlock on the class lock',
+      'Nothing wrong — synchronized already guarantees visibility',
+    ],
+    answer: 1,
+    why: 'The JMM allows instance = new Pool() to publish the reference before constructor writes finish. The second thread skips the synchronized block (ref non-null) and reads garbage fields. volatile forbids that reordering. Or skip the whole cliff: enum / holder idiom.',
+  },
+  {
+    q: 'Sandbox gateway paired with live webhook verifier caused a prod incident. Which pattern makes that mix unrepresentable?',
+    options: [
+      'Builder — validate the pair in build()',
+      'Abstract factory — one suite interface per environment, so members can only come from the same family',
+      'Singleton — only one environment exists at a time',
+      'Factory method with an environment enum parameter',
+    ],
+    answer: 1,
+    why: 'The problem is FAMILY consistency across multiple products. An abstract factory (GatewaySuite) makes the family the unit of construction — you hold one suite, so cross-environment mixing has no code path. A builder could check it, but only if every caller uses it.',
+  },
+  {
+    q: 'Interviewer: "your factory has a switch — is that not the OCP violation you just lectured me about?" Best answer?',
+    options: [
+      'Yes, I will refactor to reflection scanning immediately',
+      'The variation is contained in one class whose single job is the choice; the upgrade path is a registry where implementations self-register, and I would take it when the switch outgrows a screen',
+      'Switches over enums are exempt from OCP',
+      'OCP does not apply to creational code',
+    ],
+    answer: 1,
+    why: 'Honest and calibrated: containment in one place is 90% of the value; a self-registering registry (map key → implementation) is the last 10% and has real costs (discoverability, ordering). Exhaustive enum switches even get compiler help when a variant is added.',
+  },
+]} />
+
+## Hand-off
+
+Creation solved. Next: **structural patterns** — wrapping, adapting, and composing objects you can't or won't change.

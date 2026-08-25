@@ -1,0 +1,147 @@
+---
+title: 'The 90-Minute Machine-Coding Protocol'
+description: 'Time boxes, the grading rubric interviewers actually use, package conventions, and the anti-patterns that fail working code.'
+module: 4
+order: 1
+minutes: 30
+---
+import Quiz from '../components/Quiz.astro';
+import Mermaid from '../components/Mermaid.astro';
+
+## What actually fails candidates
+
+Machine-coding rounds fail people for boring reasons: **code that doesn't run**, requirements silently skipped, no demonstrable output, and 40 minutes spent on a database that was never asked for. The protocol below is a time-boxed defense against every one of those. Internalize the shape; the numbers flex with the round's length.
+
+<Mermaid code={`flowchart LR
+    A["Requirements + scope cut<br/>10 min"] --> B["Entities + relationships<br/>10 min"]
+    B --> C["Interfaces + skeleton<br/>10 min"]
+    C --> D["CORE FLOW — the one demo path<br/>35 min"]
+    D --> E["Extension + edge cases<br/>15 min"]
+    E --> F["Tests + demo run<br/>10 min"]
+    style D stroke:#e3b341,stroke-width:3px`} />
+
+## Phase 1 — Requirements (10 min): scope is a decision you say out loud
+
+Ask questions until you can state: actors, core operations, and what's **out of scope**. Then *say the cut*: "I'll build park/unpark/fee with three vehicle types; multi-floor allocation strategy stays pluggable but simple; payment integration is out." Writing the cut list down does two jobs — it shows judgment, and it converts "you missed X" into "X was descoped, want it instead of Y?"
+
+The five questions that fit almost every problem:
+
+1. Which operations must **demo** at the end? (These get built first.)
+2. What **varies**? (vehicle types, pricing rules, split types — your strategy seams)
+3. What must be **consistent**? (money sums, no double-booking — your invariants)
+4. Single-threaded or concurrent? In-memory or persistent? (Almost always: in-memory, and say you're designing so storage can be swapped later)
+5. Scale hints? (only to pick data structures — this is not an HLD round)
+
+## Phase 2 — Entities (10 min): nouns, then invariants
+
+List the nouns, mark each **entity or value** (object-modeling lesson), attach each rule to its owner. Sketch the 90-second class diagram — boxes and arrows, spoken aloud. Do not open the IDE yet; the diagram is where wrong models die cheaply.
+
+## Phase 3 — Interfaces (10 min): seams before flesh
+
+Write the interfaces for whatever varies, the repository boundary, and the service entry points — empty or `throw new UnsupportedOperationException()` bodies. Now the whole shape compiles and the follow-up feature has a slot waiting for it.
+
+**Package convention that reads as senior** (and takes 60 seconds):
+
+```
+com.citadel.parkinglot
+├── model/          // entities + values: Vehicle, Spot, Ticket, Money
+├── strategy/       // the variation seams: SpotAllocationStrategy, FeeStrategy
+├── repository/     // InMemorySpotRepo (Map-backed) behind an interface
+├── service/        // ParkingService — orchestration, thin
+├── exception/      // domain exceptions: SpotUnavailableException, InvalidTicketException
+└── Main.java       // the demo script — YOUR closing argument
+```
+
+## Phase 4 — Core flow (35 min): one path, running
+
+Build the single most important flow end-to-end — park a car, get a ticket, unpark, see a fee — before any breadth. A running narrow slice beats a broad skeleton every time, because the round ends with "show me", not "tell me".
+
+Conventions that earn points as you go:
+
+- **In-memory repo = `Map` behind an interface.** `class InMemoryTicketRepo implements TicketRepo { private final Map<String, Ticket> byId = new ConcurrentHashMap<>(); }` — swap-able, and nobody asked for JPA.
+- **Domain exceptions, not booleans and nulls.** `SpotUnavailableException` carries what/why; a `false` return forces callers to guess. Unchecked, extending a base `DomainException`, message includes ids.
+- **Enums for closed sets** (`VehicleType`, `SpotType`, `TicketStatus`) — with behavior on them where it's intrinsic (`SpotType.fits(VehicleType)`).
+- **Ids as `String`/`UUID` now, typed wrappers if time allows** — mention the upgrade even if you skip it.
+- **No `null` returns from finders** — `Optional<Ticket> find(String id)`; reserve exceptions for "must exist".
+
+## Phase 5 — Extension + edges (15 min)
+
+Now the follow-up you predicted in phase 1: add the fourth vehicle type, the surge pricing, the second allocation strategy. If phases 2–3 were honest, this lands as **new classes plugged into existing seams** — narrate that while typing, it's the OCP exam moment. Then the edge cases: unpark with invalid ticket, park when full, double-unpark. Each becomes a thrown domain exception plus a demo line.
+
+## Phase 6 — Tests + demo (10 min): the closing argument
+
+Interviewers run `Main` or your tests. Give them a script that tells the story:
+
+```java
+public static void main(String[] args) {
+    ParkingService lot = Wiring.demoLot();               // 2 floors, mixed spots
+    Ticket t1 = lot.park(new Vehicle("KA-01-1234", CAR));
+    System.out.println("parked: " + t1);
+    Receipt r = lot.unpark(t1.id());                     // happy path
+    System.out.println("fee: " + r.fee());
+    try { lot.unpark(t1.id()); }                          // edge: double unpark
+    catch (InvalidTicketException e) { System.out.println("rejected double-unpark ✓"); }
+}
+```
+
+If JUnit is available, 4–6 tests beat 20: one per core flow, one per invariant (fee math sums, full-lot rejection, illegal transition). Test names as sentences: `unpark_withUsedTicket_throws()`.
+
+## The rubric — what graders score
+
+| Dimension | What earns it | What kills it |
+|---|---|---|
+| **Working demo** | core flow runs, edge cases demonstrable | compile errors, "it would work if…" |
+| **Requirement coverage** | everything promised in phase 1, cut list honored | silent skips |
+| **Design** | seams on the variation axes, invariants owned by entities | God class, anemic model, pattern soup |
+| **Code hygiene** | naming, small methods, domain exceptions, no dead code | 300-line methods, `catch (Exception e) {}` |
+| **Extensibility Q** | follow-up lands as new class | follow-up edits five methods |
+| **Communication** | narrated decisions, honest trade-offs | silent typing for 40 minutes |
+
+## Anti-patterns — the ways working code still fails
+
+- **Over-engineering:** DI containers, layers "for the future", six patterns where two suffice. The tell: more interfaces than implementations. YAGNI is a grading criterion — patterns must be *forced* (the entire [War Room](/citadel/lld/war/patterns-why/) is a catalog of what forcing looks like).
+- **The database mirage:** wiring H2/JPA in an in-memory round — 20 minutes on plumbing nobody grades.
+- **Breadth-first building:** six half-features demo nothing.
+- **Getter/setter reflex:** Lombok `@Data` on entities = invariants abandoned (object-modeling lesson, violated at scale).
+- **Silent descoping:** cutting scope is fine — *unannounced* cutting reads as forgetting.
+- **UI/CLI gold-plating:** a `main` that prints clearly beats an interactive menu loop that eats 15 minutes.
+
+<Quiz questions={[
+  {
+    q: '30 minutes left, core flow works, two features remain: (a) the pricing variation the interviewer hinted at in the intro, (b) multi-floor spot allocation. What do you build?',
+    options: [
+      'Both, quickly, skipping tests',
+      'The hinted pricing variation — interviewer hints are the exam key; land it as a new strategy, demo it, then say the allocation plan out loud with its seam already in place',
+      'Multi-floor — it is architecturally more interesting',
+      'Neither — polish and test the core flow',
+    ],
+    answer: 1,
+    why: 'Hints telegraph the rubric. The variation lands cheaply if your seams are honest, demos well, and proves OCP. The unpicked feature is then a narrated plan pointing at an existing interface — nearly full credit for zero minutes.',
+  },
+  {
+    q: 'Why does park() throw SpotUnavailableException instead of returning null or false?',
+    options: [
+      'Exceptions are faster than null checks',
+      'A boolean/null forces every caller to invent handling and lets one forget; a typed domain exception carries what/why, cannot be silently ignored into an NPE later, and centralizes the failure story',
+      'Because checked exceptions document the API',
+      'It makes no difference in an interview',
+    ],
+    answer: 1,
+    why: 'Failure semantics are API design. null defers the crash to a distant NPE; false loses the reason. Unchecked domain exceptions with context (lot full? wrong spot type?) demo cleanly too — the edge-case lines in Main print them.',
+  },
+  {
+    q: 'You realize at minute 60 the requirement "vehicles can reserve ahead" was never discussed and will not fit. Best move?',
+    options: [
+      'Build a stub silently so the file exists',
+      'Say it now: "Reservations won\'t fit the remaining time; I\'d add them as a Reservation entity + a check in allocation — want me to trade it against the pricing extension?" — visible triage, interviewer chooses',
+      'Skip it and hope the demo distracts',
+      'Extend the interview',
+    ],
+    answer: 1,
+    why: 'Announced descoping with a sketched design + an offered trade is senior behavior — it converts a miss into a scoping conversation. Silent skips are the #1 boring reason working submissions fail.',
+  },
+]} />
+
+## Hand-off
+
+Protocol in hand. Final lesson: **the classic-problem canon** — parking lot worked end-to-end through these exact phases, then the full drill list with pattern mappings.

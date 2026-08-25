@@ -1,0 +1,182 @@
+---
+title: 'Structural Patterns — Composing What You Cannot Change'
+description: 'Adapter, decorator, facade, proxy, composite — five ways to wrap and arrange objects, told apart by intent, each with its production dossier.'
+module: 2
+order: 2
+minutes: 30
+---
+import Quiz from '../components/Quiz.astro';
+import Mermaid from '../components/Mermaid.astro';
+
+## The shared forcing problem
+
+You have objects whose code you **can't edit** (vendor SDK, another team, frozen module) or **shouldn't edit** (stable, tested) — and they don't fit: wrong interface, missing behavior, too many to call, too expensive to touch, or shaped like a tree. Structural patterns are five wrapping/arranging moves. They look similar in UML — **the difference is entirely intent** — so this lesson leans on the tell-them-apart table at the end.
+
+## Adapter — wrong interface
+
+**Problem.** Your domain defines `PaymentGateway.charge(Money, Method)` (the DIP port from the SOLID lesson). Stripe's SDK speaks `PaymentIntent.create(Map<String,Object>)`. Razorpay speaks something else again. Neither will change for you.
+
+**Fix.** One translating class per vendor; domain never learns vendor vocabulary:
+
+```java
+class StripeAdapter implements PaymentGateway {
+    private final StripeClient stripe;                       // the adaptee
+    public PaymentResult charge(Money m, PaymentMethod pm) {
+        PaymentIntent pi = stripe.paymentIntents().create(   // translate OUR call...
+            Map.of("amount", m.paise(), "currency", m.currency().code(), "source", pm.token()));
+        return toResult(pi);                                 // ...and THEIR response
+    }
+}
+```
+
+Two grading points. First, **the port belongs to the consumer**: your domain defines `PaymentGateway`, the adapter conforms to *it* — not the other way round. Second, adapters are where a swap becomes configuration: the [production dossier](/citadel/lld/war/patterns-why/#8-adapter--so-a-swap-is-config-not-a-release) exists because switching SMS vendors had to be a config flag, not a release.
+
+## Decorator — same interface, added behavior
+
+**Problem.** Every `NotificationSender` needs retry. Some also need rate limiting. Some need both, some neither, and the combinations multiply. Subclassing gives you `RetryingRateLimitedSmsSender`, `RetryingEmailSender`… a class per combination — 2ⁿ explosion.
+
+**Fix.** Wrappers that implement the *same* interface and hold one inside:
+
+```java
+class RetryingSender implements NotificationSender {
+    private final NotificationSender inner;                  // same type — that's the pattern
+    private final int maxAttempts;
+    public void send(Notification n) {
+        for (int a = 1; ; a++) {
+            try { inner.send(n); return; }
+            catch (TransientSendException e) { if (a == maxAttempts) throw e; backoff(a); }
+        }
+    }
+}
+// Compose at wiring time, per need:
+NotificationSender sms = new RetryingSender(new RateLimitedSender(new SmsSender(vendor), 50), 3);
+```
+
+Order matters and interviewers probe it: retry-outside-rateLimit re-enters the limiter on each attempt; rateLimit-outside-retry counts one permit per logical send. Say which you want and why. This is also how `java.io` works (`BufferedInputStream(new FileInputStream(f))`) — cite it.
+
+Production scar worth knowing: decorators that hop threads lose `ThreadLocal` context — [the dossier on exactly that bug](/citadel/lld/war/patterns-why/#5-decorator--the-bug-threadlocals-cause-at-thread-boundaries). A decorator must capture context *before* submitting work to a pool and restore it inside.
+
+## Facade — too many doors
+
+**Problem.** Checking out a cart touches inventory, pricing, payment, notification, and audit — five subsystems, each with its own error semantics. Every caller re-implements the sequence and half of them forget the audit call.
+
+**Fix.** One class exposing the *use-case*, hiding the choreography:
+
+```java
+class CheckoutFacade {
+    OrderConfirmation checkout(Cart cart, PaymentMethod pm) {
+        inventory.reserve(cart);
+        Money total = pricing.total(cart);
+        PaymentResult pay = payments.charge(total, pm);
+        audit.record(cart, pay);
+        return notifier.confirm(cart, pay);
+    }
+}
+```
+
+Facade ≠ God class: it **coordinates, never decides** — no business rules inside, just the sequence and a uniform error story. That uniform-failure-policy angle is the production version: [one facade over 12 remote services](/citadel/lld/war/patterns-why/#9-facade--a-uniform-failure-policy-over-12-remote-services) so every caller got the same timeout/fallback behavior for free. Facade is SRP applied to *entry points*.
+
+## Proxy — same interface, controlled access
+
+**Problem.** Callers should *think* they're talking to the object, but something must happen around every call: lazy-load it, cache it, check permissions, log it, rate-limit it — without the caller or the target knowing.
+
+**Fix.** Same shape as decorator — implements the interface, holds the real thing — but the intent is **access control**, not feature-adding:
+
+```java
+class AuthorizingReportProxy implements ReportService {
+    private final ReportService real;
+    private final AccessChecker access;
+    public Report generate(ReportRequest r) {
+        if (!access.allowed(Context.currentUser(), r)) throw new AccessDeniedException(r);
+        return real.generate(r);
+    }
+}
+```
+
+The industrial form is the **dynamic proxy / AOP interceptor** — Spring wraps your bean and applies `@Transactional`/security advice. Two things every Java interviewer eventually asks live in that sentence: self-invocation bypasses the proxy (`this.method()` never crosses it), and un-proxied paths are unguarded — the [production leak dossier](/citadel/lld/war/patterns-why/#6-proxy--aop--the-leak-on-the-path-nobody-guarded) is one forgotten path.
+
+## Composite — the tree where leaf and branch must look alike
+
+**Problem.** A hospital bill: line items, but also *groups* of line items (a surgery package containing procedures, each with sub-charges). Callers computing totals shouldn't care whether they hold one charge or a subtree.
+
+**Fix.** One interface; leaves implement it directly, containers implement it by recursing:
+
+```java
+interface BillNode { Money total(); }
+record Charge(String desc, Money amount) implements BillNode {
+    public Money total() { return amount; }
+}
+class ChargeGroup implements BillNode {
+    private final List<BillNode> children = new ArrayList<>();   // leaves OR groups — same type
+    public Money total() { return children.stream().map(BillNode::total).reduce(Money.ZERO, Money::plus); }
+}
+```
+
+Recognition cue: **part-whole hierarchy + "treat one and many uniformly"**. File systems, org charts, UI component trees, nested bills. Follow-up to expect: "now print an itemized statement AND compute tax" — two operations over one tree is Visitor's cue ([Drill 4](/citadel/lld/war/build-drills/#drill-4--composite--visitor-on-a-bill-tree) builds exactly this pair).
+
+## Flyweight — thirty seconds
+
+Millions of similar objects → split **intrinsic** shared state (immutable, cached: glyph metrics, `Integer.valueOf` cache for -128..127) from **extrinsic** state passed per call. Recognition cue is memory pressure, not design elegance. Rare in LLD rounds; one sentence suffices.
+
+## Telling them apart — the table that wins follow-ups
+
+Decorator, proxy, adapter, facade all "wrap". The discriminator is **interface geometry + intent**:
+
+| Pattern | Interface vs wrapped object | Intent in one word | The cue |
+|---|---|---|---|
+| Adapter | **different** — converts theirs to yours | translate | "wrong shape", vendor SDK |
+| Decorator | **same** — stacks | add | "also needs retry/logging", combinations |
+| Proxy | **same** — usually single | control | "check/defer/cache before the real call" |
+| Facade | **new, smaller** — over many objects | simplify | "five subsystems per use-case" |
+| Composite | same, over a **tree** | unify | "part-whole, treat one and many alike" |
+
+<Quiz questions={[
+  {
+    q: 'RetryingSender wraps RateLimitedSender wraps SmsSender. A send fails transiently twice, succeeds third try. How many rate-limit permits were consumed, and how do you flip that?',
+    options: [
+      'One — retries bypass inner decorators',
+      'Three — each retry re-enters the limiter; to consume one permit per logical send, wrap rate limiting OUTSIDE retry',
+      'Three — and the order cannot be changed without new classes',
+      'Zero — rate limiting only counts failures',
+    ],
+    answer: 1,
+    why: 'Each attempt traverses everything inside the retry decorator. Decorator order is semantics, not style — and the fix is re-wiring the composition, not writing code. Being able to say that is the point of the pattern.',
+  },
+  {
+    q: 'Your domain defines PaymentGateway; StripeAdapter implements it. The interviewer asks: why does the interface belong to your domain and not to the Stripe layer?',
+    options: [
+      'Naming convention — ports are always domain-side',
+      'Dependency direction: the stable domain must not change when vendors do, so the volatile side conforms to the stable side (DIP), making a vendor swap a new adapter instead of a domain edit',
+      'Because Spring requires interfaces in the service package',
+      'It does not matter as long as an interface exists',
+    ],
+    answer: 1,
+    why: 'Consumer-owned ports are the whole game: arrows point from volatile to stable. If Stripe defined the interface, every vendor quirk would ripple into your domain — the adapter would be decoration, not protection.',
+  },
+  {
+    q: '"Treat a single charge and a package of charges uniformly when computing totals" — pattern, and the follow-up you should expect?',
+    options: [
+      'Decorator; expect "add caching"',
+      'Composite; expect a second operation over the tree (print, tax), which cues Visitor',
+      'Facade; expect "hide the billing subsystem"',
+      'Flyweight; expect memory questions',
+    ],
+    answer: 1,
+    why: 'Part-whole + uniform treatment = Composite. And N operations over one stable tree structure is exactly Visitor territory — the classic escalation graders use to see if you know when Composite alone stops being enough.',
+  },
+  {
+    q: 'Spring @Transactional method calls another @Transactional method on THIS. What happens and why?',
+    options: [
+      'Both transactions apply, nested',
+      'The inner annotation is ignored: self-invocation never crosses the proxy, and the advice lives on the proxy, not the target',
+      'Runtime exception — Spring detects self-invocation',
+      'The inner one starts a new transaction due to REQUIRES_NEW default',
+    ],
+    answer: 1,
+    why: 'AOP advice wraps the proxy object; this.method() is a plain Java call on the target. The production "leak on the path nobody guarded" dossier is this exact class of bug. Fixes: split the bean, or inject self via proxy.',
+  },
+]} />
+
+## Hand-off
+
+Next: **behavioral patterns** — the biggest lesson in the arsenal, and the one machine-coding rounds live in. Strategy, observer, state, chain, command, template — each with its dossier.

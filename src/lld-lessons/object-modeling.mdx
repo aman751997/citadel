@@ -1,0 +1,171 @@
+---
+title: 'Object Modeling — What LLD Rounds Actually Grade'
+description: 'Entities vs values, invariants, composition vs inheritance, interface vs abstract class — the object-design decisions that decide the round before any pattern appears.'
+module: 1
+order: 1
+minutes: 25
+---
+import Quiz from '../components/Quiz.astro';
+import Mermaid from '../components/Mermaid.astro';
+
+## What the round is really testing
+
+A machine-coding / LLD round is **not** a design-pattern spelling bee. The grader reads your code for four signals, in this order:
+
+| Signal | What it looks like in code | Weight |
+|---|---|---|
+| **Correct object boundaries** | classes that own their data and rules; no God class | highest |
+| **Invariants enforced** | illegal states are unrepresentable or rejected at the door | high |
+| **Extensibility along the stated axis** | the follow-up feature lands without editing existing classes | high |
+| **Pattern vocabulary** | the right name for what you already built | lowest |
+
+Patterns are the *last* 10%. Get the first three right and the patterns fall out on their own — that's why this lesson comes before any of them.
+
+## Entities vs value objects — the first cut
+
+Every domain object you write is one of two kinds, and mixing them up causes real bugs:
+
+- **Entity** — has an identity that survives change. A `Booking` whose amount gets corrected is still the same booking. Equality = same id.
+- **Value object** — *is* its data. `Money(500, "INR")`, a `TimeRange`, a `SeatNumber`. Equality = same fields. No setters, ever — you don't "change" ₹500, you compute a new `Money`.
+
+```java
+public record Money(long paise, Currency currency) {
+    public Money {
+        if (paise < 0) throw new IllegalArgumentException("negative amount");
+    }
+    public Money plus(Money other) {
+        if (currency != other.currency) throw new IllegalArgumentException("currency mismatch");
+        return new Money(paise + other.paise, currency);
+    }
+}
+```
+
+Java `record` is the value-object tool: immutable, `equals`/`hashCode` by field, compact constructor for validation. Two free interview signals in one: **store money as minor units (paise), never `double`** — and say why (binary floating point can't represent 0.1; `0.1 + 0.2 != 0.3`).
+
+**The trap this prevents:** value objects used as `HashMap` keys or in `HashSet`s need field-based `equals`/`hashCode`. A hand-written class that forgets `hashCode` while overriding `equals` breaks every hash collection silently. With records, the compiler writes both.
+
+## Invariants — make illegal states unrepresentable
+
+An **invariant** is a rule that must hold for the object's whole lifetime: a booking's end is after its start; a wallet never goes negative; a parking spot holds at most one vehicle. The grading difference:
+
+```java
+// Anemic — a struct with getters. The invariant lives in the caller's head.
+class Wallet { private long balance; public void setBalance(long b) { balance = b; } }
+
+// Rich — the object defends itself. The invariant CANNOT be broken from outside.
+class Wallet {
+    private long balance;
+    public void debit(long amount) {
+        if (amount <= 0) throw new IllegalArgumentException("amount must be positive");
+        if (amount > balance) throw new InsufficientFundsException(balance, amount);
+        balance -= amount;
+    }
+}
+```
+
+The anemic version compiles, runs, and passes the happy path — and every reviewer marks it down, because now *every* caller must re-check the rules, and one of them won't. The rule of thumb: **behavior lives with the data it guards.** If you find a service class doing `if (wallet.getBalance() >= amount) wallet.setBalance(...)`, that logic is homesick.
+
+Three enforcement tools, cheapest first:
+
+1. **Types** — a `SeatNumber` can't be confused with a `RowNumber` if they're different types; an `enum` can't hold an unknown status. Free at compile time.
+2. **Constructor validation** — an object that constructed successfully is valid forever (if immutable) or valid-so-far (if not).
+3. **Guarded mutators** — every state-changing method re-establishes the invariant before returning, like `debit` above.
+
+## Composition vs inheritance — the default that's usually right
+
+Inheritance is a compile-time, single-parent, is-a-forever commitment. Composition is a runtime, swappable, has-a relationship. The interview-grade decision rule:
+
+**Inherit only when the subclass IS-A parent under every operation the parent supports** (that's Liskov, formally — next lesson). Otherwise compose.
+
+The classic failure: `class Square extends Rectangle`. Mathematically a square is-a rectangle; behaviorally it isn't — `setWidth(4); setHeight(5)` on a Square breaks either the square rule or the caller's expectation. The fix isn't cleverer inheritance, it's modeling the actual variation:
+
+```java
+// Not a hierarchy problem — a behavior-variation problem. Compose the varying part.
+interface Shape { double area(); }
+record Rectangle(double w, double h) implements Shape { public double area() { return w * h; } }
+record Square(double side) implements Shape { public double area() { return side * side; } }
+```
+
+Where this bites in machine coding: vehicle hierarchies in Parking Lot (`Bike extends Vehicle extends ...`) go three levels deep and then a follow-up ("add an electric SUV that needs a charging spot") cuts across the tree. **A `VehicleType` enum + composition of capabilities beats a class tree** whose branches you guessed wrong. Deep hierarchies are guesses about the future; composition defers the guess.
+
+## Interface vs abstract class
+
+| | `interface` | `abstract class` |
+|---|---|---|
+| Contract | pure capability — "can price a ride" | shared skeleton — "is 80% of a ride pricer" |
+| State | none (constants only) | fields allowed |
+| Multiple? | implement many | extend exactly one |
+| When | defining a **seam** callers depend on | sharing a **partial implementation** among close siblings |
+
+Default to interfaces for every boundary between components — that's the seam a Strategy or Adapter later plugs into. Reach for an abstract class only when siblings genuinely share code *and* state; that's Template Method territory (the [production dossier on it](/citadel/lld/war/patterns-why/#7-template-method--forced-by-module-dependency-direction) shows it forced by module dependency direction, not by taste).
+
+## Draw before you code — the 90-second UML
+
+Interviewers don't want ceremony UML; they want proof you designed before typing. One box per class, three relationship arrows, done:
+
+<Mermaid code={`classDiagram
+    class ParkingLot { -List~Floor~ floors +park(Vehicle) Ticket +unpark(Ticket) Receipt }
+    class Floor { -List~Spot~ spots +findSpot(VehicleType) Spot }
+    class Spot { -SpotType type -Vehicle occupant +isFree() boolean +assign(Vehicle) }
+    class Ticket { -String id -Instant entry -Spot spot }
+    ParkingLot "1" *-- "many" Floor : composition
+    Floor "1" *-- "many" Spot
+    Spot --> Vehicle : holds 0..1
+    ParkingLot ..> Ticket : creates`} />
+
+Read the arrows out loud as you draw: *composition* (filled diamond — the floor dies with the lot), *association* (plain arrow — a spot references a vehicle), *dependency* (dashed — the lot creates tickets but doesn't keep them). That vocabulary, used casually, is worth more than any pattern name.
+
+## The checklist that survives contact
+
+Before writing any class, answer in your head: **entity or value? what's its invariant? who's allowed to change it?** Before connecting two classes: **is this is-a under all operations, or has-a?** That's the whole lesson as four questions — they take ten seconds and they're the difference between a design and a pile of getters.
+
+<Quiz questions={[
+  {
+    q: 'Your Booking class has getStatus()/setStatus() and a BookingService checks "if status == HELD then setStatus(CONFIRMED)". What is the core problem?',
+    options: [
+      'BookingService should be named BookingManager',
+      'The status transition rule lives outside the object it protects — any other caller can set an illegal transition',
+      'Enums should not be used for status fields',
+      'setStatus should return the new status for chaining',
+    ],
+    answer: 1,
+    why: 'Anemic model. The invariant (legal status transitions) must live inside Booking — e.g. booking.confirm() that throws unless current state is HELD. Once a setter exists, every caller is trusted, and one will betray you.',
+  },
+  {
+    q: 'Money as double: what breaks?',
+    options: [
+      'Nothing, doubles hold 15+ significant digits',
+      'Binary floating point cannot represent most decimal fractions — 0.1 + 0.2 != 0.3, so sums and comparisons drift',
+      'Doubles overflow at ten million rupees',
+      'Doubles cannot be serialized to JSON',
+    ],
+    answer: 1,
+    why: 'Store minor units (paise) in a long inside a Money value object. Saying "0.1 has no exact binary representation" is the one-sentence proof interviewers want.',
+  },
+  {
+    q: 'When is extending a class the right call (vs composing)?',
+    options: [
+      'Whenever two classes share any code',
+      'When the subclass is substitutable for the parent under EVERY operation the parent supports, and siblings share real skeleton code',
+      'When you want to override just one method',
+      'Never — inheritance is always wrong',
+    ],
+    answer: 1,
+    why: 'Inheritance = is-a under all operations (Liskov) + genuine shared skeleton. Anything less, compose: hold the varying behavior behind an interface. Square/Rectangle fails exactly this test.',
+  },
+  {
+    q: 'A value object (record) is used as a HashMap key. Which guarantee makes this safe?',
+    options: [
+      'Records are stored by reference so lookup always works',
+      'Records auto-generate field-based equals AND hashCode together, keeping the hash contract intact',
+      'HashMap falls back to linear scan for records',
+      'Records are interned like Strings',
+    ],
+    answer: 1,
+    why: 'The classic bug is overriding equals without hashCode — two "equal" keys land in different buckets and lookups silently miss. Records generate both consistently, which is exactly why they are the value-object default.',
+  },
+]} />
+
+## Hand-off
+
+Next lesson: **SOLID, problem-first** — each principle taught by the mess it prevents, and mapped to the pattern that embodies it. Then the arsenal opens. After both foundations, skim the War Room [cheatsheet](/citadel/lld/war/cheatsheet/) once — the one-liners will already mean more.

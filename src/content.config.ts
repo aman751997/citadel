@@ -22,6 +22,17 @@ const dsa = defineCollection({
   }),
 });
 
+const lld = defineCollection({
+  loader: glob({ pattern: '**/*.mdx', base: './src/lld-lessons' }),
+  schema: z.object({
+    title: z.string(),
+    description: z.string(),
+    module: z.number(),
+    order: z.number(),
+    minutes: z.number(),
+  }),
+});
+
 const war = defineCollection({
   loader: glob({ pattern: '**/*.md', base: './src/war' }),
   schema: z.object({
@@ -32,4 +43,4 @@ const war = defineCollection({
   }),
 });
 
-export const collections = { lessons, dsa, war };
+export const collections = { lessons, dsa, lld, war };

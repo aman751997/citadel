@@ -1,0 +1,156 @@
+---
+title: 'The Classic-Problem Canon'
+description: 'Parking lot worked end-to-end through the protocol, then the full canon — 12 machine-coding classics with their pattern mappings and a drill order.'
+module: 4
+order: 2
+minutes: 45
+---
+import Quiz from '../components/Quiz.astro';
+import Mermaid from '../components/Mermaid.astro';
+
+## Why a canon exists
+
+Machine-coding rounds draw from a surprisingly small pool. Interviewers reskin them — "parking lot" becomes "warehouse slotting", "Splitwise" becomes "team lunch settle-up" — but the *skeleton* repeats: a resource allocator, a money splitter, a state machine, a matcher. Learn the twelve skeletons and you've seen the reskins too. First, one worked end-to-end.
+
+## Parking lot, through the protocol
+
+### Phase 1 — requirements and the cut
+
+Actors: driver, operator. Operations that must demo: **park, unpark, fee**. Varies: vehicle types (bike/car/truck), spot types, pricing. Invariants: one vehicle per spot; a ticket unparks exactly once; fee covers the full stay. Cut list: no payments integration, no reservations, single entry gate, in-memory. Concurrency: design for it, coarse-to-fine if asked (the [concurrency lesson's](/citadel/lld/lessons/concurrency-for-lld/) parking example is stage two of this exact problem).
+
+### Phase 2 — entities and the diagram
+
+<Mermaid code={`classDiagram
+    class ParkingLot { -List~Floor~ floors -TicketRepo tickets +park(Vehicle) Ticket +unpark(String ticketId) Receipt }
+    class Floor { -List~Spot~ spots +findFree(VehicleType) Optional~Spot~ }
+    class Spot { -String id -SpotType type -Vehicle occupant +fits(VehicleType) boolean +tryAssign(Vehicle) boolean +release() }
+    class Ticket { -String id -String spotId -Instant entryTime -TicketStatus status +close() }
+    class Vehicle { -String regNo -VehicleType type }
+    class FeeStrategy { <<interface>> +calculate(Ticket, Instant exit) Money }
+    class SpotAllocationStrategy { <<interface>> +allocate(List~Floor~, VehicleType) Optional~Spot~ }
+    ParkingLot *-- Floor
+    Floor *-- Spot
+    Spot --> Vehicle : 0..1
+    ParkingLot ..> Ticket : issues
+    ParkingLot --> FeeStrategy
+    ParkingLot --> SpotAllocationStrategy`} />
+
+Calls made out loud: `Ticket` is an **entity** (identity survives change; status flips OPEN→CLOSED). `Money` is a **value**. Spot occupancy is guarded *inside* `Spot` (`tryAssign`, not `isFree`+`assign` — that gap is the race from the concurrency lesson). Vehicle types are an **enum**, not a class tree — the electric-SUV follow-up cuts across any tree you'd guess (object-modeling lesson's exact warning).
+
+### Phase 3 — the seams
+
+Two interfaces carry all the flex: `SpotAllocationStrategy` (nearest / first-free / distribute-across-floors) and `FeeStrategy` (hourly / slab / weekend surge). Both Strategy + registry from the [behavioral lesson](/citadel/lld/lessons/behavioral-patterns/). `TicketRepo` hides the map.
+
+### Phase 4 — the core flow
+
+```java
+public Ticket park(Vehicle v) {
+    Spot spot = allocation.allocate(floors, v.type())
+        .orElseThrow(() -> new LotFullException(v.type()));
+    if (!spot.tryAssign(v))                      // lost the race — retry allocation once
+        return park(v);
+    Ticket t = Ticket.open(spot.id(), clock.instant());
+    tickets.save(t);
+    return t;
+}
+
+public Receipt unpark(String ticketId) {
+    Ticket t = tickets.find(ticketId).orElseThrow(() -> new InvalidTicketException(ticketId));
+    t.close();                                   // throws IllegalStateException if already CLOSED
+    Money fee = feeStrategy.calculate(t, clock.instant());
+    spotById(t.spotId()).release();
+    tickets.save(t);
+    return new Receipt(t, fee);
+}
+```
+
+Details graders notice: **`clock` is injected** (`java.time.Clock`) so fee tests don't sleep; `t.close()` owns the exactly-once invariant (State from the behavioral lesson, enum-sized); the race retry is narrated, not hidden.
+
+### Phases 5–6
+
+Extension lands as `WeekendSurgeFee implements FeeStrategy` + one registry entry — zero edits. Demo main: park two vehicles, unpark one, show fee, show `LotFullException` for a truck, show double-unpark rejected. Six tests: fee math (fixed clock), full lot, double unpark, allocation choice, race on last spot (two threads, one wins), remainder-free money.
+
+## The canon — twelve skeletons
+
+| # | Problem | Skeleton | Patterns that carry it | The trap |
+|---|---|---|---|---|
+| 1 | **Parking lot** | resource allocator | Strategy ×2, State (ticket), guarded Spot | class-tree vehicles; `isFree`+`assign` race |
+| 2 | **Splitwise** | money splitter + debt graph | Strategy (splits), Observer (balance updates) | remainder paise; simplify-debts is a graph problem — min cash flow |
+| 3 | **BookMyShow** | seat inventory + booking | State (booking), pessimistic hold + TTL, Strategy (pricing) | double-booking race — the SD contention lesson in miniature |
+| 4 | **Vending machine** | state machine | State (the canonical one), Factory (products) | scattered transition ifs; change-making greedy fails on odd denominations |
+| 5 | **Elevator system** | scheduler | Strategy (scheduling: SCAN/nearest), State (per car), Observer (events) | scheduling all-in-one method; ignore direction = pathological routes |
+| 6 | **LRU / in-memory cache** | data structure + policy | Strategy (eviction), Decorator (TTL over base) | O(n) recency; thread-safety hand-waving (concurrency lesson build #2) |
+| 7 | **Rate limiter** | token/window per key | Strategy (algorithms), Factory (per-client buckets) | shared bucket across clients; unsynchronized compound refill |
+| 8 | **Logger framework** | pipeline + sinks | Chain (levels), Observer/Strategy (appenders), Singleton-as-scope | blocking I/O on caller thread — bounded queue + worker (build #1) |
+| 9 | **Snake & Ladder / Chess** | board game engine | Command (moves, undo), State (turns), Factory (pieces) | chess legality all in one method — per-piece movement strategies |
+| 10 | **Notification service** | fan-out with fallbacks | Strategy (channels), Chain (fallback order), Decorator (retry/rate-limit) | the structural lesson's decorator-order question, live |
+| 11 | **Task scheduler** | delayed execution | Command (jobs), priority queue by time, worker pool | busy-wait polling instead of `DelayQueue`/condition-wait; missed idempotency |
+| 12 | **Tic-tac-toe / board validator** | small engine, fast round | minimal — clean model beats patterns here | over-engineering a 30-minute problem is itself the failure |
+
+Read the pattern column and the last two lessons echo: **Strategy appears eleven times.** Machine coding is mostly "find the variation axis, put a strategy seam on it, guard the invariants, demo it running."
+
+## Drill order
+
+Interleave with the [War Room build drills](/citadel/lld/war/build-drills/) (pattern muscle) — this list is problem muscle. Timed, from scratch, `Main` must run:
+
+1. **Parking lot** (90 min) — you've now read the answer; earn it honestly.
+2. **Splitwise** (90 min) — money invariants + a real algorithm (min cash flow).
+3. **Vending machine** (60 min) — the state machine, both forms from [Drill 3](/citadel/lld/war/build-drills/#drill-3--state-both-ways).
+4. **LRU cache** (45 min) — then make it thread-safe out loud.
+5. **BookMyShow** (90 min) — bring the SD contention vocabulary (hold + TTL, atomic claim).
+6. **Elevator** (90 min) — the hardest scheduling conversation; two strategies minimum.
+7. **Logger** (60 min) — async appender with the bounded queue you built in Module 3.
+8. **Rate limiter** (45 min) — per-key buckets, `computeIfAbsent` done right.
+
+Rules per drill: phase time boxes from the [protocol](/citadel/lld/lessons/machine-coding-protocol/), no IDE generation beyond getters, `Main` demos happy + two edges, and afterwards write the three-line post-mortem (what slipped, which phase ate time, one thing to steal from the reference solutions online — LLD repos on GitHub and editorials are fine *after* the attempt, never before).
+
+<Quiz questions={[
+  {
+    q: 'Splitwise "simplify debts" — A owes B ₹30, B owes C ₹30. What is the algorithmic core, and the classic wrong answer?',
+    options: [
+      'Dijkstra over the debt graph; wrong answer is BFS',
+      'Net out per-person balances (+/-), then settle max creditor against max debtor (min cash flow); wrong answer is pairwise cancellation of individual IOUs, which misses transitive chains',
+      'Topological sort of debts; wrong answer is cycles',
+      'Union-Find on participants; wrong answer is per-expense loops',
+    ],
+    answer: 1,
+    why: 'Only NET positions matter: A -30, B 0, C +30 settles in one transfer A→C. Pairwise IOU cancellation cannot see through B. Greedy max-debtor→max-creditor gives ≤ n−1 transfers — state that bound, then note true minimum-transaction-count is NP-hard, so greedy is the accepted answer.',
+  },
+  {
+    q: 'BookMyShow: two users pick seat F7 in the same 100ms. Your in-memory design guards this how?',
+    options: [
+      'First-come wins at payment time; UI refreshes fast',
+      'Atomic claim on the seat (tryHold with CAS/synchronized, exactly the Spot.tryAssign shape) creating a HOLD with TTL; payment confirms within the window or the hold expires and releases',
+      'Global lock on the show while any user browses',
+      'Optimistic: let both book, refund one later',
+    ],
+    answer: 1,
+    why: 'Same skeleton as parking\'s tryAssign, plus the time dimension: hold-with-TTL so abandoned checkouts release inventory. This is the SD contention pattern at LLD scale — saying that cross-link out loud is exactly the range interviewers reward.',
+  },
+  {
+    q: 'Chess: where does move legality live in a design that survives the round?',
+    options: [
+      'One Board.isLegal(from, to) method with a switch over piece type',
+      'Each piece type owns its movement rule (strategy per piece / polymorphic canMove), while Board owns board-level rules: path blocking, check exposure, turn order',
+      'A rules engine parsed from config',
+      'The Player class, since players make moves',
+    ],
+    answer: 1,
+    why: 'Two layers, split by ownership: piece-intrinsic geometry (knight L-shape) belongs to the piece; board-contextual rules (pinned piece exposing check) need whole-board sight and belong to Board. The all-in-one switch is the canon trap — every new piece edits it, and check logic tangles with geometry.',
+  },
+  {
+    q: 'The logger drill: appenders write to disk on the caller thread and a slow disk stalls the app. The fix, from this wing?',
+    options: [
+      'Buffer in a StringBuilder and flush every 100 logs',
+      'Async appender: bounded blocking queue between callers and a worker thread pool — Module 3 build #1 — with an explicit overflow policy (drop-oldest / block / drop-and-count)',
+      'Log less',
+      'Write to memory-mapped files',
+    ],
+    answer: 1,
+    why: 'Producer-consumer verbatim: callers produce log events, workers drain to sinks. The graded detail is naming the overflow policy — a bounded queue WILL fill, and "what then?" is the follow-up. (Real logback/log4j2 async appenders work exactly this way.)',
+  },
+]} />
+
+## Hand-off — the wing is yours
+
+Theory complete. From here: drill the canon in the order above with `/interview-buddy` timing you, reread the [cheatsheet](/citadel/lld/war/cheatsheet/) before every real round, and treat the [18 dossiers](/citadel/lld/war/patterns-why/) as your follow-up ammunition — every "when have you actually used this?" has a production answer sitting there.

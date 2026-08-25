@@ -1,0 +1,221 @@
+---
+title: 'Java Concurrency for LLD Rounds'
+description: 'Visibility, locks, atomics, executors, and the four classic thread-safe builds — bounded queue, LRU, rate limiter, singleton — that machine-coding rounds escalate into.'
+module: 3
+order: 1
+minutes: 40
+---
+import Quiz from '../components/Quiz.astro';
+import Mermaid from '../components/Mermaid.astro';
+
+## Why this module sits here
+
+Every machine-coding round has a stage-two question: **"now make it thread-safe."** Your parking lot works; two threads park into the same spot. Your rate limiter works; two requests both pass the check. This lesson is the toolkit for that moment, ordered from cheapest to heaviest — and the grading rule is: **reach for the cheapest tool that closes the race, and name the race before you fix it.**
+
+## First, name the two diseases
+
+1. **Atomicity failure** — check-then-act with a gap: `if (spot.isFree()) spot.assign(v)` — both threads see free, both assign. The read and write must be one indivisible step.
+2. **Visibility failure** — a write one thread makes is *never seen* by another: no `synchronized`/`volatile`/atomic means the JVM may cache the field per-thread indefinitely. `boolean running = false` set by thread A can leave thread B spinning forever.
+
+Every fix below closes one or both. Saying which disease you're treating is the senior-signal sentence.
+
+## The ladder — cheapest tool first
+
+### Rung 0: no shared mutable state
+
+Immutable objects (records, final fields) need no synchronization — safe to share by construction. Confinement (each thread its own object) likewise. Say this rung exists before you lock anything: "can I make this immutable instead?"
+
+### Rung 1: `volatile` — visibility only
+
+```java
+private volatile boolean shutdown = false;   // writer thread sets; worker loops read
+```
+
+`volatile` guarantees every read sees the latest write (and forbids the reordering that breaks double-checked locking). It does **not** make `count++` safe — that's read-modify-write, three steps. Flags and publish-once references: yes. Counters and check-then-act: no.
+
+### Rung 2: atomics — lock-free single-variable updates
+
+```java
+private final AtomicInteger freeSpots = new AtomicInteger(40);
+
+boolean tryReserve() {
+    while (true) {
+        int cur = freeSpots.get();
+        if (cur == 0) return false;
+        if (freeSpots.compareAndSet(cur, cur - 1)) return true;  // CAS: succeed only if unchanged
+    }
+}
+```
+
+That loop is the **CAS retry pattern** — optimistic, no blocking, and the shape behind `AtomicLong.incrementAndGet`, `LongAdder`, and every lock-free structure. Explain CAS in one sentence: *"compare-and-set updates only if the value is still what I read; on failure I re-read and retry — I never block, I just may loop."* Under heavy write contention, `LongAdder` beats `AtomicLong` (it stripes the counter); one sentence, free points.
+
+### Rung 3: `synchronized` / `ReentrantLock` — compound invariants
+
+When the invariant spans **multiple fields or steps**, you need mutual exclusion:
+
+```java
+class Spot {
+    private Vehicle occupant;
+    synchronized boolean tryAssign(Vehicle v) {     // check-then-act made atomic — one method, one lock
+        if (occupant != null) return false;
+        occupant = v;
+        return true;
+    }
+}
+```
+
+Design rules that get graded: **lock the smallest object that owns the invariant** (the spot, not the lot — or all parking serializes); **never call foreign code while holding a lock** (listener callbacks under lock = deadlock bait); **document the lock's guard set** ("this lock guards occupant").
+
+`ReentrantLock` over `synchronized` when you need: `tryLock(timeout)` (deadlock avoidance, back-pressure), interruptible waits, fairness, or multiple `Condition`s (see the bounded queue below). Otherwise `synchronized` — less code, harder to leak (no forgotten `unlock()`; and when you do use locks: `lock(); try { ... } finally { unlock(); }`, always).
+
+### Rung 4: concurrent collections — outsource the locking
+
+```java
+// The lazy-init race the production codebase actually shipped (inventory finding #2):
+if (!map.containsKey(k)) map.put(k, create(k));        // two threads: both miss, both create
+
+// The fix is one atomic method:
+cache.computeIfAbsent(k, this::create);                 // ConcurrentHashMap does it under the hood
+```
+
+`ConcurrentHashMap` (+ `computeIfAbsent`/`merge`/`putIfAbsent`), `CopyOnWriteArrayList` (read-heavy listener lists — the Observer lesson used it), `BlockingQueue` (below). The graded insight: **a thread-safe map does not make your two-step logic safe** — safety composes at the operation level, not the data-structure level. `map.get` then `map.put` is still a race on a `ConcurrentHashMap`.
+
+For multi-field swaps, production used [copy-on-write: build new maps, swap both references in one atomic assignment](/citadel/lld/war/patterns-why/#15-copy-on-write-registry--two-maps-that-must-swap-together).
+
+## Executors — never raw threads
+
+```java
+ExecutorService pool = new ThreadPoolExecutor(
+    4, 8,                          // core, max
+    60, TimeUnit.SECONDS,          // idle keep-alive for the extra 4
+    new ArrayBlockingQueue<>(100), // BOUNDED queue — unbounded queues turn overload into OOM
+    new ThreadPoolExecutor.CallerRunsPolicy());  // rejection = back-pressure, not silent drop
+```
+
+Interview sentences that matter: **bound the queue** (an unbounded queue means "max threads" never triggers and overload becomes memory death); **choose the rejection policy out loud** (`CallerRunsPolicy` = the submitter does the work, natural throttle); sizing heuristic — CPU-bound ≈ cores, IO-bound ≈ cores × (1 + wait/compute). And the trap from the structural lesson: thread pools drop `ThreadLocal` context — [the decorator dossier bug](/citadel/lld/war/patterns-why/#5-decorator--the-bug-threadlocals-cause-at-thread-boundaries) — capture context before submit, restore inside the task.
+
+## The four classic builds
+
+These four cover ~90% of "make it concurrent" escalations. Build each once for real.
+
+### 1. Bounded blocking queue (producer-consumer) — the king
+
+```java
+class BoundedQueue<T> {
+    private final Queue<T> items = new ArrayDeque<>();
+    private final int capacity;
+    private final ReentrantLock lock = new ReentrantLock();
+    private final Condition notFull  = lock.newCondition();
+    private final Condition notEmpty = lock.newCondition();
+
+    void put(T item) throws InterruptedException {
+        lock.lock();
+        try {
+            while (items.size() == capacity) notFull.await();   // WHILE, never if — spurious wakeups
+            items.add(item);                                    // + another consumer may beat you
+            notEmpty.signal();
+        } finally { lock.unlock(); }
+    }
+    T take() throws InterruptedException {
+        lock.lock();
+        try {
+            while (items.isEmpty()) notEmpty.await();
+            T item = items.poll();
+            notFull.signal();
+            return item;
+        } finally { lock.unlock(); }
+    }
+}
+```
+
+The three graded lines: **`while` around `await`** (spurious wakeups + stolen wakeups make `if` a bug), **two conditions** (producers and consumers wake only their counterparts — with one condition or `wait/notifyAll` everyone wakes and re-fights), **`finally { unlock() }`**. Then the closer: "in production I'd use `ArrayBlockingQueue` — this is what's inside it."
+
+### 2. Thread-safe LRU cache
+
+Single-threaded LRU = `LinkedHashMap` with `accessOrder=true` + `removeEldestEntry`, or hand-rolled HashMap + doubly-linked list (the DSA version). Concurrency options, in answer order: (1) coarse lock around the whole thing — correct, contended, say it first; (2) segment/stripe the locks; (3) production answer: Caffeine-style — `ConcurrentHashMap` for the data plus a lossy queue of access events applied asynchronously, trading *exact* LRU order for throughput. Naming that trade-off is the gold move.
+
+### 3. Token-bucket rate limiter
+
+```java
+class TokenBucket {
+    private final long capacity, refillPerSec;
+    private double tokens; private long lastRefillNanos;
+    synchronized boolean tryAcquire() {
+        long now = System.nanoTime();
+        tokens = Math.min(capacity, tokens + (now - lastRefillNanos) / 1e9 * refillPerSec);
+        lastRefillNanos = now;
+        if (tokens < 1) return false;
+        tokens -= 1; return true;
+    }
+}
+```
+
+Lazy refill (compute on access — no timer thread), `synchronized` because tokens+timestamp is a compound invariant. Per-key limiting: `ConcurrentHashMap<ClientId, TokenBucket>` + `computeIfAbsent` — which is the lazy-init race done *right*, closing the loop with rung 4. (Your SD wing has the distributed version; this is its in-process little sibling.)
+
+### 4. Safe lazy singleton
+
+Covered in creational: enum or holder idiom; DCL needs `volatile`. In this module you can now say *why*: DCL without volatile is a **visibility + reordering** failure — disease 2.
+
+## Deadlock — the one question you must not fumble
+
+Four conditions (mutual exclusion, hold-and-wait, no preemption, circular wait); you break **circular wait** with a **global lock order**:
+
+```java
+// transfer(a, b) and transfer(b, a) on two threads = classic deadlock.
+Account first  = a.id() < b.id() ? a : b;      // total order on lock acquisition
+Account second = a.id() < b.id() ? b : a;
+synchronized (first) { synchronized (second) { ledger.move(a, b, amt); } }
+```
+
+Alternatives to name: `tryLock` with timeout + retry (livelock-aware), or a single coarser lock. Detection: thread dump shows two threads each `BLOCKED` on the other's monitor.
+
+<Quiz questions={[
+  {
+    q: 'ConcurrentHashMap<String, Integer> counts; two threads run counts.put(k, counts.get(k) + 1). Thread-safe?',
+    options: [
+      'Yes — ConcurrentHashMap synchronizes all access',
+      'No — get-then-put is a compound action; both threads can read 5 and write 6. Fix: counts.merge(k, 1, Integer::sum)',
+      'No — but only on JDK 8 and older',
+      'Yes if the key is immutable',
+    ],
+    answer: 1,
+    why: 'Thread-safe structure ≠ thread-safe usage. Safety composes at the operation level: use the atomic compound ops (merge/compute/putIfAbsent) or an AtomicInteger value. This is the single most common concurrency-interview trap.',
+  },
+  {
+    q: 'In the bounded queue, why "while (items.isEmpty()) notEmpty.await()" instead of "if"?',
+    options: [
+      'Style convention from Doug Lea',
+      'Spurious wakeups exist AND another consumer may consume the item between your wakeup and your lock reacquisition — the condition must be rechecked',
+      'while is needed only with notifyAll, and we use signal',
+      'if would not compile with Condition',
+    ],
+    answer: 1,
+    why: 'await() can return without a signal (spurious), and signal order does not guarantee the woken thread wins the race back to the lock. The predicate loop is mandatory; "if" is the textbook bug graders plant.',
+  },
+  {
+    q: 'Your parking lot: 200 spots, one ReentrantLock on the whole lot around park(). Correct but slow. Best next move?',
+    options: [
+      'Replace with volatile fields on each spot',
+      'Push locking down to the invariant owner: per-spot tryAssign (synchronized or CAS on occupant), keep a lock-free counter (AtomicInteger/LongAdder) for capacity',
+      'Use a thread pool so fewer threads contend',
+      'Make everything immutable',
+    ],
+    answer: 1,
+    why: 'Lock granularity = the object that owns the invariant. Spot occupancy is per-spot; total capacity is a single-variable invariant that CAS handles. Coarse lock is the correct FIRST answer, then narrow it — that order is the graded behavior.',
+  },
+  {
+    q: 'Two threads: transfer(A,B) and transfer(B,A), each synchronizing on from then to. What happens and what is the canonical fix?',
+    options: [
+      'One waits, then proceeds — locks queue fairly',
+      'Deadlock: each holds one account and waits for the other (circular wait). Fix: acquire locks in a global order (e.g. by account id), or tryLock with timeout',
+      'Livelock: both retry forever',
+      'JVM detects the cycle and throws DeadlockException',
+    ],
+    answer: 1,
+    why: 'All four deadlock conditions hold; ordering lock acquisition by a total order (id) breaks circular wait. Know the thread-dump diagnosis too: two BLOCKED threads, each owning the monitor the other wants.',
+  },
+]} />
+
+## Hand-off
+
+Toolkit loaded. Final module: **the machine-coding playbook** — the 90-minute protocol that turns all four modules into a finished, running, tested submission.

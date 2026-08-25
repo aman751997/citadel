@@ -44,11 +44,18 @@
 - Pattern lessons forged (1–8, user directive 2026-08-17): **two-pointers, sliding-window, prefix-sum, intervals, linked-lists, binary-search, stacks, heaps** — Act I DSA surface fully covered. Drill-design rule still governs RECOGNITION drills (taught-in-session patterns only); lessons ahead of reps are reference, teach before drilling.
 - Queue: patterns 9–20 (Trees DFS/BFS → Graphs → Backtracking → DP → Tries → Math/Bit → Greedy → Hashing → Matrix) — forge as Act II/III weeks open, enrich with real bugs.
 
-## LLD status — wing opened 2026-08-25
+## LLD status — THEORY COMPLETE (2026-08-25)
 
-- `/lld/` wing live: 4 planned theory modules (foundations/SOLID, pattern arsenal, Java concurrency, machine-coding playbook) — all 🛠️ queued, forge on demand.
-- War Room (battle-tested, from prod code): patterns-why (18 dossiers), inventory, build-drills, cheatsheet — ✅ live at `/lld/war/…`. SD wing got its own War Room: 6 case studies at `/sd/war/…`. Doctrine: theory first, War Room pages are the live examples.
-- Forge queue: OOP mechanics → SOLID problem-first → creational → structural → behavioral → Java concurrency → 90-min protocol → classic problems (parking lot, Splitwise, BookMyShow, LRU, rate limiter).
+| Module | Lessons | Status |
+|--------|---------|--------|
+| 1 Object Design Foundations | object-modeling, solid | ✅ forged |
+| 2 The Pattern Arsenal | creational-patterns, structural-patterns, behavioral-patterns | ✅ forged |
+| 3 Concurrency for LLD | concurrency-for-lld | ✅ forged |
+| 4 Machine-Coding Playbook | machine-coding-protocol, classic-problems | ✅ forged |
+
+- All 8 lessons gated in order (localStorage key `sdc-lld-progress`), Quiz + Mermaid + Java throughout; every lesson cross-links its War Room dossiers as live examples.
+- War Room (battle-tested, from prod code): patterns-why (18 dossiers), inventory, build-drills, cheatsheet — ✅ live at `/lld/war/…`. SD War Room: 6 case studies at `/sd/war/…`. Doctrine: theory first, War Room = live examples.
+- Remaining LLD work = REPS, not lessons: the classic-problems drill order (parking lot → splitwise → vending machine → LRU → BookMyShow → elevator → logger → rate limiter), timed with the buddy, post-mortems logged. Lesson infra: MDX in `src/lld-lessons/`, modules in `src/lld-modules.ts`.
 
 ## Coverage map
 `src/bank.ts` (46 SD questions) → all map to forged theory; 17 walkthroughs queued. `src/dsa.ts` (144 problems) → 8/20 pattern lessons forged (all of Act I). DSA page now has click-to-mark solves + copy-progress (localStorage overlay; baked flags stay the synced truth).

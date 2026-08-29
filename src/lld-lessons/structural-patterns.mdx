@@ -1,168 +1,292 @@
 ---
 title: 'Structural Patterns — Composing What You Cannot Change'
-description: 'Adapter, decorator, facade, proxy, composite — five ways to wrap and arrange objects, told apart by intent, each with its production dossier.'
+description: 'Adapter, decorator, facade, proxy, composite — MediCore meets vendors, records, and one messy discharge. Full code + memory hooks for telling the wrappers apart.'
 module: 2
 order: 2
-minutes: 30
+minutes: 45
 ---
 import Quiz from '../components/Quiz.astro';
 import Mermaid from '../components/Mermaid.astro';
 
-## The shared forcing problem
+## MediCore meets the outside world
 
-You have objects whose code you **can't edit** (vendor SDK, another team, frozen module) or **shouldn't edit** (stable, tested) — and they don't fit: wrong interface, missing behavior, too many to call, too expensive to touch, or shaped like a tree. Structural patterns are five wrapping/arranging moves. They look similar in UML — **the difference is entirely intent** — so this lesson leans on the tell-them-apart table at the end.
+Creational built MediCore's objects. Now the clinic goes live and hits reality: an SMS vendor with an alien SDK, reminders that need retry, a discharge process touching five subsystems, medical records that need access control, and hospital bills shaped like trees. You **can't edit** vendor code and **shouldn't edit** stable, tested classes — so structural patterns are five wrapping/arranging moves for making misfits work together.
 
-## Adapter — wrong interface
+They look near-identical in UML — **the difference is entirely intent** — so every memory hook below is aimed at telling them apart. The table at the end is the weapon; the story makes it stick.
 
-**Problem.** Your domain defines `PaymentGateway.charge(Money, Method)` (the DIP port from the SOLID lesson). Stripe's SDK speaks `PaymentIntent.create(Map<String,Object>)`. Razorpay speaks something else again. Neither will change for you.
+## Adapter — the SMS vendor speaks alien
 
-**Fix.** One translating class per vendor; domain never learns vendor vocabulary:
+**Story beat.** MediCore sends appointment reminders. Your domain defines the port it *wishes* existed:
 
 ```java
-class StripeAdapter implements PaymentGateway {
-    private final StripeClient stripe;                       // the adaptee
-    public PaymentResult charge(Money m, PaymentMethod pm) {
-        PaymentIntent pi = stripe.paymentIntents().create(   // translate OUR call...
-            Map.of("amount", m.paise(), "currency", m.currency().code(), "source", pm.token()));
-        return toResult(pi);                                 // ...and THEIR response
-    }
-}
+interface SmsGateway { void send(PhoneNumber to, String text); }   // owned by YOUR domain
 ```
 
-Two grading points. First, **the port belongs to the consumer**: your domain defines `PaymentGateway`, the adapter conforms to *it* — not the other way round. Second, adapters are where a swap becomes configuration: the [production dossier](/citadel/lld/war/patterns-why/#8-adapter--so-a-swap-is-config-not-a-release) exists because switching SMS vendors had to be a config flag, not a release.
+The vendor you signed, TextWave, ships an SDK that speaks `submitMessage(TextWavePayload)` with API keys, sender codes, and a `char[]` body. TextWave will not change for you. Next year procurement will switch vendors again.
 
-## Decorator — same interface, added behavior
-
-**Problem.** Every `NotificationSender` needs retry. Some also need rate limiting. Some need both, some neither, and the combinations multiply. Subclassing gives you `RetryingRateLimitedSmsSender`, `RetryingEmailSender`… a class per combination — 2ⁿ explosion.
-
-**Fix.** Wrappers that implement the *same* interface and hold one inside:
+**Fix.** One translating class per vendor; the domain never learns vendor vocabulary:
 
 ```java
-class RetryingSender implements NotificationSender {
-    private final NotificationSender inner;                  // same type — that's the pattern
+class TextWaveAdapter implements SmsGateway {
+    private final TextWaveClient client;                 // the adaptee — the alien SDK
+    private final String senderCode;
+
+    TextWaveAdapter(TextWaveClient client, String senderCode) {
+        this.client = client;
+        this.senderCode = senderCode;
+    }
+
+    public void send(PhoneNumber to, String text) {
+        TextWavePayload payload = new TextWavePayload();  // translate OUR call to THEIR shape
+        payload.setMsisdn(to.e164());
+        payload.setBody(text.toCharArray());
+        payload.setSender(senderCode);
+        TextWaveAck ack = client.submitMessage(payload);
+        if (!ack.accepted())                              // and THEIR errors to OUR exception
+            throw new SmsDeliveryException(to, ack.reasonCode());
+    }
+}
+
+// Wiring: the vendor swap is ONE line here, zero lines in the domain.
+SmsGateway sms = new TextWaveAdapter(new TextWaveClient(apiKey), "MEDICORE");
+```
+
+Two grading points. First, **the port belongs to the consumer**: your domain defines `SmsGateway`, the adapter conforms to *it* — never the other way round. That's DIP from the SOLID lesson: arrows point from volatile (vendor) to stable (domain). Second, adapters are where a swap becomes configuration — the [production dossier](/citadel/lld/war/patterns-why/#8-adapter--so-a-swap-is-config-not-a-release) exists because switching SMS vendors had to be a config flag, not a release.
+
+> 🧠 **Memory hook.** *A travel plug adapter:* your laptop's plug (domain port) never changes — the adapter reshapes the wall socket (vendor) to fit it.
+> **Cheat code:** wrong *interface shape* → adapter. The port is defined by YOUR side.
+> **Interview line:** *"I'll define the gateway interface in my domain and adapt each vendor to it — a vendor swap becomes a new adapter plus a config change."*
+
+## Decorator — reminders need retry, some need rate-limiting
+
+**Story beat.** TextWave drops ~2% of calls; reminders need retry. Bulk campaign blasts also need rate-limiting so TextWave doesn't ban the account. But OTP sends must NOT be rate-limited (they're urgent), and the in-app channel needs neither. Subclassing gives you `RetryingRateLimitedSmsGateway`, `RetryingSmsGateway`, `RetryingInAppGateway`… a class per combination — 2ⁿ explosion.
+
+**Fix.** Wrappers that implement the **same interface** and hold one inside — stack them per need at wiring time:
+
+```java
+class RetryingGateway implements SmsGateway {
+    private final SmsGateway inner;                      // same type — THAT is the pattern
     private final int maxAttempts;
-    public void send(Notification n) {
-        for (int a = 1; ; a++) {
-            try { inner.send(n); return; }
-            catch (TransientSendException e) { if (a == maxAttempts) throw e; backoff(a); }
+
+    RetryingGateway(SmsGateway inner, int maxAttempts) {
+        this.inner = inner;
+        this.maxAttempts = maxAttempts;
+    }
+
+    public void send(PhoneNumber to, String text) {
+        for (int attempt = 1; ; attempt++) {
+            try { inner.send(to, text); return; }
+            catch (SmsDeliveryException e) {
+                if (attempt == maxAttempts) throw e;
+                sleepBackoff(attempt);                    // 100ms, 200ms, 400ms...
+            }
         }
     }
 }
-// Compose at wiring time, per need:
-NotificationSender sms = new RetryingSender(new RateLimitedSender(new SmsSender(vendor), 50), 3);
+
+class RateLimitedGateway implements SmsGateway {
+    private final SmsGateway inner;
+    private final TokenBucket bucket;                    // from the concurrency lesson
+
+    RateLimitedGateway(SmsGateway inner, TokenBucket bucket) {
+        this.inner = inner;
+        this.bucket = bucket;
+    }
+
+    public void send(PhoneNumber to, String text) {
+        if (!bucket.tryAcquire()) throw new RateLimitExceededException();
+        inner.send(to, text);
+    }
+}
+
+// Wiring — every combination WITHOUT new classes:
+SmsGateway campaign = new RetryingGateway(new RateLimitedGateway(vendor, bucket), 3);
+SmsGateway otp      = new RetryingGateway(vendor, 5);        // urgent: retry, never limit
+SmsGateway plain    = vendor;                                 // no wrapping — also a choice
 ```
 
-Order matters and interviewers probe it: retry-outside-rateLimit re-enters the limiter on each attempt; rateLimit-outside-retry counts one permit per logical send. Say which you want and why. This is also how `java.io` works (`BufferedInputStream(new FileInputStream(f))`) — cite it.
+**Order matters and interviewers probe it:** in `campaign` above, retry sits *outside* the limiter — every retry attempt re-enters the bucket and burns a permit. Flip the nesting and one logical send costs one permit no matter how many retries. Neither is "correct"; **say which you want and why**. This is also how `java.io` works — `new BufferedInputStream(new FileInputStream(f))` — cite it.
 
-Production scar worth knowing: decorators that hop threads lose `ThreadLocal` context — [the dossier on exactly that bug](/citadel/lld/war/patterns-why/#5-decorator--the-bug-threadlocals-cause-at-thread-boundaries). A decorator must capture context *before* submitting work to a pool and restore it inside.
+Production scar: decorators that hop threads lose `ThreadLocal` context — [the dossier on exactly that bug](/citadel/lld/war/patterns-why/#5-decorator--the-bug-threadlocals-cause-at-thread-boundaries). A decorator submitting work to a pool must capture context *before* submit and restore it inside.
 
-## Facade — too many doors
+> 🧠 **Memory hook.** *Gift wrapping:* every layer wraps a gift and IS a gift — you can keep wrapping. Order visible from outside: last wrap = outermost layer = runs first.
+> **Cheat code:** same interface + "ALSO needs X, some need Y, combinations vary" → decorator. Combination decided at wiring, not by class explosion.
+> **Interview line:** *"Retry and rate-limit become decorators over the gateway; I compose per channel at wiring time — and the nesting order is a semantic decision: outside-retry burns a permit per attempt."*
 
-**Problem.** Checking out a cart touches inventory, pricing, payment, notification, and audit — five subsystems, each with its own error semantics. Every caller re-implements the sequence and half of them forget the audit call.
+## Facade — the discharge button
+
+**Story beat.** Discharging a patient touches five subsystems: compute the final bill, charge the pending amount, decrement pharmacy stock for take-home meds, send the discharge summary SMS, write the audit trail. The front-desk UI, the mobile app, and the night-shift batch job each implemented this sequence themselves. The batch job forgot the audit call. Compliance noticed.
 
 **Fix.** One class exposing the *use-case*, hiding the choreography:
 
 ```java
-class CheckoutFacade {
-    OrderConfirmation checkout(Cart cart, PaymentMethod pm) {
-        inventory.reserve(cart);
-        Money total = pricing.total(cart);
-        PaymentResult pay = payments.charge(total, pm);
-        audit.record(cart, pay);
-        return notifier.confirm(cart, pay);
+class DischargeFacade {
+    private final BillingService billing;
+    private final PaymentProcessor payments;      // from the creational lesson's factory
+    private final PharmacyService pharmacy;
+    private final SmsGateway sms;                 // the decorated gateway from above
+    private final AuditLog audit;
+
+    DischargeFacade(BillingService billing, PaymentProcessor payments,
+                    PharmacyService pharmacy, SmsGateway sms, AuditLog audit) {
+        this.billing = billing; this.payments = payments;
+        this.pharmacy = pharmacy; this.sms = sms; this.audit = audit;
+    }
+
+    DischargeSummary discharge(String admissionId) {
+        Bill bill = billing.finalizeBill(admissionId);              // 1. freeze the bill
+        PaymentResult paid = payments.process(bill.pendingDue());   // 2. settle dues
+        pharmacy.dispenseTakeHome(admissionId);                     // 3. meds out
+        audit.record("DISCHARGE", admissionId, paid.reference());   // 4. compliance FIRST
+        sms.send(bill.patientPhone(), "Discharge complete. Bill: " + bill.total());  // 5. then notify
+        return new DischargeSummary(bill, paid);
     }
 }
+
+// Every caller — UI, app, batch — now writes ONE line:
+DischargeSummary s = dischargeFacade.discharge("ADM-2201");
 ```
 
-Facade ≠ God class: it **coordinates, never decides** — no business rules inside, just the sequence and a uniform error story. That uniform-failure-policy angle is the production version: [one facade over 12 remote services](/citadel/lld/war/patterns-why/#9-facade--a-uniform-failure-policy-over-12-remote-services) so every caller got the same timeout/fallback behavior for free. Facade is SRP applied to *entry points*.
+**Facade ≠ God class:** it **coordinates, never decides** — no business rules inside, just the sequence and a uniform error story. Bill math lives in `BillingService`; the facade only knows the order. That coordination *is* its single responsibility (SRP applied to entry points). Production's version: [one facade over 12 remote services](/citadel/lld/war/patterns-why/#9-facade--a-uniform-failure-policy-over-12-remote-services) so every caller got the same timeout/fallback behavior for free.
 
-## Proxy — same interface, controlled access
+> 🧠 **Memory hook.** *Hotel front desk:* you say "check me out" — the desk calls housekeeping, billing, and the valet. You never phone the valet yourself.
+> **Cheat code:** every caller re-implementing the same multi-subsystem sequence → facade. It sequences, it never decides.
+> **Interview line:** *"I'll expose the use-case as a facade so the five-step choreography exists exactly once — callers can't forget the audit step, because they never see the steps."*
 
-**Problem.** Callers should *think* they're talking to the object, but something must happen around every call: lazy-load it, cache it, check permissions, log it, rate-limit it — without the caller or the target knowing.
+## Proxy — who's reading the medical records?
+
+**Story beat.** `PatientRecordService.fullHistory(patientId)` returns everything — diagnoses, prescriptions, lab results. Today the billing team calls it (they only need it for insurance claims), and nothing checks *who* is asking. A receptionist's session could pull any patient's psychiatric history. The service itself is correct and tested; you don't want to weave permission checks through its logic.
 
 **Fix.** Same shape as decorator — implements the interface, holds the real thing — but the intent is **access control**, not feature-adding:
 
 ```java
-class AuthorizingReportProxy implements ReportService {
-    private final ReportService real;
-    private final AccessChecker access;
-    public Report generate(ReportRequest r) {
-        if (!access.allowed(Context.currentUser(), r)) throw new AccessDeniedException(r);
-        return real.generate(r);
+interface PatientRecords { History fullHistory(String patientId); }
+
+class RecordsAuthProxy implements PatientRecords {
+    private final PatientRecords real;
+    private final AccessPolicy policy;
+    private final AuditLog audit;
+
+    RecordsAuthProxy(PatientRecords real, AccessPolicy policy, AuditLog audit) {
+        this.real = real; this.policy = policy; this.audit = audit;
+    }
+
+    public History fullHistory(String patientId) {
+        User caller = RequestContext.currentUser();
+        if (!policy.canReadHistory(caller, patientId)) {          // gate BEFORE the real call
+            audit.record("DENIED_HISTORY", caller.id(), patientId);
+            throw new AccessDeniedException(caller.id(), patientId);
+        }
+        audit.record("READ_HISTORY", caller.id(), patientId);     // regulators want reads logged too
+        return real.fullHistory(patientId);
     }
 }
+
+// Wiring: callers receive the proxy and never know.
+PatientRecords records = new RecordsAuthProxy(new DbPatientRecords(ds), policy, audit);
 ```
 
-The industrial form is the **dynamic proxy / AOP interceptor** — Spring wraps your bean and applies `@Transactional`/security advice. Two things every Java interviewer eventually asks live in that sentence: self-invocation bypasses the proxy (`this.method()` never crosses it), and un-proxied paths are unguarded — the [production leak dossier](/citadel/lld/war/patterns-why/#6-proxy--aop--the-leak-on-the-path-nobody-guarded) is one forgotten path.
+The industrial form is the **dynamic proxy / AOP interceptor** — Spring wraps your bean and applies `@Transactional`/`@PreAuthorize` advice as an auto-generated proxy. Two follow-ups every Java interviewer eventually asks live there: **self-invocation bypasses the proxy** (`this.method()` is a plain call on the target — advice never runs), and **un-proxied paths are unguarded** — the [production leak dossier](/citadel/lld/war/patterns-why/#6-proxy--aop--the-leak-on-the-path-nobody-guarded) is one forgotten path.
 
-## Composite — the tree where leaf and branch must look alike
+**Proxy vs decorator in one breath** (they compile identically): decorator *adds a feature the caller wants* (retry); proxy *controls access the caller doesn't get a say in* (auth, lazy-load, cache). Intent, not structure.
 
-**Problem.** A hospital bill: line items, but also *groups* of line items (a surgery package containing procedures, each with sub-charges). Callers computing totals shouldn't care whether they hold one charge or a subtree.
+> 🧠 **Memory hook.** *The bouncer:* same door, same club behind it — but the bouncer decides whether you get in, and writes your name in the log either way. A gift-wrapper (decorator) makes the gift better; a bouncer (proxy) decides if you reach it.
+> **Cheat code:** "check / defer / cache / log BEFORE the real call, caller unaware" → proxy.
+> **Interview line:** *"Access control wraps as a proxy so the record service stays pure — and in Spring this is exactly what @PreAuthorize generates, with the self-invocation caveat."*
+
+## Composite — the hospital bill is a tree
+
+**Story beat.** A MediCore inpatient bill: room charges, but also a *surgery package* containing surgeon fee, OT charges, and an anesthesia sub-group with its own items. Groups inside groups, charges at the leaves. Billing code that computes the total shouldn't care whether it holds one charge or a package of packages.
 
 **Fix.** One interface; leaves implement it directly, containers implement it by recursing:
 
 ```java
 interface BillNode { Money total(); }
-record Charge(String desc, Money amount) implements BillNode {
-    public Money total() { return amount; }
+
+record Charge(String description, Money amount) implements BillNode {
+    public Money total() { return amount; }                       // leaf: my own amount
 }
+
 class ChargeGroup implements BillNode {
-    private final List<BillNode> children = new ArrayList<>();   // leaves OR groups — same type
-    public Money total() { return children.stream().map(BillNode::total).reduce(Money.ZERO, Money::plus); }
+    private final String name;
+    private final List<BillNode> children = new ArrayList<>();    // leaves OR groups — same type
+
+    ChargeGroup(String name) { this.name = name; }
+    ChargeGroup add(BillNode child) { children.add(child); return this; }
+
+    public Money total() {                                        // container: sum of children
+        return children.stream().map(BillNode::total).reduce(Money.ZERO, Money::plus);
+    }
 }
+
+// Building the bill reads like the bill itself:
+BillNode bill = new ChargeGroup("Admission ADM-2201")
+    .add(new Charge("Room 3 nights", Money.rupees(9000)))
+    .add(new ChargeGroup("Surgery package")
+        .add(new Charge("Surgeon fee", Money.rupees(40000)))
+        .add(new Charge("OT charges", Money.rupees(15000)))
+        .add(new ChargeGroup("Anesthesia")
+            .add(new Charge("Anesthetist", Money.rupees(8000)))
+            .add(new Charge("Drugs", Money.rupees(2500)))));
+
+Money grandTotal = bill.total();   // one call — the tree recurses itself
 ```
 
-Recognition cue: **part-whole hierarchy + "treat one and many uniformly"**. File systems, org charts, UI component trees, nested bills. Follow-up to expect: "now print an itemized statement AND compute tax" — two operations over one tree is Visitor's cue ([Drill 4](/citadel/lld/war/build-drills/#drill-4--composite--visitor-on-a-bill-tree) builds exactly this pair).
+Recognition cue: **part-whole hierarchy + "treat one and many uniformly"**. File systems, org charts, UI trees, nested bills. Follow-up to expect: *"now print an itemized statement AND compute GST per category"* — two-plus operations over one stable tree is Visitor's cue ([Drill 4](/citadel/lld/war/build-drills/#drill-4--composite--visitor-on-a-bill-tree) builds exactly this pair).
+
+> 🧠 **Memory hook.** *Folders in folders:* a folder's size = sum of contents, and you never care if an item is a file or another folder. Bill groups are folders; charges are files.
+> **Cheat code:** tree + "one and many treated alike" → composite. Second operation over the tree → visitor incoming.
+> **Interview line:** *"Charges and packages share one BillNode interface, so totals are a single recursive call — and if you add more operations over the tree, I'd bring in Visitor rather than bloat the node interface."*
 
 ## Flyweight — thirty seconds
 
-Millions of similar objects → split **intrinsic** shared state (immutable, cached: glyph metrics, `Integer.valueOf` cache for -128..127) from **extrinsic** state passed per call. Recognition cue is memory pressure, not design elegance. Rare in LLD rounds; one sentence suffices.
+MediCore's pharmacy holds 200,000 prescription lines, each referencing drug info (name, strength, manufacturer — identical across thousands of lines). Don't store copies: **share the immutable intrinsic part** (one `DrugInfo` per drug, cached in a map — `computeIfAbsent`), keep the **extrinsic** part (quantity, patient) per line. Same trick as `Integer.valueOf`'s -128..127 cache. Recognition cue is *memory pressure*, not elegance. One sentence in a round; move on.
 
 ## Telling them apart — the table that wins follow-ups
 
-Decorator, proxy, adapter, facade all "wrap". The discriminator is **interface geometry + intent**:
+All five "wrap something". The discriminator is **interface geometry + intent**:
 
-| Pattern | Interface vs wrapped object | Intent in one word | The cue |
-|---|---|---|---|
-| Adapter | **different** — converts theirs to yours | translate | "wrong shape", vendor SDK |
-| Decorator | **same** — stacks | add | "also needs retry/logging", combinations |
-| Proxy | **same** — usually single | control | "check/defer/cache before the real call" |
-| Facade | **new, smaller** — over many objects | simplify | "five subsystems per use-case" |
-| Composite | same, over a **tree** | unify | "part-whole, treat one and many alike" |
+| Pattern | Interface vs wrapped object | Intent in one word | Story beat | Hook |
+|---|---|---|---|---|
+| Adapter | **different** — theirs → yours | translate | TextWave SDK | travel plug |
+| Decorator | **same** — stacks | add | retry + rate-limit | gift wrap |
+| Proxy | **same** — usually single | control | records auth | bouncer |
+| Facade | **new, smaller** — over many | simplify | discharge button | front desk |
+| Composite | same, over a **tree** | unify | bill tree | folders |
 
 <Quiz questions={[
   {
-    q: 'RetryingSender wraps RateLimitedSender wraps SmsSender. A send fails transiently twice, succeeds third try. How many rate-limit permits were consumed, and how do you flip that?',
+    q: 'The campaign gateway is RetryingGateway(RateLimitedGateway(vendor)). A send fails twice, succeeds third try. Permits consumed — and how do you make it one?',
     options: [
       'One — retries bypass inner decorators',
-      'Three — each retry re-enters the limiter; to consume one permit per logical send, wrap rate limiting OUTSIDE retry',
-      'Three — and the order cannot be changed without new classes',
+      'Three — each attempt re-enters the limiter; to spend one permit per logical send, nest the limiter OUTSIDE the retry',
+      'Three — and changing it requires a new class',
       'Zero — rate limiting only counts failures',
     ],
     answer: 1,
-    why: 'Each attempt traverses everything inside the retry decorator. Decorator order is semantics, not style — and the fix is re-wiring the composition, not writing code. Being able to say that is the point of the pattern.',
+    why: 'Every retry traverses everything INSIDE the retry decorator. Decorator order is semantics, not style — and the fix is re-wiring the composition, not writing code. Being able to say that is the point of the pattern.',
   },
   {
-    q: 'Your domain defines PaymentGateway; StripeAdapter implements it. The interviewer asks: why does the interface belong to your domain and not to the Stripe layer?',
+    q: 'Why does the SmsGateway interface belong to MediCore\'s domain and not to the TextWave layer?',
     options: [
       'Naming convention — ports are always domain-side',
-      'Dependency direction: the stable domain must not change when vendors do, so the volatile side conforms to the stable side (DIP), making a vendor swap a new adapter instead of a domain edit',
+      'Dependency direction: the stable domain must not change when vendors do, so the volatile side conforms to the stable side (DIP) — a vendor swap is a new adapter, not a domain edit',
       'Because Spring requires interfaces in the service package',
       'It does not matter as long as an interface exists',
     ],
     answer: 1,
-    why: 'Consumer-owned ports are the whole game: arrows point from volatile to stable. If Stripe defined the interface, every vendor quirk would ripple into your domain — the adapter would be decoration, not protection.',
+    why: 'Consumer-owned ports are the whole game: arrows point from volatile to stable. If TextWave defined the interface, every vendor quirk would ripple into your domain — the adapter would be decoration, not protection.',
   },
   {
-    q: '"Treat a single charge and a package of charges uniformly when computing totals" — pattern, and the follow-up you should expect?',
+    q: 'RecordsAuthProxy and RetryingGateway have byte-identical structure: implement interface, hold inner, wrap the call. What makes one a proxy and the other a decorator?',
     options: [
-      'Decorator; expect "add caching"',
-      'Composite; expect a second operation over the tree (print, tax), which cues Visitor',
-      'Facade; expect "hide the billing subsystem"',
-      'Flyweight; expect memory questions',
+      'Proxies must be generated at runtime',
+      'Intent: the decorator adds a feature the caller wants (retry); the proxy controls access the caller gets no say in (auth, lazy-load, cache). Structure is identical — the classification is about WHY',
+      'Proxies may not add logging',
+      'Decorators cannot throw exceptions',
     ],
     answer: 1,
-    why: 'Part-whole + uniform treatment = Composite. And N operations over one stable tree structure is exactly Visitor territory — the classic escalation graders use to see if you know when Composite alone stops being enough.',
+    why: 'GoF patterns are named by intent, not shape. Interviewers deliberately probe this pair because the UML is the same — the answer "structure identical, intent differs: add vs control" is the full-marks response.',
   },
   {
     q: 'Spring @Transactional method calls another @Transactional method on THIS. What happens and why?',
@@ -179,4 +303,4 @@ Decorator, proxy, adapter, facade all "wrap". The discriminator is **interface g
 
 ## Hand-off
 
-Next: **behavioral patterns** — the biggest lesson in the arsenal, and the one machine-coding rounds live in. Strategy, observer, state, chain, command, template — each with its dossier.
+MediCore is now wired to the world. Next: **behavioral patterns** — the biggest lesson in the arsenal — where the clinic starts *running*: fee strategies, appointment state machines, completion events, request pipelines, and the front desk's undo button.

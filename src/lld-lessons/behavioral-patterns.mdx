@@ -1,176 +1,349 @@
 ---
 title: 'Behavioral Patterns — Varying the Verb at Runtime'
-description: 'Strategy, state, observer, chain, command, template method — the patterns machine-coding rounds actually run on, each with its forcing problem and production dossier.'
+description: 'Strategy, state, observer, chain, command, template method — MediCore starts running: bills split, appointments flow, events ripple. Full code + memory hooks.'
 module: 2
 order: 3
-minutes: 40
+minutes: 50
 ---
 import Quiz from '../components/Quiz.astro';
 import Mermaid from '../components/Mermaid.astro';
 
-## The shared forcing problem
+## MediCore starts running
 
-Creational patterns vary **which object**; structural vary **how objects connect**; behavioral vary **what happens** — the algorithm, the reaction, the sequence — at runtime, without if-else towers. This is the module machine-coding rounds live in: nearly every classic problem (parking lot, splitwise, vending machine, chess) is two or three of these patterns wearing a costume.
+Creational made the objects, structural wired the clinic to the world. Now patients arrive and the *day-to-day* begins: bills get split between insurance and family, appointments move through their lifecycle, a completed visit triggers five downstream reactions, every API request runs a gauntlet of checks, and the front desk demands an undo button. Behavioral patterns vary **what happens** — the algorithm, the reaction, the sequence — at runtime, without if-else towers.
 
-## Strategy — the workhorse
+This is the lesson machine-coding rounds live in: nearly every classic problem (parking lot, splitwise, vending machine, chess) is two or three of these patterns wearing a costume.
 
-**Problem.** One verb, several interchangeable algorithms, chosen at runtime by data: split an expense equally / by percentage / by exact amounts (Splitwise); price by hour / by slab / with surge (parking); pay by UPI / card / wallet ([the dossier that opens the War Room](/citadel/lld/war/patterns-why/#1-strategy--five-payment-gateways)).
+## Strategy — splitting the bill
+
+**Story beat.** A family checks out. The bill can be split **equally** among family members, by **percentages** they agree on, or **insurance-first** (insurer pays up to the policy cap, family covers the rest). Same verb — *split* — three interchangeable algorithms, chosen at runtime by data.
 
 ```java
-interface SplitStrategy { List<Share> split(Money total, List<Participant> ps); }
+interface SplitStrategy { List<Share> split(Money total, List<Party> parties); }
 
 class EqualSplit implements SplitStrategy {
-    public List<Share> split(Money total, List<Participant> ps) {
-        Money each = total.dividedBy(ps.size());          // careful: remainder paise!
+    public List<Share> split(Money total, List<Party> parties) {
+        Money each = total.dividedBy(parties.size());        // careful: remainder paise!
         List<Share> shares = new ArrayList<>();
         Money assigned = Money.ZERO;
-        for (int i = 0; i < ps.size() - 1; i++) { shares.add(new Share(ps.get(i), each)); assigned = assigned.plus(each); }
-        shares.add(new Share(ps.getLast(), total.minus(assigned)));  // last absorbs remainder — sums exactly
+        for (int i = 0; i < parties.size() - 1; i++) {
+            shares.add(new Share(parties.get(i), each));
+            assigned = assigned.plus(each);
+        }
+        shares.add(new Share(parties.getLast(), total.minus(assigned)));  // last absorbs remainder
+        return shares;                                        // shares sum EXACTLY to total
+    }
+}
+
+class InsuranceFirstSplit implements SplitStrategy {
+    public List<Share> split(Money total, List<Party> parties) {
+        Party insurer = parties.stream().filter(Party::isInsurer).findFirst()
+            .orElseThrow(() -> new IllegalArgumentException("no insurer party"));
+        Money covered = Money.min(total, insurer.policyCap());   // insurer pays up to the cap
+        Money remainder = total.minus(covered);
+        List<Share> shares = new ArrayList<>();
+        shares.add(new Share(insurer, covered));
+        List<Party> family = parties.stream().filter(p -> !p.isInsurer()).toList();
+        shares.addAll(new EqualSplit().split(remainder, family));  // strategies can compose!
         return shares;
     }
 }
 ```
 
-(That remainder line is a real grading moment: ₹100 across 3 people must sum to ₹100, not ₹99.99.)
+(That remainder line is a real grading moment: ₹100 across 3 people must sum to ₹100, not ₹99.99. Money conservation is the hidden invariant graders test with "does it sum back?")
 
-**Strategy + registry** is the standard pair — the map from key to strategy replaces every `if (type == ...)` ladder:
+**Strategy + registry** is the standard pair — the same move as the creational lesson's payment registry:
 
 ```java
-class SplitService {
-    private final Map<SplitType, SplitStrategy> strategies;   // injected, or self-registered
-    List<Share> split(Expense e) { return strategies.get(e.type()).split(e.total(), e.participants()); }
+class BillSplitter {
+    private final Map<SplitType, SplitStrategy> strategies;   // injected; or self-registered via key()
+    List<Share> split(Bill bill) {
+        return strategies.get(bill.splitType()).split(bill.total(), bill.parties());
+    }
 }
 ```
 
-The honest wrinkle from production: strategies rarely share a clean signature (the exact-split needs per-person amounts; equal-split doesn't). [Drill 2](/citadel/lld/war/build-drills/#drill-2--strategy--registry-with-a-real-signature-problem) makes you fight that — the usual fix is a context parameter object, not fifteen overloads.
+The honest wrinkle from production: strategies rarely share a clean signature (percentage split needs the percentages; equal split doesn't). [Drill 2](/citadel/lld/war/build-drills/#drill-2--strategy--registry-with-a-real-signature-problem) makes you fight that — the usual fix is a context parameter object, not fifteen overloads. And the founding production example is [five payment gateways behind one Strategy seam](/citadel/lld/war/patterns-why/#1-strategy--five-payment-gateways).
 
-## State — when behavior depends on where you are
+> 🧠 **Memory hook.** *Choose your weapon:* same fight, swappable weapon, picked at fight time. The fighter (service) never knows which blade it holds — only that it cuts.
+> **Cheat code:** one verb × N interchangeable algorithms, chosen by data → strategy (+ registry to kill the if-ladder).
+> **Interview line:** *"Splitting varies by rule, not by caller — so each rule is a strategy behind one interface, a registry picks by type, and my equal-split conserves every paisa."*
 
-**Problem.** A vending machine (or booking, or order) behaves differently per state: `insertCoin` while IDLE starts a session; while DISPENSING it's an error. The naive version — `if (state == IDLE) ... else if (state == DISPENSING) ...` inside *every* method — scatters one machine across ten methods, and nothing stops an illegal transition.
+## State — the appointment lifecycle
 
-**Fix.** Each state is a class; transitions return the next state; illegal moves fail in one obvious place:
+**Story beat.** An appointment flows `REQUESTED → CONFIRMED → CHECKED_IN → COMPLETED`, with `CANCELLED` reachable from the first two. The naive version — status checks scattered through every method — let a bug move a `COMPLETED` appointment back to `CONFIRMED`. It was re-billed. Production's version of this scar: [a backwards transition corrupts history](/citadel/lld/war/patterns-why/#10-state--because-a-backwards-transition-corrupts-history).
+
+**Form 1 — enum + transition table** (right size for most rounds):
 
 ```java
-interface MachineState {
-    MachineState insertCoin(Machine m, Money coin);
-    MachineState selectItem(Machine m, String code);
-    default MachineState illegal(String event) { throw new IllegalStateException(event + " not allowed in " + getClass().getSimpleName()); }
+enum ApptStatus {
+    REQUESTED, CONFIRMED, CHECKED_IN, COMPLETED, CANCELLED;
+
+    private static final Map<ApptStatus, Set<ApptStatus>> LEGAL = Map.of(
+        REQUESTED,  Set.of(CONFIRMED, CANCELLED),
+        CONFIRMED,  Set.of(CHECKED_IN, CANCELLED),
+        CHECKED_IN, Set.of(COMPLETED),
+        COMPLETED,  Set.of(),                       // terminal — nothing leaves
+        CANCELLED,  Set.of()
+    );
+    boolean canGoTo(ApptStatus next) { return LEGAL.get(this).contains(next); }
 }
-class Idle implements MachineState {
-    public MachineState insertCoin(Machine m, Money c) { m.credit(c); return new HasCredit(); }
-    public MachineState selectItem(Machine m, String code) { return illegal("selectItem"); }
+
+class Appointment {
+    private ApptStatus status = ApptStatus.REQUESTED;
+
+    private void transition(ApptStatus next) {       // ONE gate for every transition
+        if (!status.canGoTo(next))
+            throw new IllegalStateException(status + " → " + next + " is not a legal transition");
+        this.status = next;
+    }
+    public void confirm()  { transition(ApptStatus.CONFIRMED); }    // verbs, not setStatus
+    public void checkIn()  { transition(ApptStatus.CHECKED_IN); }
+    public void complete() { transition(ApptStatus.COMPLETED); }
+    public void cancel()   { transition(ApptStatus.CANCELLED); }
 }
 ```
 
-**The interview calibration** (this exact trade-off is [Drill 3](/citadel/lld/war/build-drills/#drill-3--state-both-ways)): for 3 states × 3 events, an **enum + explicit transition table** is less code and equally safe; state-per-class earns its weight when states carry *behavior*, not just names. Production picked the enum-with-guards form because the invariant that mattered was **no backwards transitions** — [a backwards transition corrupts history](/citadel/lld/war/patterns-why/#10-state--because-a-backwards-transition-corrupts-history). Either form, the non-negotiable is: **transitions validated in one place**, not scattered.
+**Form 2 — state-per-class** (when states carry real behavior, not just names):
 
-## Observer — decoupling the ripple
+```java
+interface ApptState {
+    default ApptState confirm(Appointment a)  { throw illegal("confirm"); }
+    default ApptState checkIn(Appointment a)  { throw illegal("checkIn"); }
+    default IllegalStateException illegal(String event) {
+        return new IllegalStateException(event + " not allowed in " + getClass().getSimpleName());
+    }
+}
+class Requested implements ApptState {
+    public ApptState confirm(Appointment a) {
+        a.reserveSlot();                              // state-specific BEHAVIOR — why classes earn keep
+        return new Confirmed();
+    }
+}
+class Confirmed implements ApptState {
+    public ApptState checkIn(Appointment a) {
+        a.assignRoom();
+        return new CheckedIn();
+    }
+}
+```
 
-**Problem.** When an appointment completes, five things must happen: invoice, SMS, analytics, inventory decrement, follow-up scheduling. Hard-coding five calls into `completeAppointment()` couples the core flow to every side effect; each new reaction edits the method (OCP again).
+**The interview calibration** (this exact trade-off is [Drill 3](/citadel/lld/war/build-drills/#drill-3--state-both-ways)): few states, no per-state behavior → the enum table is less code and equally safe. States doing real different work → classes. Either form, the non-negotiable is **transitions validated in one place** — you already derived this rule in the object-modeling lesson ("no setter for state, ever").
+
+> 🧠 **Memory hook.** *Traffic light:* what "go" means depends on which light is on, and lights change in a fixed legal order — red never jumps to green via yellow-backwards.
+> **Cheat code:** behavior depends on lifecycle stage + illegal transitions must be impossible → state. Few dumb states → enum table; rich states → classes.
+> **Interview line:** *"I'll centralize transitions in one guarded method over an explicit legal-moves table — and I'd only upgrade to state-per-class when states carry distinct behavior."*
+
+## Observer — the visit ends, the clinic reacts
+
+**Story beat.** When an appointment completes, five things must happen: generate the invoice, send the feedback SMS, update the doctor's analytics, decrement consumables, schedule the follow-up. Hard-coding five calls into `complete()` couples the core flow to every side effect; each new reaction edits the method.
 
 ```java
 interface AppointmentListener { void onCompleted(AppointmentCompleted event); }
 
+record AppointmentCompleted(String apptId, String patientId, String doctorId, Instant at) {}
+
 class AppointmentService {
     private final List<AppointmentListener> listeners = new CopyOnWriteArrayList<>();
+    private final AppointmentRepo repo;
+
+    AppointmentService(AppointmentRepo repo) { this.repo = repo; }
+
+    void register(AppointmentListener l) { listeners.add(l); }
+
     void complete(Appointment a) {
-        a.complete();                                   // 1. the actual state change
-        repository.save(a);                             // 2. persist it
-        AppointmentCompleted evt = AppointmentCompleted.from(a);
-        listeners.forEach(l -> notifySafely(l, evt));   // 3. THEN tell the world
+        a.complete();                                   // 1. the state transition (guarded, above)
+        repo.save(a);                                   // 2. persist it
+        AppointmentCompleted evt = new AppointmentCompleted(   // 3. THEN tell the world
+            a.id(), a.patientId(), a.doctorId(), Instant.now());
+        for (AppointmentListener l : listeners) notifySafely(l, evt);
     }
+
     private void notifySafely(AppointmentListener l, AppointmentCompleted e) {
-        try { l.onCompleted(e); } catch (Exception ex) { log.error("listener failed", ex); }
+        try { l.onCompleted(e); }
+        catch (Exception ex) { log.error("listener failed: " + l.getClass(), ex); }
         // one broken listener must not break the others — or the core flow
     }
 }
+
+// Reactions are now plug-ins:
+service.register(evt -> invoicing.generateFor(evt.apptId()));
+service.register(evt -> sms.send(phoneOf(evt.patientId()), "How was your visit?"));
+service.register(evt -> analytics.recordVisit(evt.doctorId()));
 ```
 
-Three graded details in those ten lines: **notify after persisting** (observers of an unsaved change observe a lie), **isolate listener failures**, and `CopyOnWriteArrayList` so a listener can (un)subscribe during iteration without `ConcurrentModificationException`. The production timing subtlety — the event must fire *after the transaction commits*, or the SMS announces a rollback — is [the Observer dossier](/citadel/lld/war/patterns-why/#13-observer--the-existing-integration-only-fired-after-the-call-ended); in-process, that's Spring's `@TransactionalEventListener(AFTER_COMMIT)`.
+Three graded details in those lines: **notify after persisting** (observers of an unsaved change observe a lie), **isolate listener failures**, and `CopyOnWriteArrayList` so a listener can (un)subscribe during iteration without `ConcurrentModificationException`. The production timing subtlety — fire *after the transaction commits*, or the SMS announces a rollback — is [the Observer dossier](/citadel/lld/war/patterns-why/#13-observer--the-existing-integration-only-fired-after-the-call-ended); in Spring that's `@TransactionalEventListener(AFTER_COMMIT)`.
 
-## Chain of Responsibility — a pipeline where order is law
+> 🧠 **Memory hook.** *Newsletter subscription:* the clinic publishes "visit completed"; subscribers signed up themselves; the publisher doesn't know or care who reads. One reader's spam filter breaking doesn't stop the others' delivery.
+> **Cheat code:** "when X happens, do these N things — more later" → observer. Save first, notify after; guard each listener.
+> **Interview line:** *"complete() publishes an event after persisting; reactions subscribe. New reaction = new listener, zero edits — and in real systems I'd fire after commit."*
 
-**Problem.** A request must pass a sequence of checks/transforms, each optional-ish, each with a veto: auth → tenant resolution → validation → rate limit → handler. Or: discount rules applied in priority order until one claims the order.
+## Chain of Responsibility — every request runs the gauntlet
+
+**Story beat.** Every MediCore API request passes: authentication → clinic (tenant) resolution → validation → rate limiting → the actual handler. Each check can veto. The team assembled these from an unordered set once — and tenant resolution ran *after* a handler that touched the database. Cross-clinic data leak. Production wrote it down: [order is a data dependency](/citadel/lld/war/patterns-why/#4-chain-of-responsibility--order-is-a-data-dependency).
 
 ```java
-interface Handler { Response handle(Request r, Chain chain); }   // chain.proceed(r) = "not mine, pass on"
+interface Handler { Response handle(Request r, Chain chain); }
 
+class Chain {                                        // the cursor over the ordered list
+    private final List<Handler> handlers;
+    private final int index;
+    Chain(List<Handler> handlers) { this(handlers, 0); }
+    private Chain(List<Handler> handlers, int index) { this.handlers = handlers; this.index = index; }
+
+    Response proceed(Request r) {
+        if (index >= handlers.size()) throw new IllegalStateException("no terminal handler");
+        return handlers.get(index).handle(r, new Chain(handlers, index + 1));
+    }
+}
+
+class AuthHandler implements Handler {
+    public Response handle(Request r, Chain chain) {
+        User u = tokens.verify(r.bearerToken());
+        if (u == null) return Response.unauthorized();      // veto — chain stops here
+        r.attach("user", u);
+        return chain.proceed(r);                            // pass on
+    }
+}
+class TenantHandler implements Handler {
+    public Response handle(Request r, Chain chain) {
+        Clinic clinic = clinics.forUser(r.attached("user", User.class));
+        r.attach("clinic", clinic);                         // later handlers DEPEND on this
+        return chain.proceed(r);
+    }
+}
 class RateLimitHandler implements Handler {
     public Response handle(Request r, Chain chain) {
         if (!limiter.tryAcquire(r.clientId())) return Response.tooManyRequests();
-        return chain.proceed(r);                       // servlet filters, OkHttp interceptors — same shape
+        return chain.proceed(r);
     }
 }
+
+// Assembly: ONE place, an ORDERED list, dependencies written down.
+Chain pipeline = new Chain(List.of(
+    new AuthHandler(),        // attaches user
+    new TenantHandler(),      // needs user; attaches clinic — MUST precede anything touching the DB
+    new ValidationHandler(),
+    new RateLimitHandler(),
+    new DispatchHandler()     // terminal — never calls proceed()
+));
 ```
 
-The production lesson that upgrades this from trivia: **order is a data dependency, make it explicit** — [the dossier](/citadel/lld/war/patterns-why/#4-chain-of-responsibility--order-is-a-data-dependency) exists because tenant resolution *must* precede anything touching the database, and a chain assembled from an unordered set broke that silently. In interviews: build the chain in one place, as an ordered list, with a comment saying which links depend on which.
+Same shape as servlet filters and OkHttp interceptors — cite them. The graded sentence: **build the chain in one place, as an ordered list, with the dependencies commented** — because links depend on earlier links' side effects, and a `Set` or classpath scanning randomizes that silently.
 
-## Command — the verb becomes an object
+> 🧠 **Memory hook.** *Airport security lanes:* passport check, then security, then boarding — each station can reject you, and swapping their order is not a style choice (security before passport control = chaos).
+> **Cheat code:** sequential checks/transforms, each with a veto, order meaningful → chain. Assemble once, ordered, documented.
+> **Interview line:** *"Each concern is a handler; the pipeline is an explicit ordered list assembled in one place — order is a data dependency here, so I keep it visible."*
 
-**Problem.** You need to *hold* an action: queue it, log it, undo it, retry it, schedule it. A method call evaporates; an object persists.
+## Command — the front desk wants undo
+
+**Story beat.** Front-desk staff juggle walk-ins: book, cancel, reschedule — and misclick constantly. They want Ctrl+Z. A method call evaporates the moment it returns; to undo, queue, log, or replay an action, **the action itself must be an object**.
 
 ```java
 interface Command { void execute(); void undo(); }
 
-record TransferFunds(Ledger ledger, Account from, Account to, Money amt) implements Command {
-    public void execute() { ledger.transfer(from, to, amt); }
-    public void undo()    { ledger.transfer(to, from, amt); }   // compensating action
+class BookAppointment implements Command {
+    private final Scheduler scheduler;
+    private final BookingRequest request;
+    private Appointment booked;                          // memory the undo needs
+
+    BookAppointment(Scheduler scheduler, BookingRequest request) {
+        this.scheduler = scheduler; this.request = request;
+    }
+    public void execute() { booked = scheduler.book(request); }
+    public void undo()    { scheduler.cancel(booked.id()); }
 }
-// The invoker knows none of that: it just runs commands and stacks them for undo.
-Deque<Command> history = new ArrayDeque<>();
-void run(Command c) { c.execute(); history.push(c); }
-void undoLast()     { history.pop().undo(); }
+
+class CancelAppointment implements Command {
+    private final Scheduler scheduler;
+    private final String apptId;
+    private Appointment cancelled;                       // snapshot for restore
+
+    CancelAppointment(Scheduler scheduler, String apptId) {
+        this.scheduler = scheduler; this.apptId = apptId;
+    }
+    public void execute() { cancelled = scheduler.cancel(apptId); }
+    public void undo()    { scheduler.rebook(cancelled); }
+}
+
+// The invoker knows nothing about scheduling — it runs commands and stacks them:
+class FrontDesk {
+    private final Deque<Command> history = new ArrayDeque<>();
+    void run(Command c) { c.execute(); history.push(c); }
+    void undoLast() {
+        if (history.isEmpty()) return;
+        history.pop().undo();
+    }
+}
 ```
 
-Recognition cues: **undo/redo** (text editor round), **job queues**, **audit logs of user actions**, macro recording. Two production footnotes: real undo across a service boundary is a *compensating action*, not a rollback — that's the [Saga compensation dossier](/citadel/lld/war/patterns-why/#11-saga-compensation--transactional-cant-reach-outside-the-database) — and beware naming: a class called `*Command` without an `execute()` [may be lying to you](/citadel/lld/war/patterns-why/#18-the-one-that-lies--command-without-execute).
+Recognition cues: **undo/redo** (text-editor round), **job queues**, **audit logs of user actions**, macro recording. Two production footnotes: real undo across a service boundary is a *compensating action*, not a rollback — the [Saga compensation dossier](/citadel/lld/war/patterns-why/#11-saga-compensation--transactional-cant-reach-outside-the-database) — and beware naming: a class called `*Command` without an `execute()` [may be lying to you](/citadel/lld/war/patterns-why/#18-the-one-that-lies--command-without-execute).
 
-## Template Method — the frozen skeleton
+> 🧠 **Memory hook.** *Restaurant order slip:* the waiter writes your order on a slip — now it can be queued to the kitchen, re-fired, or crumpled (undone). A shouted order can't.
+> **Cheat code:** "undo / queue / log / replay actions" → command. Each command carries the memory its own undo needs.
+> **Interview line:** *"Every front-desk action is a command with execute and undo; the invoker just stacks them — and I'd note that cross-service undo becomes compensation, not rollback."*
 
-**Problem.** Five report generators share the same sequence — fetch, transform, render, deliver — but differ in two steps. Copy-pasting the sequence five times means the *sequence itself* can drift.
+## Template Method — every report, same skeleton
+
+**Story beat.** MediCore ships reports: daily revenue, doctor utilization, pharmacy stock. Every one does fetch → transform → render → deliver; only fetch and render differ. Five copy-pasted sequences drifted — one report skipped delivery audit.
 
 ```java
 abstract class ReportJob {
     final Report run(ReportRequest req) {        // final: the skeleton is not negotiable
-        Data d = fetch(req);
-        Data t = transform(d);
-        return deliver(render(t));
+        Data raw = fetch(req);
+        Data clean = transform(raw);
+        Rendered out = render(clean);
+        return deliver(out);                     // fixed step — subclasses can't skip the audit
     }
-    protected abstract Data fetch(ReportRequest req);      // the two hooks subclasses fill
+    protected abstract Data fetch(ReportRequest req);      // the holes subclasses fill
     protected abstract Rendered render(Data d);
     protected Data transform(Data d) { return d; }         // optional hook: default no-op
-    private Report deliver(Rendered r) { ... }             // fixed step: not even visible
+    private Report deliver(Rendered r) {                   // private: not even visible to children
+        storage.save(r);
+        audit.record("REPORT_DELIVERED", r.id());
+        return new Report(r);
+    }
+}
+
+class DailyRevenueReport extends ReportJob {
+    protected Data fetch(ReportRequest req) { return billing.revenueRows(req.date()); }
+    protected Rendered render(Data d)       { return pdf.renderRevenueTable(d); }
 }
 ```
 
-This is the one pattern where inheritance is the *point* — the parent owns the algorithm, children own the holes. Modern alternative worth naming: pass the varying steps as lambdas (strategy-shaped) and keep the skeleton a plain final class; choose Template Method when hooks are many or need shared protected state. Production was pushed into it by something sneakier — [module dependency direction](/citadel/lld/war/patterns-why/#7-template-method--forced-by-module-dependency-direction): the skeleton lived in a core module that *couldn't* see its implementors.
+This is the one pattern where inheritance is the *point* — the parent owns the algorithm and state, children own the holes (the interface-vs-abstract-class rule from Module 1, applied). Modern alternative worth naming: pass the varying steps as lambdas and keep the skeleton a plain final class; choose Template Method when hooks are several or need shared protected state. Production was pushed into it by something sneakier — [module dependency direction](/citadel/lld/war/patterns-why/#7-template-method--forced-by-module-dependency-direction): the skeleton lived in a core module that *couldn't see* its implementors.
+
+> 🧠 **Memory hook.** *Recipe with blanks:* "prepare ___, cook at 180° for 20 min, garnish with ___" — the steps and order are printed and fixed; you only fill the blanks.
+> **Cheat code:** same sequence, 1–3 steps differ per variant → template method (skeleton `final`). Steps trivially small → lambdas instead.
+> **Interview line:** *"The sequence is the asset, so it's final in the parent; variants override only fetch and render — delivery and audit are physically unskippable."*
 
 ## The rest of the family — one line each, know the cue
 
-| Pattern | Cue | One-liner |
+| Pattern | MediCore cue | One-liner |
 |---|---|---|
-| **Iterator** | "traverse without exposing internals" | you use it every `for (x : xs)`; hand-roll only for custom structures |
-| **Mediator** | "N components all talk to each other" | replace N² chatter with one coordinator (chat room, air-traffic control) |
-| **Memento** | "snapshot and restore" | opaque state capsule; undo for *state* where Command is undo for *actions* |
-| **Visitor** | "N operations over a stable object tree" | double dispatch; pairs with Composite ([Drill 4](/citadel/lld/war/build-drills/#drill-4--composite--visitor-on-a-bill-tree)) |
-| **Interpreter** | "users write rules/expressions" | tiny AST + evaluate; [production used it so new reports stopped being releases](/citadel/lld/war/patterns-why/#14-interpreter--every-new-report-used-to-be-a-release), [Drill 5](/citadel/lld/war/build-drills/#drill-5--a-tiny-interpreter) |
-| **Null Object** | "absent collaborator, no null checks" | a do-nothing implementation — but decide if it fails open or closed: [the production one failed open](/citadel/lld/war/inventory/#3-a-null-object-that-fails-open) |
-| **Specification** | "combinable business rules" | predicates with and/or/not; [two constraints you'd never guess](/citadel/lld/war/patterns-why/#12-specification--two-constraints-youd-never-guess) |
+| **Iterator** | walk the bill tree without exposing lists | you use it every `for (x : xs)`; hand-roll only for custom structures |
+| **Mediator** | OT scheduling: surgeons, rooms, equipment all negotiating | replace N² chatter with one coordinator |
+| **Memento** | "restore this prescription draft" | opaque state snapshot; undo for *state* where Command is undo for *actions* |
+| **Visitor** | itemized statement + GST over the bill tree | N operations over a stable tree; pairs with Composite ([Drill 4](/citadel/lld/war/build-drills/#drill-4--composite--visitor-on-a-bill-tree)) |
+| **Interpreter** | admins write eligibility rules like `age > 60 AND dept = CARDIO` | tiny AST + evaluate; [new reports stopped being releases](/citadel/lld/war/patterns-why/#14-interpreter--every-new-report-used-to-be-a-release), [Drill 5](/citadel/lld/war/build-drills/#drill-5--a-tiny-interpreter) |
+| **Null Object** | clinic without an SMS vendor configured yet | do-nothing sender, no null checks — but decide fail-open vs fail-closed: [production's failed open](/citadel/lld/war/inventory/#3-a-null-object-that-fails-open) |
+| **Specification** | combinable discount eligibility rules | predicates with and/or/not; [two constraints you'd never guess](/citadel/lld/war/patterns-why/#12-specification--two-constraints-youd-never-guess) |
 
 ## Recognition drill — problem to pattern in one breath
 
-| The round says | You think |
-|---|---|
-| "support equal, percent, and exact splits" | Strategy + registry |
-| "order moves through PLACED → PAID → SHIPPED" | State (enum + guarded transitions) |
-| "notify these teams when X happens; more teams later" | Observer, after-commit |
-| "apply discount rules in priority order" | Chain |
-| "undo/redo", "action history" | Command |
-| "same flow, two steps differ per subtype" | Template Method (or lambdas) |
-| "admins define custom rules" | Interpreter / Specification |
+| The round says | You think | Hook |
+|---|---|---|
+| "equal, percent, and insurance-first splits" | Strategy + registry | choose your weapon |
+| "order moves through PLACED → PAID → SHIPPED" | State — one guarded gate | traffic light |
+| "notify these teams when X happens; more later" | Observer, after persist/commit | newsletter |
+| "checks in sequence, each can reject" | Chain — ordered, one assembly point | airport lanes |
+| "undo / action history / job queue" | Command | order slip |
+| "same flow, two steps differ" | Template Method | recipe with blanks |
+| "admins define custom rules" | Interpreter / Specification | — |
 
 <Quiz questions={[
   {
-    q: 'Splitwise equal-split of ₹100.00 across 3 people. What must your Strategy get right that naive division misses?',
+    q: 'Equal-split of ₹100.00 across 3 family members. What must your Strategy get right that naive division misses?',
     options: [
       'Use double division for accuracy',
       'Integer minor-unit division leaves a remainder (3334+3333+3333 paise) — assign it deterministically so shares sum EXACTLY to the total',
@@ -178,24 +351,24 @@ This is the one pattern where inheritance is the *point* — the parent owns the
       'Store shares as percentages instead',
     ],
     answer: 1,
-    why: 'Money conservation is the hidden invariant graders test with "does it sum back?". Deterministic remainder assignment (last participant, or rotating) in minor units. Doubles reintroduce the drift you avoided by using paise.',
+    why: 'Money conservation is the hidden invariant graders test with "does it sum back?". Deterministic remainder assignment (last party, or rotating) in minor units. Doubles reintroduce the drift you avoided by using paise.',
   },
   {
-    q: 'Your Observer fires the SMS inside the same DB transaction that saves the appointment. The transaction rolls back. What did the patient receive, and what is the fix?',
+    q: 'Your Observer fires the feedback SMS inside the same DB transaction that saves the completed appointment. The transaction rolls back. What did the patient receive, and what is the fix?',
     options: [
       'Nothing — rollback cancels the SMS too',
-      'A confirmation for an appointment that never happened; fix: publish after commit (AFTER_COMMIT listener / transactional outbox)',
+      'A "how was your visit?" for a visit that never completed; fix: publish after commit (AFTER_COMMIT listener / transactional outbox)',
       'A duplicate SMS; fix: idempotency keys',
       'The SMS is delayed until commit automatically',
     ],
     answer: 1,
-    why: 'External side effects do not participate in DB transactions. Observers touching the outside world must fire after commit — the production dossier bug. (Outbox pattern is the durable version, which your SD wing covers.)',
+    why: 'External side effects do not participate in DB transactions. Observers touching the outside world must fire after commit — the production dossier bug. (The outbox pattern is the durable version; your SD wing covers it.)',
   },
   {
-    q: 'Vending machine with 3 states and 3 events, states carry no extra data. Interviewer asks state-per-class or enum + transition table. Gold answer?',
+    q: 'Appointment lifecycle: 5 states, no per-state behavior beyond names. State-per-class or enum + transition table?',
     options: [
       'Always state-per-class — it is the named pattern',
-      'Enum + explicit transition table here (less code, same safety); state-per-class when states carry distinct behavior/data. Either way, transitions validate in ONE place',
+      'Enum + explicit legal-moves table here (less code, same safety); state-per-class when states carry distinct behavior. Either way, transitions validate in ONE gate',
       'Always enum — classes are overkill in interviews',
       'If-else inside each method, refactor later if asked',
     ],
@@ -203,18 +376,29 @@ This is the one pattern where inheritance is the *point* — the parent owns the
     why: 'Calibration beats pattern-worship. The invariant (no illegal transitions, enforced centrally) is the requirement; the mechanism scales with behavioral weight. Drill 3 makes you build both to feel the crossover.',
   },
   {
-    q: 'Auth, tenant-resolution, validation, rate-limit handlers assembled into a chain from an unordered Set. What is the production bug class?',
+    q: 'The request pipeline was assembled from an unordered Set and tenant resolution ran after a DB-touching handler. What is the general lesson?',
     options: [
-      'Duplicate handlers running twice',
-      'Order is a data dependency — e.g. tenant must resolve before any DB-touching handler — and set iteration order silently breaks it; build the chain as an explicit ordered list',
       'Sets cannot hold handlers with equal hashCodes',
-      'No bug — chains are order-independent by design',
+      'Chain order is a data dependency — later links consume earlier links\' side effects (attached user, resolved clinic); assemble as an explicit ordered list in one place, dependencies documented',
+      'Every handler should re-resolve the tenant defensively',
+      'Chains are order-independent by design; the bug was elsewhere',
     ],
     answer: 1,
-    why: 'The chain dossier exactly: links have invisible dependencies on earlier links\' side effects. Make order explicit, in one assembly point, with the dependencies written down.',
+    why: 'The production dossier verbatim: links have invisible dependencies on earlier links\' work. Defensive re-resolution hides the design flaw; the fix is making order explicit and visible.',
+  },
+  {
+    q: 'Why does BookAppointment keep the `booked` field — why can\'t undo() just be a fresh cancel call built from the request?',
+    options: [
+      'Performance — caching avoids a lookup',
+      'The command must remember what ITS execution actually did (the concrete appointment created, with id and slot) — undo reverses that specific effect, not a guess reconstructed from inputs',
+      'Java requires commands to be stateful',
+      'It cannot — undo() should indeed rebuild from the request',
+    ],
+    answer: 1,
+    why: 'Execute-time state capture is the half of Command people forget: between execute and undo, the world moved (other bookings, reschedules). Undo targets the exact effect this command produced — that is also why cross-service undo becomes explicit compensation.',
   },
 ]} />
 
 ## Hand-off
 
-Arsenal complete. Now read the [18 dossiers](/citadel/lld/war/patterns-why/) end to end — every pattern above, but as production scar tissue — then the [inventory](/citadel/lld/war/inventory/) for which of these Spring hands you for free. Next module: **concurrency**, because half these patterns break quietly the moment two threads arrive.
+Arsenal complete — MediCore runs. Now read the [18 dossiers](/citadel/lld/war/patterns-why/) end to end: every pattern above, but as production scar tissue from the *real* hospital platform. Then the [inventory](/citadel/lld/war/inventory/) for which patterns Spring hands you free. Next module: **concurrency** — because half of what you just built breaks quietly the moment two threads arrive.

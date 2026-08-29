@@ -1,22 +1,24 @@
 ---
 title: 'Creational Patterns — When Making the Object Is the Problem'
-description: 'Factory method, abstract factory, builder, singleton done right — each from its forcing problem, plus the modern answer (DI) that replaces half of them.'
+description: 'Factory, abstract factory, builder, singleton, prototype — building MediCore the clinic platform, one forced pattern at a time. Full code + memory hooks.'
 module: 2
 order: 1
-minutes: 35
+minutes: 40
 ---
 import Quiz from '../components/Quiz.astro';
 import Mermaid from '../components/Mermaid.astro';
 
-## The shared forcing problem
+## The story that carries this module
 
-Every creational pattern answers one question: **`new` hard-codes a concrete class at the call site — what do you do when the call site shouldn't know it?** Shouldn't know *which* class (factory), shouldn't wrestle *how* to assemble it (builder), shouldn't create it *at all* because exactly one must exist (singleton). Pick by which of those three you have.
+You're building **MediCore** — a clinic management platform. One story runs through all three pattern lessons: this one *creates* MediCore's objects, the structural lesson *connects* MediCore to the outside world, the behavioral lesson *runs* the clinic day to day. Every pattern arrives when the story forces it — never before. (This mirrors the real thing: the [War Room dossiers](/citadel/lld/war/patterns-why/) come from an actual production hospital platform, so every pattern here has a "this actually happened" link.)
 
-## Factory Method — the decision moved to one place
+Creational patterns all answer one question: **`new` hard-codes a concrete class at the call site — what do you do when the call site shouldn't know it?** Shouldn't know *which* class (factory), shouldn't wrestle with *how* to assemble it (builder), shouldn't create it *at all* because exactly one must exist (singleton).
 
-**Problem.** Callers write `new UpiProcessor()` / `new CardProcessor()` all over. The choice logic (which processor for which payment mode) duplicates at every call site, and adding a mode means a codebase-wide hunt.
+## Factory Method — the billing counter
 
-**Fix.** Centralize the decision behind a method that returns the *interface*:
+**Story beat.** MediCore's billing counter takes UPI, card, and wallet. Your first version: every place that charges a patient does `new UpiProcessor()` or `new CardProcessor()` based on an `if`. The same if-ladder now lives in the counter code, the online-portal code, and the refund code. Adding EMI means hunting all three down.
+
+**Fix.** Move the decision to one place that returns the *interface*:
 
 ```java
 enum PaymentMode { UPI, CARD, WALLET }
@@ -49,20 +51,53 @@ class ProcessorFactory {
     }
 }
 
-// Caller never names a concrete class:
+// The counter, the portal, and refunds all just say:
 PaymentProcessor p = factory.forMode(request.mode());
 PaymentResult result = p.process(request);
 ```
 
-One honest subtlety worth saying aloud: a `switch` inside a factory is **not** an OCP violation worth losing sleep over — the variation is *contained in one place whose single job is choosing*. The upgrade, when implementations register themselves and the switch disappears entirely, is the **registry** — a map from key to implementation. That's the production system's answer to webhook routing: [the Registry dossier](/citadel/lld/war/patterns-why/#2-registry--the-inbound-webhook-routing-problem), where each strategy announces its own key and the factory becomes `map.get(key)`.
+**"Isn't that switch an OCP violation?"** — the follow-up you should invite. Technically yes; honestly graded, no: the variation is *contained in one class whose single job is choosing*, and an exhaustive enum switch even gets compiler help. The upgrade, when the switch outgrows a screen or implementations live in different modules, is the **registry** — implementations announce their own key, the switch disappears:
+
+```java
+interface PaymentProcessor {
+    PaymentMode mode();                              // each impl declares its OWN key
+    PaymentResult process(PaymentRequest r);
+}
+
+class ProcessorRegistry {
+    private final Map<PaymentMode, PaymentProcessor> byMode;
+
+    ProcessorRegistry(List<PaymentProcessor> processors) {
+        this.byMode = processors.stream()
+            .collect(Collectors.toUnmodifiableMap(PaymentProcessor::mode, p -> p));
+        // toUnmodifiableMap throws on duplicate keys — two impls claiming UPI fails at STARTUP, not mid-payment
+    }
+
+    PaymentProcessor forMode(PaymentMode mode) {
+        PaymentProcessor p = byMode.get(mode);
+        if (p == null) throw new UnsupportedModeException(mode);  // the map is not exhaustive — name the miss policy
+        return p;
+    }
+}
+
+// Wiring — the ONLY place that lists implementations (Spring injects this list automatically):
+ProcessorRegistry registry = new ProcessorRegistry(List.of(
+    new UpiProcessor(), new CardProcessor(), new WalletProcessor()));
+```
+
+The knowledge "UPI → UpiProcessor" moved *into UpiProcessor itself*. New mode = new class + one wiring entry, zero edits to the registry. You traded compile-time exhaustiveness for runtime flexibility — say that trade out loud. Production's version: [the Registry dossier](/citadel/lld/war/patterns-why/#2-registry--the-inbound-webhook-routing-problem), webhook handlers announcing their provider key.
 
 **Static factory methods** (the small sibling, worth dropping in passing): `Money.rupees(10)`, `Duration.ofMinutes(5)` — named constructors that validate, cache, or return subtypes. *Effective Java* item 1; free polish.
 
-## Abstract Factory — families that must not mix
+> 🧠 **Memory hook.** *The hospital reception desk:* you say what you need, reception decides which department — you never walk the corridors yourself.
+> **Cheat code:** callers naming concrete classes → factory. Choice logic duplicating → registry.
+> **Interview line:** *"I'll centralize creation behind a factory returning the interface; if implementations multiply, I'll flip it to a registry where each one announces its key."*
 
-**Problem.** Objects come in **consistent families**: a sandbox `PaymentGateway` must pair with a sandbox `RefundClient` and a sandbox `WebhookVerifier`. Constructing them independently lets someone mix live charging with sandbox verification — a bug type systems can prevent.
+## Abstract Factory — sandbox vs live money
 
-**Fix.** One factory interface per *family*, one implementation per *environment*:
+**Story beat.** MediCore has a test mode. The payment gateway, the refund client, and the webhook signature verifier each have a **sandbox** and a **live** version. One evening someone wires the live gateway with the sandbox verifier — real charges, signatures never verified. The bug wasn't one wrong object; it was a **mixed family**.
+
+**Fix.** Make the *family* the unit of construction — one factory interface, one implementation per environment:
 
 ```java
 interface GatewaySuite {           // the family contract
@@ -82,21 +117,25 @@ class SandboxSuite implements GatewaySuite {
 class LiveSuite implements GatewaySuite {
     private final LiveConfig cfg;
     LiveSuite(LiveConfig cfg) { this.cfg = cfg; }
-    public PaymentGateway gateway()   { return new StripeGateway(cfg.apiKey()); }
-    public RefundClient refunds()     { return new StripeRefundClient(cfg.apiKey()); }
-    public WebhookVerifier verifier() { return new StripeVerifier(cfg.webhookSecret()); }
+    public PaymentGateway gateway()   { return new RazorpayGateway(cfg.apiKey()); }
+    public RefundClient refunds()     { return new RazorpayRefundClient(cfg.apiKey()); }
+    public WebhookVerifier verifier() { return new RazorpayVerifier(cfg.webhookSecret()); }
 }
 
-// Wiring picks ONE suite; mixing members across environments is now unrepresentable:
+// Wiring picks ONE suite; mixing members across environments now has no code path:
 GatewaySuite suite = env.isProd() ? new LiveSuite(liveCfg) : new SandboxSuite(sandboxCfg);
-CheckoutService checkout = new CheckoutService(suite.gateway(), suite.verifier());
+BillingService billing = new BillingService(suite.gateway(), suite.verifier());
 ```
 
-Recognition cue: the word **"family"** or "these three must always match". If there's no family — just one product — you wanted plain factory method; don't upgrade for ceremony.
+Recognition cue: the word **"family"**, or "these three must always match". No family — just one product? Plain factory method; don't upgrade for ceremony.
 
-## Builder — constructors past four parameters
+> 🧠 **Memory hook.** *A furniture set:* buy the sofa, table, and chairs as one matching set — you can't accidentally pair a Victorian sofa with a modern table because you never pick pieces, you pick the set.
+> **Cheat code:** "these N objects must never mix across variants" → abstract factory.
+> **Interview line:** *"The consistency rule spans several objects, so I'll make the family the unit of construction — you hold one suite, cross-environment mixing becomes unrepresentable."*
 
-**Problem.** `new Booking(patientId, doctorId, slot, null, null, true, false, null)` — the telescoping constructor. Nobody can read which `null` means what; adding an optional field breaks every caller; `boolean, boolean` transpositions compile fine and corrupt data.
+## Builder — the appointment form
+
+**Story beat.** Booking an appointment at MediCore needs patient, doctor, and slot — plus maybe teleconsult flag, maybe room, maybe referral note, maybe insurance id. The constructor grows to eight parameters: `new Booking(patientId, doctorId, slot, null, null, true, false, null)`. Nobody can read which `null` means what; two booleans transpose silently; every new optional field breaks all callers.
 
 **Fix — the full hand-rolled shape** (rounds ask you to *write* this, not just call it):
 
@@ -148,22 +187,26 @@ class Booking {
 
 // Usage reads like the requirements doc:
 Booking booking = Booking.builder()
-    .patient(patientId)
-    .doctor(doctorId)
+    .patient("P-1042")
+    .doctor("D-07")
     .slot(slot)
     .teleconsult(true)
     .build();
 ```
 
-The mechanics to narrate while writing it: **builder fields are mutable, the product's are final** — mutation is quarantined inside the builder and ends at `build()`; the product's constructor is **private** so a half-configured object has no way to exist; setters `return this` for chaining; defaults live in the builder's field initializers.
+The mechanics to narrate while writing it: **builder fields are mutable, the product's are final** — mutation is quarantined inside the builder and ends at `build()`; the product's constructor is **private** so a half-configured Booking has no way to exist; setters `return this` for chaining; defaults live in the builder's field initializers.
 
-The part that separates a gold answer from a Lombok reflex: **`build()` is where cross-field invariants live** (slot within doctor's schedule, teleconsult excludes room assignment). A builder that just sets fields is syntax; a builder whose `build()` can refuse is an invariant gate — it restores the "constructed ⇒ valid" guarantee from the object-modeling lesson, which telescoping constructors were quietly providing.
+The part that separates a gold answer from a Lombok reflex: **`build()` is where cross-field invariants live** (teleconsult excludes room; slot within doctor's schedule). A builder that just sets fields is syntax; a builder whose `build()` can refuse is an invariant gate — it restores the "constructed ⇒ valid" guarantee from the object-modeling lesson.
 
 When asked "when builder over factory?": factory chooses **which class**, builder assembles **one complex object step-by-step**. Different questions; they compose (a factory can return builders).
 
-## Singleton — done right, and mostly not done at all
+> 🧠 **Memory hook.** *The clinic's paper intake form:* fill fields in any order, skip the optional ones — but the receptionist checks the form is complete and consistent **before** stamping it. `build()` is the stamp.
+> **Cheat code:** constructor past ~4 params, half optional → builder. Cross-field rules → they live in `build()`.
+> **Interview line:** *"Required fields checked in build(), cross-field invariants too — so a Booking that exists is valid by construction."*
 
-**Problem.** Exactly one instance must exist *and be globally reachable*: a config registry, a connection pool, a metrics collector.
+## Singleton — one connection pool for the whole clinic
+
+**Story beat.** MediCore opens one database connection pool. Someone constructs a second one inside a report job; connections double, the DB hits its limit at 6 pm. You need **exactly one instance, enforced** — not requested politely.
 
 **The Java answers, in interview-ranking order:**
 
@@ -199,13 +242,19 @@ without re-check second thread constructs a second Pool object.
 */
 ```
 
-Then the sentence that shows senior judgment: **in real systems, singletons are a scope, not a pattern** — the DI container (or your `main()`) constructs one instance and injects it everywhere. Same one-ness, none of the global-state damage: tests can substitute it, and the hidden-dependency problem disappears. The [War Room inventory](/citadel/lld/war/inventory/) grades it exactly this way — Spring supplies singleton scope for free, so hand-rolling one in a Spring codebase is a smell, not a skill.
+Why `volatile`, precisely: `instance = new Pool()` is three steps — allocate, run constructor, write reference — and the JMM may reorder to allocate → **write reference** → construct. A second thread sees non-null at check 1, skips the lock, and returns a Pool whose constructor **hasn't finished**. `volatile` forbids that reordering. Without the private constructor there is no singleton at all — anything in the package can `new Pool()` around the ceremony.
 
-Related production variant worth knowing: the [copy-on-write registry](/citadel/lld/war/patterns-why/#15-copy-on-write-registry--two-maps-that-must-swap-together) — a singleton whose *contents* must swap atomically; rebuild into new maps, then swap references in one assignment.
+Then the sentence that shows senior judgment: **in real systems, singletons are a scope, not a pattern** — the DI container (or your `main()`) constructs one instance and injects it everywhere. Same one-ness, none of the global-state damage: tests can substitute it, hidden dependencies disappear. The [War Room inventory](/citadel/lld/war/inventory/) grades it exactly this way — Spring supplies singleton scope for free, so hand-rolling one in a Spring codebase is a smell, not a skill.
 
-## Prototype — thirty seconds
+Related production variant worth knowing: the [copy-on-write registry](/citadel/lld/war/patterns-why/#15-copy-on-write-registry--two-maps-that-must-swap-together) — a singleton whose *contents* must swap atomically: rebuild into new maps, swap references in one assignment.
 
-Clone a pre-configured exemplar instead of rebuilding from scratch. In Java, prefer **copy constructors or `toBuilder()`** over `Cloneable` (broken by design: no constructor call, shallow by default, checked exception):
+> 🧠 **Memory hook.** *One head pharmacist holds the narcotics-cabinet key.* Not "we agreed to share nicely" — there is physically one key (private constructor), and one official way to ask for it (`get()`).
+> **Cheat code:** "exactly one, shared everywhere" → DI scope first, enum if hand-rolled, DCL only to prove you know the JMM.
+> **Interview line:** *"I'd let the composition root own the single instance and inject it; if you want the classic, here's DCL — and here's why volatile is load-bearing."*
+
+## Prototype — the invoice template
+
+**Story beat.** Every MediCore invoice starts from the clinic's standard template — header, GST fields, default line items — then gets customized per patient. Rebuilding the template from scratch each time re-runs config lookups; you want to **copy the exemplar**.
 
 ```java
 class InvoiceTemplate {
@@ -218,20 +267,23 @@ class InvoiceTemplate {
     }                                                             // shallow copy shares the list,
 }                                                                 // and edits bleed between "copies"
 
-InvoiceTemplate monthly = new InvoiceTemplate(standardTemplate);  // clone, then customize
+InvoiceTemplate patientInvoice = new InvoiceTemplate(standardTemplate);  // clone, then customize
 ```
 
-The one graded detail: **deep vs shallow** — copy mutable fields into fresh collections, or both objects silently share state. Comes up rarely; know this much, move on.
+Prefer **copy constructors or `toBuilder()`** over `Cloneable` (broken by design: no constructor call, shallow by default, checked exception). The one graded detail: **deep vs shallow** — copy mutable fields into fresh collections, or both objects silently share state.
 
-## Recognition table
+> 🧠 **Memory hook.** *Photocopying a pre-filled form* instead of writing the letterhead again — but staple your own attachments (deep copy), don't share the original's.
+> **Cheat code:** "copy this configured template" → copy constructor. Mutable field → fresh collection.
 
-| You hear | Reach for |
-|---|---|
-| "callers shouldn't know which implementation" | Factory method → registry when implementations self-register |
-| "these N objects must always be consistent / same environment" | Abstract factory |
-| "constructor has 6 params, half optional" | Builder with validating `build()` |
-| "exactly one, shared everywhere" | DI-scoped instance; enum if you truly need a hand-rolled one |
-| "copy this template object" | Prototype (copy constructor) |
+## The module cheat sheet
+
+| Story beat | You hear | Pattern | One-word cue |
+|---|---|---|---|
+| billing counter | "callers shouldn't know which implementation" | Factory → registry | *reception* |
+| sandbox vs live | "these N must never mix across variants" | Abstract factory | *furniture set* |
+| appointment form | "6 params, half optional, cross-field rules" | Builder | *stamped form* |
+| connection pool | "exactly one, shared everywhere" | Singleton (as DI scope) | *one key* |
+| invoice template | "copy the configured exemplar" | Prototype | *photocopy* |
 
 <Quiz questions={[
   {
@@ -265,10 +317,21 @@ The one graded detail: **deep vs shallow** — copy mutable fields into fresh co
       'OCP does not apply to creational code',
     ],
     answer: 1,
-    why: 'Honest and calibrated: containment in one place is 90% of the value; a self-registering registry (map key → implementation) is the last 10% and has real costs (discoverability, ordering). Exhaustive enum switches even get compiler help when a variant is added.',
+    why: 'Honest and calibrated: containment in one place is 90% of the value; a self-registering registry (map key → implementation) is the last 10% and has real costs (you trade compile-time exhaustiveness for runtime flexibility). Exhaustive enum switches even get compiler help when a variant is added.',
+  },
+  {
+    q: 'In the hand-rolled Builder, why is Booking\'s constructor private and why are the Builder\'s fields mutable while Booking\'s are final?',
+    options: [
+      'Convention from Effective Java, no functional reason',
+      'Private constructor forces all construction through build()\'s validation; mutation is quarantined in the builder so the product is immutable and "constructed ⇒ valid" holds',
+      'Performance — final fields are faster to read',
+      'So Lombok can generate the same code',
+    ],
+    answer: 1,
+    why: 'The builder is a mutable staging area; build() is the checkpoint where required-field and cross-field invariants run; the private constructor means no half-configured Booking can ever exist. That trio IS the pattern — the fluent syntax is just sugar.',
   },
 ]} />
 
 ## Hand-off
 
-Creation solved. Next: **structural patterns** — wrapping, adapting, and composing objects you can't or won't change.
+MediCore's objects now get created safely. Next: **structural patterns** — the clinic connects to the outside world: SMS vendors, payment SDKs, medical records, and one very messy discharge process.

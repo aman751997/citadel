@@ -7,6 +7,7 @@ minutes: 45
 ---
 import Quiz from '../components/Quiz.astro';
 import Mermaid from '../components/Mermaid.astro';
+import Reveal from '../components/Reveal.astro';
 
 ## MediCore meets the outside world
 
@@ -25,6 +26,17 @@ interface SmsGateway { void send(PhoneNumber to, String text); }   // owned by Y
 The vendor you signed, TextWave, ships an SDK that speaks `submitMessage(TextWavePayload)` with API keys, sender codes, and a `char[]` body. TextWave will not change for you. Next year procurement will switch vendors again.
 
 **Fix.** One translating class per vendor; the domain never learns vendor vocabulary:
+
+<Mermaid code={`flowchart LR
+    subgraph domain [stable domain — never changes]
+      RS[ReminderService] --> P[[SmsGateway port]]
+    end
+    subgraph edge [volatile edge — swap freely]
+      A[TextWaveAdapter] -.implements.-> P
+      A --> SDK[TextWave SDK]
+    end
+    style domain stroke:#3fb950
+    style edge stroke:#e3b341`} />
 
 ```java
 class TextWaveAdapter implements SmsGateway {
@@ -56,6 +68,20 @@ Two grading points. First, **the port belongs to the consumer**: your domain def
 > 🧠 **Memory hook.** *A travel plug adapter:* your laptop's plug (domain port) never changes — the adapter reshapes the wall socket (vendor) to fit it.
 > **Cheat code:** wrong *interface shape* → adapter. The port is defined by YOUR side.
 > **Interview line:** *"I'll define the gateway interface in my domain and adapt each vendor to it — a vendor swap becomes a new adapter plus a config change."*
+
+<Quiz questions={[
+  {
+    q: 'Why does the SmsGateway interface belong to MediCore\'s domain and not to the TextWave layer?',
+    options: [
+      'Naming convention — ports are always domain-side',
+      'Dependency direction: the stable domain must not change when vendors do, so the volatile side conforms to the stable side (DIP) — a vendor swap is a new adapter, not a domain edit',
+      'Because Spring requires interfaces in the service package',
+      'It does not matter as long as an interface exists',
+    ],
+    answer: 1,
+    why: 'Consumer-owned ports are the whole game: arrows point from volatile to stable. If TextWave defined the interface, every vendor quirk would ripple into your domain — the adapter would be decoration, not protection.',
+  },
+]} />
 
 ## Decorator — reminders need retry, some need rate-limiting
 
@@ -105,6 +131,17 @@ SmsGateway otp      = new RetryingGateway(vendor, 5);        // urgent: retry, n
 SmsGateway plain    = vendor;                                 // no wrapping — also a choice
 ```
 
+<Mermaid code={`flowchart LR
+    S["send()"] --> R
+    subgraph R [RetryingGateway]
+      subgraph RL [RateLimitedGateway]
+        V[TextWaveAdapter]
+      end
+    end
+    style R stroke:#e3b341
+    style RL stroke:#58a6ff
+    style V stroke:#3fb950`} />
+
 **Order matters and interviewers probe it:** in `campaign` above, retry sits *outside* the limiter — every retry attempt re-enters the bucket and burns a permit. Flip the nesting and one logical send costs one permit no matter how many retries. Neither is "correct"; **say which you want and why**. This is also how `java.io` works — `new BufferedInputStream(new FileInputStream(f))` — cite it.
 
 Production scar: decorators that hop threads lose `ThreadLocal` context — [the dossier on exactly that bug](/citadel/lld/war/patterns-why/#5-decorator--the-bug-threadlocals-cause-at-thread-boundaries). A decorator submitting work to a pool must capture context *before* submit and restore it inside.
@@ -113,11 +150,36 @@ Production scar: decorators that hop threads lose `ThreadLocal` context — [the
 > **Cheat code:** same interface + "ALSO needs X, some need Y, combinations vary" → decorator. Combination decided at wiring, not by class explosion.
 > **Interview line:** *"Retry and rate-limit become decorators over the gateway; I compose per channel at wiring time — and the nesting order is a semantic decision: outside-retry burns a permit per attempt."*
 
+<Quiz questions={[
+  {
+    q: 'The campaign gateway is RetryingGateway(RateLimitedGateway(vendor)). A send fails twice, succeeds third try. Permits consumed — and how do you make it one?',
+    options: [
+      'One — retries bypass inner decorators',
+      'Three — each attempt re-enters the limiter; to spend one permit per logical send, nest the limiter OUTSIDE the retry',
+      'Three — and changing it requires a new class',
+      'Zero — rate limiting only counts failures',
+    ],
+    answer: 1,
+    why: 'Every retry traverses everything INSIDE the retry decorator. Decorator order is semantics, not style — and the fix is re-wiring the composition, not writing code. Being able to say that is the point of the pattern.',
+  },
+]} />
+
 ## Facade — the discharge button
 
 **Story beat.** Discharging a patient touches five subsystems: compute the final bill, charge the pending amount, decrement pharmacy stock for take-home meds, send the discharge summary SMS, write the audit trail. The front-desk UI, the mobile app, and the night-shift batch job each implemented this sequence themselves. The batch job forgot the audit call. Compliance noticed.
 
 **Fix.** One class exposing the *use-case*, hiding the choreography:
+
+<Mermaid code={`flowchart LR
+    UI[Front desk] --> F
+    APP[Mobile app] --> F
+    BATCH[Night batch] --> F
+    F{{DischargeFacade}} --> B[Billing]
+    F --> PAY[Payments]
+    F --> PH[Pharmacy]
+    F --> AU[Audit]
+    F --> SMS[SMS]
+    style F stroke:#e3b341,stroke-width:2px`} />
 
 ```java
 class DischargeFacade {
@@ -152,6 +214,12 @@ DischargeSummary s = dischargeFacade.discharge("ADM-2201");
 > 🧠 **Memory hook.** *Hotel front desk:* you say "check me out" — the desk calls housekeeping, billing, and the valet. You never phone the valet yourself.
 > **Cheat code:** every caller re-implementing the same multi-subsystem sequence → facade. It sequences, it never decides.
 > **Interview line:** *"I'll expose the use-case as a facade so the five-step choreography exists exactly once — callers can't forget the audit step, because they never see the steps."*
+
+<Reveal q='Interviewer pushes: "Your DischargeFacade calls five services — isn&apos;t that a God class?" Defend it.'>
+
+The discriminator is **coordinates vs decides**. A God class *decides*: bill math, discount rules, stock logic all inline. The facade holds **zero business rules** — bill math lives in `BillingService`, stock logic in `PharmacyService`; the facade knows only the *sequence*. Sequencing one use-case IS a single responsibility (SRP applied to entry points). The tell in code review: if the facade grows an `if` about money or medicine, logic is leaking in — push it down.
+
+</Reveal>
 
 ## Proxy — who's reading the medical records?
 
@@ -194,6 +262,31 @@ The industrial form is the **dynamic proxy / AOP interceptor** — Spring wraps 
 > **Cheat code:** "check / defer / cache / log BEFORE the real call, caller unaware" → proxy.
 > **Interview line:** *"Access control wraps as a proxy so the record service stays pure — and in Spring this is exactly what @PreAuthorize generates, with the self-invocation caveat."*
 
+<Quiz questions={[
+  {
+    q: 'RecordsAuthProxy and RetryingGateway have byte-identical structure: implement interface, hold inner, wrap the call. What makes one a proxy and the other a decorator?',
+    options: [
+      'Proxies must be generated at runtime',
+      'Intent: the decorator adds a feature the caller wants (retry); the proxy controls access the caller gets no say in (auth, lazy-load, cache). Structure is identical — the classification is about WHY',
+      'Proxies may not add logging',
+      'Decorators cannot throw exceptions',
+    ],
+    answer: 1,
+    why: 'GoF patterns are named by intent, not shape. Interviewers deliberately probe this pair because the UML is the same — the answer "structure identical, intent differs: add vs control" is the full-marks response.',
+  },
+  {
+    q: 'Spring @Transactional method calls another @Transactional method on THIS. What happens and why?',
+    options: [
+      'Both transactions apply, nested',
+      'The inner annotation is ignored: self-invocation never crosses the proxy, and the advice lives on the proxy, not the target',
+      'Runtime exception — Spring detects self-invocation',
+      'The inner one starts a new transaction due to REQUIRES_NEW default',
+    ],
+    answer: 1,
+    why: 'AOP advice wraps the proxy object; this.method() is a plain Java call on the target. The production "leak on the path nobody guarded" dossier is this exact class of bug. Fixes: split the bean, or inject self via proxy.',
+  },
+]} />
+
 ## Composite — the hospital bill is a tree
 
 **Story beat.** A MediCore inpatient bill: room charges, but also a *surgery package* containing surgeon fee, OT charges, and an anesthesia sub-group with its own items. Groups inside groups, charges at the leaves. Billing code that computes the total shouldn't care whether it holds one charge or a package of packages.
@@ -232,11 +325,29 @@ BillNode bill = new ChargeGroup("Admission ADM-2201")
 Money grandTotal = bill.total();   // one call — the tree recurses itself
 ```
 
+<Mermaid code={`flowchart TB
+    A[Admission ADM-2201] --> R["Room 3 nights ₹9,000"]
+    A --> SP[Surgery package]
+    SP --> SF["Surgeon fee ₹40,000"]
+    SP --> OT["OT charges ₹15,000"]
+    SP --> AN[Anesthesia]
+    AN --> AT["Anesthetist ₹8,000"]
+    AN --> DR["Drugs ₹2,500"]
+    style A stroke:#e3b341
+    style SP stroke:#e3b341
+    style AN stroke:#e3b341`} />
+
 Recognition cue: **part-whole hierarchy + "treat one and many uniformly"**. File systems, org charts, UI trees, nested bills. Follow-up to expect: *"now print an itemized statement AND compute GST per category"* — two-plus operations over one stable tree is Visitor's cue ([Drill 4](/citadel/lld/war/build-drills/#drill-4--composite--visitor-on-a-bill-tree) builds exactly this pair).
 
 > 🧠 **Memory hook.** *Folders in folders:* a folder's size = sum of contents, and you never care if an item is a file or another folder. Bill groups are folders; charges are files.
 > **Cheat code:** tree + "one and many treated alike" → composite. Second operation over the tree → visitor incoming.
 > **Interview line:** *"Charges and packages share one BillNode interface, so totals are a single recursive call — and if you add more operations over the tree, I'd bring in Visitor rather than bloat the node interface."*
+
+<Reveal q='Follow-up lands: "now print an itemized statement AND compute GST per category." Why not just add print() and gst() to BillNode?'>
+
+Two operations today, five next quarter (insurance claim format, discount audit, export…) — every new operation edits **every node class**. The tree *structure* is stable; the *operations* over it multiply. That's Visitor's exact cue: one `accept(Visitor)` on the nodes, then each new operation is one new visitor class, zero node edits. Trade-off to say aloud: Visitor makes adding operations cheap but adding node *types* expensive — you're betting the structure is done growing. [Drill 4](/citadel/lld/war/build-drills/#drill-4--composite--visitor-on-a-bill-tree) builds this pair.
+
+</Reveal>
 
 ## Flyweight — thirty seconds
 
@@ -253,53 +364,6 @@ All five "wrap something". The discriminator is **interface geometry + intent**:
 | Proxy | **same** — usually single | control | records auth | bouncer |
 | Facade | **new, smaller** — over many | simplify | discharge button | front desk |
 | Composite | same, over a **tree** | unify | bill tree | folders |
-
-<Quiz questions={[
-  {
-    q: 'The campaign gateway is RetryingGateway(RateLimitedGateway(vendor)). A send fails twice, succeeds third try. Permits consumed — and how do you make it one?',
-    options: [
-      'One — retries bypass inner decorators',
-      'Three — each attempt re-enters the limiter; to spend one permit per logical send, nest the limiter OUTSIDE the retry',
-      'Three — and changing it requires a new class',
-      'Zero — rate limiting only counts failures',
-    ],
-    answer: 1,
-    why: 'Every retry traverses everything INSIDE the retry decorator. Decorator order is semantics, not style — and the fix is re-wiring the composition, not writing code. Being able to say that is the point of the pattern.',
-  },
-  {
-    q: 'Why does the SmsGateway interface belong to MediCore\'s domain and not to the TextWave layer?',
-    options: [
-      'Naming convention — ports are always domain-side',
-      'Dependency direction: the stable domain must not change when vendors do, so the volatile side conforms to the stable side (DIP) — a vendor swap is a new adapter, not a domain edit',
-      'Because Spring requires interfaces in the service package',
-      'It does not matter as long as an interface exists',
-    ],
-    answer: 1,
-    why: 'Consumer-owned ports are the whole game: arrows point from volatile to stable. If TextWave defined the interface, every vendor quirk would ripple into your domain — the adapter would be decoration, not protection.',
-  },
-  {
-    q: 'RecordsAuthProxy and RetryingGateway have byte-identical structure: implement interface, hold inner, wrap the call. What makes one a proxy and the other a decorator?',
-    options: [
-      'Proxies must be generated at runtime',
-      'Intent: the decorator adds a feature the caller wants (retry); the proxy controls access the caller gets no say in (auth, lazy-load, cache). Structure is identical — the classification is about WHY',
-      'Proxies may not add logging',
-      'Decorators cannot throw exceptions',
-    ],
-    answer: 1,
-    why: 'GoF patterns are named by intent, not shape. Interviewers deliberately probe this pair because the UML is the same — the answer "structure identical, intent differs: add vs control" is the full-marks response.',
-  },
-  {
-    q: 'Spring @Transactional method calls another @Transactional method on THIS. What happens and why?',
-    options: [
-      'Both transactions apply, nested',
-      'The inner annotation is ignored: self-invocation never crosses the proxy, and the advice lives on the proxy, not the target',
-      'Runtime exception — Spring detects self-invocation',
-      'The inner one starts a new transaction due to REQUIRES_NEW default',
-    ],
-    answer: 1,
-    why: 'AOP advice wraps the proxy object; this.method() is a plain Java call on the target. The production "leak on the path nobody guarded" dossier is this exact class of bug. Fixes: split the bean, or inject self via proxy.',
-  },
-]} />
 
 ## Hand-off
 

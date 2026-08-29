@@ -7,6 +7,7 @@ minutes: 50
 ---
 import Quiz from '../components/Quiz.astro';
 import Mermaid from '../components/Mermaid.astro';
+import Reveal from '../components/Reveal.astro';
 
 ## MediCore starts running
 
@@ -69,9 +70,35 @@ The honest wrinkle from production: strategies rarely share a clean signature (p
 > **Cheat code:** one verb × N interchangeable algorithms, chosen by data → strategy (+ registry to kill the if-ladder).
 > **Interview line:** *"Splitting varies by rule, not by caller — so each rule is a strategy behind one interface, a registry picks by type, and my equal-split conserves every paisa."*
 
+<Quiz questions={[
+  {
+    q: 'Equal-split of ₹100.00 across 3 family members. What must your Strategy get right that naive division misses?',
+    options: [
+      'Use double division for accuracy',
+      'Integer minor-unit division leaves a remainder (3334+3333+3333 paise) — assign it deterministically so shares sum EXACTLY to the total',
+      'Round every share up to be safe',
+      'Store shares as percentages instead',
+    ],
+    answer: 1,
+    why: 'Money conservation is the hidden invariant graders test with "does it sum back?". Deterministic remainder assignment (last party, or rotating) in minor units. Doubles reintroduce the drift you avoided by using paise.',
+  },
+]} />
+
 ## State — the appointment lifecycle
 
 **Story beat.** An appointment flows `REQUESTED → CONFIRMED → CHECKED_IN → COMPLETED`, with `CANCELLED` reachable from the first two. The naive version — status checks scattered through every method — let a bug move a `COMPLETED` appointment back to `CONFIRMED`. It was re-billed. Production's version of this scar: [a backwards transition corrupts history](/citadel/lld/war/patterns-why/#10-state--because-a-backwards-transition-corrupts-history).
+
+<Mermaid code={`stateDiagram-v2
+    [*] --> REQUESTED
+    REQUESTED --> CONFIRMED: confirm()
+    REQUESTED --> CANCELLED: cancel()
+    CONFIRMED --> CHECKED_IN: checkIn()
+    CONFIRMED --> CANCELLED: cancel()
+    CHECKED_IN --> COMPLETED: complete()
+    COMPLETED --> [*]
+    CANCELLED --> [*]`} />
+
+Draw this before coding — the diagram IS the spec: every arrow is a legal transition, every *missing* arrow is a guaranteed exception. (No arrow leaves COMPLETED — that's the re-billing bug made impossible.)
 
 **Form 1 — enum + transition table** (right size for most rounds):
 
@@ -134,6 +161,20 @@ class Confirmed implements ApptState {
 > **Cheat code:** behavior depends on lifecycle stage + illegal transitions must be impossible → state. Few dumb states → enum table; rich states → classes.
 > **Interview line:** *"I'll centralize transitions in one guarded method over an explicit legal-moves table — and I'd only upgrade to state-per-class when states carry distinct behavior."*
 
+<Quiz questions={[
+  {
+    q: 'Appointment lifecycle: 5 states, no per-state behavior beyond names. State-per-class or enum + transition table?',
+    options: [
+      'Always state-per-class — it is the named pattern',
+      'Enum + explicit legal-moves table here (less code, same safety); state-per-class when states carry distinct behavior. Either way, transitions validate in ONE gate',
+      'Always enum — classes are overkill in interviews',
+      'If-else inside each method, refactor later if asked',
+    ],
+    answer: 1,
+    why: 'Calibration beats pattern-worship. The invariant (no illegal transitions, enforced centrally) is the requirement; the mechanism scales with behavioral weight. Drill 3 makes you build both to feel the crossover.',
+  },
+]} />
+
 ## Observer — the visit ends, the clinic reacts
 
 **Story beat.** When an appointment completes, five things must happen: generate the invoice, send the feedback SMS, update the doctor's analytics, decrement consumables, schedule the follow-up. Hard-coding five calls into `complete()` couples the core flow to every side effect; each new reaction edits the method.
@@ -172,15 +213,56 @@ service.register(evt -> sms.send(phoneOf(evt.patientId()), "How was your visit?"
 service.register(evt -> analytics.recordVisit(evt.doctorId()));
 ```
 
+<Mermaid code={`sequenceDiagram
+    participant S as AppointmentService
+    participant DB as Repo
+    participant I as Invoicing
+    participant M as SMS
+    participant A as Analytics
+    S->>S: a.complete() — guarded transition
+    S->>DB: save(a)
+    Note over S,DB: persist FIRST — never announce an unsaved change
+    S->>I: onCompleted(evt)
+    S--xM: onCompleted(evt) 💥 throws
+    Note over S,M: caught + logged — the others still run
+    S->>A: onCompleted(evt)`} />
+
 Three graded details in those lines: **notify after persisting** (observers of an unsaved change observe a lie), **isolate listener failures**, and `CopyOnWriteArrayList` so a listener can (un)subscribe during iteration without `ConcurrentModificationException`. The production timing subtlety — fire *after the transaction commits*, or the SMS announces a rollback — is [the Observer dossier](/citadel/lld/war/patterns-why/#13-observer--the-existing-integration-only-fired-after-the-call-ended); in Spring that's `@TransactionalEventListener(AFTER_COMMIT)`.
 
 > 🧠 **Memory hook.** *Newsletter subscription:* the clinic publishes "visit completed"; subscribers signed up themselves; the publisher doesn't know or care who reads. One reader's spam filter breaking doesn't stop the others' delivery.
 > **Cheat code:** "when X happens, do these N things — more later" → observer. Save first, notify after; guard each listener.
 > **Interview line:** *"complete() publishes an event after persisting; reactions subscribe. New reaction = new listener, zero edits — and in real systems I'd fire after commit."*
 
+<Quiz questions={[
+  {
+    q: 'Your Observer fires the feedback SMS inside the same DB transaction that saves the completed appointment. The transaction rolls back. What did the patient receive, and what is the fix?',
+    options: [
+      'Nothing — rollback cancels the SMS too',
+      'A "how was your visit?" for a visit that never completed; fix: publish after commit (AFTER_COMMIT listener / transactional outbox)',
+      'A duplicate SMS; fix: idempotency keys',
+      'The SMS is delayed until commit automatically',
+    ],
+    answer: 1,
+    why: 'External side effects do not participate in DB transactions. Observers touching the outside world must fire after commit — the production dossier bug. (The outbox pattern is the durable version; your SD wing covers it.)',
+  },
+]} />
+
 ## Chain of Responsibility — every request runs the gauntlet
 
 **Story beat.** Every MediCore API request passes: authentication → clinic (tenant) resolution → validation → rate limiting → the actual handler. Each check can veto. The team assembled these from an unordered set once — and tenant resolution ran *after* a handler that touched the database. Cross-clinic data leak. Production wrote it down: [order is a data dependency](/citadel/lld/war/patterns-why/#4-chain-of-responsibility--order-is-a-data-dependency).
+
+<Mermaid code={`flowchart LR
+    R[Request] --> A[Auth]
+    A -->|attaches user| T[Tenant]
+    T -->|attaches clinic| V[Validation]
+    V --> RL[RateLimit]
+    RL --> D[Dispatch ✅]
+    A -.->|401| X1[⛔]
+    V -.->|400| X2[⛔]
+    RL -.->|429| X3[⛔]
+    style T stroke:#f85149,stroke-width:2px`} />
+
+(The red node is the story's bug: everything after Tenant *depends on* the clinic it attaches — order is data, not style.)
 
 ```java
 interface Handler { Response handle(Request r, Chain chain); }
@@ -235,6 +317,20 @@ Same shape as servlet filters and OkHttp interceptors — cite them. The graded 
 > **Cheat code:** sequential checks/transforms, each with a veto, order meaningful → chain. Assemble once, ordered, documented.
 > **Interview line:** *"Each concern is a handler; the pipeline is an explicit ordered list assembled in one place — order is a data dependency here, so I keep it visible."*
 
+<Quiz questions={[
+  {
+    q: 'The request pipeline was assembled from an unordered Set and tenant resolution ran after a DB-touching handler. What is the general lesson?',
+    options: [
+      'Sets cannot hold handlers with equal hashCodes',
+      'Chain order is a data dependency — later links consume earlier links\' side effects (attached user, resolved clinic); assemble as an explicit ordered list in one place, dependencies documented',
+      'Every handler should re-resolve the tenant defensively',
+      'Chains are order-independent by design; the bug was elsewhere',
+    ],
+    answer: 1,
+    why: 'The production dossier verbatim: links have invisible dependencies on earlier links\' work. Defensive re-resolution hides the design flaw; the fix is making order explicit and visible.',
+  },
+]} />
+
 ## Command — the front desk wants undo
 
 **Story beat.** Front-desk staff juggle walk-ins: book, cancel, reschedule — and misclick constantly. They want Ctrl+Z. A method call evaporates the moment it returns; to undo, queue, log, or replay an action, **the action itself must be an object**.
@@ -283,6 +379,20 @@ Recognition cues: **undo/redo** (text-editor round), **job queues**, **audit log
 > **Cheat code:** "undo / queue / log / replay actions" → command. Each command carries the memory its own undo needs.
 > **Interview line:** *"Every front-desk action is a command with execute and undo; the invoker just stacks them — and I'd note that cross-service undo becomes compensation, not rollback."*
 
+<Quiz questions={[
+  {
+    q: 'Why does BookAppointment keep the `booked` field — why can\'t undo() just be a fresh cancel call built from the request?',
+    options: [
+      'Performance — caching avoids a lookup',
+      'The command must remember what ITS execution actually did (the concrete appointment created, with id and slot) — undo reverses that specific effect, not a guess reconstructed from inputs',
+      'Java requires commands to be stateful',
+      'It cannot — undo() should indeed rebuild from the request',
+    ],
+    answer: 1,
+    why: 'Execute-time state capture is the half of Command people forget: between execute and undo, the world moved (other bookings, reschedules). Undo targets the exact effect this command produced — that is also why cross-service undo becomes explicit compensation.',
+  },
+]} />
+
 ## Template Method — every report, same skeleton
 
 **Story beat.** MediCore ships reports: daily revenue, doctor utilization, pharmacy stock. Every one does fetch → transform → render → deliver; only fetch and render differ. Five copy-pasted sequences drifted — one report skipped delivery audit.
@@ -317,6 +427,12 @@ This is the one pattern where inheritance is the *point* — the parent owns the
 > **Cheat code:** same sequence, 1–3 steps differ per variant → template method (skeleton `final`). Steps trivially small → lambdas instead.
 > **Interview line:** *"The sequence is the asset, so it's final in the parent; variants override only fetch and render — delivery and audit are physically unskippable."*
 
+<Reveal q="run() is final, deliver() is private, transform() has a default body. Each keyword choice defends something — what?">
+
+**`final run()`** — the sequence is the asset; a subclass overriding it could skip the audit, which is the exact drift that motivated the pattern. **`private deliver()`** — not even *visible* to children: fixed steps that no variant should touch don't get `protected`. **`default-body transform()`** — an *optional hook*: most reports don't transform, so forcing every subclass to write `return d;` is noise. The pattern's precision is in these access modifiers — abstract = must fill, protected-with-default = may fill, private/final = hands off.
+
+</Reveal>
+
 ## The rest of the family — one line each, know the cue
 
 | Pattern | MediCore cue | One-liner |
@@ -340,64 +456,6 @@ This is the one pattern where inheritance is the *point* — the parent owns the
 | "undo / action history / job queue" | Command | order slip |
 | "same flow, two steps differ" | Template Method | recipe with blanks |
 | "admins define custom rules" | Interpreter / Specification | — |
-
-<Quiz questions={[
-  {
-    q: 'Equal-split of ₹100.00 across 3 family members. What must your Strategy get right that naive division misses?',
-    options: [
-      'Use double division for accuracy',
-      'Integer minor-unit division leaves a remainder (3334+3333+3333 paise) — assign it deterministically so shares sum EXACTLY to the total',
-      'Round every share up to be safe',
-      'Store shares as percentages instead',
-    ],
-    answer: 1,
-    why: 'Money conservation is the hidden invariant graders test with "does it sum back?". Deterministic remainder assignment (last party, or rotating) in minor units. Doubles reintroduce the drift you avoided by using paise.',
-  },
-  {
-    q: 'Your Observer fires the feedback SMS inside the same DB transaction that saves the completed appointment. The transaction rolls back. What did the patient receive, and what is the fix?',
-    options: [
-      'Nothing — rollback cancels the SMS too',
-      'A "how was your visit?" for a visit that never completed; fix: publish after commit (AFTER_COMMIT listener / transactional outbox)',
-      'A duplicate SMS; fix: idempotency keys',
-      'The SMS is delayed until commit automatically',
-    ],
-    answer: 1,
-    why: 'External side effects do not participate in DB transactions. Observers touching the outside world must fire after commit — the production dossier bug. (The outbox pattern is the durable version; your SD wing covers it.)',
-  },
-  {
-    q: 'Appointment lifecycle: 5 states, no per-state behavior beyond names. State-per-class or enum + transition table?',
-    options: [
-      'Always state-per-class — it is the named pattern',
-      'Enum + explicit legal-moves table here (less code, same safety); state-per-class when states carry distinct behavior. Either way, transitions validate in ONE gate',
-      'Always enum — classes are overkill in interviews',
-      'If-else inside each method, refactor later if asked',
-    ],
-    answer: 1,
-    why: 'Calibration beats pattern-worship. The invariant (no illegal transitions, enforced centrally) is the requirement; the mechanism scales with behavioral weight. Drill 3 makes you build both to feel the crossover.',
-  },
-  {
-    q: 'The request pipeline was assembled from an unordered Set and tenant resolution ran after a DB-touching handler. What is the general lesson?',
-    options: [
-      'Sets cannot hold handlers with equal hashCodes',
-      'Chain order is a data dependency — later links consume earlier links\' side effects (attached user, resolved clinic); assemble as an explicit ordered list in one place, dependencies documented',
-      'Every handler should re-resolve the tenant defensively',
-      'Chains are order-independent by design; the bug was elsewhere',
-    ],
-    answer: 1,
-    why: 'The production dossier verbatim: links have invisible dependencies on earlier links\' work. Defensive re-resolution hides the design flaw; the fix is making order explicit and visible.',
-  },
-  {
-    q: 'Why does BookAppointment keep the `booked` field — why can\'t undo() just be a fresh cancel call built from the request?',
-    options: [
-      'Performance — caching avoids a lookup',
-      'The command must remember what ITS execution actually did (the concrete appointment created, with id and slot) — undo reverses that specific effect, not a guess reconstructed from inputs',
-      'Java requires commands to be stateful',
-      'It cannot — undo() should indeed rebuild from the request',
-    ],
-    answer: 1,
-    why: 'Execute-time state capture is the half of Command people forget: between execute and undo, the world moved (other bookings, reschedules). Undo targets the exact effect this command produced — that is also why cross-service undo becomes explicit compensation.',
-  },
-]} />
 
 ## Hand-off
 

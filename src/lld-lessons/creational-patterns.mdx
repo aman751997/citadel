@@ -7,6 +7,7 @@ minutes: 40
 ---
 import Quiz from '../components/Quiz.astro';
 import Mermaid from '../components/Mermaid.astro';
+import Reveal from '../components/Reveal.astro';
 
 ## The story that carries this module
 
@@ -19,6 +20,16 @@ Creational patterns all answer one question: **`new` hard-codes a concrete class
 **Story beat.** MediCore's billing counter takes UPI, card, and wallet. Your first version: every place that charges a patient does `new UpiProcessor()` or `new CardProcessor()` based on an `if`. The same if-ladder now lives in the counter code, the online-portal code, and the refund code. Adding EMI means hunting all three down.
 
 **Fix.** Move the decision to one place that returns the *interface*:
+
+<Mermaid code={`flowchart LR
+    C[Counter] --> F{{ProcessorFactory}}
+    P[Portal] --> F
+    R[Refunds] --> F
+    F -->|returns interface| I[PaymentProcessor]
+    I -.-> U[UpiProcessor]
+    I -.-> CA[CardProcessor]
+    I -.-> W[WalletProcessor]
+    style F stroke:#e3b341,stroke-width:2px`} />
 
 ```java
 enum PaymentMode { UPI, CARD, WALLET }
@@ -93,11 +104,38 @@ The knowledge "UPI → UpiProcessor" moved *into UpiProcessor itself*. New mode 
 > **Cheat code:** callers naming concrete classes → factory. Choice logic duplicating → registry.
 > **Interview line:** *"I'll centralize creation behind a factory returning the interface; if implementations multiply, I'll flip it to a registry where each one announces its key."*
 
+<Quiz questions={[
+  {
+    q: 'Interviewer: "your factory has a switch — is that not the OCP violation you just lectured me about?" Best answer?',
+    options: [
+      'Yes, I will refactor to reflection scanning immediately',
+      'The variation is contained in one class whose single job is the choice; the upgrade path is a registry where implementations self-register, and I would take it when the switch outgrows a screen',
+      'Switches over enums are exempt from OCP',
+      'OCP does not apply to creational code',
+    ],
+    answer: 1,
+    why: 'Honest and calibrated: containment in one place is 90% of the value; a self-registering registry (map key → implementation) is the last 10% and has real costs (you trade compile-time exhaustiveness for runtime flexibility). Exhaustive enum switches even get compiler help when a variant is added.',
+  },
+]} />
+
 ## Abstract Factory — sandbox vs live money
 
 **Story beat.** MediCore has a test mode. The payment gateway, the refund client, and the webhook signature verifier each have a **sandbox** and a **live** version. One evening someone wires the live gateway with the sandbox verifier — real charges, signatures never verified. The bug wasn't one wrong object; it was a **mixed family**.
 
 **Fix.** Make the *family* the unit of construction — one factory interface, one implementation per environment:
+
+<Mermaid code={`flowchart TB
+    W[Wiring picks ONE suite] --> S
+    W --> L
+    subgraph S [SandboxSuite]
+      SG[SandboxGateway] ~~~ SR[SandboxRefunds] ~~~ SV[SandboxVerifier]
+    end
+    subgraph L [LiveSuite]
+      LG[RazorpayGateway] ~~~ LR[RazorpayRefunds] ~~~ LV[RazorpayVerifier]
+    end
+    S -. members can never mix .-> L
+    style S stroke:#3fb950
+    style L stroke:#f85149`} />
 
 ```java
 interface GatewaySuite {           // the family contract
@@ -132,6 +170,20 @@ Recognition cue: the word **"family"**, or "these three must always match". No f
 > 🧠 **Memory hook.** *A furniture set:* buy the sofa, table, and chairs as one matching set — you can't accidentally pair a Victorian sofa with a modern table because you never pick pieces, you pick the set.
 > **Cheat code:** "these N objects must never mix across variants" → abstract factory.
 > **Interview line:** *"The consistency rule spans several objects, so I'll make the family the unit of construction — you hold one suite, cross-environment mixing becomes unrepresentable."*
+
+<Quiz questions={[
+  {
+    q: 'Sandbox gateway paired with live webhook verifier caused a prod incident. Which pattern makes that mix unrepresentable?',
+    options: [
+      'Builder — validate the pair in build()',
+      'Abstract factory — one suite interface per environment, so members can only come from the same family',
+      'Singleton — only one environment exists at a time',
+      'Factory method with an environment enum parameter',
+    ],
+    answer: 1,
+    why: 'The problem is FAMILY consistency across multiple products. An abstract factory (GatewaySuite) makes the family the unit of construction — you hold one suite, so cross-environment mixing has no code path. A builder could check it, but only if every caller uses it.',
+  },
+]} />
 
 ## Builder — the appointment form
 
@@ -204,6 +256,20 @@ When asked "when builder over factory?": factory chooses **which class**, builde
 > **Cheat code:** constructor past ~4 params, half optional → builder. Cross-field rules → they live in `build()`.
 > **Interview line:** *"Required fields checked in build(), cross-field invariants too — so a Booking that exists is valid by construction."*
 
+<Quiz questions={[
+  {
+    q: 'In the hand-rolled Builder, why is Booking\'s constructor private and why are the Builder\'s fields mutable while Booking\'s are final?',
+    options: [
+      'Convention from Effective Java, no functional reason',
+      'Private constructor forces all construction through build()\'s validation; mutation is quarantined in the builder so the product is immutable and "constructed ⇒ valid" holds',
+      'Performance — final fields are faster to read',
+      'So Lombok can generate the same code',
+    ],
+    answer: 1,
+    why: 'The builder is a mutable staging area; build() is the checkpoint where required-field and cross-field invariants run; the private constructor means no half-configured Booking can ever exist. That trio IS the pattern — the fluent syntax is just sugar.',
+  },
+]} />
+
 ## Singleton — one connection pool for the whole clinic
 
 **Story beat.** MediCore opens one database connection pool. Someone constructs a second one inside a report job; connections double, the DB hits its limit at 6 pm. You need **exactly one instance, enforced** — not requested politely.
@@ -242,7 +308,11 @@ without re-check second thread constructs a second Pool object.
 */
 ```
 
-Why `volatile`, precisely: `instance = new Pool()` is three steps — allocate, run constructor, write reference — and the JMM may reorder to allocate → **write reference** → construct. A second thread sees non-null at check 1, skips the lock, and returns a Pool whose constructor **hasn't finished**. `volatile` forbids that reordering. Without the private constructor there is no singleton at all — anything in the package can `new Pool()` around the ceremony.
+<Reveal q="Cover the comment block above. Why exactly is volatile load-bearing — what can a second thread observe without it?">
+
+`instance = new Pool()` is three steps — allocate, run constructor, write reference — and the JMM may reorder to allocate → **write reference** → construct. A second thread sees non-null at check 1, skips the lock, and returns a Pool whose constructor **hasn't finished** — it reads garbage fields. `volatile` forbids that reordering. And without the private constructor there is no singleton at all — anything in the package can `new Pool()` around the ceremony.
+
+</Reveal>
 
 Then the sentence that shows senior judgment: **in real systems, singletons are a scope, not a pattern** — the DI container (or your `main()`) constructs one instance and injects it everywhere. Same one-ness, none of the global-state damage: tests can substitute it, hidden dependencies disappear. The [War Room inventory](/citadel/lld/war/inventory/) grades it exactly this way — Spring supplies singleton scope for free, so hand-rolling one in a Spring codebase is a smell, not a skill.
 
@@ -251,6 +321,20 @@ Related production variant worth knowing: the [copy-on-write registry](/citadel/
 > 🧠 **Memory hook.** *One head pharmacist holds the narcotics-cabinet key.* Not "we agreed to share nicely" — there is physically one key (private constructor), and one official way to ask for it (`get()`).
 > **Cheat code:** "exactly one, shared everywhere" → DI scope first, enum if hand-rolled, DCL only to prove you know the JMM.
 > **Interview line:** *"I'd let the composition root own the single instance and inject it; if you want the classic, here's DCL — and here's why volatile is load-bearing."*
+
+<Quiz questions={[
+  {
+    q: 'Double-checked locking without volatile: what exactly can a second thread observe?',
+    options: [
+      'null forever — the write never publishes',
+      'A non-null reference to a partially constructed object, because the reference write can reorder before field initialization completes',
+      'A deadlock on the class lock',
+      'Nothing wrong — synchronized already guarantees visibility',
+    ],
+    answer: 1,
+    why: 'The JMM allows instance = new Pool() to publish the reference before constructor writes finish. The second thread skips the synchronized block (ref non-null) and reads garbage fields. volatile forbids that reordering. Or skip the whole cliff: enum / holder idiom.',
+  },
+]} />
 
 ## Prototype — the invoice template
 
@@ -275,6 +359,12 @@ Prefer **copy constructors or `toBuilder()`** over `Cloneable` (broken by design
 > 🧠 **Memory hook.** *Photocopying a pre-filled form* instead of writing the letterhead again — but staple your own attachments (deep copy), don't share the original's.
 > **Cheat code:** "copy this configured template" → copy constructor. Mutable field → fresh collection.
 
+<Reveal q="Delete the 'new ArrayList<>(...)' wrapper and copy the list reference directly. What bug ships?">
+
+Both "copies" now share **one** `List` object. Customize the patient's invoice — add a line item — and the standard template silently grows that line too; every future invoice inherits it. Nothing crashes, no exception: the corruption just accumulates. That's why the graded phrase is **deep-copy every mutable field**; immutable fields (`String header`) are safe to share, which is also the argument for making fields immutable in the first place.
+
+</Reveal>
+
 ## The module cheat sheet
 
 | Story beat | You hear | Pattern | One-word cue |
@@ -284,53 +374,6 @@ Prefer **copy constructors or `toBuilder()`** over `Cloneable` (broken by design
 | appointment form | "6 params, half optional, cross-field rules" | Builder | *stamped form* |
 | connection pool | "exactly one, shared everywhere" | Singleton (as DI scope) | *one key* |
 | invoice template | "copy the configured exemplar" | Prototype | *photocopy* |
-
-<Quiz questions={[
-  {
-    q: 'Double-checked locking without volatile: what exactly can a second thread observe?',
-    options: [
-      'null forever — the write never publishes',
-      'A non-null reference to a partially constructed object, because the reference write can reorder before field initialization completes',
-      'A deadlock on the class lock',
-      'Nothing wrong — synchronized already guarantees visibility',
-    ],
-    answer: 1,
-    why: 'The JMM allows instance = new Pool() to publish the reference before constructor writes finish. The second thread skips the synchronized block (ref non-null) and reads garbage fields. volatile forbids that reordering. Or skip the whole cliff: enum / holder idiom.',
-  },
-  {
-    q: 'Sandbox gateway paired with live webhook verifier caused a prod incident. Which pattern makes that mix unrepresentable?',
-    options: [
-      'Builder — validate the pair in build()',
-      'Abstract factory — one suite interface per environment, so members can only come from the same family',
-      'Singleton — only one environment exists at a time',
-      'Factory method with an environment enum parameter',
-    ],
-    answer: 1,
-    why: 'The problem is FAMILY consistency across multiple products. An abstract factory (GatewaySuite) makes the family the unit of construction — you hold one suite, so cross-environment mixing has no code path. A builder could check it, but only if every caller uses it.',
-  },
-  {
-    q: 'Interviewer: "your factory has a switch — is that not the OCP violation you just lectured me about?" Best answer?',
-    options: [
-      'Yes, I will refactor to reflection scanning immediately',
-      'The variation is contained in one class whose single job is the choice; the upgrade path is a registry where implementations self-register, and I would take it when the switch outgrows a screen',
-      'Switches over enums are exempt from OCP',
-      'OCP does not apply to creational code',
-    ],
-    answer: 1,
-    why: 'Honest and calibrated: containment in one place is 90% of the value; a self-registering registry (map key → implementation) is the last 10% and has real costs (you trade compile-time exhaustiveness for runtime flexibility). Exhaustive enum switches even get compiler help when a variant is added.',
-  },
-  {
-    q: 'In the hand-rolled Builder, why is Booking\'s constructor private and why are the Builder\'s fields mutable while Booking\'s are final?',
-    options: [
-      'Convention from Effective Java, no functional reason',
-      'Private constructor forces all construction through build()\'s validation; mutation is quarantined in the builder so the product is immutable and "constructed ⇒ valid" holds',
-      'Performance — final fields are faster to read',
-      'So Lombok can generate the same code',
-    ],
-    answer: 1,
-    why: 'The builder is a mutable staging area; build() is the checkpoint where required-field and cross-field invariants run; the private constructor means no half-configured Booking can ever exist. That trio IS the pattern — the fluent syntax is just sugar.',
-  },
-]} />
 
 ## Hand-off
 

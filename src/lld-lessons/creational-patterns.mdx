@@ -3,7 +3,7 @@ title: 'Creational Patterns — When Making the Object Is the Problem'
 description: 'Factory method, abstract factory, builder, singleton done right — each from its forcing problem, plus the modern answer (DI) that replaces half of them.'
 module: 2
 order: 1
-minutes: 30
+minutes: 35
 ---
 import Quiz from '../components/Quiz.astro';
 import Mermaid from '../components/Mermaid.astro';
@@ -19,17 +19,39 @@ Every creational pattern answers one question: **`new` hard-codes a concrete cla
 **Fix.** Centralize the decision behind a method that returns the *interface*:
 
 ```java
+enum PaymentMode { UPI, CARD, WALLET }
+
 interface PaymentProcessor { PaymentResult process(PaymentRequest r); }
+
+class UpiProcessor implements PaymentProcessor {
+    public PaymentResult process(PaymentRequest r) {
+        return PaymentResult.success("upi-" + r.amount().paise());
+    }
+}
+class CardProcessor implements PaymentProcessor {
+    public PaymentResult process(PaymentRequest r) {
+        return PaymentResult.success("card-" + r.amount().paise());
+    }
+}
+class WalletProcessor implements PaymentProcessor {
+    public PaymentResult process(PaymentRequest r) {
+        return PaymentResult.success("wallet-" + r.amount().paise());
+    }
+}
 
 class ProcessorFactory {
     PaymentProcessor forMode(PaymentMode mode) {
         return switch (mode) {
-            case UPI    -> new UpiProcessor(upiConfig);
-            case CARD   -> new CardProcessor(cardVault);
-            case WALLET -> new WalletProcessor(walletApi);
+            case UPI    -> new UpiProcessor();
+            case CARD   -> new CardProcessor();
+            case WALLET -> new WalletProcessor();
         };  // exhaustive switch over enum: compiler yells when a new mode is added. That's a feature.
     }
 }
+
+// Caller never names a concrete class:
+PaymentProcessor p = factory.forMode(request.mode());
+PaymentResult result = p.process(request);
 ```
 
 One honest subtlety worth saying aloud: a `switch` inside a factory is **not** an OCP violation worth losing sleep over — the variation is *contained in one place whose single job is choosing*. The upgrade, when implementations register themselves and the switch disappears entirely, is the **registry** — a map from key to implementation. That's the production system's answer to webhook routing: [the Registry dossier](/citadel/lld/war/patterns-why/#2-registry--the-inbound-webhook-routing-problem), where each strategy announces its own key and the factory becomes `map.get(key)`.
@@ -48,9 +70,26 @@ interface GatewaySuite {           // the family contract
     RefundClient refunds();
     WebhookVerifier verifier();
 }
-class SandboxSuite implements GatewaySuite { ... }
-class LiveSuite    implements GatewaySuite { ... }
-// Wiring picks ONE suite; mixing members across environments is now unrepresentable.
+
+class SandboxSuite implements GatewaySuite {
+    private final SandboxConfig cfg;
+    SandboxSuite(SandboxConfig cfg) { this.cfg = cfg; }
+    public PaymentGateway gateway()   { return new SandboxGateway(cfg.baseUrl()); }
+    public RefundClient refunds()     { return new SandboxRefundClient(cfg.baseUrl()); }
+    public WebhookVerifier verifier() { return new SandboxVerifier(cfg.testSecret()); }
+}
+
+class LiveSuite implements GatewaySuite {
+    private final LiveConfig cfg;
+    LiveSuite(LiveConfig cfg) { this.cfg = cfg; }
+    public PaymentGateway gateway()   { return new StripeGateway(cfg.apiKey()); }
+    public RefundClient refunds()     { return new StripeRefundClient(cfg.apiKey()); }
+    public WebhookVerifier verifier() { return new StripeVerifier(cfg.webhookSecret()); }
+}
+
+// Wiring picks ONE suite; mixing members across environments is now unrepresentable:
+GatewaySuite suite = env.isProd() ? new LiveSuite(liveCfg) : new SandboxSuite(sandboxCfg);
+CheckoutService checkout = new CheckoutService(suite.gateway(), suite.verifier());
 ```
 
 Recognition cue: the word **"family"** or "these three must always match". If there's no family — just one product — you wanted plain factory method; don't upgrade for ceremony.
@@ -59,16 +98,64 @@ Recognition cue: the word **"family"** or "these three must always match". If th
 
 **Problem.** `new Booking(patientId, doctorId, slot, null, null, true, false, null)` — the telescoping constructor. Nobody can read which `null` means what; adding an optional field breaks every caller; `boolean, boolean` transpositions compile fine and corrupt data.
 
-**Fix.**
+**Fix — the full hand-rolled shape** (rounds ask you to *write* this, not just call it):
 
 ```java
+class Booking {
+    // all final — a built Booking is immutable
+    private final String patientId;      // required
+    private final String doctorId;       // required
+    private final Slot slot;             // required
+    private final boolean teleconsult;   // optional, default false
+    private final String roomId;         // optional
+
+    private Booking(Builder b) {         // private: the ONLY way in is build()
+        this.patientId  = b.patientId;
+        this.doctorId   = b.doctorId;
+        this.slot       = b.slot;
+        this.teleconsult = b.teleconsult;
+        this.roomId     = b.roomId;
+    }
+
+    static Builder builder() { return new Builder(); }
+
+    static class Builder {
+        private String patientId;
+        private String doctorId;
+        private Slot slot;
+        private boolean teleconsult = false;   // defaults live here
+        private String roomId;
+
+        Builder patient(String id)      { this.patientId = id; return this; }   // return this = chaining
+        Builder doctor(String id)       { this.doctorId = id; return this; }
+        Builder slot(Slot s)            { this.slot = s; return this; }
+        Builder teleconsult(boolean t)  { this.teleconsult = t; return this; }
+        Builder room(String roomId)     { this.roomId = roomId; return this; }
+
+        Booking build() {
+            // 1. required fields present
+            if (patientId == null || doctorId == null || slot == null)
+                throw new IllegalStateException("patient, doctor, slot are required");
+            // 2. CROSS-FIELD invariants — the whole point of build()
+            if (teleconsult && roomId != null)
+                throw new IllegalStateException("teleconsult bookings cannot have a room");
+            if (!teleconsult && roomId == null)
+                throw new IllegalStateException("in-person bookings need a room");
+            return new Booking(this);
+        }
+    }
+}
+
+// Usage reads like the requirements doc:
 Booking booking = Booking.builder()
     .patient(patientId)
     .doctor(doctorId)
     .slot(slot)
     .teleconsult(true)
-    .build();   // build() validates the COMPLETE object: required fields present, invariants hold
+    .build();
 ```
+
+The mechanics to narrate while writing it: **builder fields are mutable, the product's are final** — mutation is quarantined inside the builder and ends at `build()`; the product's constructor is **private** so a half-configured object has no way to exist; setters `return this` for chaining; defaults live in the builder's field initializers.
 
 The part that separates a gold answer from a Lombok reflex: **`build()` is where cross-field invariants live** (slot within doctor's schedule, teleconsult excludes room assignment). A builder that just sets fields is syntax; a builder whose `build()` can refuse is an invariant gate — it restores the "constructed ⇒ valid" guarantee from the object-modeling lesson, which telescoping constructors were quietly providing.
 
@@ -93,9 +180,10 @@ class Config {
 
 // 3. Double-checked locking — the classic exam answer. volatile is NOT optional:
 class Pool {
-    private static volatile Pool instance;              // without volatile, a thread can see
-    static Pool get() {                                 // a non-null but PARTIALLY constructed Pool
-        if (instance == null) {                         // (write reordering) — the famous JMM bug
+    private static volatile Pool instance;
+    private Pool() {}
+    static Pool get() {
+        if (instance == null) {
             synchronized (Pool.class) {
                 if (instance == null) instance = new Pool();
             }
@@ -103,6 +191,12 @@ class Pool {
         return instance;
     }
 }
+/**
+1. volatile: always read latest state of object
+2. private constructor required, w/o it any class in same package can call the constructor
+3. double check: two threads can pass check 1 before either locks, they enter synchronized block one at a time,
+without re-check second thread constructs a second Pool object.
+*/
 ```
 
 Then the sentence that shows senior judgment: **in real systems, singletons are a scope, not a pattern** — the DI container (or your `main()`) constructs one instance and injects it everywhere. Same one-ness, none of the global-state damage: tests can substitute it, and the hidden-dependency problem disappears. The [War Room inventory](/citadel/lld/war/inventory/) grades it exactly this way — Spring supplies singleton scope for free, so hand-rolling one in a Spring codebase is a smell, not a skill.
@@ -111,7 +205,23 @@ Related production variant worth knowing: the [copy-on-write registry](/citadel/
 
 ## Prototype — thirty seconds
 
-Clone a pre-configured exemplar instead of rebuilding from scratch. In Java, prefer **copy constructors or `toBuilder()`** over `Cloneable` (broken by design: no constructor call, shallow by default, checked exception). Comes up rarely; know the one-liner, move on.
+Clone a pre-configured exemplar instead of rebuilding from scratch. In Java, prefer **copy constructors or `toBuilder()`** over `Cloneable` (broken by design: no constructor call, shallow by default, checked exception):
+
+```java
+class InvoiceTemplate {
+    private final String header;
+    private final List<LineItem> defaultItems;
+
+    InvoiceTemplate(InvoiceTemplate other) {              // copy constructor = Prototype in Java
+        this.header = other.header;
+        this.defaultItems = new ArrayList<>(other.defaultItems);  // DEEP-copy mutable fields —
+    }                                                             // shallow copy shares the list,
+}                                                                 // and edits bleed between "copies"
+
+InvoiceTemplate monthly = new InvoiceTemplate(standardTemplate);  // clone, then customize
+```
+
+The one graded detail: **deep vs shallow** — copy mutable fields into fresh collections, or both objects silently share state. Comes up rarely; know this much, move on.
 
 ## Recognition table
 

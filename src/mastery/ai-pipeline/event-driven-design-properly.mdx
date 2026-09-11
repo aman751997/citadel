@@ -1,0 +1,169 @@
+---
+title: "2. Event-driven design, properly"
+description: "One-line answer. \"At-least-once delivery from RabbitMQ, made safe by idempotent consumers and idempotency keys on every side effect…"
+project: "ai-pipeline"
+order: 2
+minutes: 9
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58032129"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+**One-line answer.** "At-least-once delivery from RabbitMQ, made safe by idempotent consumers and idempotency keys on every side effect; a message is acked only after the work is done, rejected without requeue on failure so it lands in a dead-letter queue instead of looping; prefetch bounds what the broker hands us, a semaphore bounds what we run."
+
+## 1. The topology
+
+<Mermaid code={`flowchart LR
+    J[Java patient-service] -->|extraction.completed| EX([topic exchange])
+    J -->|document.deleted| EX
+    EX --> Q1[[ai-pipeline.extraction-completed]]
+    EX --> Q2[[ai-pipeline.document-deleted]]
+    Q1 --> C[consumer<br>prefetch 5 · semaphore 1]
+    Q2 --> C
+    Q1 -.->|reject, requeue=false| DLX([DLX fanout])
+    Q2 -.-> DLX
+    DLX --> DLQ[[ai-pipeline.dlq<br>nothing drains it yet]]
+    C -->|4 × section-ready| J
+    C -->|progress events| J
+    J -->|STOMP relay :61613| B[Browser]`} />
+
+```plaintext
+Java-internal (never seen by Python):
+   extraction.jobs.queue      PDF → text jobs, 3 attempts with hand-rolled delayed retry
+   ai.section.jobs.queue      section generation jobs, triggered by our webhook
+```
+
+**Topic exchange** means routing by key pattern. The pipeline binds its own queues to the exchange; Java publishes and does not know who listens. Adding a consumer never touches the producer. That is the actual decoupling, not "it uses a queue".
+
+**Consumer-owned queues.** The pipeline declares and binds its queues at startup. Consequence worth saying: if the consumer has never run, the queue does not exist and events published to the exchange are dropped silently. Real trap; the runbook checks the binding before blaming extraction.
+
+## 2. The message: pointers, not payload (claim-check pattern)
+
+```json
+{
+  "eventType": "EXTRACTION_COMPLETED",
+  "tenantId": "default_tenant",
+  "patientId": "PTN_DEMO_003",
+  "documentId": "01a08b1a-4880-78d8-bfce-408191607164",
+  "extractionId": "ext_bedcda620",
+  "s3ExtractedTextKey": "patients/PTN_DEMO_003/documents/01a08b1a.../extracted-text/v1.txt",
+  "occurredAt": "2026-09-10T11:35:55Z"
+}
+```
+
+Clinical text never enters the broker. The consumer fetches it from S3 itself. Why: the broker is not a PHI store, messages get logged and inspected, and a queue full of 100 KB notes is a different capacity problem. This is the **claim check** pattern; say the name.
+
+Small detail that shows you ran it: the Java side once published `s3://bucket/key` URIs where the contract said raw keys; using a URI as a Key gives a misleading `AccessDenied`. Both sides now normalise (`events.py` strips the scheme). Belt and braces after a real incident.
+
+## 3. Delivery semantics — the part they actually test
+
+### 3.1 Ack after work, reject without requeue
+
+```python
+async def process_extraction_completed(message: aio_pika.IncomingMessage):
+    async with message.process(requeue=False):     # ack on normal exit, reject on exception
+        pipeline_run_id = str(uuid.uuid4())
+        event = ExtractionCompletedEvent(**json.loads(message.body.decode()))
+        ...
+```
+
+`message.process()` is a context manager: leaving normally **acks**; an exception **rejects**. `requeue=False` means a rejected message goes to the dead-letter exchange rather than back to the head of the queue. Without that flag a poison message (malformed JSON, say) would be redelivered forever — the classic poison-pill loop.
+
+### 3.2 What "at least once" means here, concretely
+
+<Mermaid code={`sequenceDiagram
+    participant MQ as RabbitMQ
+    participant C1 as consumer A
+    participant C2 as consumer B
+    MQ->>C1: deliver doc-123 (unacked)
+    C1->>C1: fetch text, NER, chunks…
+    Note over C1: process dies before ack
+    MQ->>C2: redeliver doc-123
+    C2->>C2: delete-by-document, re-insert; new run_id
+    C2->>MQ: ack
+    Note over C2: webhook key has a NEW run_id → Java refreshes (work really was redone)`} />
+
+If the consumer process dies after fetching text but before acking, RabbitMQ sees the channel close and redelivers the message to the next consumer. So the same document _can_ be processed twice. Every side effect must therefore tolerate a repeat:
+
+| Side effect | How a repeat is made safe |
+| --- | --- |
+| Entity rows + S3 objects | Old rows for the document are deleted and re-inserted; S3 keys are new UUIDs, old ones deleted. (Has a total-loss window — page 9, trap 5.) |
+| Chunks in pgvector | Delete-by-document then insert |
+| Webhook to Java | `idempotencyKey = patient:section:document:pipeline_run_id`. Java does `INSERT … ON CONFLICT DO NOTHING` into `ai_section_webhook_event`; an insert that inserts nothing is a replay and is dropped |
+| Progress events | Sequence-numbered per run; the client takes the highest sequence as truth |
+
+The subtle design in that key: `pipeline_run_id` is minted _per handler invocation_, not per document. So a genuine RabbitMQ redelivery (the work really was redone) produces a fresh key and Java refreshes; but the notifier's own retry of the same POST reuses the key and Java dedupes. Two different kinds of "again", told apart by where the id is created.
+
+### 3.3 Exactly-once?
+
+Does not exist across a broker and two databases. The correct answer is "at-least-once delivery plus idempotent consumers gives effectively-once outcomes". If they push: the only true exactly-once is within one transactional system, and our side effects span RabbitMQ, Postgres, S3 and an HTTP call to Java.
+
+## 4. Flow control: prefetch vs semaphore
+
+```python
+await channel.set_qos(prefetch_count=5)                       # broker pushes at most 5 unacked
+_semaphore = asyncio.Semaphore(settings.max_concurrent_events)  # we process at most N (1 locally)
+```
+
+Two different knobs, and interviewers like the distinction. **Prefetch** is how many messages RabbitMQ will hand this consumer before it acks any — a network buffer. **Semaphore** is how many we actually run in parallel — a CPU/GPU/API-quota budget. Prefetch > concurrency means the next message is already in memory when a slot frees, without the broker over-committing. Locally concurrency is 1 because Gemini rate limits and the model containers are memory-bound.
+
+The webhooks deliberately run _outside_ the semaphore: they are network I/O against another service and must not hold a pipeline slot. Before that change, four webhooks × two attempts × \~6 s timeout against a dead Java burned \~48 s of the only concurrency slot.
+
+## 5. Partial failure — the honest story
+
+```python
+ner_result, chunk_result = await asyncio.gather(
+    _tracked(reporter, PipelineStage.CLINICAL_EXTRACTION, lambda: ner_service.run(...)),
+    _tracked(reporter, PipelineStage.SEMANTIC_INDEXING,   lambda: chunking_service.run(...)),
+    return_exceptions=True,
+)
+...
+section_status = "FAILED" if isinstance(ner_result, Exception) else "COMPLETED"
+await notify_java_structured_sections_ready(..., status=section_status)
+if ner_failed and isinstance(chunk_result, Exception):
+    raise ner_result        # only a double failure dead-letters
+```
+
+NER and indexing run concurrently and independently (`return_exceptions=True` — one failing does not cancel the other). If NER fails, the four sections are reported `FAILED` to Java so the cards say so. But the message is still **acked** unless both tracks fail. That means a document can end up indexed for search with no entities, and be counted as processed. Known trap (page 9, #1). The fix I would make: a per-track outcome column on the document and a dead-letter on any track failure, with the DLQ actually drained.
+
+## 6. Retries and the dead-letter queue
+
+* The consumer checks `x-delivery-count >= 3` to give up. Trap: classic queues do not set that header — only quorum queues do. So today there are effectively no retries; a failure goes straight to the DLQ.
+* The DLQ has a gauge on the dashboard and **nothing drains it**. Redrive is a manual operation. Saying this unprompted is worth more than hiding it.
+* Java's job listeners do have retry: 3 attempts with exponential delay (1 s → ×2 → max 30 s), implemented by re-publishing with a delay because RabbitMQ has no native delayed retry without a plugin.
+
+## 7. The outbox pattern (lite) on the Java side
+
+Dual-write problem: Java must insert a job row _and_ publish a message; two systems, no shared transaction. Its answer: write the row first (status `QUEUED`), try to publish, and on failure mark the row `QUEUED_PENDING_MQ` so a scheduler republishes. Same shape for section jobs (`PROCESSING_PENDING_MQ`). It is the cheap version of the transactional outbox — no outbox table, the job row _is_ the outbox. Gap: a crash between the row commit and the publish leaves a row at `QUEUED` that nothing revisits. Full outbox (relay owns all publishing) has no such gap but needs a poller or CDC.
+
+## 8. Progress events (J11): observability inside the flow
+
+Every stage boundary emits `{patientId, documentId, stage, outcome, seq}` to a second Java endpoint, relayed to the browser on `/topic/patients.{id}.pipeline-progress`. Stages: `ACCEPTED → CLINICAL_EXTRACTION / SEMANTIC_INDEXING (parallel) → PROFILE_MERGE → SECTIONS_PUBLISHED`, plus `DEAD_LETTERED` as a terminal failure so the UI stops spinning. Progress is fire-and-forget with 1–2 s timeouts — telemetry must never slow the pipeline. Real log from yesterday:
+
+```plaintext
+17:05:55 seq=2 CLINICAL_EXTRACTION STARTED
+17:05:55 seq=3 SEMANTIC_INDEXING STARTED
+17:05:57 seq=4 SEMANTIC_INDEXING COMPLETED
+17:06:10 seq=6 PROFILE_MERGE STARTED
+17:08:05 seq=7 PROFILE_MERGE COMPLETED      ← this 115 s gap is how the S3 bug was found
+17:08:05 seq=8 SECTIONS_PUBLISHED COMPLETED
+```
+
+## Likely follow-ups
+
+* _"Ordering — two documents for the same patient, which wins?"_ — No ordering guarantee across messages. Sections are recomputed from _all_ of the patient's entities on every merge, so the final state is the same whichever finishes last. The only ordering that matters (a document's own stages) is inside one handler.
+* _"What if Java is down when you webhook?"_ — Two attempts with backoff, then log and move on; the message is acked; sections stay queryable through the pipeline API. Java's read path re-fetches from the pipeline when it next gets a section-ready or a user opens the page.
+* _"How do you replay a dead-lettered document?"_ — Today: shovel from `ai-pipeline.dlq` back to the exchange by hand. Tomorrow: a redrive endpoint with a cap, and alerting on the DLQ gauge.
+* _"Why a semaphore of 1?"_ — Laptop and API quotas. The knob is `MAX_CONCURRENT_EVENTS`; the dev server should run 3–4 once MedGemma or a paid Gemini tier is in place.
+
+## Read more
+
+* [RabbitMQ: reliability guide](https://www.rabbitmq.com/docs/reliability) — acknowledgements, publisher confirms, at-least-once
+* [Consumer acknowledgements and prefetch](https://www.rabbitmq.com/docs/confirms) · [Dead letter exchanges](https://www.rabbitmq.com/docs/dlx) · [Quorum queues](https://www.rabbitmq.com/docs/quorum-queues) (where `x-delivery-count` lives)
+* [Claim Check](https://www.enterpriseintegrationpatterns.com/patterns/messaging/StoreInLibrary.html) · [Idempotent Receiver](https://www.enterpriseintegrationpatterns.com/patterns/messaging/IdempotentReceiver.html) · [Dead Letter Channel](https://www.enterpriseintegrationpatterns.com/patterns/messaging/DeadLetterChannel.html) — Hohpe & Woolf
+* [Transactional outbox](https://microservices.io/patterns/data/transactional-outbox.html) and [Debezium: outbox with CDC](https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/)
+* Kleppmann, [Designing Data-Intensive Applications](https://dataintensive.net/), ch. 11 — exactly-once vs effectively-once
+* [aio-pika IncomingMessage.process()](https://aio-pika.readthedocs.io/en/latest/apidoc.html#aio_pika.IncomingMessage.process) — the ack/reject context manager we rely on
+* [STOMP 1.2 specification](https://stomp.github.io/stomp-specification-1.2.html) · [RabbitMQ STOMP plugin](https://www.rabbitmq.com/docs/stomp) — the browser relay
+

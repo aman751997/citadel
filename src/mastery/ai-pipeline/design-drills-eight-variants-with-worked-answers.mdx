@@ -1,0 +1,92 @@
+---
+title: "14. Design drills — eight variants with worked answers"
+description: "How to use. Cover the answer. Set a five-minute timer. Talk out loud, drawing as you go. Then compare…"
+project: "ai-pipeline"
+order: 14
+minutes: 7
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58032150"
+synced: "2026-09-11"
+---
+
+**How to use.** Cover the answer. Set a five-minute timer. Talk out loud, drawing as you go. Then compare. The point is not the answer — it is the _order_ you raise things in: clarify → constraints → current design → the change → what breaks → how you'd verify.
+
+## Drill 1 — "Scale it to 10,000 documents a day"
+
+**Clarify.** Peak vs average? 10k/day ≈ 7/minute average, maybe 40/minute at the morning peak. Document size distribution? Latency target (minutes, not seconds)?
+
+**Today.** One consumer, concurrency 1, 55 s/doc → \~1,500/day max. Bottlenecks in order: Gemini reasoning call (31 s, rate-limited), NER LLM calls (10 s), model containers (CPU), S3 fan-out on section reads (fixed).
+
+**Change.** (1) Horizontal: N consumers × concurrency 4, prefetch 8; the broker load-balances. (2) Persist sections (J14) so reads never fan out. (3) Batch LLM calls: enrichment already batches 30 spans; run discovery for all missing types in one call. (4) Move to a paid Gemini tier or Vertex with quota, or on-prem 4B with vLLM continuous batching. (5) Replicate CPU model services (MedCAT/GLiNER/MedCPT) behind a load balancer; they are stateless. (6) Quorum queues for retries; DLQ redrive.
+
+**Breaks.** Two documents for one patient in parallel both recompute the profile row — last writer wins; add a per-patient lock or serialise by routing key (consistent hashing on patient id → one queue per shard). Gemini 429s → backoff + rate limiter per key. Postgres connection pool sizing per consumer.
+
+**Verify.** Load test with synthetic notes; watch p95 per stage, DLQ depth, 429 rate, cost per document on the dashboard.
+
+## Drill 2 — "Swap Gemini for an on-prem model with zero downtime"
+
+**Clarify.** Which calls — extraction, reasoning, both? Quality parity required or acceptable regression?
+
+**Today.** Model names are config; `NER_MODE` already switches extraction between the Gemini legacy path and MedGemma; the reasoning call is a single client with a settings-driven model.
+
+**Change.** (1) Run the on-prem model alongside; (2) shadow mode: process every document with both, store the second result under a different `source`, compare entity counts / F1 against the gold set for a week; (3) canary: flip `NER_MODE` for 5% of documents by patient-id hash; (4) flip fully; (5) keep Gemini as fallback via a circuit breaker (if on-prem times out, route to Gemini and tag the entity `source`). Rollback = one env var, no deploy, because the entity record is model-agnostic.
+
+**Breaks.** On-prem latency (27B: 154 s/doc) — that is why 4B + batching; prompt formats differ (Gemini schema vs SSE JSON for MedGemma) — the client abstraction already hides it; provenance quotes may be less faithful from a smaller model → span-located ratio is the metric to watch.
+
+## Drill 3 — "Add a second hospital with its own vocabulary and forms"
+
+**Clarify.** Same tenant model? Different languages? Different lab codes (local codes vs LOINC)?
+
+**Today.** Tenancy in Java; `tenantId` on events, entities, chunks; UMLS pack is universal; alert rules are one YAML for everyone.
+
+**Change.** (1) Tenant-scoped configuration: rules YAML per tenant (thresholds differ by lab and population), section config per tenant (already a table). (2) Vocabulary mapping layer: local lab codes → LOINC via a tenant mapping table before grouping; MedCAT can take a supplementary CDB for local terms. (3) Prompt variants per tenant only if forms differ materially — otherwise one prompt with the section-header list extended. (4) Per-tenant S3 prefixes and KMS keys; per-tenant metrics labels (tenant is low-cardinality, unlike patient).
+
+**Breaks.** A rule written against a display name breaks across tenants — the LOINC-first grouping fix is what makes this drill answerable. Cross-tenant uniqueness on `patient_health_profile` (known constraint tension) must be resolved first.
+
+## Drill 4 — "Make it HIPAA-auditable end to end"
+
+**Today.** PHI in S3 (SSE), pointers in Postgres, none in the broker/logs, service-to-service auth, per-patient WebSocket authorisation, erasure cascade.
+
+**Change.** (1) Access log: every S3 GET of an entity object and every section read recorded with who/why (Java already has a patient access-event service — call it from the pipeline read path via the internal API or emit an audit event). (2) BAA or de-identification for any cloud model; today only synthetic data. (3) Erasure: fix the swallowed S3 failure (tombstone table, retry until confirmed, report). (4) Secrets: remove default tokens, rotate, vault. (5) Data retention policy per object class; lifecycle rules on S3. (6) Prompt/response logging _off_ for PHI paths or into the same encrypted store with the same access controls. (7) Evidence: the audit trail itself is what an auditor asks for — make it queryable.
+
+**Say the principle.** Minimum necessary, one place for PHI, every access recorded, every deletion confirmed.
+
+## Drill 5 — "A clinician says an alert is wrong. What happens?"
+
+**Today.** Alerts carry `related_entities`; entities carry span, offsets, page; rule alerts have stable ids; LLM concerns do not. Nothing records the clinician's verdict.
+
+**Change.** (1) J13: deterministic concern ids (category + entity keys) so a dismissal survives re-analysis. (2) A lifecycle table: open / acknowledged / snoozed / dismissed with reason. (3) The dismissal is a _label_: feed it into the gold set and a weekly report of false-positive categories. (4) Trace the alert to its entities and spans on the AlertDetail screen so the clinician can point at the wrong fact. (5) If the fact is wrong (bad extraction), that is a NER bug with a test case; if the reasoning is wrong, that is a prompt or model issue evaluated against the growing label set.
+
+## Drill 6 — "The pipeline is silently producing empty sections for some patients"
+
+**Diagnose, in order.** (1) Dashboard: documents processed vs entities written per document — a zero-entity document is trap #1 (half-failed, acked). (2) Logs by `document_id`: which track failed? (3) Common causes: truncated model output parsed as empty list (trap #2); S3 text key mismatch (URI vs key); GLiNER 384-token truncation on long notes; MedCAT container OOM-killed (memory fuse) → connection refused → empty. (4) Check `span_match=unlocated` ratio — a model returning quotes that don't resolve. (5) Fix + regression test + a metric/alert so it cannot be silent again (entities-per-document p5 below threshold → alert).
+
+**What this drill tests:** whether you reach for telemetry first and know your own failure modes.
+
+## Drill 7 — "Replace RabbitMQ with Kafka" (or: defend not doing so)
+
+**Kafka gives:** replayable log (re-run a month of documents after a prompt fix), ordering per partition (per patient, if keyed), multiple consumer groups reading the same history, very high throughput.
+
+**Kafka costs:** no per-message ack/nack semantics (offsets), no native dead-letter (you build it), no delayed retry (you build it), no STOMP relay for the browser, heavier operations.
+
+**Answer.** At our volume and with work-queue semantics, RabbitMQ is right. The one Kafka feature I'd want — _replay_ — I can get by re-publishing `extraction.completed` events from the documents table (the text is still in S3). If we grow to many downstream consumers of the same events (analytics, de-identification, billing), that's when the log model pays off.
+
+## Drill 8 — "Design the retrieval (Q&A) feature"
+
+**Clarify.** Who asks (clinician), about one patient at a time, needs citations, must not hallucinate.
+
+**Design.** Hybrid retrieval over the patient's chunks: pgvector HNSW top-20 + `tsvector` BM25 top-20 → reciprocal rank fusion → cross-encoder rerank → top-5. Prompt = question + chunks (with document/page ids) + the four structured sections (so it knows current meds/labs). Answer must cite chunk ids; a post-check drops sentences with no citation. Guardrails: refuse out-of-scope questions; never answer from general knowledge without saying so. Evaluate with a question set per demo patient: recall@k for retrieval, faithfulness and answer relevance for generation; run on every change.
+
+**Breaks.** HNSW + patient filter (iterative scan); chunks that split a lab table across boundaries (overlap 50 helps, header-aware splitting helps more); cost per question (rerank on CPU is fine at top-20).
+
+## Scoring yourself
+
+| You… | Score |
+| --- | --- |
+| Asked at least one clarifying question before designing | +2 |
+| Stated the current design and its numbers first | +2 |
+| Named what breaks, unprompted | +3 |
+| Said how you would verify it worked | +2 |
+| Gave a rollback | +1 |
+
+8+ on every drill, three times in a row, and you are ready.
+

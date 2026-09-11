@@ -1,0 +1,120 @@
+---
+title: "7. LLM engineering: prompts, schemas, thinking, cost, latency, PHI"
+description: "One-line answer. \"The LLM is a component with a contract, not an oracle: every call has a JSON schema it must satisfy, a token budget, a timeout, a retry policy with backoff, and…"
+project: "ai-pipeline"
+order: 7
+minutes: 9
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/57933826"
+synced: "2026-09-11"
+---
+
+**One-line answer.** "The LLM is a component with a contract, not an oracle: every call has a JSON schema it must satisfy, a token budget, a timeout, a retry policy with backoff, and metrics for latency, tokens and cost. I found the default 'thinking' mode was 75% of our latency and turned it off for extraction; I measured a 27B on-prem model at 8 tok/s and parked it; and the model name is configuration, so the next comparison is a one-line change."
+
+## 1. Where the LLM sits (and where it does not)
+
+| Call | Input | Output contract | Thinking | Typical |
+| --- | --- | --- | --- | --- |
+| Span enrichment | ≤ 30 GLiNER spans with context windows | schema: value, unit, code, dose, frequency, route, date, verbatim span | off | 4 s |
+| Type discovery | whole note + list of missing types | schema: entities with verbatim span | off | 3–8 s (10 s for all 7 types on 3.8-flash; 25 s on 2.5-flash) |
+| Clinical reasoning (alerts) | structured meds + labs JSON | schema: array of concerns with related_entities | on (configurable) | 23–32 s on; 6–8 s off |
+| Java section generation (being retired, J3) | Gemini summaries of Gemini summaries | free-ish JSON | on, 8 192 budget | 13–30 s each × 4; failed once on MAX_TOKENS |
+
+Not the LLM: concept linking (MedCAT), span tagging (GLiNER), grouping, trends, thresholds, dedupe, provenance resolution. Say this: "I keep the LLM to the jobs where a dictionary cannot work."
+
+## 2. Structured output — the schema is the contract
+
+```python
+response = await client.aio.models.generate_content(
+    model=self.MODEL,                           # settings.gemini_extraction_model
+    contents=prompt,
+    config=types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=_RESPONSE_SCHEMA,       # the shape is enforced by the API, not asked for politely
+        thinking_config=types.ThinkingConfig(thinking_budget=0),
+    ),
+)
+```
+
+Why it matters: a prompt that says "return JSON" gets JSON 97% of the time; a _schema_ gets it 100% of the time and gets the field names right. Parsing failures were our most common LLM error before the schema. The schema also lets you say _no_ to fields — the enrichment schema has no free-text "notes" field, so there is nowhere for prose to leak into.
+
+**Prompt design rules we follow** (each learned the hard way):
+
+* Give the model the _job boundary_, not just the job. The enrichment prompt says "MedCAT has already identified the concept and its code. Your ONLY task is to extract numeric values and dates from the surrounding context." Without that line it re-diagnoses.
+* Ask for the verbatim quote next to every answer (`span`). It costs tokens and buys provenance (page 5).
+* Batch: ≤ 30 spans per call (`MAX_SPANS_PER_BATCH`) so one bad span cannot blow the whole context, and batches are grouped by entity type so the instructions are specific.
+* Tell it what to do with nothing: "Return \[\] if no concerns are found. Do not fabricate concerns." An unspecified empty case is where hallucinations live.
+* Structured input beats prose input: the reasoning pass receives meds and labs as JSON blocks in XML-ish tags, not the note. Less text, no PHI beyond what the sections already hold, and the model cannot be distracted by narrative.
+
+## 3. Thinking budgets — the 4× latency story
+
+Gemini 2.5 Flash "thinks" by default: it generates hidden reasoning tokens before the answer. Those tokens are **billed as output and waited for, but never returned**. On the discovery prompt for one demo note: default → 40.3 s with 7,004 thought tokens; `thinking_budget=0` → 10.2 s, same schema, comparable output. Structured extraction is not reasoning; there is nothing to think about. So thinking is off for extraction and configurable for the one call that is reasoning (alerts): 23 s / 9 concerns on, 6–8 s / 7–9 concerns off. I left it on by default and made it a setting (`GEMINI_REASONING_THINKING_BUDGET`), because that trade is a clinical judgement, not an engineering one.
+
+The cost angle: thought tokens are output tokens at $2.50 per million on 2.5 Flash. 7,000 hidden tokens per call is real money at volume. The dashboard now counts them separately (`gemini_tokens_total{direction="thought"}`).
+
+## 4. Model choice — measured, not guessed
+
+### 4.1 Gemini 2.5 Flash vs 3.8 Flash, five demo notes, type discovery over all seven types, thinking off
+
+| Note | Ground truth labs / current meds | 2.5-flash | 3.8-flash |
+| --- | --- | --- | --- |
+| 01 | 10 / 4 | 24.9 s · 64 entities · labs 13 · meds 10 | 7.9 s · 35 · labs 10 · meds 4 |
+| 02 | 10 | 20.5 s · 47 · labs 10 | 8.7 s · 38 · labs 10 |
+| 03 | 10 | 25.4 s · 56 · labs 17 | 12.7 s · 41 · labs 10 |
+| 04 | 10 | 29.5 s · 69 · labs 21 | 9.6 s · 43 · labs 11 |
+| 05 | 10 | 34.1 s · 75 · labs 19 | 10.0 s · 41 · labs 10 |
+| **median** |  | **25.4 s** | **9.6 s** |
+
+The reading, which is the interesting part: 3.8-flash is 2.6× faster _and_ its counts match the notes. 2.5-flash's "extra" entities are the same fact re-extracted from each sentence it appears in (HbA1c quoted three times → three entities). Dedupe absorbs it downstream, but it is noise and cost. Caveat I always add: **counts are not precision/recall**; the gold set is the next step. Extraction runs on 3.8-flash locally; the default flips after the gold set says so.
+
+### 4.2 MedGemma 27B on-prem — why it is parked
+
+The intent is on-prem: clinical text should not leave the building, and the AI Studio key has no BAA. DevOps deployed MedGemma 27B (Q4_K_M, \~18 GB) on an NVIDIA L4. I built a Postman collection with the exact prompts to measure it outside the pipeline:
+
+* **Decode 8.3 tokens/s, prefill \~430 tokens/s.** \~1,081 output tokens per document → **\~154 s per document** for extraction alone.
+* Not misconfiguration: 100% of layers on GPU, 0% CPU offload. It is **memory-bandwidth-bound**: an L4 has \~300 GB/s; each generated token streams the whole 18 GB of weights, so \~16 tok/s is the theoretical ceiling and 8 is realistic with a KV cache and thermals (the card sat at 78 °C at 37 W of a 72 W cap).
+* Recommendation sent to DevOps with the Grafana board and the collection: **MedGemma 4B** for extraction (≈ 5× faster, structured extraction does not need 27B), keep 27B for the reasoning pass if at all, or an L40S/A100 if 27B is non-negotiable.
+
+This is the "is it really production or a POC" moment in interviews: the answer is that the cloud path is a measured stop-gap, the on-prem path is measured too, and the decision has numbers attached and an owner.
+
+## 5. Cost accounting
+
+```python
+_COST_PER_M = {  # list price per 1M tokens, paid tier (checked 2026-09-10)
+    "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40},
+    "gemini-2.5-flash":      {"input": 0.30, "output": 2.50},
+    "gemini-2.5-pro":        {"input": 1.25, "output": 10.00},
+}
+GEMINI_ESTIMATED_COST_USD.labels(model=model).inc(estimate_cost_usd(model, in_tokens, out_tokens + thought_tokens))
+```
+
+Story: the table had been two model generations stale (0.15/0.60), so the cost panel under-reported by \~4×. Nobody had checked because the counter moved. Lesson I quote: a metric that moves is not a metric that is right — cost tables need a "checked on" date.
+
+## 6. Reliability around the call
+
+* **Retries:** up to 4 attempts, exponential backoff from 1 s, on API errors; 429s counted separately (`gemini_rate_limit_total`).
+* **Timeouts:** MedGemma calls 300 s (it is slow by design); Gemini via SDK defaults.
+* **Truncation is a failure, not an empty list — in theory.** Known trap: a token-capped response that truncates currently parses to an empty list with no metric. Java hit exactly this: `RECENT_LABS` failed with `MAX_TOKENS` because its text-only budget was 8,192 _with thinking on_, so the thoughts ate the answer. Fix on both sides: budget the thinking, treat `finish_reason=MAX_TOKENS` as an error.
+* **Non-determinism:** identical input, thinking off, gave 7 concerns once and 9 the next time. Temperature 0 helps but does not make an LLM deterministic; the design must tolerate it (stable ids for concerns — J13).
+
+## 7. PHI, BAA, and what "compliant" means here
+
+* The Gemini AI Studio key is a developer key with **no Business Associate Agreement**. Under HIPAA that means no real patient text may go to it. All local runs use synthetic demo notes. The production choices are Vertex AI with a BAA (the `llm_backend=vertex_ai` switch exists) or on-prem MedGemma.
+* What leaves the pipeline today, per call: for enrichment, the span plus a window of context; for discovery, the note; for reasoning, structured meds/labs. Minimising that surface is why MedCAT/GLiNER run first.
+* Entity text lives in S3 (SSE), Postgres holds pointers; the broker carries pointers; logs never print bodies. That is the PHI isolation rule, and it constrains design choices (page 5, page 10).
+
+## 8. Likely follow-ups
+
+* _"Why not fine-tune a small model instead of prompting?"_ — We would, once the gold set exists: MetaCAT for assertion status first (cheap, in-domain), then a 4B extraction model on our annotated notes. Prompting is what you do before you have labels.
+* _"Temperature?"_ — Low (0.1–0.2) for extraction; the schema does more for consistency than temperature does.
+* _"Prompt injection?"_ — A note could contain "ignore previous instructions". The schema limits the blast radius (it cannot return arbitrary shapes), the models never call tools, and the reasoning pass never sees free text — only structured fields. Not a full answer; content-level defences are on the list.
+* _"How do you evaluate a prompt change?"_ — Today: the five-note comparison harness (per-note timing, entity counts by type). Tomorrow: the gold set with P/R per entity type, run in CI.
+
+## 9. Read more
+
+* [Gemini thinking budgets](https://ai.google.dev/gemini-api/docs/thinking) · [structured output](https://ai.google.dev/gemini-api/docs/structured-output) · [pricing](https://ai.google.dev/gemini-api/docs/pricing)
+* [Vertex AI and HIPAA](https://cloud.google.com/vertex-ai/generative-ai/docs/learn/hipaa-compliance) — what a BAA covers
+* [MedGemma model card](https://developers.google.com/health-ai-developer-foundations/medgemma) · [llama.cpp / Ollama performance notes](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) — bandwidth-bound decode explained
+* ["Fast Inference from Transformers via Speculative Decoding"](https://arxiv.org/abs/2211.17192) — why tok/s is bounded by weights streamed per token
+* [Prompt Engineering Guide](https://www.promptingguide.ai/) — the structured-output and few-shot sections
+* ["Not what you've signed up for: Compromising Real-World LLM-Integrated Applications with Indirect Prompt Injection"](https://arxiv.org/abs/2302.12173) (Greshake et al.) — the threat model for notes-as-input
+

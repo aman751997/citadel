@@ -1,0 +1,106 @@
+---
+title: "Telemedicine POC — Interview Mastery"
+description: "What this is: the interview course for telemedicine-poc (\"TeleCare\"), a self-hosted, local-first video consultation with per-speaker recording, on-device Whisper transcription, a…"
+project: "telemedicine-poc"
+order: 0
+minutes: 6
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58294374"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+**What this is:** the interview course for `telemedicine-poc` ("TeleCare"), a self-hosted, local-first video consultation with per-speaker recording, on-device Whisper transcription, a MedGemma clinical summary and a doctor sign-off. Small codebase (about 2,900 hand-written lines), big talking points: WebRTC, consent engineering, speech-to-text failure modes, PHI handling, and honest "what I would do for production" answers.
+
+> **Honesty guard.** This is a _proof of concept_, built and demoed in August 2026 on one Mac plus a phone on the same LAN. It has no automated tests, no authentication on its API, dev credentials in config, and the folder is not even a git repository. Say "POC" every time. The value in interviews is the _design reasoning_ and the _problems solved_, not production hardening. When asked "is it live?", answer: "It was a demo to secure the telemedicine roadmap; production would swap four seams, which I can name."
+
+## 1. Why this project is worth talking about
+
+| Interviewers hear | What you actually did |
+| --- | --- |
+| Real-time media systems | Ran a LiveKit SFU, wrote a token server issuing scoped JWT grants, proxied the signalling websocket behind one HTTPS origin so phones on the LAN could open their mic. |
+| A deliberate architectural bet | **One recording per microphone track** instead of one mixed file plus diarization. Speaker labels are exact by construction. No pyannote, no guesswork. |
+| Distributed-systems thinking in a small box | Idempotent finalisation reachable from three paths (stop button, doctor's End, LiveKit webhook); polling egress until timestamps exist; a serialised transcription queue so two calls do not fight for the GPU. |
+| Speech-to-text depth | Whisper on Apple MLX, five stacked hallucination gates, the decisive one measuring actual audio energy in the segment window with ffmpeg. You can explain _why_ Whisper says "Thank you." over silence. |
+| Consent and compliance engineering | Recording cannot start until every remote participant accepts; anyone can revoke and the doctor learns who. Audio deleted right after transcription; signed note is write-once; machine transcript kept as audit trail. |
+| Applied LLM, safely | MedGemma summary with a "summarise strictly from the transcript, do not invent findings" prompt, five clinical sections, labelled as a draft, failure never blocks the transcript. |
+| Ops resilience | Docker Desktop wedged repeatedly; the start script probes the daemon socket and self-heals. Redis moved out of Docker because the port proxy added latency LiveKit could not tolerate. |
+
+## 2. The system on one diagram
+
+<Mermaid code={`flowchart LR
+    subgraph Browser["Browsers (doctor on Mac, patient on phone)"]
+        UI["React 19 + livekit-client 2.21<br>https://host:5173"]
+    end
+    subgraph Host["One Mac"]
+        VITE["Vite dev server (HTTPS, self-signed)<br>/api → :3001 · /lk → ws://:7880"]
+        TS["Token/API server<br>Express 5 · :3001"]
+        LK["livekit-server<br>:7880 ws · :7881 tcp · 50000–50200 udp"]
+        EG["livekit/egress (Docker)<br>one TrackEgress per mic"]
+        RD[("Redis (brew, host)<br>LiveKit ↔ egress coordination")]
+        FS[("./recordings/room/session/<br>*.ogg → manifest.json →<br>transcript.json/.md → summary → signed-note")]
+        WH["uv run transcribe.py<br>mlx-whisper turbo"]
+    end
+    MG["MedGemma<br>self-hosted, HTTPS, X-API-Key"]
+    UI -->|"HTTPS + WSS"| VITE
+    VITE --> TS
+    VITE --> LK
+    UI <-->|"WebRTC media (DTLS-SRTP, UDP)"| LK
+    TS -->|"JWT grants, listParticipants,<br>startTrackEgress, deleteRoom, sendData"| LK
+    LK <--> RD
+    EG <--> RD
+    LK -->|"room_finished webhook (signed)"| TS
+    EG -->|"/out bind mount"| FS
+    TS -->|"spawn, serialised"| WH
+    WH --> FS
+    TS -->|"transcript text → 5-section summary"| MG`} />
+
+## 3. The 60-second pitch
+
+"I built a telemedicine proof of concept end to end: a doctor and a patient join a WebRTC call on LiveKit; the doctor requests recording, and it only starts when every participant has explicitly consented. The key design choice is that we never record a mixed room. We start one server-side track egress per microphone, so each speaker lands in their own Opus file and the speaker labels in the transcript are exact by construction, with no diarization model. When the call ends, each file is transcribed locally with Whisper on the Mac's GPU, aligned onto one timeline using the egress start timestamps, filtered through five hallucination gates including an actual audio-energy check, and merged into a speaker-labelled transcript. Our self-hosted MedGemma drafts a five-section clinical summary; the doctor edits and signs; the signed note is write-once and the audio is already deleted. The whole loop runs in under a minute after hang-up. It is a POC: I can name exactly what changes for production."
+
+## 4. Numbers to have on the tongue
+
+| Number | What | Where |
+| --- | --- | --- |
+| 1 per mic | TrackEgress per participant microphone; file `identity-TR_sid.ogg` | `server.js` recording/start |
+| Opus / Ogg, 48 kHz, 2 ch | LiveKit native pass-through, no transcode | ffprobe on retained file |
+| 29–74 ms | Measured start skew between two egresses in one session; corrected via `startedAtNs` | EG\_\*.json artefacts |
+| 20 × 500 ms | Poll egress until COMPLETE so timestamps exist (10 s max) | `waitForComplete` |
+| 5 | Hallucination gates: no_speech_prob > 0.5, compression_ratio > 2.4, avg_logprob &lt; −1.0, duration &lt; 0.2 s, peak &lt; −35 dBFS | `transcribe.py` |
+| −35 dBFS | Silence threshold measured with `ffmpeg volumedetect` per segment window | `SILENT_SEGMENT_DB` |
+| 1.5 s | Same-speaker segments closer than this are coalesced into one turn | `transcribe.py` merge |
+| whisper-turbo | `mlx-community/whisper-turbo` (large-v3-turbo distil, \~809M params) on Apple MLX | `MODEL` |
+| 1 | Transcription concurrency: serialised promise chain, one Whisper job at a time | `queueTranscription` |
+| 180 s / 1024 | MedGemma timeout / max_tokens | `summarizeSession` |
+| &lt; 60 s | Hang-up → transcript ready, on the Mac, for a 30–60 s consult | DEMO.md |
+| 7880 / 7881 / 50000–50200 | LiveKit ws / tcp fallback / UDP media range | `livekit.yaml` |
+| 3 | Paths into idempotent `finalizeRecording`: stop, doctor End, `room_finished` webhook | `server.js` |
+| 409 | Second recording start in a room; second signature on a note | `server.js` |
+| 0 | Automated tests. Say it before they ask. | — |
+
+## 5. Read in this order
+
+1. [1. Architecture & Call Flow](https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/57966659) — processes, ports, the single-origin HTTPS trick, join → record → finalise → transcribe → summarise → sign as a sequence diagram, the finalise state machine, on-disk layout.
+2. [2. Per-Speaker Recording & Consent](https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/57933875) — why track egress, file naming and manifests, the consent state machine, dual-path signalling, revoke, room close, retention.
+3. [3. Transcription, Alignment & Summary](https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58261539) — Whisper on MLX, the five gates with the reasoning, alignment maths, coalescing, the MedGemma prompt verbatim, the provider seam.
+4. [4. Design Decisions, War Stories, Q&A & Further Reading](https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/57933912) — trade-offs with friend-versions, seven STAR stories, the production gap table, question bank, WebRTC and STT reading.
+
+## 6. The one-liners
+
+* "We never mix speakers, so we never have to un-mix them."
+* "Whisper's confidence looks fine on a hallucination. The waveform does not lie."
+* "Consent is a set that must empty, not a flag that must be true."
+* "Every background path into finalise is idempotent, because a browser can die mid-call."
+* "The signed note is write-once; the machine transcript is the audit trail."
+
+## 7. Two-minute revision before an interview
+
+1. Say the pitch (§3) once, out loud.
+2. Name the five gates and thresholds from memory.
+3. Draw the consent state machine.
+4. Pick one war story (page 4) and time it under 90 seconds.
+5. Recite three production gaps and their fixes.
+
+_Created 2026-09-11 from the code at_ `~/code/telemedicine-poc`_. All constants checked against source._
+

@@ -1,0 +1,117 @@
+---
+title: "6. From entities to clinical sections"
+description: "One-line answer. \"Four sections computed from the patient's entities, not from prose: active medications (deduped by canonical name, latest dose wins), recent labs (grouped by…"
+project: "ai-pipeline"
+order: 6
+minutes: 7
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58097696"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+**One-line answer.** "Four sections computed from the patient's entities, not from prose: active medications (deduped by canonical name, latest dose wins), recent labs (grouped by LOINC code, unit-normalised, trended over time), a timeline (events by clinical date with importance tiers), and critical alerts — deterministic threshold rules from a YAML file first, then one LLM reasoning pass for cross-variable patterns the rules cannot see. Rules are auditable and free; the LLM finds the drug–lab interactions. Both return the entities they used."
+
+## 1. The mental model
+
+<Mermaid code={`flowchart LR
+    E[(patient.medical_entities<br>+ S3 entity JSON)] --> M[ACTIVE_MEDICATIONS<br>dedupe by name, latest dose]
+    E --> L[RECENT_LABS<br>group by LOINC, normalise units, trend]
+    E --> T[PATIENT_TIMELINE<br>events by date, importance tiers]
+    M --> A
+    L --> A[CRITICAL_ALERTS]
+    A --> R[YAML threshold rules<br>deterministic]
+    A --> G[Gemini reasoning pass<br>cross-variable patterns]
+    R --> P[(patient_health_profile.risk_flags<br>persisted, served in 30 ms)]
+    G --> P`} />
+
+Everything downstream of NER is **plain code over structured entities**. That is deliberate and it is your strongest line: the AI reads; the sections are computed. If a clinician disputes a lab trend, you can show the three entities and the sort key that produced it.
+
+## 2. ACTIVE_MEDICATIONS
+
+* Take all `MEDICATIONS` entities, group by `normalized_name` (lower-cased; RxNorm code when present).
+* Within a group, the "current" record is the one from the **newest document** (by document date, else upload date), tie-broken by onset date and by richness (how many of dose/frequency/route are filled).
+* A discontinuation mention ("Discontinued Lisinopril") flips the status rather than deleting history.
+* Output per drug: name, dose, frequency, route, since, status, source document and span.
+
+Example from the demo patient: Lisinopril 20 mg daily appears in notes 1–4; note 5 says "Hyperkalemia — potassium 5.7. Discontinued Lisinopril. Started Furosemide 20 mg." The section shows Lisinopril as discontinued (20 Jan 2025) and Furosemide as active. That is the "one drug written two ways becomes one medicine, at its most recent dose" promise on the upload screen.
+
+## 3. RECENT_LABS
+
+1. **Grouping key: LOINC first.** `loinc:4548-4` for HbA1c regardless of whether the note said "HbA1c", "Hemoglobin A1c" or "A1C". If the entity has no LOINC code, fall back to a canonical-name map (`_canonical_lab_name`). Grouping by display name was an early bug: the group took whichever phrasing the model emitted first, and an alert rule written for "hba1c" never matched a group labelled "Hemoglobin A1c".
+2. **Unit normalisation before grouping** (`clinical_reference.normalize_unit`): mg/dL vs mmol/L for glucose would otherwise make a trend that goes 148 → 8.2 → 152 and looks like a crash. Known trap: an older path computed the normalised value and then discarded it — fixed, and now a regression test.
+3. **Order by clinical time**, not ingestion time: the lab's own collection date, else the document date. A cross-document trend cannot order correctly on upload order — the demo uploads are out of chronological order on purpose.
+4. **Trend direction** from the chronological numeric series (rising / falling / stable with a tolerance), plus a reference range and a flag (high/low) from the reference table.
+
+```plaintext
+HbA1c (LOINC 4548-4)   9.1 % (Jan 24) → 8.4 % (Apr 24) → 7.6 % (Jan 25)   trend: falling   flag: high (ref 4.0–5.6)
+eGFR  (LOINC 33914-3)  58 → 52 → 48 mL/min/1.73m2                            trend: falling   flag: low  (ref ≥ 60)
+Potassium              4.9 → 5.2 → 5.7 mmol/L                                 trend: rising    flag: high (ref 3.5–5.1)
+```
+
+## 4. PATIENT_TIMELINE
+
+Every dated fact becomes an event — a diagnosis first mentioned, a medication started or stopped, an abnormal lab, a procedure. Events are bucketed by date (and quarter for the overview), deduplicated (a diagnosis repeated in five follow-ups is one event with five mentions), and given a rule-based **importance tier** so the UI can show the top tier and fold the rest. Honest trap: dedupe and tier grouping used different identities (name vs code) so the same fact could appear twice with different tiers — on the fix list.
+
+## 5. CRITICAL_ALERTS — rules, then reasoning
+
+### 5.1 Rules (config/critical_alert_rules.yaml)
+
+```yaml
+- name: "Severe Kidney Failure"      lab: eGFR        op: lt   threshold: 30   severity: critical
+- name: "CKD Stage 3 or Worse"       lab: eGFR        op: lt   threshold: 60   severity: high
+- name: "Critical Hyperkalemia"      lab: Potassium   op: gt   threshold: 5.5  severity: critical
+- name: "Uncontrolled Diabetes"      lab: HbA1c       op: gt   threshold: 9.0  severity: critical
+- name: "Elevated HbA1c"             lab: HbA1c       op: gt   threshold: 6.5  severity: high
+- name: "Severe Hypoglycemia"        lab: Glucose     op: lt   threshold: 54   severity: critical
+```
+
+Deterministic, free, explainable, and editable by a clinician without a deploy. Each rule fires on the _latest_ value of its analyte group and produces an alert with a stable id (rule + patient), the value, the threshold, and the entity it came from.
+
+### 5.2 The reasoning pass (alert_llm_reasoning.py)
+
+One Gemini call with the structured meds and labs (JSON, not prose) and an explicit contract:
+
+```plaintext
+You are a clinical pharmacist reviewing a patient's structured medical profile for safety concerns.
+- Do NOT repeat individual abnormal lab values — those are handled by rule-based alerts.
+- Focus ONLY on patterns that require cross-referencing multiple data points.
+Look for: 1. DRUG INTERACTIONS  2. MULTI-LAB PATTERNS (rising creatinine + declining eGFR)
+          3. CONTRADICTIONS (metformin with severe renal impairment)  4. CARE GAPS (ACEi, no potassium check)
+Return a JSON array: severity, category, name, reasoning (1–2 sentences), confidence, related_entities.
+Return [] if no concerns are found. Do not fabricate concerns.
+```
+
+Response is schema-constrained (`response_schema`), so it cannot return prose. Real output for the demo patient yesterday — this is the paragraph to quote in an interview:
+
+| Severity | Source | Concern | Reasoning (abridged) |
+| --- | --- | --- | --- |
+| high | rule | CKD Stage 3 or Worse | eGFR 48 below threshold of 60 |
+| high | rule | Elevated HbA1c | HbA1c 8.4 % exceeds 6.5 % |
+| high | LLM | Metformin–Renal Risk | eGFR consistently 48–58 (CKD 3) while on metformin — dose review / contraindication threshold |
+| high | LLM | Triple Whammy (ACEi–Diuretic–NSAID) Renal Risk | Concurrent lisinopril, furosemide and an NSAID in a patient with declining eGFR |
+| high | LLM | ACE-Inhibitor-Induced Hyperkalaemia Risk | Persistent hyperkalaemia (K 5.7) while on lisinopril |
+| medium | LLM | Anaemia of CKD | Hb 10.6–11.3 despite ferrous sulfate, in the context of CKD |
+
+Notice the division of labour: the rules caught the single-value facts; the model caught _combinations_ — exactly what the prompt asked for and exactly what a pharmacist does. "Triple whammy" is a real, named clinical pattern; the model knowing it is the value of a frontier model here.
+
+### 5.3 Persisted, not recomputed on read
+
+`CRITICAL_ALERTS` is written to `patient_health_profile.risk_flags` after every document merge and served from that row in \~30 ms. The other three sections are still computed on read (5–20 s cold because they fetch entity JSONs from S3) — that is J14, the next pipeline story: persist them the same way.
+
+## 6. Trade-offs to state out loud
+
+* **Rules vs LLM.** Rules: cheap, explainable, stable ids, no false creativity, but only see one variable. LLM: sees interactions, costs 6–30 s and money, non-deterministic (7 vs 9 concerns on identical input with thinking off). Both, with the LLM explicitly forbidden from repeating what rules cover.
+* **Thinking on or off for reasoning.** On: 23 s, 9 concerns, more stable. Off: 6–8 s, 7–9 concerns. Left on by default; exposed as `GEMINI_REASONING_THINKING_BUDGET`; a clinician's decision, not an engineer's.
+* **Alert identity.** Rule alerts have stable ids; LLM concerns get a fresh UUID per run, so "dismiss" cannot survive re-analysis. The fix (J13) is a deterministic key from category + entities involved. Say this before they ask.
+* **Confidence filter ignored on cached alerts** — the cache returns before the parameter is read. Small, real, on the list.
+
+## 7. Read more
+
+* [LOINC FAQ](https://loinc.org/kb/faq/) — why a lab code, not a name, is the grouping key
+* [RxNorm overview](https://www.nlm.nih.gov/research/umls/rxnorm/overview.html) — normalised drug names and the clinical-drug hierarchy
+* [NICE CKD guideline](https://www.nice.org.uk/guidance/ng203) and [KDIGO](https://kdigo.org/guidelines/ckd-evaluation-and-management/) — where the eGFR 60/30 thresholds come from
+* ["Triple whammy" — BMJ](https://www.bmj.com/content/346/bmj.e8525) — the ACEi/diuretic/NSAID interaction the model surfaced
+* [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output) and [thinking budgets](https://ai.google.dev/gemini-api/docs/thinking)
+* Clinical decision support background: Osheroff et al., [Improving Outcomes with Clinical Decision Support](https://www.himss.org/resources/improving-outcomes-clinical-decision-support-implementers-guide) — the "five rights" of CDS
+

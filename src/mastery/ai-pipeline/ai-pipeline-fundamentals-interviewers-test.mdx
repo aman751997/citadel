@@ -1,0 +1,113 @@
+---
+title: "13. AI pipeline fundamentals interviewers test"
+description: "Why this page. The project pages prove depth on one system. Interviewers then check breadth: do you know the field, or only your codebase? Each section below is a fundamental,…"
+project: "ai-pipeline"
+order: 13
+minutes: 8
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58294274"
+synced: "2026-09-11"
+---
+
+**Why this page.** The project pages prove depth on one system. Interviewers then check breadth: do you know the field, or only your codebase? Each section below is a fundamental, taught in plain words, tied back to where it shows up (or should show up) in our pipeline, with a two-sentence answer to say and links to go deeper.
+
+## 1. Evaluating an extraction system — precision, recall, F1, and the gold set
+
+**The idea.** Precision = of what the system extracted, how much was right. Recall = of what was there, how much the system found. F1 = their harmonic mean. For NER you score at the _span_ level (exact or relaxed overlap) and at the _concept_ level (right CUI/LOINC). You need a **gold set**: documents annotated by humans, with **inter-annotator agreement** (Cohen's κ or F1 between annotators) measured first — if two clinicians disagree 20% of the time, no model will score above \~80% and you need to know that.
+
+**Us.** We have counts, not P/R. The plan: annotate the five demo notes plus 50 de-identified real notes for seven entity types and i2b2 assertion status; score MedCAT, GLiNER, each LLM and the merged output separately; put it in CI so a prompt change shows its effect on F1 before merge.
+
+**Say:** "I would build a small gold set with two annotators and measure agreement before touching the model; a model can't be evaluated against labels people don't agree on."
+
+* [scikit-learn: precision, recall, F](https://scikit-learn.org/stable/modules/model_evaluation.html#precision-recall-f-measure-metrics) · [seqeval](https://github.com/chakki-works/seqeval) (span-level NER scoring) · [Cohen's kappa](https://en.wikipedia.org/wiki/Cohen%27s_kappa)
+* [i2b2 NLP datasets](https://www.i2b2.org/NLP/DataSets/) and [n2c2](https://n2c2.dbmi.hms.harvard.edu/) — the public clinical NLP benchmarks; know their names
+
+## 2. Prompting vs RAG vs fine-tuning — when each
+
+| Approach | Use when | Cost / risk | Us |
+| --- | --- | --- | --- |
+| **Prompting** (+ schema, few-shot) | Task is expressible in instructions; no labelled data yet; need to ship | Per-call tokens; prompt drift; non-determinism | Enrichment, discovery, reasoning |
+| **RAG** | Answer depends on _your_ documents; facts change; need citations | Retrieval quality bounds answer quality; chunking decisions | Indexed, not yet queried |
+| **Fine-tuning** | Stable task, labelled data (hundreds+), need speed/cost/consistency or a small on-prem model | Data labelling, retraining, evaluation infra | MetaCAT status model first; then a 4B extractor once the gold set exists |
+
+**Say:** "Prompting is what you do before you have labels; RAG is what you do when the knowledge is in your documents; fine-tuning is what you do when the task is stable and you have labels and a reason to own the model."
+
+* ["Fine-Tuning or Retrieval? Comparing Knowledge Injection in LLMs"](https://arxiv.org/abs/2312.05934) (Ovadia et al.) · [OpenAI: optimizing LLM accuracy](https://platform.openai.com/docs/guides/optimizing-llm-accuracy) — the prompt → RAG → fine-tune ladder, vendor-neutral in substance
+* [LoRA](https://arxiv.org/abs/2106.09685) and [PEFT](https://huggingface.co/docs/peft) — how fine-tuning a 4B model becomes affordable
+
+## 3. LLMOps: versioning, drift, canaries
+
+**The idea.** A prompt is code; a model name is a dependency; both must be versioned and released like code. Outputs drift when the vendor updates the model behind a name ("2.5-flash" today is not "2.5-flash" in six months). Guard with: pinned model versions where the API allows, an evaluation suite that runs on every prompt change, _shadow_ or _canary_ runs (new prompt on 5% of documents, compare entity counts and F1), and logging of prompt hash + model + usage per call so any output can be reproduced.
+
+**Us.** Model names are config (`GEMINI_EXTRACTION_MODEL`); prompts live in code and are reviewed in PRs; token/latency/cost per model are metrics. Missing: prompt hash on the entity record, an eval suite, canarying. The five-note harness is the seed of the eval suite.
+
+**Say:** "Treat the prompt and model as a versioned dependency with an eval gate, and log enough per call to reproduce any output."
+
+* [Chip Huyen, "Building LLM applications for production"](https://huyenchip.com/2023/04/11/llm-engineering.html) · [Designing Machine Learning Systems](https://www.oreilly.com/library/view/designing-machine-learning/9781098107956/) (ch. 8–9 on monitoring and drift)
+* [promptfoo](https://www.promptfoo.dev/) · [RAGAS](https://docs.ragas.io/) · [OpenAI evals](https://github.com/openai/evals) — evaluation harness patterns
+
+## 4. Orchestration: queue-and-worker vs workflow engines
+
+**The idea.** A queue + worker (ours) is right when each unit of work is independent and short-lived, and retries/idempotency are handled per message. A **workflow engine** (Temporal, Airflow, Prefect, Step Functions) is right when work is a multi-step, long-running, stateful DAG that needs durable progress, human approval steps, compensation, or scheduled batch runs. LangChain/LlamaIndex are libraries for composing LLM calls, not orchestrators; they add abstraction you may not want in a regulated pipeline where every prompt must be auditable.
+
+**Us.** Queue + worker, with the stage graph hand-coded in one handler (\~260 lines). That is appropriate at one document per message. If we add multi-day workflows (e.g., "wait for the lab result to arrive, then re-run alerts"), Temporal is the natural next step; the progress events (J11) already look like workflow state.
+
+**Say:** "A queue is the right tool when each message is self-contained; I'd move to Temporal when the unit of work outlives a process or needs a human in the loop."
+
+* [Temporal: why durable execution](https://docs.temporal.io/evaluate/why-temporal) · [Airflow concepts](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/overview.html)
+* [Competing Consumers](https://www.enterpriseintegrationpatterns.com/patterns/messaging/CompetingConsumers.html) — the pattern our worker implements
+
+## 5. Scaling: horizontal consumers, GPU batching, cost per document
+
+**The idea.** Scale a queue-driven pipeline by adding consumers (each with its own prefetch and semaphore); the broker distributes. The bottleneck moves to the model tier: CPU models (MedCAT, GLiNER, MedCPT) scale with replicas; GPU models scale with _batching_ (vLLM/TGI continuous batching turns 8 tok/s per request into hundreds of tok/s aggregate) and with model size. Per-document cost = tokens × price + GPU-seconds × rate + S3/DB ops; estimate it before choosing the architecture.
+
+**Us.** One consumer, concurrency 1, laptop. Numbers for the estimate: 55 s/doc, \~3k Gemini tokens (incl. thoughts) ≈ $0.01–0.02/doc on 2.5 Flash; MedGemma 27B on one L4 = \~23 docs/hour serialised, \~150+/hour with batching at 4B.
+
+**Say:** "Scale the workers horizontally behind the queue and the models by batching; measure tokens and GPU-seconds per document so the cost is a number, not a feeling."
+
+* [vLLM](https://docs.vllm.ai/en/latest/) — continuous batching, PagedAttention · [TGI](https://huggingface.co/docs/text-generation-inference/index)
+* [RabbitMQ consumer prefetch](https://www.rabbitmq.com/docs/consumer-prefetch) — the per-consumer knob
+
+## 6. Privacy in healthcare AI: PHI, de-identification, BAA, audit
+
+**The idea.** HIPAA's 18 identifiers define PHI; a **BAA** is the contract that lets a vendor process it; **de-identification** (Safe Harbor: remove the 18; or Expert Determination) lets you use data without a BAA at the cost of clinical detail. Minimum necessary: send the model only what the task needs. Every access to PHI is audited; erasure must reach every copy.
+
+**Us.** PHI isolated in S3; pointers in Postgres; nothing in the broker or logs; only synthetic notes have reached the AI Studio key. Erasure cascade exists (document.deleted) but has a swallowed-failure gap. De-identification is not built — it is the alternative to a BAA for the cloud path, and worth naming as an option.
+
+**Say:** "Two lawful paths for a cloud model: a BAA, or de-identify before sending. We designed for the first and minimised what leaves the building regardless."
+
+* [HHS de-identification guidance](https://www.hhs.gov/hipaa/for-professionals/privacy/special-topics/de-identification/index.html) · [Minimum necessary](https://www.hhs.gov/hipaa/for-professionals/privacy/guidance/minimum-necessary-requirement/index.html)
+* [Microsoft Presidio](https://github.com/microsoft/presidio) — open-source PII/PHI detection and anonymisation
+
+## 7. Embeddings and vector search — how to choose
+
+**The idea.** Pick the embedding model for the domain and the query type (asymmetric query→passage vs symmetric); dimension trades recall for storage; ANN index choice (HNSW vs IVF vs product quantisation) trades recall, memory and build time. Hybrid search (lexical + vector) beats either alone for exact tokens. Evaluate with recall@k on a labelled query set — MTEB scores are a starting point, not a decision.
+
+**Us.** MedCPT (domain), 768-d, HNSW cosine in pgvector, hybrid planned. Caveat we state: trained on articles, not notes.
+
+**Say:** "Domain model, hybrid retrieval, HNSW, and a recall@k number from my own queries before I trust a leaderboard."
+
+* [MTEB leaderboard](https://huggingface.co/spaces/mteb/leaderboard) · [HNSW explained](https://www.pinecone.io/learn/series/faiss/hnsw/) · [Hybrid search explained](https://weaviate.io/blog/hybrid-search-explained)
+
+## 8. Guardrails and safety for LLM output in clinical software
+
+**The idea.** Layer them: schema constraints (shape), allow-lists (codes must exist in the vocabulary), provenance checks (quote must be in the source), rule-based overrides for non-negotiables (thresholds), human-in-the-loop for high-stakes actions, and a feedback channel (dismissals as labels). Never let the model be the last word on a clinical decision — it is decision _support_.
+
+**Us.** Schema + provenance + rules + `related_entities` are in; allow-list validation of codes and the clinician feedback loop (J13) are not.
+
+* [FDA: Clinical Decision Support software guidance](https://www.fda.gov/medical-devices/software-medical-device-samd/clinical-decision-support-software) — where "support" stops being exempt
+* [OWASP Top 10 for LLM applications](https://owasp.org/www-project-top-10-for-large-language-model-applications/) — prompt injection, insecure output handling, over-reliance
+
+## 9. Data pipeline vs ML pipeline vs LLM pipeline — vocabulary
+
+A **data pipeline** moves and transforms records (ETL/ELT, batch or stream). An **ML pipeline** adds training, evaluation and deployment of a model with versioned datasets and features. An **LLM (inference) pipeline** orchestrates calls to pre-trained models with prompts, retrieval and post-processing, and its "training" is mostly prompt/eval iteration. Ours is an LLM inference pipeline embedded in a streaming data pipeline, with two classical ML components (MedCAT, GLiNER) whose training we do not own — yet.
+
+* [ml-ops.org](https://ml-ops.org/) — MLOps principles · [Fundamentals of Data Engineering](https://www.oreilly.com/library/view/fundamentals-of-data/9781098108298/) (Reis & Housley)
+
+## 10. Reading list for the whole field (pick three)
+
+* Chip Huyen, _Designing Machine Learning Systems_ — the systems view
+* Martin Kleppmann, _Designing Data-Intensive Applications_ — streams, idempotence, exactly-once
+* Jurafsky & Martin, _Speech and Language Processing_ (free, 3rd ed. draft) — NER, IE, evaluation
+* [deeplearning.ai short courses](https://www.deeplearning.ai/short-courses/) on RAG, evaluation and LLMOps — two hours each
+* ["Challenges and Applications of Large Language Models"](https://arxiv.org/abs/2307.10169) (Kaddour et al.) — a survey to cite
+

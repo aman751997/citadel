@@ -1,0 +1,154 @@
+---
+title: "3. Transcription, Alignment & Summary"
+description: "After the call we have two audio files, one per speaker, each half silence (while the other person talks). We need one transcript that reads like a conversation…"
+project: "telemedicine-poc"
+order: 3
+minutes: 8
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58261539"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+## In plain words first
+
+After the call we have two audio files, one per speaker, each half silence (while the other person talks). We need one transcript that reads like a conversation. Three problems: (1) turn each file into words with timestamps, (2) put both files on the same clock, (3) stop the speech model inventing words during the silent halves. Then a medical LLM drafts a summary the doctor can edit and sign.
+
+<Mermaid code={`flowchart LR
+    M["manifest.json<br>tracks + startedAtNs"] --> A["Whisper per track<br>mlx-whisper turbo"]
+    A --> G["5 gates per segment"]
+    G --> T0["+ t0 = startedAtNs / 1e9"]
+    T0 --> S["sort by start<br>rebase to first utterance"]
+    S --> C["coalesce same speaker<br>gap under 1.5 s"]
+    C --> J["transcript.json + .md"]
+    J --> D["delete *.ogg"]
+    J --> L["MedGemma → 5 sections<br>summary.json / .md"]
+    L --> R["doctor edits → sign<br>signed-note.json (write-once)"]`} />
+
+## 1. Speech to text: Whisper on Apple Silicon
+
+* **Engine:** `mlx-whisper`, Apple's MLX port, running on the Mac's GPU via Metal. Not faster-whisper (CUDA/CPU), not openai-whisper (PyTorch).
+* **Model:** `mlx-community/whisper-turbo` = large-v3-turbo, a distilled large-v3 with 4 decoder layers (\~809 M params). Near large-v3 accuracy, several times faster. Good fit for "under a minute after hang-up".
+* **Language:** autodetect by default; `--language hi` is the documented example because the target market is India.
+* **Chunking / VAD:** none of our own. Whisper's 30-second windows are used as-is; there is no VAD model in front of it. Instead we filter _after_ (next section).
+* **Word timestamps:** not enabled; segment-level `start`/`end` only. Enough for turn ordering.
+* **Runtime:** invoked as `uv run transcribe.py manifest.json` using PEP 723 inline dependencies, so the Node server needs no Python environment management.
+
+## 2. The five hallucination gates (the best story on this project)
+
+Whisper was trained on huge amounts of YouTube-style audio. When it hears silence or room tone, it often produces the phrases that follow silence in that data: _"Thank you."_, _"Thanks for watching."_, and in one of our runs the Russian _"Продолжение следует..."_ ("to be continued"). Per-speaker tracks make this worse, because each file is half silence by design. Worse still, Whisper's own confidence scores often look normal on these hallucinations.
+
+Two decode-time settings first:
+
+```python
+result = mlx_whisper.transcribe(path, path_or_hf_repo=MODEL, language=language,
+    # per-speaker tracks are half silence (while the other person talks);
+    # these settings stop Whisper from hallucinating over the gaps
+    condition_on_previous_text=False,   # a hallucinated segment cannot seed the next one
+    no_speech_threshold=0.5)
+```
+
+Then five gates per segment, in order:
+
+```python
+for seg in result["segments"]:
+    if seg.get("no_speech_prob", 0.0) > 0.5:   continue  # 1 silence misread as speech
+    if seg.get("compression_ratio", 1.0) > 2.4: continue  # 2 repetition loop ("Doctor Doctor Doctor…")
+    if seg.get("avg_logprob", 0.0) < -1.0:      continue  # 3 decoder guessing — hallucinated filler
+    if seg["end"] - seg["start"] < 0.2:         continue  # 4 sub-word blip, not real speech
+    peak = segment_peak_db(path, seg["start"], seg["end"])
+    if peak is not None and peak < SILENT_SEGMENT_DB:     # 5 words "heard" in a silent window
+        continue
+    segments.append(seg)
+```
+
+| # | Gate | What it catches | Why the threshold |
+| --- | --- | --- | --- |
+| 1 | `no_speech_prob > 0.5` | Whisper itself thinks this window is probably silence | Whisper's own default |
+| 2 | `compression_ratio > 2.4` | Degenerate repetition ("Doctor Doctor Doctor…") compresses too well | Whisper's own default for temperature fallback |
+| 3 | `avg_logprob < −1.0` | Low average token probability = the decoder was guessing | Whisper's default; typical of filler hallucinations |
+| 4 | duration &lt; 0.2 s | Sub-word blips | Nothing clinically meaningful is said in 200 ms |
+| 5 | peak &lt; −35 dBFS | **Words in a window with no audio energy.** The decisive gate. | Speech peaks well above −35 dBFS; room tone on a muted-ish mic stays below |
+
+Gate 5 is the one to explain slowly. It does not ask the model anything. It shells out to `ffmpeg -ss start -to end -af volumedetect -f null -` and reads `max_volume` from stderr. If the loudest sample in the segment's window is quieter than −35 dBFS, nobody spoke, whatever Whisper claims. Interview line: **"Whisper's confidence looks fine on a hallucination. The waveform does not lie."**
+
+**Honesty:** the gates are not sufficient. A retained demo transcript has _"I'm sorry."_ three times at two-second intervals that passed all five, and the legacy run has the Russian outro. Known next steps: a real VAD (Silero) in front of Whisper, a repeated-phrase filter across segments, and a language lock per tenant. Saying this earns more credibility than pretending the gates are airtight.
+
+## 3. Alignment: two files, one clock
+
+Each track's timestamps start at 0 for _that file_. The doctor's egress started 74 ms before the patient's. To interleave them correctly we add each track's absolute start:
+
+```python
+t0 = t["startedAtNs"] / 1e9                # from the egress result, via manifest.json
+for seg in segments:
+    lines.append({"speaker": t["name"], "role": t["role"],
+                  "start": t0 + seg["start"], "end": t0 + seg["end"], "text": seg["text"].strip()})
+...
+lines.sort(key=lambda l: l["start"])
+origin = lines[0]["start"]                 # rebase so the transcript starts at 00:00
+for l in lines:
+    l["start"] = round(l["start"] - origin, 2); l["end"] = round(l["end"] - origin, 2)
+```
+
+* **Fallback:** if _any_ track lacks `startedAtNs`, absolute alignment is impossible, so _all_ tracks fall back to relative time with a stderr warning. Tracks started within tens of milliseconds of each other, so the error is bounded by the egress start gap.
+* **Why nanoseconds:** LiveKit reports egress timestamps in ns; we divide once and never mix units.
+* **Missing file** = warning and skip, not a crash; **no speech in any track** = exit 1 with a specific message the server pattern-matches to show a `no-speech` status.
+
+## 4. Coalescing into turns
+
+```python
+if prev and prev["speaker"] == l["speaker"] and l["start"] - prev["end"] < 1.5:
+    prev["text"] += " " + l["text"]; prev["end"] = l["end"]   # same speaker, short pause → one turn
+else:
+    merged.append(dict(l))
+```
+
+Whisper emits many short segments. Merging same-speaker segments separated by under 1.5 s turns "I have had. A headache. Since Tuesday." into one line. Output: `transcript.json` (`ensure_ascii=False` so Devanagari survives) and `transcript.md` as `**[MM:SS] Doctor (Asha)**: text`.
+
+## 5. The MedGemma summary
+
+Once the transcript exists, the server renders it as `[MM:SS] Role (Name): text` lines and POSTs it to our self-hosted MedGemma (`/v1/medgemma/chat`, `X-API-Key` from `.env`, 180 s timeout, 1024 max tokens). The prompt, verbatim:
+
+```plaintext
+You are drafting a clinical consultation summary for the doctor's review.
+Below is the speaker-labeled transcript of a telemedicine consultation.
+Summarize strictly from the transcript — do not invent findings or diagnoses.
+Structure:
+- Chief complaint
+- History & key findings discussed
+- Assessment (only as stated by the doctor)
+- Plan / follow-up / medications discussed
+- Red flags or safety concerns raised (or 'none mentioned')
+Be concise and factual. Output ONLY the summary sections —
+no preamble, no acknowledgement, no closing remarks.
+
+Transcript:
+<transcript>
+```
+
+Design points worth saying out loud:
+
+* **Grounding instruction** ("strictly from the transcript", "only as stated by the doctor") to limit fabricated diagnoses. It is a five-section structure close to SOAP with a safety section added; do not call it SOAP.
+* **Draft, not record.** The file starts with _"Draft by MedGemma — review before relying on it."_ and the UI labels it "MedGemma draft — verify against the transcript". Nothing enters the chart unsigned.
+* **Failure is non-fatal.** If MedGemma is down or the key is missing, the transcript still completes; the summary can be regenerated later with one POST. In the demo this was the "if the AI is down" fallback.
+* **Streaming parsed by hand.** The endpoint returns SSE; the server reads the full text, splits `data:` lines, skips `[DONE]`, and concatenates tokens with a fallback for non-JSON chunks.
+* **PHI boundary.** This is the single network hop where transcript text leaves the machine, to RGT's own infrastructure over HTTPS. Say that precisely: "PHI never leaves RGT" is true; "PHI never leaves the device" is not.
+
+## 6. Sign-off and audit trail
+
+The doctor edits the transcript in place and signs. `signed-note.json` is written once; a second POST returns 409. `transcript.json` is never modified, so the machine output and the human-edited signed version can always be compared. This is the medico-legal shape: an immutable source, an attributable edit.
+
+## 7. The provider seam
+
+`transcribe_file()` is the only function that touches the STT engine, by design: _"Swap mlx-whisper for Sarvam (India) / Deepgram (US) here without touching the merge logic."_ For Indic languages a managed service (Sarvam) is the production plan; the gates, alignment and coalescing stay unchanged.
+
+## Read more
+
+* [Whisper paper (Radford et al., 2022)](https://arxiv.org/abs/2212.04356) — read the decoding section for `no_speech_prob`, `compression_ratio`, `avg_logprob`.
+* [Whisper hallucination discussion](https://github.com/openai/whisper/discussions/679) and ["Careless Whisper" (Koenecke et al., 2024)](https://arxiv.org/abs/2402.08021) — documented hallucination rates and why they matter in medical settings.
+* [mlx-community/whisper-turbo](https://huggingface.co/mlx-community/whisper-turbo) and [mlx-whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper).
+* [Silero VAD](https://github.com/snakers4/silero-vad) — the next gate to add.
+* [ffmpeg volumedetect](https://ffmpeg.org/ffmpeg-filters.html#volumedetect) — how gate 5 measures energy.
+* [PEP 723 inline script metadata](https://peps.python.org/pep-0723/) and [uv run scripts](https://docs.astral.sh/uv/guides/scripts/).
+* [MedGemma](https://developers.google.com/health-ai-developer-foundations/medgemma) — model card and intended use.
+

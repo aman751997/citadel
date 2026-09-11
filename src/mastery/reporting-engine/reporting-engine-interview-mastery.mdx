@@ -1,0 +1,121 @@
+---
+title: "Reporting Engine — Interview Mastery"
+description: "What this is: a self-contained course on reporting-service, written so you can read it once and explain the whole system out loud…"
+project: "reporting-engine"
+order: 0
+minutes: 8
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/54231041"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+**What this is:** a self-contained course on `reporting-service`, written so you can read it once and explain the whole system out loud. Every page has plain-language explanations, real code artefacts (DSL JSON, emitted SQL, catalog rows), Mermaid diagrams and links to read more. Read in order the first time; jump around after that.
+
+> **Honesty guard (updated 2026-09-11).** The service is _deployed and in daily use_: 148 commits between 2026-06-15 and 2026-09-10, 38 Flyway migrations, and a production tuning change on 2026-09-01 (bulkhead 3 → 10) that was triggered by real users seeing HTTP 429 on dashboard load. Say "live" with confidence. The row cap (5000), timeout (3 s) and bulkhead (10) are _design parameters_, not measured limits; the Redis result cache exists only when a Redis bean is present.
+
+## 1. Why this project is worth 10 minutes of an interviewer's time
+
+Most teams build reports the slow way: a product manager asks for "revenue by branch for last month", a developer writes SQL, wraps it in a controller, tests it, ships a release. Three weeks later the next report request arrives. We built the other way: **one engine, zero code per report**. A report is a small JSON recipe saved in a table. The engine turns the recipe into safe SQL at run time. Adding a new dashboard is a data change, not a deploy.
+
+The analogy that lands with every interviewer: **this is Grafana + Prometheus for business data.**
+
+| Grafana / Prometheus concept | Reporting engine equivalent | Concrete artefact |
+| --- | --- | --- |
+| A **data source** Grafana can query (a Prometheus instance) | `catalog_datasource` row: one fact table or view, with its tenant / branch / date / soft-delete columns and which DB pool to use | `'patient.appointments'` → table `patient.appointments`, pool `patient` |
+| A **metric name and its labels** (`http_requests_total{status}`) | `catalog_field` row: field key, physical column, roles (DIMENSION / MEASURE / TIME / FILTER), type, allowed aggregations and operators | `status` → DIMENSION+FILTER, STRING, operators EQUALS/IN |
+| A **panel** with a PromQL query | `report_definition` row: the JSON DSL (datasource, dimensions, measures, filters, sort, limit, privacy) + chart type | "Appointment Status" PIE, COUNT by `status` |
+| A **dashboard** (JSON of panels in a grid) | `report_dashboard` row: `items` JSONB list of `{definitionId, layoutHint}`, default date range, default branch scope | 4 tiles, `layoutHint: "half"|"full"` |
+| **PromQL engine** that evaluates the query | `QueryCompiler` (489 lines): DSL → parameterised SQL, injecting tenant / branch / k-anonymity / LIMIT / timezone | Page 2 shows the exact SQL |
+| **Time range picker** at the top of the dashboard | `ExportDateRangeResolver`: TODAY / THIS_WEEK / THIS_MONTH computed in the tenant's timezone, appended as a BETWEEN filter | one definition serves all three ranges |
+| **Provisioning** dashboards from files in Git | Flyway migrations seed catalog rows and starter definitions; a PR review is the approval gate | V3, V4, V9, V16–V38 are pure data |
+| **Alerting / scheduled reports** | `report_schedule` + ShedLock poller: cron delivery of a definition as CSV by email, with the creator's stored scope | polls every 60 s, lock 30 s–9 min |
+| What Grafana does **not** give you | Tenant + branch isolation from the JWT, PII allow-list, k-anonymity, per-tenant timezone, regulator-grade audit row. This is why we built instead of embedding. | Pages 1, 3, 6 |
+
+One sentence to memorise: **"Catalog is the type system, the DSL is the program, the compiler is the interpreter, and the guardrails are compiled in so nobody can forget them."**
+
+## 2. The system on one diagram
+
+<Mermaid code={`flowchart LR
+    subgraph Build["Build once (data, via Flyway PR)"]
+        DS["catalog_datasource<br>which table, which pool,<br>tenant/branch/date cols"]
+        FL["catalog_field<br>which columns, roles,<br>allowed aggs + operators"]
+        RD["report_definition<br>JSON DSL + chart type"]
+        DB2["report_dashboard<br>tiles = [definitionId, layoutHint]"]
+    end
+    subgraph Run["Run many times (per request)"]
+        JWT["JWT → tenant, branch, roles"] --> POL["AccessPolicy<br>ALL / RESTRICTED / DENY"]
+        POL --> VAL["CatalogValidator<br>400 on anything not allowed"]
+        VAL --> CMP["QueryCompiler<br>DSL → parameterised SQL"]
+        CMP --> ADP["PostgresJdbcAdapter<br>read-only · 3 s · bulkhead 10 · cap 5000"]
+        ADP --> AUD["report_run_audit row"]
+        ADP --> RES["rows + column metadata → chart"]
+    end
+    DS -.-> VAL
+    FL -.-> VAL
+    FL -.-> CMP
+    RD --> CMP
+    DB2 --> RD
+    ADP -->|"one read-only pool per service DB"| SRC[("patient_db · billing_db<br>pharmacy_db · lead_db")]`} />
+
+## 3. The 60-second pitch (say it out loud)
+
+"I designed and led `reporting-service`, a metadata-driven reporting engine for our multi-tenant hospital platform. Instead of hand-writing SQL per report, a tenant admin composes a report in the UI; we persist it as an eight-field JSON DSL, and at run time a compiler turns it into parameterised SQL against a server-controlled catalog. The catalog is an allow-list: which tables, which columns, which aggregations and operators. The compiler injects tenant and branch predicates from the JWT, k-anonymity via HAVING, a hard row cap after a deterministic sort, and timezone-correct bucketing. Execution goes through a read-only pool per source database with a 3-second statement timeout and a bulkhead. There is a synchronous audit row per run, a short-TTL result cache, and a ShedLock-based scheduler that emails CSVs with the creator's stored scope. Thirty-eight migrations later, roughly two-thirds of them are pure data: new dashboards ship as INSERTs. It is live and iterating weekly with product."
+
+## 4. The 3-minute version (when they say "tell me more")
+
+1. **Problem.** Five service teams, each hand-rolling report endpoints. Every product tweak ("GST-inclusive or exclusive?") was a code change and a release. No shared tenancy or PII rules across them.
+2. **Insight.** Every report is the same shape: _from one table, group by some columns, aggregate some columns, filter, sort, limit_. That shape is small enough to be a DSL and safe enough to compile if identifiers come from a catalog and values are bound.
+3. **Guardrails compiled in.** Tenant predicate always. Branch predicate for branch admins. HAVING COUNT(\*) >= k for privacy. LIMIT with a forced ORDER BY so truncation is meaningful. `AT TIME ZONE :tz` so a 2 a.m. IST appointment lands in the right month.
+4. **Protecting the OLTP databases.** Read-only Hikari pools, `SET LOCAL statement_timeout`, resilience4j bulkhead with fail-fast 429, Redis result cache. The adapter is a seam: moving to the read replica was a URL change.
+5. **Operations.** Catalog snapshot reloaded every 5 minutes. ShedLock scheduler. Synchronous audit row. Two-tenant integration test. Real-engine E2E tests per business domain (appointments, billing, pharmacy, telecaller, refunds).
+6. **Proof it works.** Product reversed a GST decision in one week (V33 exclusive → V36 inclusive). Both were data migrations. No Java changed. That is the whole argument for metadata-driven.
+
+## 5. Numbers to have on the tongue
+
+| Number | What | Where it lives |
+| --- | --- | --- |
+| 8 | DSL fields: datasource, chartType, dimensions, measures, filters, sort, limit, privacy | `ReportDefinitionDsl` |
+| 5 / 10 / 100 / 5000 | Max dimensions / filters / values per IN / row limit | `CatalogValidator` |
+| 3000 ms | Per-statement timeout, `SET LOCAL` inside the read-only transaction | `PostgresJdbcAdapter` |
+| 10 (was 3) | Bulkhead concurrent source queries, `maxWaitDuration=0`, raised 2026-09-01 after dashboard-load 429s | `application.yml`, PR #1706 |
+| 60 s / 30 s | Redis cache TTL for run / preview | `reporting.cache.*` |
+| 5 min | Catalog snapshot reload interval per pod | `CatalogLoader` |
+| 10 min / 100 | Tenant timezone Caffeine cache TTL / max size; fallback Asia/Kolkata | `ReportTimezoneResolver` |
+| 60 s / 30 s–9 min | Scheduler poll interval / ShedLock lockAtLeastFor–lockAtMostFor | `ScheduledReportRunner` |
+| 38 / \~25 | Flyway migrations / of which pure data (catalog + definitions) | `db/migration` |
+| 106 / \~5.5k / 489 | Java files / lines / compiler lines | `src/main/java` |
+| 33 | Test classes, including 7 real-engine E2E ITs and a two-tenant isolation IT | `src/test/java` |
+| 8088 | Port; API base `/api/v1/reporting`; own DB `reporting_db` schema `reporting` | `application.yml` |
+
+## 6. Read in this order
+
+1. [1. Architecture & Data Flow](https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/54263809) — who talks to whom, the engine pipeline, dashboard fan-out, the guardrail table, the Grafana mapping component by component.
+2. [2. Request Lifecycle & Emitted SQL](https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/54296577) — three worked examples: simple bar, timezone-bucketed trend with a date range, lookup join. Every clause explained. Error paths.
+3. [3. Design Decisions & Trade-offs](https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/54329345) — every "why", the friend-version, the rejected alternative, and when I would revisit.
+4. [4. War Stories, Q&A Drill & Self-check](https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/54394881) — nine STAR stories including three from the live service, questions with answers, closed-book test.
+5. [5. Add a New Dashboard in 30 Minutes — Worked Example](https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58392578) — the Grafana story end to end: datasource, fields, definition, dashboard, preview, emitted SQL, the GST reversal timeline.
+6. [6. Security Deep Dive — Injection, Tenancy, PII, k-anonymity](https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58097755) — ten attacks that fail, and which line stops each.
+7. [7. Question Bank, Vocabulary & Further Reading](https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58392609) — 40 questions grouped by interviewer type, one-line glossary, curated external links.
+
+## 7. The analogy table (memorise the columns)
+
+| Programming languages | Reporting engine | What it guarantees |
+| --- | --- | --- |
+| Type system | Catalog (datasources + fields + allowed aggs/operators) | You cannot reference something that does not exist or is not allowed |
+| Program | DSL JSON (8 fields) | Small, declarative, storable, diffable |
+| Type checker | `CatalogValidator` | Field-level 400s before any SQL exists |
+| Compiler | `QueryCompiler` | Identifiers looked up, values bound, structure by ordinals, guardrails injected |
+| Runtime with a sandbox | `PostgresJdbcAdapter` + bulkhead + timeout + read-only tx | Bounded time, memory, connections, concurrency |
+| Standard library | Seeded starter definitions and dashboards (V9, V16–V38) | New tenants start with 15+ reports on day one |
+
+## 8. Two-minute revision before an interview
+
+1. Say the 60-second pitch (§3) out loud once.
+2. Write the example-1 SQL from memory (page 2). Check the parameter names.
+3. Recite the Grafana mapping's first four rows.
+4. Pick today's war story (page 4). Time it: under 90 seconds.
+5. Glance at the numbers table (§5).
+
+_Last refreshed 2026-09-11 against_ `develop`_. Numbers above are checked against the code, not remembered._
+

@@ -1,0 +1,209 @@
+---
+title: "5. Add a New Dashboard in 30 Minutes — Worked Example"
+description: "This is the page that proves the Grafana + Prometheus claim. We add a brand-new business dashboard, \"Revenue by Consultation Type\", with zero Java changes…"
+project: "reporting-engine"
+order: 5
+minutes: 9
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58392578"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+This is the page that proves the Grafana + Prometheus claim. We add a brand-new business dashboard, "Revenue by Consultation Type", with **zero Java changes**. Everything below is modelled on the real migration `V19__billing_consultation_type_revenue.sql` (178 lines, 2026-08) and the starter seed `V9__seed_drbasu_starters.sql`.
+
+## The Grafana mental model, applied
+
+<Mermaid code={`flowchart TB
+    A["Step 1 · Register a data source<br>(Grafana: add Prometheus)<br>catalog_datasource row"] --> B["Step 2 · Declare the metrics<br>(Grafana: metric names + labels)<br>catalog_field rows"]
+    B --> C["Step 3 · Write the panel query<br>(Grafana: PromQL in a panel)<br>report_definition row with JSON DSL"]
+    C --> D["Step 4 · Arrange panels<br>(Grafana: dashboard JSON)<br>report_dashboard row with items"]
+    D --> E["Step 5 · Preview & verify<br>POST /preview, read emitted SQL"]
+    E --> F["Step 6 · Ship as a Flyway PR<br>(Grafana: provisioning from Git)"]`} />
+
+In Grafana you would click through the UI for steps 1 to 4 and export JSON. Here the "JSON" is four INSERT statements. Same idea, one important difference: **our catalog changes are security changes** (they widen what can be queried), so they go through PR review rather than an admin UI. Page 3 explains that choice.
+
+## Step 0 — pick the physical source
+
+Revenue must be attributed per invoice line, not per invoice, because one invoice can mix a consultation and a pharmacy sale. Billing exposes a view for exactly this: `billing.v_invoice_revenue_line` (line joined to its invoice for status / tenant / branch; `net_revenue` = line total with the invoice-level discount apportioned by line share). Pointing a datasource at a **view** is the trick that keeps every report single-table: the join logic lives in the owning service's schema, and our compiler never needs multi-table joins.
+
+> **Interview line:** "When a report needed a join, we did not teach the compiler joins. We asked the owning service for a view. The compiler stayed 489 lines; the complexity stayed with the team that understands the tables."
+
+## Step 1 — register the data source (one row)
+
+```sql
+INSERT INTO catalog_datasource (
+    datasource_key, display_name, physical_table, adapter,
+    tenant_column, branch_column, default_date_column, soft_delete_column,
+    source_connection, is_active
+) VALUES (
+    'billing.revenue_lines', 'Billing Revenue Lines',
+    'billing.v_invoice_revenue_line', 'POSTGRES_PRIMARY',
+    'tenant_id', 'branch_id', 'created_at', NULL,
+    'billing', TRUE
+) ON CONFLICT (datasource_key) DO NOTHING;
+```
+
+| Column | Plain meaning | Why the engine needs it |
+| --- | --- | --- |
+| `datasource_key` | The name the DSL uses | Users never see `physical_table`; they pick a key |
+| `physical_table` | Real table or view | Only source of the FROM clause. Never from user input |
+| `tenant_column` | Which column holds the tenant | Compiler injects `tenant_id = :tenant_id`. A datasource _without_ one is refused at compile time |
+| `branch_column` | Which column holds the branch | Injected as `IN (:branch_ids)` for BRANCH_ADMIN scope |
+| `default_date_column` | Column the date-range picker applies to | TODAY / THIS_WEEK / THIS_MONTH become a BETWEEN on this column |
+| `soft_delete_column` | Nullable "deleted_at" style column | If set, `IS NULL` is appended automatically. Here NULL because the view already excludes deletes |
+| `source_connection` | Which read-only Hikari pool | Production has separate DBs per service; a Postgres connection cannot span them. Unknown key = fail fast naming the missing config |
+
+## Step 2 — declare the fields (the "metrics and labels")
+
+```sql
+INSERT INTO catalog_field
+    (datasource_key, field_key, physical_column, roles, data_type,
+     is_enum, enum_type, allowed_aggregations, allowed_operators)
+VALUES
+-- dimensions (Grafana labels)
+('billing.revenue_lines', 'consultation_type', 'consultation_type',
+ ARRAY['DIMENSION','FILTER'], 'STRING', FALSE, NULL,
+ ARRAY[]::TEXT[], ARRAY['EQUALS','IN']),
+('billing.revenue_lines', 'branch_id', 'branch_id',
+ ARRAY['DIMENSION','FILTER'], 'STRING', FALSE, NULL,
+ ARRAY[]::TEXT[], ARRAY['EQUALS','IN']),
+-- time (the x-axis)
+('billing.revenue_lines', 'created_at', 'created_at',
+ ARRAY['TIME','FILTER'], 'TIMESTAMPTZ', FALSE, NULL,
+ ARRAY[]::TEXT[], ARRAY['BETWEEN','GREATER_THAN','LESS_THAN']),
+-- measures (the metric values)
+('billing.revenue_lines', 'net_revenue', 'net_revenue',
+ ARRAY['MEASURE'], 'NUMBER', FALSE, NULL,
+ ARRAY['SUM','AVG','MIN','MAX'], ARRAY[]::TEXT[]),
+('billing.revenue_lines', 'count', '*',
+ ARRAY['MEASURE'], 'NUMBER', FALSE, NULL,
+ ARRAY['COUNT'], ARRAY[]::TEXT[]);
+```
+
+Read the `roles` array as _permissions_: `net_revenue` can be summed but never grouped by; `consultation_type` can be grouped and filtered but never summed. `allowed_operators` is why a user cannot run `LIKE '%'` on a column we did not open to it. The validator enforces all of this before a single character of SQL exists.
+
+Two special forms worth knowing:
+
+* `physical_column = '*'` — the `count` field. Compiles to `COUNT(*)`. `COUNT_DISTINCT` on it is rejected as meaningless.
+* **Computed columns with** `{f}.` — for example the appointments `duration` field is `EXTRACT(EPOCH FROM ({f}.end_at - {f}.start_at)) / 60`. The placeholder is replaced with the fact-table alias only when a lookup join is present, so non-join SQL stays byte-identical (migration V14 introduced this after the ambiguous-column incident on page 4).
+
+## Step 3 — write the "panel" (the report definition)
+
+```sql
+INSERT INTO report_definition
+    (id, name, datasource_key, definition_json, chart_type,
+     owner, is_system, is_public, tenant_id, created_by)
+VALUES (
+    '01950000-0000-7000-0000-000000000060',
+    'Revenue by Consultation Type',
+    'billing.revenue_lines',
+    '{"datasource":"billing.revenue_lines","chartType":"BAR",
+      "dimensions":[{"field":"consultation_type","timeBucket":null,"alias":"Consultation Type"}],
+      "measures":[{"agg":"SUM","field":"net_revenue","alias":"Revenue"},
+                  {"agg":"COUNT","field":"count","alias":"Lines"}],
+      "filters":[{"field":"status","operator":"IN","values":["PAID","PARTIALLY_PAID"]}],
+      "sort":[{"by":"Revenue","order":"DESC"}],
+      "limit":20,
+      "privacy":{"excludePatientIdentifiers":true,"minimumGroupSize":5}}'::jsonb,
+    'BAR', 'PLATFORM', true, true, 'default_tenant', 'flyway'
+);
+```
+
+`owner='PLATFORM', is_system=true` makes it a **system template**: every tenant can run it, nobody but the platform can edit it, and any tenant can `POST /reports/{id}/clone` to get a private editable copy. That is how 15 starter reports appear for a new tenant on day one.
+
+## Step 4 — arrange the "dashboard"
+
+```sql
+INSERT INTO report_dashboard
+    (id, name, description, items, default_date_range, default_branch_scope,
+     owner, is_system, tenant_id, created_by)
+VALUES (
+    '01950000-0000-7000-0000-0000000000d0',
+    'Revenue Overview',
+    'Where the money comes from, this month',
+    '[{"definitionId":"01950000-0000-7000-0000-000000000060","layoutHint":"full"},
+      {"definitionId":"01950000-0000-7000-0000-000000000040","layoutHint":"half"},
+      {"definitionId":"01950000-0000-7000-0000-000000000041","layoutHint":"half"}]'::jsonb,
+    '{"range":"THIS_MONTH"}'::jsonb, 'ALL',
+    'PLATFORM', true, 'default_tenant', 'flyway'
+);
+```
+
+A dashboard is nothing but a list of definition ids plus layout hints. The UI loads the dashboard, then fires one `/run` per tile **in parallel**. Remember that: it is the root cause of war story 7 (bulkhead 3 → 10).
+
+## Step 5 — preview before you commit
+
+```shell
+curl -s -X POST http://localhost:8088/api/v1/reporting/reports/preview \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+  -d '{ "dsl": { ...the JSON above... }, "range": "THIS_MONTH" }'
+```
+
+What the compiler emits for a SUPER_ADMIN of tenant `drbasu` in September 2026 (Asia/Kolkata):
+
+```sql
+SELECT consultation_type::text AS "Consultation Type",
+       SUM(net_revenue)        AS "Revenue",
+       COUNT(*)                AS "Lines"
+FROM billing.v_invoice_revenue_line
+WHERE tenant_id = :tenant_id
+  AND status::text IN (:flt_0)
+  AND created_at BETWEEN :flt_1_lo::timestamptz AND :flt_1_hi::timestamptz
+GROUP BY 1
+HAVING COUNT(*) >= :min_group_size
+ORDER BY 2 DESC
+LIMIT :row_limit
+
+-- tenant_id = 'drbasu'
+-- flt_0     = ['PAID','PARTIALLY_PAID']
+-- flt_1_lo  = '2026-09-01T00:00:00+05:30'   flt_1_hi = '2026-09-30T23:59:59.999999+05:30'
+-- min_group_size = 5   row_limit = 20
+```
+
+Notice what is _not_ there: no `branch_id` predicate (scope is ALL), no soft-delete predicate (column NULL in the datasource), no `:tz` parameter (no time bucket). The compiler only adds what the catalog and scope demand. A BRANCH_ADMIN running the same preview gets one extra line, `AND branch_id::text IN (:branch_ids)`, and cannot remove it.
+
+Response shape:
+
+```json
+{ "columns": [ {"alias":"Consultation Type","role":"dimension"},
+               {"alias":"Revenue","role":"measure"}, {"alias":"Lines","role":"measure"} ],
+  "rows": [ ["GENERAL", 412500.00, 318], ["PANCHAKARMA", 286000.00, 57], ["FOLLOW_UP", 91200.00, 228] ],
+  "meta": { "rowCount": 3, "truncated": false, "cached": false, "elapsedMs": 41, "timezone": "Asia/Kolkata" } }
+```
+
+## Step 6 — ship it
+
+Put steps 1 to 4 into `V39__revenue_by_consultation_type.sql`, open a PR. The reviewer checks exactly two things: _does every new field respect the PII rule_ (no `*_vault_id`, `*_token`, `*_hash`; the validator would block them anyway) and _is the datasource scoped_ (tenant column present). Merge. The catalog snapshot reloads within 5 minutes on every pod; no restart. Provisioning from Git, exactly like Grafana.
+
+## What happens when product changes its mind (the real V33 → V36 story)
+
+On 2026-09-02 product asked for "Revenue by Branch" to exclude GST (to match pharmacy receipts). Migration V33 repointed the measure to `net_of_gst_amount`. On 2026-09-09 product reversed the decision. Migration V36 repointed it back to `total_amount`. Two definition-row UPDATEs, one week apart, **zero Java changes, zero releases of application code**. Both were verified by running the stored definition through the live app, not by reading the DB row.
+
+<Mermaid code={`timeline
+    title One product reversal, handled as data
+    2026-09-02 : V33 · measure → net_of_gst_amount (GST-exclusive)
+    2026-09-04 : V31-V32 · refunds netted out via approved-refund views
+    2026-09-09 : V36 · measure → total_amount (GST-inclusive again)
+    2026-09-10 : V37-V38 · Lead Source ROI gated on paid invoices`} />
+
+> **Interview line:** "The strongest evidence for a metadata-driven design is not the launch. It is the week product flip-flopped on GST and both directions were a migration."
+
+## Checklist you can recite
+
+1. Is there a single table or view with tenant, branch and date columns? If not, ask the owning service for a view.
+2. Datasource row: key, physical table, pool, tenant / branch / date / soft-delete columns.
+3. Field rows: roles, type, allowed aggregations, allowed operators. No PII patterns.
+4. Definition row: the eight-field DSL, chart type, PLATFORM + is_system for a template.
+5. Dashboard row: items list with layout hints, default range and scope.
+6. Preview with a BRANCH_ADMIN token and a SUPER_ADMIN token; read the emitted SQL for both.
+7. Flyway PR. Reviewed as a security change. Live within 5 minutes of merge.
+
+## Read more
+
+* [Grafana provisioning from files](https://grafana.com/docs/grafana/latest/administration/provisioning/) — the closest industry analogue to seeding catalog and dashboards via Flyway.
+* [Cube.dev semantic layer concepts](https://cube.dev/docs/product/data-modeling/concepts) — dimensions, measures and segments defined once; the same vocabulary we use.
+* [Metabase query builder](https://www.metabase.com/learn/metabase-basics/querying-and-dashboards/questions/the-query-builder) — what "build a report without SQL" looks like in a commercial tool.
+* [Flyway versioned migrations](https://documentation.red-gate.com/fd/migrations-184127470.html) — why V-numbers, and why out-of-order is off by default.
+* [PostgreSQL CREATE VIEW](https://www.postgresql.org/docs/current/sql-createview.html) — the tool that let us keep the compiler single-table.
+

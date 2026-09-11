@@ -1,0 +1,114 @@
+---
+title: "7. Question Bank, Vocabulary & Further Reading"
+description: "Forty questions grouped by who is asking. For each: the 15-second answer, then where to go deeper. Say the short answer out loud before reading it…"
+project: "reporting-engine"
+order: 7
+minutes: 10
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58392609"
+synced: "2026-09-11"
+---
+
+Forty questions grouped by who is asking. For each: the 15-second answer, then where to go deeper. Say the short answer out loud before reading it. Add real questions you get asked at the bottom after every interview.
+
+## A. Hiring manager / product-minded (why did you build this?)
+
+| Question | 15-second answer | Deeper |
+| --- | --- | --- |
+| What problem does the reporting service solve? | Five teams were hand-writing report endpoints; every product tweak was a release. We made reports data: a JSON recipe compiled to safe SQL by one engine. New dashboard = INSERT, not deploy. | Brief §1, page 5 |
+| Why build rather than embed Metabase / Superset / Grafana? | Embedded BI does not understand our tenant + branch model, vault-tokenised PII or k-anonymity. We would re-implement authorisation inside its model and still need a service for schedules and templates. Our DSL is 8 fields, compiler \~500 lines. | Page 3, row 1 |
+| How is this like Grafana + Prometheus? | Catalog datasource = data source; catalog field = metric + labels; definition = panel query; dashboard = dashboard JSON; Flyway seeding = provisioning from Git. What Grafana lacks: tenancy, PII, k-anonymity, per-tenant timezone, audit. | Brief §1 table |
+| Prove it is flexible. | V33 made revenue GST-exclusive; product reversed a week later; V36 made it inclusive. Two data migrations, no Java. 25 of 38 migrations are pure data. | Page 5, timeline |
+| Who uses it and is it live? | Tenant admins and branch admins across hospitals. Live: a 2026-09-01 prod tuning (bulkhead 3 → 10) was triggered by real dashboard loads returning 429. | Page 4, story 7 |
+| What would you do differently? | Per-tenant bulkheads instead of global; compile dry-run at save; async job path for heavy exports; SCAN instead of KEYS for eviction. All known, none blocking. | Page 4, "What I would improve" |
+
+## B. System design interviewer (how does it scale, fail, isolate?)
+
+| Question | 15-second answer | Deeper |
+| --- | --- | --- |
+| Walk me through one request. | JWT filters → tenant aspect → @PreAuthorize → load definition → policy resolves scope → optional date window in tenant TZ → cache check → validate → compile → execute read-only under bulkhead + 3 s timeout → audit row → overlay column metadata → cache → return. | Page 2, twelve steps |
+| How do you protect the OLTP database? | Read-only pool per source DB, SET LOCAL statement_timeout 3 s, LIMIT 5000 after forced sort, bulkhead 10 fail-fast, 60 s result cache. The adapter is a seam; replica was a URL change. | Page 6, attack 9 |
+| What breaks first at 10× load? | The global bulkhead (429s), then the source DB for large tenants. Next steps: per-tenant bulkheads, materialised views or an OLAP store behind the same adapter interface, async jobs with polling for heavy reports. | Page 3 |
+| Why a bulkhead _and_ a pool limit? Aren't they the same? | Pool bounds connections to the DB; bulkhead bounds threads in our JVM and fails fast instead of queueing. A hung spinner is worse than a fast 429 for interactive UI. | Page 3, "Four knobs" |
+| How do you handle multi-tenancy? | Two mechanisms. Own DB: Hibernate @Filter armed by the request aspect. Source DBs: compiler injects tenant_id from the JWT unconditionally and refuses unscoped datasources. Headers ignored. Cache keys include tenant. Two-tenant IT guards it. | Page 6, attacks 4–5 |
+| Why separate pools per service DB? | Production is one database per service; a Postgres connection cannot span databases. Bonus: a slow billing query cannot starve patient reports. | Page 1 |
+| How does the scheduler avoid double-sending on 3 pods? | ShedLock on our own DB: lockAtLeastFor 30 s, lockAtMostFor 9 min, poll every 60 s. Chosen over Redis (optional in our stack) and K8s CronJob (moves logic out of the service). | Page 3 |
+| Cache design? | Key = rpt:run:&#123;definitionId&#125;:sha256(tenant, branches, canonical DSL, sorted params). TTL 60 s run / 30 s preview. Prefix eviction on edit. Only when a Redis bean exists. | Page 6, attack 10 |
+| How do dashboards load? | Dashboard row lists tile definition ids; UI fires one /run per tile in parallel. That fan-out is why a bulkhead of 3 produced 429s on a 4-tile dashboard. | Page 4, story 7 |
+| Cross-database joins? | Not supported by design. We ask the owning service for a view (billing.v_invoice_revenue_line) so every report stays single-table. Same-DB lookup joins to master tables are supported for display names. | Page 5, step 0; page 2, example 3 |
+
+## C. Security-minded interviewer
+
+| Question | 15-second answer | Deeper |
+| --- | --- | --- |
+| How is this not a SQL injection machine? | Values are bound, identifiers are looked up in the catalog, structure uses ordinals, operators and aggregations are enums, aliases are sanitised and quoted. Exactly one class builds SQL text and it is tested. | Page 6, attacks 1–3 |
+| Why can't you bind a column name? | SQL prepared statements bind values, not identifiers; the planner needs identifiers at prepare time. So the only safe identifier is one the server already knows: hence the catalog. | Page 6, attack 2 |
+| How do you prevent PII leakage? | Allow-list catalog (raw identifiers are not listed) plus a regex block on \*\_vault_id / \*\_token / \*\_hash applied to field key and physical column. Plus k-anonymity via HAVING for small groups. | Page 6, attacks 6–7 |
+| What about platform staff? | RGT\_\* roles get 403 from the access policy before anything runs. They have no tenant claim, so this policy layer is load-bearing. | Page 6, defence in depth |
+| Audit? | Synchronous INSERT per run with user, definition, SQL hash, datasource, truncated flag, tenant. Async would lose tenant context and could drop rows on crash. | Page 6, audit |
+| Read-only guarantee? | Hikari readOnly, enforceReadOnly on the tx manager, TransactionTemplate readOnly, and a SELECT-only DB role. Even a compiler bug cannot write. | Page 6 |
+
+## D. Hands-on / coding interviewer
+
+| Question | 15-second answer | Deeper |
+| --- | --- | --- |
+| Show me the SQL for "appointments by status" for a branch admin. | SELECT status::text AS "Status", COUNT(\*) AS "Appointments" FROM patient.appointments WHERE tenant_id = :tenant_id AND branch_id::text IN (:branch_ids) AND status::text IN (:flt_0) GROUP BY 1 HAVING COUNT(\*) >= :min_group_size ORDER BY 2 DESC LIMIT :row_limit | Page 2, example 1 |
+| Why the ::text casts? | Postgres has no enum = varchar operator, and no uuid = varchar either. Bound params arrive as varchar, so enum and uuid columns are cast to text. Date filters cast the _parameter_ instead (::timestamptz) so the index on the column stays usable. | Page 2, clause notes |
+| How do time buckets work? | date_trunc('month', col AT TIME ZONE :tz). HOUR_OF_DAY uses EXTRACT(HOUR FROM col AT TIME ZONE :tz) for a 0–23 distribution. TZ is a bound param from admin-service, cached 10 min, fallback Asia/Kolkata. | Page 2, example 2 |
+| Why ordinals in GROUP BY / ORDER BY? | So no user string shapes the statement. Aliases only appear in SELECT, sanitised. "Appointments" resolves to position 2 at compile time. | Page 2 |
+| How do lookup joins work without breaking existing SQL? | A field with lookup_table / lookup_key / lookup_display_column registers LEFT JOIN lead.lead_sources lk0 ON lk0.id = f.source_id once per FK, projects lk0.name, and the fact table gets alias f only when a lookup exists. Computed columns use a &#123;f&#125;. placeholder. Non-lookup SQL stayed byte-identical. | Page 2, example 3; page 4, story 4 |
+| How is the date range picker implemented? | ExportDateRangeResolver turns TODAY / THIS_WEEK / THIS_MONTH into a BETWEEN on the datasource's default_date_column in the tenant zone; upper bound = start of next period minus 1 µs so boundaries never double count. | Page 2, step 7 |
+| How is the catalog loaded? | Immutable snapshot in an AtomicReference, rebuilt every 5 min by CatalogLoader (and on POST /catalog/refresh). Readers never lock; a half-loaded catalog is impossible. | Page 1 |
+| What does the engine flag do? | reporting.engine.stub selects CompilingReportEngineService or StubReportEngineService behind one interface. Ships dark, flips per environment, UI develops against canned data. | Page 1 |
+| What do the tests cover? | 33 classes: QueryCompilerTest (invariants), CatalogValidatorTest, ReportAccessPolicyTest, PostgresJdbcAdapter unit + IT, TenantIsolationIT (two tenants, one table), seven real-engine E2E ITs by business domain (appointments, billing, pharmacy, telecaller, refunds ×3), controller slices. | Brief §5 |
+| Honest gaps? | Save validates but does not compile (a definition can validate yet fail at run). Audit dsl_hash hashes the SQL not the DSL. Global bulkhead. KEYS scan eviction. Stale Javadoc on CompiledReport. | Page 4 |
+
+## E. Behavioural hooks (STAR stories on page 4)
+
+* "Tell me about a time you pushed back on a requirement" → GST flip-flop: did not push back, made the reversal cheap instead (story 8).
+* "A bug you found before production" → scheduler ALL scope (story 1); tenant filter never enabled (story 2).
+* "A production incident" → 429 on dashboard load, bulkhead 3 → 10 (story 7).
+* "A design you are proud of" → the compiler's "values bound, identifiers looked up, structure ordinals" rule.
+* "Something you would redo" → per-tenant bulkheads; compile dry-run at save.
+
+## Vocabulary (one line each)
+
+| Term | Meaning here |
+| --- | --- |
+| Metadata-driven | Behaviour comes from rows in tables (catalog, definitions), not from code paths per report. |
+| DSL | Domain-specific language: our eight-field JSON describing a report. |
+| Catalog / semantic layer | Allow-list of datasources and fields with roles, types, allowed aggregations and operators. The type system. |
+| Dimension / measure | What you group by / what you aggregate. Borrowed from OLAP and Cube.dev. |
+| Time bucket | HOUR, HOUR_OF_DAY, DAY, WEEK, MONTH, QUARTER, YEAR granularity for a time dimension. |
+| Access scope | (tenantId, ALL \| RESTRICTED \| DENY, branchIds) derived from the JWT by ReportAccessPolicy. |
+| k-anonymity | Suppress any group with fewer than k members; here HAVING COUNT(\*) >= k. |
+| Bulkhead | Concurrency limiter; ship-hull metaphor. resilience4j, fail-fast at 10. |
+| SET LOCAL | Postgres setting scoped to the current transaction; our statement_timeout lives there. |
+| ShedLock | DB-backed distributed lock so one pod runs a scheduled job. |
+| System template | report_definition with owner=PLATFORM, is_system=true: runnable by any tenant, editable by none, clonable. |
+| Lookup join | Same-DB LEFT JOIN to a master table for a display name, declared in catalog_field. |
+| Claim-check / seam / snapshot | Design patterns you will name: adapter seam (swap DB target), immutable snapshot (AtomicReference catalog). |
+
+## Further reading (curated, in order of usefulness)
+
+* [OWASP SQL Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html) — prepared statements, allow-list input validation for identifiers. Our design is defences 1 and 3.
+* [OWASP Query Parameterization](https://cheatsheetseries.owasp.org/cheatsheets/Query_Parameterization_Cheat_Sheet.html) — why identifiers cannot be parameters, with Java examples.
+* [PostgreSQL statement_timeout](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-STATEMENT-TIMEOUT) and [SET LOCAL](https://www.postgresql.org/docs/current/sql-set.html).
+* [PostgreSQL AT TIME ZONE](https://www.postgresql.org/docs/current/functions-datetime.html#FUNCTIONS-DATETIME-ZONECONVERT) and [date_trunc](https://www.postgresql.org/docs/current/functions-datetime.html#FUNCTIONS-DATETIME-TRUNC) — the timezone bucketing trick.
+* [resilience4j Bulkhead](https://resilience4j.readme.io/docs/bulkhead) — semaphore vs thread-pool bulkhead; we use semaphore with zero wait.
+* [ShedLock](https://github.com/lukas-krecan/ShedLock) — lockAtMostFor / lockAtLeastFor semantics.
+* [HikariCP](https://github.com/brettwooldridge/HikariCP) — readOnly, pool sizing ([About Pool Sizing](https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing)).
+* [Hibernate @Filter](https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#pc-filter) — session-scoped, must be enabled per session (war story 2).
+* [k-anonymity](https://en.wikipedia.org/wiki/K-anonymity) and [l-diversity](https://en.wikipedia.org/wiki/L-diversity) — know the limits of what we claim.
+* [Cube.dev semantic layer](https://cube.dev/docs/product/data-modeling/concepts) and [Apache Superset row-level security](https://superset.apache.org/docs/security/) — the "build vs embed" comparison points.
+* [Grafana provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/) and [Prometheus data model](https://prometheus.io/docs/concepts/data_model/) — the analogy's source material.
+* [Fowler: Query Object pattern](https://martinfowler.com/eaaCatalog/queryObject.html) and [Fowler on DSLs](https://martinfowler.com/bliki/DomainSpecificLanguage.html).
+* [Redis KEYS](https://redis.io/docs/latest/commands/keys/) vs [SCAN](https://redis.io/docs/latest/commands/scan/) — the eviction gap.
+* [Flyway documentation](https://documentation.red-gate.com/fd) — versioned migrations as the deployment unit for data.
+* [India DPDP Act 2023](https://www.meity.gov.in/data-protection-framework) — the audit-trail conversation.
+
+## Add after each interview
+
+* \[ \] Question I was asked that is not on this page:
+* \[ \] Answer I fumbled and the better version:
+* \[ \] Number I did not know:
+

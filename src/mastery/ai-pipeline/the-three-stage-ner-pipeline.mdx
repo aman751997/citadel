@@ -1,0 +1,114 @@
+---
+title: "3. The three-stage NER pipeline"
+description: "One-line answer. \"Three stages, each covering what the previous one cannot: MedCAT for fast, cheap, code-linked UMLS concepts…"
+project: "ai-pipeline"
+order: 3
+minutes: 7
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58064898"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+**One-line answer.** "Three stages, each covering what the previous one cannot: MedCAT for fast, cheap, code-linked UMLS concepts; GLiNER, a zero-shot span tagger, on the text MedCAT left untouched; and an LLM only for what a dictionary cannot do — normalising values, dates and doses, and discovering entity types the first two missed. The output of each stage narrows the input of the next, so the expensive model sees the least text."
+
+## 1. What NER is, in one paragraph
+
+Named-entity recognition takes free text and returns _spans_ — start/end character offsets — each labelled with a _type_ (MEDICATION, LAB_VALUE, DIAGNOSIS…). Clinical NER adds two harder jobs: **linking** the span to a coded concept in a vocabulary (UMLS CUI, ICD-10, SNOMED, RxNorm, LOINC) so "T2DM", "type 2 diabetes" and "diabetes mellitus type II" become the same thing; and **context** — is the mention negated, historical, about a family member, hypothetical. A hospital record is useless if "denies chest pain" produces a chest-pain diagnosis.
+
+## 2. The three stages, and the exact hand-off
+
+<Mermaid code={`flowchart LR
+    T[Extracted text<br>~2 KB note] --> M[Stage 1<br>MedCAT + UMLS Small<br>38–68 concepts, 1.2 s]
+    M -->|covered_spans| MASK[space-mask covered ranges<br>offsets preserved]
+    MASK --> G[Stage 2<br>GLiNER medium v2.1<br>6–13 spans, 1 s]
+    G -->|spans without codes| E[Stage 3a Gemini enrich<br>value, unit, date, dose, code]
+    M -->|passthrough| R
+    E --> R[merge]
+    R -->|types still missing| D[Stage 3b Gemini discover<br>ANATOMY, PROCEDURES…]
+    D --> S[span resolver<br>offsets + pages]
+    S --> OUT[49–75 entities<br>S3 JSON + Postgres row]`} />
+
+```plaintext
+Text:   "Denies chest pain, palpitations, or acute shortness of breath. Started Lisinopril 20mg daily.
+         HbA1c: 7.6%   eGFR: 48 mL/min/1.73m2"
+
+Stage 1 MedCAT        chest pain (C0008031, negated) · palpitations (C0030252, negated) · Lisinopril (C0065374)
+                      HbA1c (C0019018)  eGFR (C3811844)  → covered_spans = [(7,17),(19,31),...]
+Mask                  "Denies ██████████, ████████████, or acute shortness of breath. Started ██████████ 20mg daily. ..."
+Stage 2 GLiNER        "acute shortness of breath" → CONDITIONS   "20mg daily" → dose/frequency context
+Stage 3a Gemini       Lisinopril → RxNorm 29046, dose 20 mg, frequency "daily", route oral
+                      HbA1c 7.6 → value_numeric 7.6, unit %, LOINC 4548-4
+                      eGFR 48 → value 48, unit mL/min/1.73m2, LOINC 33914-3
+Stage 3b Gemini       missing types [ANATOMY, PROCEDURES] → "lower extremities" ANATOMY
+Resolver              every quote → char_start/char_end/page; 49/49 exact
+```
+
+### 2.1 Stage 1 — MedCAT (dictionary + disambiguation)
+
+**What it is.** MedCAT (Medical Concept Annotation Tool, King's College London / CogStack) is a concept linker: a vocabulary of UMLS terms, a spaCy tokeniser, and a context-vector model that disambiguates ambiguous surface forms ("cold" the illness vs "cold" the temperature). Output per mention: CUI, preferred name, semantic types (TUI), an accuracy score, and MetaCAT meta-annotations such as _Status_ (Affirmed/Other) and _Subject_ (Patient/Family).
+
+**Why first.** Fast (1.2 s for a note on CPU), free per call, deterministic, and every hit comes with a _code_ — which is what medications and labs sections need to group on. UMLS also carries mappings to ICD-10 and SNOMED (`cdb.addl_info['cui2icd10']`), which we surface truthfully as separate code lists rather than pretending the CUI is an ICD code (a bug we fixed).
+
+**Pack.** UMLS Small v1 (`umls_sm_pt2ch`, 573,284 concepts, 607 MB CDB, a MetaCAT Status LSTM). Requires a UMLS licence (granted August 2026). Runs in its own container with `mem_limit: 6g`.
+
+**The story that always lands in interviews:** MedCAT v2 silently auto-converts a v1 pack in-process. That conversion took 13–16 GB of RAM inside a 19.5 GB Docker Desktop VM and wedged the daemon twice, taking Postgres down with it. Fix: pin the v1 library (`medcat[meta-cat,spacy]==1.16.12`), CPU-only torch from the PyTorch index, `--only-binary :all:` to avoid Cython builds, a memory fuse, and a compose profile so nobody starts it by accident. Lesson: a model server is a database — provision it like one.
+
+### 2.2 Stage 2 — GLiNER (zero-shot span NER)
+
+**What it is.** GLiNER (Generalist model for NER, Zaratiana et al. 2023) is a small bi-encoder transformer that takes the text _and a list of label names_ and returns spans matching those labels — no training per label. We use `urchade/gliner_mediumv2.1` with labels like `medication, diagnosis, lab value, vital sign, procedure, anatomy` and per-type confidence thresholds (default 0.5, tunable via `GLINER_TYPE_THRESHOLDS`).
+
+**Why second and only on uncovered text.** MedCAT misses phrasing that isn't in UMLS surface forms; GLiNER reads context. But GLiNER produces no codes and can double-tag what MedCAT already found. So we **space-mask** MedCAT's covered spans (replace covered characters with spaces, so every remaining character keeps its original offset) and hand GLiNER only the leftovers. Offsets stay valid without any bookkeeping — that mask is the whole mechanism, and the same one the MedGemma cascade uses.
+
+**Limit to know:** the model truncates at 384 word tokens and silently drops the rest. Long notes are windowed.
+
+### 2.3 Stage 3 — the LLM, used sparingly
+
+Two calls, both structured output (`response_mime_type=application/json`, a strict schema), thinking off, \~4 s and \~3–8 s:
+
+* **Enrichment** takes the GLiNER spans (not MedCAT's — those already have codes and are passed through) with a window of surrounding text and returns the structured fields: `normalized_name`, `code_system/code_value`, `value_numeric`, `value_unit`, `dosage`, `frequency`, `route`, `onset_date`, and crucially the verbatim `span` it based the answer on.
+* **Discovery** runs only for entity types with zero hits so far (typically ANATOMY, PROCEDURES) over the whole note. Bounded: it asks for the missing types by name.
+
+**Why not the LLM for everything?** Four reasons you should rattle off: _cost_ (Gemini output tokens at $2.50/M, and a whole-note extraction is 1,000+ tokens; MedCAT is free), _latency_ (25 s median for full discovery vs 1.2 s), _PHI_ (the AI Studio key has no BAA — the less clinical text leaves the building the better; on-prem MedGemma is the intended endgame), and _provenance/codes_ (an LLM will happily invent a "close enough" code; MedCAT's CUI is a lookup, not a guess). The LLM's real strength is the long tail: values with units, dates in prose, drug schedules — exactly what we send it.
+
+## 3. Merge, dedupe, and the entity record
+
+Entities from all three sources are merged; contained duplicates are dropped (a GLiNER span inside a MedCAT span loses); mentions of the same concept are deduped by `(entity_type, normalized_name)` with a `mention_count`. Each entity becomes one JSON object in S3 and one row in `patient.medical_entities`:
+
+```json
+{
+  "entity_type": "LAB_VALUE",
+  "raw_text": "eGFR: 48 mL/min/1.73m2",
+  "normalized_name": "Glomerular filtration rate",
+  "code_system": "LOINC", "code_value": "33914-3",
+  "value_numeric": 48.0, "value_unit": "mL/min/1.73m2",
+  "onset_date": "2025-01-20",
+  "confidence": 0.93, "negated": false, "source": "medcat",
+  "source_span": "eGFR: 48 mL/min/1.73m2", "char_start": 1412, "char_end": 1434, "page": 1,
+  "span_match": "exact", "mention_count": 1
+}
+```
+
+Postgres stores the pointer (`s3_entity_key`), type, code, numeric value, dates, offsets, page — everything the sections need to _group and sort_ — but not the raw clinical text. That is the PHI split.
+
+## 4. Modes: legacy vs MedGemma cascade
+
+The service has one switch, `NER_MODE`: `medgemma_only` (three whole-document MedGemma calls — the design for on-prem), `gliner_medgemma` (GLiNER first, MedGemma only on the masked leftovers — same masking trick), and `legacy` (the MedCAT→GLiNER→Gemini path above). A blank `MEDGEMMA_URL` forces legacy. All three end in the same span resolver and the same entity record, so downstream never knows which ran. Interview line: "the stages are interchangeable behind one output contract; that is what let me swap the expensive model out when it proved too slow".
+
+## 5. Quality — what I can and cannot claim
+
+* Counts on the five demo notes track the ground truth: 10 labs in the panel → 10 lab entities; 4 current meds → 4 (with 3.8-flash). 2.5-flash over-extracts the same fact from every sentence it appears in (13–21 "labs" for a 10-lab panel) — dedup absorbs it downstream, but it is noise.
+* 100% of spans resolved to exact offsets on the runs I measured.
+* **No gold set yet.** There is no precision/recall figure, and I say so. The next step is annotating the five demo notes (labs, meds, diagnoses, allergies) and scoring each stage and each model against them. An interviewer who hears "we measured counts, not P/R, and here is the plan" trusts the rest.
+* Known clinical gap: **allergies are not extracted at all** — no entity type, no prompt line. "ALLERGIES: Penicillin (rash)" in the demo note is read straight past. Arguably the most dangerous omission; it is a 2-point story.
+
+## 6. Read more
+
+* [MedCAT on GitHub](https://github.com/CogStack/MedCAT) and the paper: Kraljevic et al., ["Multi-domain clinical natural language processing with MedCAT"](https://arxiv.org/abs/2010.01165) (2021)
+* [UMLS — Unified Medical Language System](https://www.nlm.nih.gov/research/umls/index.html) (what a CUI is; the Metathesaurus; semantic types)
+* [GLiNER: Generalist Model for Named Entity Recognition using Bidirectional Transformer](https://arxiv.org/abs/2311.08526) (Zaratiana et al., 2023) · [code](https://github.com/urchade/GLiNER)
+* [spaCy NER concepts](https://spacy.io/usage/linguistic-features#named-entities) — spans, offsets, tokenisation (MedCAT rides on spaCy)
+* [RxNorm](https://www.nlm.nih.gov/research/umls/rxnorm/index.html), [LOINC](https://loinc.org/get-started/), [SNOMED CT](https://www.snomed.org/), [ICD-10](https://www.who.int/standards/classifications/classification-of-diseases) — the four vocabularies the sections group on
+* [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output) — why the schema, not the prompt, guarantees the JSON shape
+* Background: Jurafsky & Martin, [Speech and Language Processing](https://web.stanford.edu/~jurafsky/slp3/), the NER and information-extraction chapters
+

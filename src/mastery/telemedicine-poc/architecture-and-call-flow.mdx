@@ -1,0 +1,135 @@
+---
+title: "1. Architecture & Call Flow"
+description: "A video call needs three things: a way for two browsers to find each other (signalling), a server that forwards audio and video packets between them (an SFU, \"selective forwarding…"
+project: "telemedicine-poc"
+order: 1
+minutes: 5
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/57966659"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+## In plain words first
+
+A video call needs three things: a way for two browsers to find each other (signalling), a server that forwards audio and video packets between them (an SFU, "selective forwarding unit"), and permission tokens so random people cannot join a consultation. LiveKit gives us the SFU and the token format; we wrote the small server that mints tokens, starts recordings, and turns finished recordings into notes. Everything runs on one Mac; the patient joins from a phone on the same Wi-Fi.
+
+## Processes and ports
+
+| Process | Port | Role | Started by |
+| --- | --- | --- | --- |
+| Redis (Homebrew, native on the host) | 6379 | Coordination between LiveKit server and the egress worker | `brew services start redis` |
+| `livekit-server` (binary) | 7880 ws/http · 7881 tcp fallback · 50000–50200 udp | The SFU: signalling websocket, media forwarding, room state, webhooks | `start-all.sh` |
+| `livekit/egress` (Docker) | — | Joins rooms as a hidden participant and writes track audio to `/out` (bind-mounted `./recordings`) | `docker compose up` |
+| Token/API server (Express 5, ESM) | 3001 | Mint JWTs, start/stop egress, finalise, transcribe, summarise, sign, serve sessions | `start-all.sh` |
+| Vite dev server (HTTPS, self-signed) | 5173 | Serves the React app and proxies `/api` and `/lk` | `start-all.sh` |
+
+## The single-origin trick (the networking decision worth explaining)
+
+Browsers grant microphone and camera access only on secure origins. A phone on the LAN must therefore load the app over HTTPS. But if the page is HTTPS and the signalling websocket is plain `ws://host:7880`, the browser blocks it as mixed content. And if the API is on a different port, the phone must accept a second self-signed certificate. So the Vite dev server serves HTTPS with one self-signed cert and **proxies both** the REST API (`/api` → `http://localhost:3001`) and the LiveKit signalling websocket (`/lk` → `ws://localhost:7880`, with `ws: true`). One origin, one certificate, no mixed content. WebRTC media itself still flows directly over UDP and is encrypted by DTLS-SRTP regardless.
+
+<Mermaid code={`flowchart LR
+    P["Phone browser<br>https://192.168.x.y:5173"] -->|"GET /  (React app)"| V["Vite HTTPS<br>self-signed cert"]
+    P -->|"GET /api/token → proxy"| V
+    V -->|"http://localhost:3001/token"| T["Token server"]
+    P -->|"wss://…/lk → proxy"| V
+    V -->|"ws://localhost:7880"| L["livekit-server"]
+    P <-->|"UDP 50000–50200<br>DTLS-SRTP media, direct"| L`} />
+
+Interview line: "One certificate warning per device, not two, and no mixed-content errors. Media never touches the proxy."
+
+## The full call, as a sequence
+
+<Mermaid code={`sequenceDiagram
+    autonumber
+    actor D as Doctor (Mac)
+    actor P as Patient (phone)
+    participant T as Token/API server :3001
+    participant L as livekit-server
+    participant E as egress (Docker)
+    participant W as transcribe.py (Whisper)
+    participant M as MedGemma
+
+    D->>T: GET /api/token?room=consult-1&identity=doctor:Asha
+    T-->>D: JWT {roomJoin, room, canPublish, canSubscribe}
+    P->>T: GET /api/token?room=consult-1&identity=patient:Ravi
+    T-->>P: JWT
+    D->>L: connect wss /lk, publish mic (+camera)
+    P->>L: connect, publish mic
+    D->>P: consent-request (data channel + HTTP relay)
+    P->>D: consent-accept
+    D->>T: POST /api/recording/start?room=consult-1
+    T->>L: listParticipants
+    T->>E: startTrackEgress(doctor mic) → /out/consult-1/2026-…/doctor_Asha-TR_x.ogg
+    T->>E: startTrackEgress(patient mic) → …/patient_Ravi-TR_y.ogg
+    T-->>D: 200 {session, tracks: 2}
+    Note over D,P: 30–60 s consultation, REC badge on both screens
+    D->>T: POST /api/consult/consult-1/end
+    T->>E: stopEgress ×2, poll listEgress until COMPLETE (≤10 s)
+    T->>T: write manifest.json {tracks[{identity, role, file, startedAtNs}]}
+    T->>L: deleteRoom → everyone disconnected (ROOM_DELETED)
+    P-->>P: "Consultation ended"
+    D-->>D: auto-routed to Consultation notes
+    T->>W: spawn uv run transcribe.py manifest.json (serialised)
+    W-->>T: transcript.json + transcript.md
+    T->>T: delete *.ogg (unless KEEP_AUDIO=1)
+    T->>M: POST /v1/medgemma/chat (transcript → 5 sections)
+    M-->>T: summary.json / summary.md ("Draft by MedGemma")
+    D->>T: GET /sessions (3 s poll), /transcript, /summary (4 s poll)
+    D->>T: POST /sign {edited text, signature}
+    T-->>D: signed-note.json (second sign → 409)`} />
+
+## Three paths into one finalise
+
+A call can end in three ways, and every one of them must produce exactly one manifest and stop exactly the right egresses:
+
+1. **Doctor presses Stop recording** → `POST /recording/stop`.
+2. **Doctor presses End** → `POST /consult/{room}/end`: finalise _first_, then `deleteRoom`, so egress stops cleanly before the room disappears.
+3. **Nobody presses anything** (browser crash, tab closed) → LiveKit fires the `room_finished` webhook, signature-verified with the raw body, which calls the same finalise.
+
+`finalizeRecording` is idempotent: it removes the room from the in-memory `activeRecordings` map _before_ any await, closing the re-entrancy window, and it swallows "egress already ended" errors because an unpublished track or a closed room may have stopped it already.
+
+<Mermaid code={`stateDiagram-v2
+    [*] --> Idle
+    Idle --> Recording: POST /recording/start (409 if already)
+    Recording --> Finalising: /recording/stop
+    Recording --> Finalising: /consult/end (then deleteRoom)
+    Recording --> Finalising: room_finished webhook
+    Finalising --> Queued: manifest.json written
+    Finalising --> Finalising: stopEgress errors ignored, poll ≤ 20×500 ms
+    Queued --> Transcribing: serialised promise chain
+    Transcribing --> Ready: transcript.json, audio deleted, summary requested
+    Transcribing --> Failed: exit ≠ 0, audio retained for retry
+    Ready --> Signed: POST /sign (409 on second)`} />
+
+## On-disk layout (the filesystem is the database)
+
+```plaintext
+recordings/
+  consult-1/
+    2026-08-17T13-28-44-880Z/          ← one folder per recording session
+      doctor_Asha-TR_AMnvJi9WBm6A5J.ogg   (deleted after successful transcription)
+      patient_Ravi-TR_Qh8k2…ogg           (deleted)
+      EG_abc123.json                      ← egress result, source of startedAt
+      manifest.json                       ← {room, session, stoppedAt, tracks[]}
+      transcribe.log
+      transcript.json                     ← {room, segments:[{speaker, role, start, end, text}]}
+      transcript.md                       ← **[MM:SS] Doctor (Asha)**: …
+      summary.json / summary.md           ← MedGemma draft
+      signed-note.json                    ← write-once
+```
+
+Session folder name is `toISOString()` with `:` and `.` replaced by `-`, so a room can be recorded many times without overwriting. The UI parses it back and shows local time.
+
+## Webhook handling done right
+
+LiveKit signs webhooks. Verification needs the _unparsed_ body, so the route uses `express.raw({ type: "application/webhook+json" })` and hands the raw buffer plus the `Authorization` header to `WebhookReceiver.receive`. A bad signature is a 400. Only `room_finished` is acted on. Interview line: "If you JSON-parse before verifying, you cannot verify."
+
+## Read more
+
+* [LiveKit: intro](https://docs.livekit.io/home/get-started/intro-to-livekit/), [Egress overview](https://docs.livekit.io/home/egress/overview/), [Webhooks](https://docs.livekit.io/home/server/webhooks/), [Access tokens and grants](https://docs.livekit.io/home/get-started/authentication/).
+* [WebRTC for the Curious](https://webrtcforthecurious.com/) — the free book; read chapters on signalling, ICE, DTLS-SRTP.
+* [SFU vs MCU](https://bloggeek.me/webrtc-sfu-vs-mcu/) — why LiveKit forwards rather than mixes, and why that made per-track recording natural.
+* [MDN: Secure contexts](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts) — why getUserMedia needs HTTPS.
+* [Vite server.proxy](https://vitejs.dev/config/server-options.html#server-proxy) — the `ws: true` option.
+

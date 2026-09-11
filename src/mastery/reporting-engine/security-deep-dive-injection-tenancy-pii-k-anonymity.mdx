@@ -1,0 +1,146 @@
+---
+title: "6. Security Deep Dive — Injection, Tenancy, PII, k-anonymity"
+description: "Security interviewers do not want the list of features. They want to hear you attack your own system and name the exact line that stops each attack…"
+project: "reporting-engine"
+order: 6
+minutes: 9
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58097755"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+Security interviewers do not want the list of features. They want to hear you _attack your own system_ and name the exact line that stops each attack. This page is written that way: an attacker's move, what the engine does, and why it is enough.
+
+## The one rule everything hangs on
+
+> **Values are bound. Identifiers are looked up. Structure is ordinals.** Users can only ever choose from a menu the server wrote; the only thing that travels as free text is a _value_, and values go through JDBC bind parameters.
+
+<Mermaid code={`flowchart LR
+    U["User JSON"] --> F["field names<br>→ catalog lookup<br>(unknown = 400)"]
+    U --> O["operators, aggs,<br>sort order, bucket<br>→ Java enums"]
+    U --> V["filter values, limit,<br>min group size<br>→ bind params"]
+    U --> A["aliases<br>→ sanitised [A-Za-z0-9_ ],<br>deduped, quoted"]
+    F --> S["SQL text"]
+    O --> S
+    A --> S
+    V -.->|"never in the text"| S
+    S --> G["GROUP BY 1, 2<br>ORDER BY 3 DESC<br>(ordinals only)"]`} />
+
+## Attack 1 — classic SQL injection through a filter value
+
+```json
+{ "field": "status", "operator": "IN", "values": ["COMPLETED') OR 1=1 --"] }
+```
+
+**What happens.** The compiler emits `status::text IN (:flt_0)` and binds the list. Postgres receives the literal string `COMPLETED') OR 1=1 --` as a value and compares it to the status column. Zero rows match. Nothing else changes.
+
+**Line that stops it.** `QueryCompiler.appendFilter`, which never concatenates values. [OWASP SQL Injection Prevention](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html): defence 1, prepared statements.
+
+## Attack 2 — injection through an identifier
+
+```json
+{ "field": "status; DROP TABLE patient.appointments; --", "alias": "x" }
+```
+
+**What happens.** `CatalogValidator` looks the field key up in the catalog snapshot. Not found → HTTP 400 with a field-level error message. The compiler never runs. Even if the validator were bypassed, the compiler _also_ resolves fields through the catalog and throws on an unknown key.
+
+**Why this matters.** Identifiers cannot be bind parameters in SQL, so the only safe identifier is one the server already knows. That is the whole reason the catalog exists. Interviewers love this line: _"You cannot bind a column name, so we made column names a lookup."_
+
+## Attack 3 — injection through an alias
+
+```json
+{ "agg": "COUNT", "field": "count", "alias": "x\" FROM patient.patients; --" }
+```
+
+**What happens.** Aliases are the one place a user string reaches the SQL text. The compiler strips everything outside `[A-Za-z0-9_ ]`, de-duplicates against other aliases, and wraps in double quotes: `AS "x FROM patientpatients "`. Harmless. GROUP BY and ORDER BY never use the alias; they use ordinals, so a mangled alias cannot change the statement's shape.
+
+## Attack 4 — spoofing tenant or branch via headers
+
+```http
+POST /api/v1/reporting/reports/{id}/run
+X-Tenant-Id: some-other-hospital
+X-Branch-Id: BR-XYZ
+Authorization: Bearer <my real JWT for tenant drbasu, branch BR-DIL>
+```
+
+**What happens.** Headers are ignored. `JwtTokenFilter → BranchContextFilter → TenantContextFilter` derive tenant and branch from the token claims only. `ReportAccessPolicy.resolve` then produces `(drbasu, RESTRICTED, [BR-DIL])` from roles + claims. The compiler injects `tenant_id = :tenant_id` unconditionally and `branch_id::text IN (:branch_ids)` for RESTRICTED scope. The user still sees only their own branch.
+
+**Soundbite.** "Tenant scope is a property of the token, not a parameter of the request."
+
+## Attack 5 — a datasource someone forgot to scope
+
+Suppose a future migration adds a datasource with `tenant_column = NULL`. **The compiler refuses to compile it** and throws. A missing tenant column is not "no filter", it is "no report". Fail closed.
+
+## Attack 6 — pulling PII columns
+
+```json
+{ "field": "phone_hash" }   or   { "field": "aadhaar_vault_id" }
+```
+
+**What happens.** Two layers. First, the catalog simply does not list raw identifiers; the catalog is an allow-list and anything unlisted "does not exist". Second, the validator applies a regex block `.*_(vault_id|token|hash)$` (case-insensitive) to both the field key _and_ the physical column, so even a mistaken catalog row cannot expose a tokenised identifier. The `privacy.excludePatientIdentifiers` flag in the DSL is enforced server-side; it is not a client courtesy.
+
+## Attack 7 — re-identifying a patient from a tiny group
+
+"Patients seen by Dr X with consultation type PANCHAKARMA on 2026-09-03" might return a group of 1. With a date filter and a branch, that one row is a person.
+
+**What happens.** `privacy.minimumGroupSize` compiles to `HAVING COUNT(*) >= :min_group_size`. Groups smaller than k are removed _inside the database_, before rows leave. A client cannot post-process its way around it because it never receives the small groups. This is [k-anonymity](https://en.wikipedia.org/wiki/K-anonymity) applied at the aggregate level; we do not claim the stronger l-diversity or differential privacy, and saying so out loud earns credibility.
+
+## Attack 8 — a background job with no user
+
+Scheduled reports run from a cron poller. There is no JWT. The first implementation resolved scope as ALL, so a branch admin's scheduled CSV could have contained every branch. **Fix (V10):** persist `branch_scope_type` and `branch_ids` on the schedule row at creation time; compile at fire time with that stored scope. **Lesson:** every background path needs an explicit identity; "no user" must never default to "all access". Full story on page 4.
+
+## Attack 9 — denial of service via an expensive report
+
+A user (or a buggy UI loop) submits a 5-dimension, 90-day, hour-bucketed report against a large table, 50 times a second.
+
+| Knob | Bounds | What the user sees |
+| --- | --- | --- |
+| Validator bounds (≤5 dims, ≤10 filters, ≤100 values, limit ≤5000) | query _shape_ | 400 before SQL exists |
+| `SET LOCAL statement_timeout = '3000ms'` | time per statement | report error after 3 s; connection freed |
+| `LIMIT :row_limit` (hard cap 5000) after a forced ORDER BY | rows into JVM memory | `meta.truncated=true`, biggest groups kept |
+| Read-only Hikari pool per source DB | connections to OLTP | waits on pool, never starves writers |
+| resilience4j bulkhead, 10 concurrent, `maxWaitDuration=0` | threads in the reporting JVM | immediate 429 "try again" |
+| Redis result cache 60 s / 30 s, key includes tenant + branches + DSL + params | repeated identical runs | `meta.cached=true`, no DB hit |
+
+Soundbite: **"Four knobs, four failure modes: timeout bounds time, LIMIT bounds memory, pool size bounds the database, bulkhead bounds the JVM."** Read more: [statement_timeout](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-STATEMENT-TIMEOUT), [resilience4j Bulkhead](https://resilience4j.readme.io/docs/bulkhead), [HikariCP readOnly](https://github.com/brettwooldridge/HikariCP#gear-configuration-knobs-baby).
+
+## Attack 10 — poisoning the cache across tenants
+
+Two tenants run byte-identical report definitions. Could tenant B get tenant A's cached rows?
+
+**What happens.** Cache key = `rpt:run:{definitionId}:sha256(tenant | branches | canonical DSL | sorted params)`. Different tenant → different hash → different key. Editing a definition evicts `rpt:run:{definitionId}:*`. Honest gap: eviction uses the Redis `KEYS` scan, which is O(N) and would be replaced with `SCAN` or key tagging at scale ([Redis docs on why KEYS is dangerous](https://redis.io/docs/latest/commands/keys/)).
+
+## Defence in depth — which layer is load-bearing?
+
+<Mermaid code={`flowchart TD
+    L1["@PreAuthorize REPORT_VIEW / admin roles<br>(coarse gate)"] --> L2["ReportAccessPolicy<br>RGT_* → 403 · ADMIN → ALL · BRANCH_ADMIN → RESTRICTED"]
+    L2 --> L3["CatalogValidator<br>unknown field, PII regex, bounds"]
+    L3 --> L4["QueryCompiler<br>refuses DENY scope · refuses unscoped datasource · injects predicates"]
+    L4 --> L5["PostgresJdbcAdapter<br>read-only tx · timeout · bulkhead"]
+    L5 --> L6["Postgres role: SELECT only on source schemas"]
+    style L2 fill:#ffe0b2,stroke:#e65100`} />
+
+The highlighted layer is the load-bearing one for **platform staff** (RGT\_\* roles): they have no tenant claim, so if the policy let them through, the compiler would have nothing to inject. That is why the policy throws `AccessDeniedException` for any RGT\_\* role before anything else runs. Knowing _which_ layer matters most is what separates "we have defence in depth" from understanding it.
+
+## Read-only, enforced three times
+
+1. Hikari pool `readOnly=true` (connection-level default).
+2. `DataSourceTransactionManager.enforceReadOnly=true` (issues `SET TRANSACTION READ ONLY`).
+3. `TransactionTemplate.readOnly=true` around the adapter call.
+
+Plus, ideally, a database role that only has SELECT. Belt, braces, and a second belt. A compiler bug that emitted `UPDATE` would still be refused by Postgres.
+
+## Audit trail (DPDP / regulator conversation)
+
+Every run writes one row to `report_run_audit`: user id, definition id, sha256 of the SQL, datasource key, truncated flag, tenant, timestamp. It is written **synchronously** after the query, inside try/catch, and a failure to audit is logged but never fails the report. Why synchronous: `@Async` loses the thread-local tenant context and can drop rows on a crash; we had a real incident pattern with after-commit writes not committing. India's [DPDP Act](https://www.meity.gov.in/data-protection-framework) framing: "who accessed what, when" must be demonstrable.
+
+## Self-test
+
+1. Why can identifiers not be bind parameters, and what do we do instead?
+2. Which two places does the PII regex run against, and why both?
+3. A BRANCH_ADMIN's JWT lacks the branch claim. What happens and where?
+4. Name the load-bearing authorisation layer for RGT\_\* roles.
+5. Explain k-anonymity in one sentence and where the HAVING clause comes from.
+6. Why is the audit row synchronous?
+

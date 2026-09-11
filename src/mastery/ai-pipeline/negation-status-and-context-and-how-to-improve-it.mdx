@@ -1,0 +1,100 @@
+---
+title: "4. Negation, status and context — and how to improve it"
+description: "One-line answer. \"Two signals: a NegEx-style lexical rule — a negation cue earlier in the same sentence with no scope-breaker between it and the mention — and MedCAT's MetaCAT…"
+project: "ai-pipeline"
+order: 4
+minutes: 6
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/57966614"
+synced: "2026-09-11"
+---
+
+**One-line answer.** "Two signals: a NegEx-style lexical rule — a negation cue earlier in the same sentence with no scope-breaker between it and the mention — and MedCAT's MetaCAT _Status_ model. The rule decides; the model is recorded. Because on real notes the model called 'Denies chest pain' _Affirmed_ at 0.54 and a live nephropathy _Other_ at 0.998. To improve it I would move from cue lists to ConText-style bidirectional scope with termination terms, fine-tune MetaCAT on our own annotated notes, use the LLM as an adjudicator only for the disagreements, and — before any of that — build a gold set so I can measure the change."
+
+## 1. Why this is the question they ask
+
+Negation is the cheapest way to check whether someone _understands_ clinical NLP or just called an API. Roughly half of all clinical concept mentions in a note are negated, historical, or about someone else ("family history of end-stage renal disease"). A pipeline that ignores that produces a record where the patient has every disease the doctor ruled out. So the interviewer wants to hear: what signals exist, which one you trust, why, and how you would measure improvement.
+
+## 2. What the code does today (services/medcat-service/main.py)
+
+```python
+_NEG_CUES = re.compile(
+    r"\b(denies|denied|deny|no|nor|without|negative for|absence of|absent|"
+    r"free of|rules? out|ruled out|never had)\b", re.IGNORECASE)
+_NEG_SCOPE_BREAK = re.compile(
+    r"\b(but|however|although|though|except|aside from|other than)\b|[;:]", re.IGNORECASE)
+
+def _is_negated(text: str, start: int) -> bool:
+    """True if a negation cue governs the mention starting at `start`."""
+    sent_start = max(text.rfind(ch, 0, start) for ch in ".!?\n") + 1
+    window = text[sent_start:start]                 # same sentence, before the mention
+    last_cue = None
+    for last_cue in _NEG_CUES.finditer(window):     # the LAST cue before the mention
+        pass
+    if last_cue is None:
+        return False
+    return not _NEG_SCOPE_BREAK.search(window[last_cue.end():])  # nothing broke the scope
+```
+
+Then, per MedCAT entity: `negated = _is_negated(text, start) or meta_anns["Status"] == "Other" with high confidence…` — the MetaCAT _Status_ value and its confidence are also stored on the entity (`status`, `status_confidence`) so downstream can see both opinions. Negated entities are dropped from the sections but their spans still count as "covered" so GLiNER does not re-find them.
+
+### Walk through the real sentence
+
+```plaintext
+"Denies chest pain, palpitations, or acute shortness of breath. No hypoglycemic episodes on current regimen."
+
+mention "chest pain"      window = "Denies "                    cue=Denies, no breaker → NEGATED
+mention "palpitations"    window = "Denies chest pain, "        cue=Denies, no breaker → NEGATED
+mention "shortness of breath"  window = "Denies chest pain, palpitations, or acute "  → NEGATED
+mention "hypoglycemic episodes"  new sentence, window = "No "   cue=No → NEGATED
+
+"Hypertension, not well controlled, complicated by early diabetic nephropathy."
+mention "nephropathy"     window has no cue ("not" is deliberately NOT a cue) → AFFIRMED ✓
+```
+
+Two deliberate choices you should be able to defend: **"not" is not a cue** ("not well controlled hypertension" is a real hypertension), and **the scope runs forward from the cue to the end of the sentence or the first breaker**, which is what makes "denies A, B, or C" negate all three.
+
+## 3. Why not trust the MetaCAT model?
+
+MetaCAT _Status_ is a small BiLSTM trained by the pack authors on their data. On our notes it was unreliable in both directions:
+
+| Mention | Truth | MetaCAT Status | Confidence |
+| --- | --- | --- | --- |
+| "Denies **chest pain**" | negated | Affirmed | 0.54 — a coin flip, wrong |
+| "complicated by early diabetic **nephropathy**" | current diagnosis | Other | 0.998 — confidently wrong |
+
+And _Other_ lumps together negated, historical and hypothetical. Past medical history is core patient data; dropping everything "Other" would delete the problem list. So the model is _evidence_, not the decision. This is the paragraph that shows you ran it.
+
+## 4. The classic algorithms, so you can name them
+
+* **NegEx** (Chapman et al., 2001). Two cue lists — _pre-negation_ ("denies", "no") and _post-negation_ ("…is absent") — plus _pseudo-negation_ phrases that look like cues but are not ("no increase", "not only"). Scope: a window of \~5 tokens after the cue, ended by conjunctions ("but", "however"). Reported \~94% specificity, \~78% sensitivity on discharge summaries. Ours is a NegEx forward-scope variant with sentence-bounded windows instead of 5 tokens.
+* **ConText** (Harkema et al., 2009). NegEx generalised to three dimensions — _Negation_, _Temporality_ (recent / historical / hypothetical), _Experiencer_ (patient / other) — with explicit _termination terms_ and bidirectional scope. This is the shape of what we need: "family history of ESRD" is Experiencer=other, not negated.
+* **NegBio / negation via dependency parsing**. Scope from the syntactic tree rather than surface distance; handles "no evidence of X or Y, but Z is present".
+* **Learned classifiers** (MetaCAT, ClinicalBERT/Bio_ClinicalBERT fine-tunes, i2b2 2010 assertion task labels: present / absent / possible / conditional / hypothetical / not-associated-with-patient). Best accuracy when trained on in-domain data, which is the catch.
+
+## 5. How I would improve it — the answer, in order
+
+1. **Measure first.** Annotate the demo notes (and 50–100 real de-identified notes) for assertion status using the i2b2 six labels. Report per-label precision/recall for the current rule. Nothing below is worth doing blind.
+2. **ConText, not just NegEx.** Add pseudo-negation ("no increase in", "not only"), post-negation cues ("…was ruled out", "…: negative"), a termination list, and the two extra dimensions: _Experiencer_ (family history, mother, father) and _Temporality_ (history of, h/o, previously, status post). Store them as three fields on the entity, not one `negated` boolean, so the sections can keep history while excluding negatives.
+3. **Section-aware scope.** Clinical notes have headers — _PAST MEDICAL HISTORY_, _ALLERGIES_, _FAMILY HISTORY_, _REVIEW OF SYSTEMS_. J10 preserved page boundaries and we detect headers already (we drop them as entities). A mention under FAMILY HISTORY is Experiencer=family by default; under ROS, the list is mostly negated. Cheap, high-yield.
+4. **Fine-tune MetaCAT on our annotations.** MetaCAT supports training the Status/Subject models; 200–500 labelled mentions moves it from coin-flip to useful. Then combine: rule and model agree → done; disagree → step 5.
+5. **LLM adjudication for disagreements only.** Send the sentence plus the two verdicts to the LLM with a strict schema (`{negated, historical, experiencer, evidence_quote}`) — cheap because it is a few dozen mentions per note, not the whole text, and the quote gives provenance. Never let the LLM decide alone on the full note; that reintroduces cost, latency and hallucination.
+6. **Carry it through the sections.** Today a negated diagnosis is simply dropped. Better: keep it, flagged, so "ruled out" facts can appear in the timeline as ruled out — clinicians care about what was excluded.
+7. **Regression-test it.** Every sentence in this page becomes a unit test. The negation rule already has tests; the point is the gold set turning into CI.
+
+## 6. The trick questions
+
+* _"'No hypoglycemic episodes on current regimen' — what should the record show?"_ — Negated mention of hypoglycaemia (good: shows control), and the regimen itself is a real, affirmed set of medications. One sentence, two assertion statuses.
+* _"'Patient's mother had diabetes.'"_ — Not negated, not the patient. Without Experiencer this becomes a diabetes diagnosis. This is why a boolean is not enough.
+* _"'Metformin was discontinued due to renal function.'"_ — Not negation. It is a medication with a _status_ of discontinued and an onset/end date — the meds section handles it via `discontinuation`, not via negation.
+* _"Why not just let Gemini read the note and return affirmed entities only?"_ — Cost/latency/PHI, and you lose the auditable rule. Use it as the tie-breaker (step 5), with the quote.
+
+## 7. Read more
+
+* Chapman et al., ["A simple algorithm for identifying negated findings and diseases in discharge summaries"](https://pubmed.ncbi.nlm.nih.gov/12123149/) (NegEx, 2001) · [reference implementation](https://github.com/chapmanbe/negex)
+* Harkema et al., ["ConText: an algorithm for determining negation, experiencer, and temporal status from clinical reports"](https://pubmed.ncbi.nlm.nih.gov/19435614/) (2009)
+* [medspaCy](https://github.com/medspacy/medspacy) — a maintained spaCy pipeline with ConText, sectionizer and target matcher; the natural next library for us
+* [MedCAT tutorials](https://github.com/CogStack/MedCAT/blob/master/docs/tutorials.md) — including training MetaCAT models on your own annotations
+* Uzuner et al., ["2010 i2b2/VA challenge on concepts, assertions, and relations in clinical text"](https://pubmed.ncbi.nlm.nih.gov/21685143/) — the six assertion labels everybody uses
+* Peng et al., [NegBio](https://arxiv.org/abs/1712.05898) (2017) — dependency-based negation for radiology reports
+* [negspaCy](https://spacy.io/universe/project/negspacy) — NegEx as a spaCy component, five minutes to try
+

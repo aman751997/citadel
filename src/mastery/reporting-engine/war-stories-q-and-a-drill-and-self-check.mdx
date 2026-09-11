@@ -1,0 +1,102 @@
+---
+title: "4. War Stories, Q&A Drill & Self-check"
+description: "Nine stories in STAR form (Situation, Task, Action, Result) with the lesson attached. Stories 1–6 were caught before production by integration tests or live verification…"
+project: "reporting-engine"
+order: 4
+minutes: 10
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/54394881"
+synced: "2026-09-11"
+---
+
+Nine stories in STAR form (Situation, Task, Action, Result) with the lesson attached. Stories 1–6 were caught before production by integration tests or live verification. Stories 7–9 are from the last two weeks of the service being live. Pick one or two per interview; each is under 90 seconds spoken.
+
+## War stories
+
+### 1. Scheduled reports would have emailed every branch's data
+
+**Situation.** Scheduled reports run from a cron poller with no JWT. **Task.** Decide what "scope" means when there is no user. **Action.** The first version defaulted to ALL. During review I asked what a BRANCH_ADMIN's schedule would contain and the answer was "everything". Added `branch_scope_type` and `branch_ids` to the schedule row (migration V10), captured from the creator at save time, and compile at fire time with that stored scope. **Result.** A branch admin's 8 a.m. CSV contains their branch only; a test asserts it. **Lesson.** Every background path needs an explicit identity; "no user" must never default to "all access".
+
+### 2. The tenant filter was declared but never switched on
+
+**Situation.** Our own DB uses Hibernate `@Filter` on `tenant_id`. **Task.** Prove isolation, not assume it. **Action.** Wrote a two-tenant integration test (`TenantIsolationIT`): tenant A saves a definition, tenant B lists. B saw A's row. `@Filter` is a session-scoped switch and nothing enabled it. Fixed by arming it in the tenant aspect. System templates then needed to be readable by all tenants, solved with explicit native-query "filter-immune" reads. **Result.** Isolation is enforced and tested. **Lesson.** Annotations are not proof; isolation needs a test that runs two tenants against the same table.
+
+### 3. Date filters failed with "operator does not exist: timestamptz > character varying"
+
+**Situation.** Filter values arrive as JSON strings. A date filter compiled to `start_at > :v`. **Task.** Make typed comparisons work without losing indexes. **Action.** The catalog already carried `data_type`; the compiler now appends a cast to the _parameter_ (`:v::timestamptz`, `::date`) so the column stays index-friendly. For enum and uuid columns the cast goes on the column (`::text`) because there is no varchar operator for them. **Result.** BadSqlGrammar gone; the trend reports on page 2 work. **Lesson.** A type-safe DSL needs the catalog to carry physical types, not just logical ones.
+
+### 4. The first lookup join made every column ambiguous
+
+**Situation.** Lead source names were denormalised copies that returned `[null, N]` after an upstream change. **Task.** Resolve display names via the master table without touching existing reports. **Action.** Added `lookup_table / lookup_key / lookup_display_column` to `catalog_field` (V13). First attempt broke queries: both tables have `tenant_id`, `status`, `created_at`. Fixed by aliasing the fact table `f` _only_ when a lookup is present, qualifying every fact reference, and giving computed columns a `{f}.` placeholder (V14). **Result.** Non-lookup SQL byte-identical, asserted in `QueryCompilerTest`. **Lesson.** Make the change additive and prove the old path unchanged.
+
+### 5. Integration tests hung forever
+
+**Situation.** Scheduler tests extended the full Spring Boot test base. **Task.** Find why CI never finished. **Action.** The full context booted the real cron poller; a seeded due-schedule fired mid-test and blocked on a notification-service that did not exist. Built a minimal engine-only context (`EngineTestApplication`) without web, poller or Feign. **Result.** Suite runs in seconds. **Lesson.** A test context should include only what the test exercises.
+
+### 6. Phase-2 datasources were runnable before their databases existed
+
+**Situation.** Billing / lead / pharmacy catalog rows were active while only the patient pool was configured. **Task.** Fail loudly, not silently. **Action.** Blank source URL → pool skipped with a warning at boot; unknown source key at run → exception naming the missing config key. **Result.** A misconfigured environment says exactly what is missing. **Lesson.** Make misconfiguration loud and specific; never a silent fallback to the wrong database.
+
+### 7. Live: dashboards returned 429 on load (2026-09-01)
+
+**Situation.** Production bulkhead was `maxConcurrentCalls: 3`, `maxWaitDuration: 0`. Admins opened dashboards with four or more tiles; the UI fires one run per tile in parallel. **Task.** Explain the 429s and fix without removing the protection. **Action.** Traced to the bulkhead doing exactly what it was designed to do, tuned for single reports rather than dashboard fan-out. Raised to 10 in both profiles (PR #1706), a config-only change. Wrote down the follow-ups: per-tenant bulkheads, and the UI staggering tile loads. **Result.** Dashboards load; the protection still exists. **Lesson.** Size concurrency limits from the _caller's_ fan-out, not from the individual call. And a fail-fast limit that fires in production is a limit that was working.
+
+### 8. Live: product reversed the GST decision within a week (V33 → V36)
+
+**Situation.** 2026-09-02: "Revenue by Branch" and "Revenue Trend" must exclude GST to match pharmacy receipts. 2026-09-09: reversed. **Task.** Deliver both changes quickly and safely. **Action.** Each was a Flyway data migration updating the measure field in the stored definition JSON. Verified each by running the stored definition through the live app, not by reading the row. Left the unused `net_of_gst_amount` catalog field in place rather than deleting it. **Result.** Zero Java changes, zero application releases, two migrations. **Lesson.** This is the argument for metadata-driven design in one week: the cost of a product reversal was a data migration.
+
+### 9. Live: refunds were not reflected in revenue (V24 → V38)
+
+**Situation.** Revenue reports summed invoice totals; approved refunds were invisible, so revenue was overstated. **Task.** Net refunds out across billing, pharmacy and lead-source ROI reports without teaching the compiler joins. **Action.** Asked billing for views that net approved refunds per line / invoice (`v_*_net_of_approved_refunds`); repointed datasources at the views; gated Lead Source ROI on paid invoices only. Added real-engine E2E tests per report family (`RefundReportE2EIT`, `PatientRefundRequestReportE2EIT`, `BillingReportE2EIT`). **Result.** Consistent net revenue everywhere; compiler unchanged. **Lesson.** Push join complexity to the team that owns the tables; the reporting engine's job is to stay small and safe.
+
+## Q&A drill
+
+Say the answer out loud before expanding.
+
+| Question | Answer |
+| --- | --- |
+| Walk me through a report run end to end. | JWT filters populate tenant / branch context → tenant-scoped aspect and method security → service loads the definition (tenant-filtered, or system template) → policy resolves scope from roles → optional date window in tenant timezone → optional cache check → validator (catalog, PII, bounds) → compiler emits parameterised SQL with tenant / branch / k-anon / limit injected → adapter runs it read-only under bulkhead + 3 s timeout on the datasource's own pool → synchronous audit row → column metadata overlaid → cached → returned. |
+| How is this safe from SQL injection? | Users never supply identifiers or structure. Identifiers come from the catalog; values are bound parameters; aliases are sanitised and quoted; GROUP BY and ORDER BY use ordinals; sort direction and operators are enums. Exactly one class builds SQL text and its invariants are documented and tested. |
+| How is tenant isolation enforced? | Two mechanisms. Own DB: Hibernate tenant filter armed by the request aspect. Source DBs: the compiler injects `tenant_id = :tenant_id` from the JWT-derived scope unconditionally and refuses a datasource without a tenant column. Headers are ignored. Cache keys include tenant and branch. A two-tenant integration test guards it. |
+| Why not Metabase / Superset / Grafana? | Embedded BI does not know our tenant / branch RBAC or that PII is vault-tokenised; we would re-implement authorisation inside its model and still need a service for schedules and templates. Our DSL is eight fields and the compiler is \~500 lines; the control is worth it. The Grafana _shape_ we kept. |
+| How do you protect the OLTP databases? | Small read-only pools, per-statement 3 s timeout via `SET LOCAL`, hard 5000-row cap after a deterministic sort, fail-fast bulkhead of 10 concurrent source queries, short-TTL result cache. The adapter seam let us move to a read replica with a URL change. |
+| Why is the audit synchronous? | A regulatory trail must not be lost. Async loses thread-local tenant context and can drop rows on crash. It is one INSERT; failure is caught and logged so the report still returns. |
+| How do you handle timezones? | Bucket in the tenant's zone before truncation: `date_trunc('month', col AT TIME ZONE :tz)`. The zone comes from admin-service, cached 10 minutes, falling back to Asia/Kolkata; only successful non-default lookups are cached so an outage does not pin the wrong zone. |
+| What is k-anonymity here? | A group smaller than N patients could identify individuals. `minimumGroupSize` becomes `HAVING COUNT(*) >= :min_group_size`, so suppression is in the SQL, not post-processing, and a client cannot skip it. |
+| What would you change at 10× scale? | Fact tables large enough that 3 s is routine → pre-aggregation (materialised views or an OLAP store behind the same adapter interface) and async report jobs with polling. Global bulkhead → per-tenant. Cache eviction via `KEYS` scan → `SCAN` or key tagging. Catalog reload and the definitions table are not the bottleneck. |
+| What bugs did you catch before production? | Scheduled runs defaulted to ALL scope; the tenant filter was declared but not enabled; date filters failed on type mismatch. All caught by tests or live verification, all fixed by making the safe path the default. |
+| What happened in production? | Dashboards fanned out past a bulkhead of 3 → 429s → raised to 10 by config. GST inclusive/exclusive reversed within a week → two data migrations. Refunds overstated revenue → views from billing, datasources repointed. |
+| Does save compile the DSL? | Save runs the catalog validator for fast field-level 400s but does **not** compile (the LLD called for a compile dry-run; the code only validates — an honest gap I would close). Run validates again and compiles because scope, timezone and date window are request-time inputs. Compilation is microseconds; the DB call dominates. |
+| What is a system template? | Rows with `owner=PLATFORM, is_system=true`. Tenant-filtered reads miss them, so read / run use an explicit native-query fallback; modification returns 403; clone copies the DSL into a tenant-owned row. Any tenant runs it, only the platform edits it. |
+| How do you add a new dashboard? | Four INSERTs in a Flyway migration: datasource row, field rows, definition row, dashboard row. Preview with two tokens, read the emitted SQL, PR. Live within 5 minutes of merge via catalog reload. Page 5 walks it end to end. |
+
+## Closed-book self-check
+
+1. Draw the three diagrams on page 1. Label which arrows write and which read.
+2. List the twelve request steps in order.
+3. Write the emitted SQL for the appointments-by-status example, including parameter names. Then the THIS_MONTH trend. Then the lookup join.
+4. Name the four OLTP-protection knobs and the failure each one catches.
+5. Explain why identifiers cannot be bound parameters, and what we do instead.
+6. State the two tenant-isolation mechanisms and why they differ.
+7. Give three rejected alternatives and one condition under which each would win.
+8. Tell one war story in under 90 seconds. Then story 7 or 8 in under 60.
+9. Which authorisation layer is load-bearing for platform roles, and why does that matter?
+10. Recite the numbers table on the brief page.
+11. Map the four Grafana layers to the four reporting tables.
+
+## What I would improve (volunteer when asked)
+
+* **Global bulkhead, not per-tenant.** One noisy tenant can 429 others. The 3 → 10 change bought time, not a fix.
+* **UI fires every tile at once.** Staggering or batching tile runs would reduce bulkhead pressure without touching the service.
+* **Audit row's** `dsl_hash` **hashes the compiled SQL, not the DSL.** Fine as a trail of what ran; misleading name.
+* **Cache eviction uses the Redis KEYS scan**, O(N). Acceptable now, wrong at scale.
+* **Synchronous path only.** Heavy reports should become async jobs with a status endpoint; export is the natural place.
+* **No compile dry-run at save.** A definition can validate yet fail at run.
+* **Unused catalog fields accumulate** (e.g. `net_of_gst_amount` after V36). Harmless, but a periodic cleanup migration would keep the catalog honest.
+* **Stale Javadoc** on `CompiledReport` claims positional aliases; the code uses sanitised human aliases.
+
+## Read more
+
+* [STAR method](https://www.themuse.com/advice/star-interview-method) — the format above; keep Result measurable.
+* [Google SRE: blameless postmortems](https://sre.google/sre-book/postmortem-culture/) — how to tell story 7 without blaming whoever chose 3.
+* [Hibernate filters](https://docs.jboss.org/hibernate/orm/6.4/userguide/html_single/Hibernate_User_Guide.html#pc-filter) — story 2's root cause, in the docs.
+

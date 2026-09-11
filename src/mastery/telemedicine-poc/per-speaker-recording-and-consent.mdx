@@ -1,0 +1,124 @@
+---
+title: "2. Per-Speaker Recording & Consent"
+description: "The normal way to record a call is a room composite: one file with everyone mixed together, later run through a diarization model (pyannote, WhisperX) that guesses \"speaker 1 /…"
+project: "telemedicine-poc"
+order: 2
+minutes: 6
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/57933875"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+## The bet: never mix speakers
+
+The normal way to record a call is a _room composite_: one file with everyone mixed together, later run through a diarization model (pyannote, WhisperX) that guesses "speaker 1 / speaker 2" from voice characteristics. Diarization is error-prone on two-person medical calls: similar voices, overlapping speech, phone-quality audio, Hindi–English code-switching. A wrong label in a clinical note is a safety problem.
+
+We chose **one LiveKit TrackEgress per participant microphone**. Each speaker's audio lands in its own Opus/Ogg file, named after their identity. The transcript's speaker labels are a join on a manifest, not a model's guess. The comment in the code says it plainly: _"separate audio per speaker is a hard product requirement (exact speaker labels, no diarization)"_.
+
+|  | Room composite + diarization | Track egress per mic (chosen) |
+| --- | --- | --- |
+| Speaker labels | Probabilistic; errors on similar voices and overlap | Exact by construction |
+| Extra models | pyannote / WhisperX alignment, GPU time | None |
+| Files | One | One per speaker, plus a manifest |
+| Hard part moves to | Diarization quality | Time alignment of independent files (page 3) and half-silent tracks confusing Whisper (page 3) |
+| Cost at record time | Mixing/encoding | Zero: Opus pass-through, no transcode |
+
+## How a recording starts
+
+```javascript
+// one folder per recording session — a meeting can be recorded multiple times
+const session = new Date().toISOString().replace(/[:.]/g, "-");
+const participants = await roomService.listParticipants(room);
+for (const p of participants) {
+    const mic = p.tracks.find((t) => t.source === 2 /* TrackSource.MICROPHONE */);
+    if (!mic) continue;                                  // no mic → skipped
+    const file = `${sanitize(p.identity)}-${mic.sid}.ogg`;
+    const info = await egress.startTrackEgress(room,
+        { filepath: `/out/${sanitize(room)}/${session}/${file}` }, mic.sid);
+    entries.push({ egressId: info.egressId, identity: p.identity, file });
+}
+if (entries.length === 0) return res.status(400).json({ error: "no audio tracks to record" });
+activeRecordings.set(room, { session, entries });        // 409 on a second start
+```
+
+* **File name includes the track SID**, so a participant who re-publishes their mic gets a second file, never an overwrite.
+* `sanitize()` keeps only `[A-Za-z0-9_-]`; combined with `path.basename()` on the session segment, no `../` can escape `recordings/`.
+* **Format** (verified with ffprobe): Ogg container, Opus codec, 48 kHz, 2 channels, VBR. LiveKit writes the packets it already has; nothing is re-encoded.
+
+## Who is who: identity carries the role
+
+The LiveKit identity string is `"<role>:<name>"`, e.g. `doctor:Asha`, chosen so the token server needed no schema change. At finalise time the manifest records `{identity, role, name, file, startedAtNs}` per track, and the transcriber copies `role` and `name` onto every segment. That is the whole "diarization".
+
+```json
+{ "identity": "doctor:Asha", "role": "doctor", "name": "Asha",
+  "file": "doctor_Asha-TR_AMnvJi9WBm6A5J.ogg",
+  "startedAtNs": 1787029147802382600 }
+```
+
+**Honest gap to volunteer:** the role is asserted by the browser and merely parsed by the server. Anyone can type `doctor:`. Production binds role to an authenticated user, not to a string.
+
+## Why finalise polls the egress
+
+Stopping an egress is asynchronous: the file is flushed and the result record (with `startedAt` in nanoseconds) appears a moment later. If we wrote the manifest immediately, `startedAtNs` would be missing and page 3's alignment would silently degrade to relative time. So finalise polls `listEgress` up to 20 × 500 ms until status is COMPLETE, then harvests `fileResults[0].startedAt`. Measured skew between the two egresses in a session: 29–74 ms. Small, but a transcript with speakers 70 ms out of order reads wrong.
+
+## Consent: a set that must empty
+
+Recording is legally and ethically different from calling. The rule we implemented: **no recording starts until every remote participant present has explicitly accepted, and any participant can revoke at any time.**
+
+<Mermaid code={`stateDiagram-v2
+    [*] --> NotRecording
+    NotRecording --> AwaitingConsent: doctor clicks REC<br>pendingConsents = {every remote identity}
+    AwaitingConsent --> AwaitingConsent: consent-accept from X<br>pendingConsents.delete(X)
+    AwaitingConsent --> Recording: pendingConsents is empty<br>POST /recording/start
+    AwaitingConsent --> NotRecording: any consent-decline<br>set cleared, toast to doctor
+    Recording --> NotRecording: revoke from X<br>stop recording, doctor told WHO and that it was a revoke
+    Recording --> NotRecording: doctor stops / ends`} />
+
+* Only the doctor sees the REC button; it is disabled while awaiting consent.
+* Clicking REC with nobody else in the room says "No one else in the call yet" instead of recording a monologue.
+* The modal text discloses purpose, deletion and revocability: _"The doctor wants to record this consultation to produce a transcript. Audio is deleted after processing. You can revoke at any time during the call."_
+* Revoke is announced _distinctly_ from a plain stop so the doctor knows who withdrew consent and does not assume a glitch.
+
+Interview line: "Consent is a set that must empty, not a boolean that must be true. A late joiner is not covered by an earlier accept; a second recording asks again."
+
+## Dual-path signalling (the subtle bug)
+
+Consent messages first went over LiveKit's data channel. A patient who joined **without mic or camera** never received them. Root cause: a participant who publishes nothing has no WebRTC _publisher_ peer connection, and data-channel sends from that side time out. Fix: every control message is sent **both** over the data channel **and** via HTTP to the server, which relays it with `roomService.sendData(..., RELIABLE, {topic:"rec"})` so it arrives on everyone's _subscriber_ connection. Receivers de-duplicate: the `pendingConsents.size > 0` guard ensures only the first copy of the last accept can start the recording, and your own revoke echo is suppressed.
+
+Second-order detail: a server-relayed message has the _server_ as `msg.from`, so the sender's identity is carried inside the payload and read as `data.from || msg.from?.identity`.
+
+<Mermaid code={`sequenceDiagram
+    participant D as Doctor
+    participant L as LiveKit
+    participant T as Token server
+    participant P as Patient (no mic → no publisher PC)
+    D->>L: data channel: consent-request
+    Note over L,P: may never arrive (no publisher connection on P's side for replies)
+    D->>T: POST /consult/{room}/relay {type: consent-request, from: doctor:Asha}
+    T->>L: roomService.sendData(RELIABLE, topic rec)
+    L->>P: arrives on subscriber connection
+    P->>T: relay consent-accept (HTTP)
+    T->>L: sendData
+    L->>D: consent-accept (possibly twice)
+    D->>D: pendingConsents.delete once; second copy ignored`} />
+
+## Ending the call properly
+
+"Leave" and "End" are different. The doctor's End calls `POST /consult/{room}/end`, which finalises the recording first, then `deleteRoom`. LiveKit disconnects everyone with `DisconnectReason.ROOM_DELETED`; the patient's screen shows "Consultation ended" rather than a stale call with one tile. The doctor is auto-routed to the Consultation notes screen on any disconnect.
+
+## Retention and deletion
+
+* After a **successful** transcription, every `.ogg` in the session folder is deleted. `KEEP_AUDIO=1` simulates a hospital's 30-day retention opt-in.
+* After a **failed** transcription, audio is deliberately kept so the job can be retried. The demo folder for a "no speech found" run still holds its two files; the successful run's folder has none.
+* Transcripts, summaries and manifests are kept indefinitely. Production needs a purge policy for these too. Say so.
+
+## Read more
+
+* [LiveKit Track Egress](https://docs.livekit.io/home/egress/track/) vs [Room Composite Egress](https://docs.livekit.io/home/egress/room-composite/).
+* [pyannote-audio](https://github.com/pyannote/pyannote-audio) and [WhisperX](https://github.com/m-bain/whisperX) — what we avoided needing, and their known failure modes on overlap.
+* [LiveKit data messages](https://docs.livekit.io/home/client/data/messages/) — reliable vs lossy, topics, and why publisher/subscriber connections differ.
+* [RFC 7845: Ogg encapsulation for Opus](https://www.rfc-editor.org/rfc/rfc7845) — the file format.
+* [India DPDP Act 2023](https://www.meity.gov.in/data-protection-framework) — consent, purpose limitation, and erasure, the three things the consent flow and deletion implement.
+* [Telemedicine Practice Guidelines (India, 2020)](https://telemedicine.gov.in/) — patient consent and record-keeping duties for teleconsultations.
+

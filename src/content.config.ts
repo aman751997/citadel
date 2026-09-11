@@ -43,4 +43,19 @@ const war = defineCollection({
   }),
 });
 
-export const collections = { lessons, dsa, lld, war };
+// Mastery wing — project dossiers synced from Confluence via scripts/confluence-to-mdx.mjs.
+// id = "<project>/<chapter-slug>"; project must match a slug in src/mastery-projects.ts.
+const mastery = defineCollection({
+  loader: glob({ pattern: '**/*.mdx', base: './src/mastery' }),
+  schema: z.object({
+    title: z.string(),
+    description: z.string(),
+    project: z.string(),
+    order: z.number(),
+    minutes: z.number(),
+    source: z.string().url().optional(),
+    synced: z.string().optional(),
+  }),
+});
+
+export const collections = { lessons, dsa, lld, war, mastery };

@@ -1,0 +1,95 @@
+---
+title: "9. Production readiness — the honest scorecard"
+description: "One-line answer. \"It is past a POC and not yet production: the full chain is proven end to end with real uploads, the contracts between three services are authenticated and…"
+project: "ai-pipeline"
+order: 9
+minutes: 6
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/57999383"
+synced: "2026-09-11"
+---
+
+import Status from '../../components/Status.astro';
+
+**One-line answer.** "It is past a POC and not yet production: the full chain is proven end to end with real uploads, the contracts between three services are authenticated and idempotent, and it has metrics, dead-lettering and tests. What it lacks is what a first production incident would expose — retries, a drained dead-letter queue, a gold-set quality measure, and a BAA-covered model path. I can name every gap and the order I would fix them."
+
+## 1. How to answer "was it production or a POC?"
+
+Interviewers ask this to see whether you inflate. The winning answer has three parts: (1) what is genuinely production-grade, with evidence; (2) what is not, named plainly; (3) the ordered plan. Never say "production" without qualification; never say "POC" for something with 361 tests and a dead-letter queue. Say "pre-production on the dev server, with these specific gaps".
+
+## 2. The scorecard
+
+| Dimension | State | Evidence / gap |
+| --- | --- | --- |
+| Functional chain | <Status>Proven</Status> | 4 real uploads through the portal → NER → webhooks 202 → Java jobs → STOMP → cards live. 55 s/doc |
+| Service contracts | <Status>Solid</Status> | Authenticated both ways (`X-Service-Auth` inbound to Java, `X-Internal-Token` inbound to Python), idempotency keys, replay dropped by `ON CONFLICT` |
+| Tests | <Status>Good on Python</Status> <Status>Red on Java</Status> | 361 Python unit tests green. Java module suite: 40 failures / 595 errors on a clean develop (H2 vs schema-qualified entities) — pre-existing, new code covered by slice tests |
+| Observability | <Status>Rebuilt</Status> | One dashboard, one row per stage, only metrics the code increments; per-stage progress events. Gap: no alerting; DLQ gauge has no alert; error-rate alert query broken |
+| Delivery guarantees | <Status>At-least-once, idempotent writes</Status> | Correct in principle. Gaps: no retries (classic-queue header never set), DLQ never drained, half-failed documents acked |
+| Data safety | <Status>Mostly</Status> | PHI in S3 only, pointers in Postgres, no text in the broker or logs. Gaps: entity write has a total-loss window; erasure swallows S3 failures after pointer rows are gone |
+| Quality measurement | <Status>Missing</Status> | Counts match ground truth on 5 notes; 100% span location. No precision/recall, no gold set, no regression suite for extraction quality |
+| Compliance | <Status>Not for real PHI</Status> | Gemini AI Studio key has no BAA; only synthetic data has ever been sent. Vertex AI switch exists; on-prem model measured and parked |
+| Performance | <Status>Acceptable, one knob</Status> | 55 s/doc at concurrency 1. Reasoning call is 31 of those seconds. Section reads 5–20 s cold until J14 persists them |
+| Security | <Status>Fixed the big ones</Status> | WebSocket now authenticates CONNECT and authorises SUBSCRIBE per patient (was open to anyone). Gaps: default internal token in pipeline config; a committed JWT literal in Java; prompts leak via a catalogue endpoint |
+| Deployment | <Status>Dev only</Status> | Compose on the dev server; runbook exists; no HA, no autoscaling, model containers pinned by memory limits |
+| Schema governance | <Status>Fragile</Status> | Two repos write one schema; Flyway numbers collided across branches once already (fixed, rule written) |
+
+## 3. The traps, grouped by what they would do in production
+
+### Would lose or corrupt data
+
+1. **Entity write total-loss window.** Old rows deleted unconditionally, then only successfully uploaded entities re-inserted. If every S3 upload fails mid-run, the document ends with nothing. Fix: write new, swap pointers, delete old (the same order the write path already uses for chunks).
+2. **Erasure can leave unreachable PHI.** S3 batch delete logs failures after pointer rows are gone. Fix: delete objects first or keep a tombstone table until S3 confirms.
+3. **Half-failed document acked as success.** Fix: per-track outcome recorded; any track failure dead-letters; DLQ drained by a redrive job.
+
+### Would page someone at 3 a.m.
+
+4. **No retries**; a transient Gemini 503 sends the document straight to a DLQ nobody drains. Fix: quorum queues (so `x-delivery-count` exists) or explicit republish-with-delay, plus a DLQ alert.
+5. **Truncated model output → empty list**, silently. Fix: treat `MAX_TOKENS` as failure; metric.
+6. **Shutdown does not stop the consumer**; the pool closes under in-flight handlers. Fix: cancel consumers, await in-flight, then close.
+7. **DLQ gauge task reference dropped** — can be garbage-collected and stop updating. One line: keep the task handle.
+
+### Would embarrass you in a clinical review
+
+8. **Allergies not extracted.**
+9. **Alert rules match on display name** — fixed by LOINC grouping, but the rule file still names analytes by string.
+10. **LLM concerns have no stable identity**; a dismissal does not survive re-analysis (J13).
+11. **Lab unit normalisation once computed then discarded** — fixed; the regression test is the point.
+
+### Would fail a security or compliance review
+
+12. Default internal token shipped in config; a committed JWT literal in Java; `patient_id` still a metric label on one counter; prompts exposed by a catalogue endpoint; local-dev `CREATE TABLE IF NOT EXISTS` runs on every boot in every environment.
+
+## 4. What I would do first, in order (and why that order)
+
+1. **J14 — persist the four sections** after every merge. Turns a 5–20 s read into 30 ms and removes the S3 fan-out from the read path entirely. Unblocks the Java switch.
+2. **J3 — Java reads sections from the pipeline** and stops generating its own from Gemini summaries. Today the cards a clinician sees are Gemini prose, not the extracted entities; two Gemini bills per document. This is the single biggest correctness-and-cost item.
+3. **Gold set + P/R** for the five demo notes and 50 real de-identified notes. Every model/prompt decision after this is measured.
+4. **Reliability trio**: quorum queues + retries, DLQ redrive + alert, per-track failure handling.
+5. **Data-safety pair**: entity write ordering, erasure tombstones.
+6. **BAA path**: Vertex AI or MedGemma 4B on-prem — a business decision with the numbers already gathered.
+
+## 5. The corrections I made to my own earlier docs — say these, they prove rigour
+
+* "Section reads take 5–7 s" → measured 5–30 s; then found the cause (unbounded S3 fan-out) and fixed it.
+* "Three retries" → there were none; the header the code checked never exists on classic queues.
+* "Dashboards show pipeline health" → several panels read metrics nothing incremented; one implied the consumer was down. Replaced four dashboards with one honest one.
+* "Cost panel" → priced at a two-generations-old rate, \~4× under.
+* "The webhook 401 has three causes" → found a fourth by running it: the rate limiter after the security chain. Also revealed a production endpoint broken the same way.
+
+## 6. Likely follow-ups
+
+* _"How would you know it's healthy in production?"_ — Documents processed vs dead-lettered per hour; p95 stage durations; webhook 2xx ratio; span-located ratio; Gemini error and 429 rates; DLQ depth alert; a synthetic upload every 15 minutes with an expected entity count.
+* _"Rollback plan for J3?"_ — One config row per section key (`source = GEMINI | PIPELINE`). Flip back, no deploy.
+* _"SLA?"_ — None defined; I would propose "sections updated within 3 minutes of upload for 95% of documents" and instrument it from the progress events, which already carry the timestamps.
+* _"What would you cut to ship sooner?"_ — The RAG read path (no consumer yet) and the MedGemma path (measured too slow). Both are already sequenced last.
+
+## 7. Read more
+
+* [Google SRE Book](https://sre.google/sre-book/table-of-contents/) — SLIs/SLOs, alerting on symptoms not causes (chapters 4 and 6)
+* [RabbitMQ quorum queues](https://www.rabbitmq.com/docs/quorum-queues) — where `x-delivery-count` actually comes from
+* [RabbitMQ dead-letter exchanges](https://www.rabbitmq.com/docs/dlx)
+* [Transactional outbox pattern](https://microservices.io/patterns/data/transactional-outbox.html) and [idempotent consumer](https://microservices.io/patterns/communication-style/idempotent-consumer.html) — microservices.io
+* [HHS: Business Associate Agreements](https://www.hhs.gov/hipaa/for-professionals/covered-entities/sample-business-associate-agreement-provisions/index.html)
+* [Twelve-Factor App: config](https://12factor.net/config) — why the default token is a defect, not a convenience
+* [Flyway versioned migrations](https://documentation.red-gate.com/fd/migrations-184127470.html) — why version collisions across branches happen and how teams avoid them (timestamps, merge-day numbering)
+

@@ -1,0 +1,87 @@
+---
+title: "5. Provenance: spans, offsets, pages"
+description: "One-line answer. \"Every entity carries the verbatim sentence it came from, its character offsets in the source text, and the PDF page…"
+project: "ai-pipeline"
+order: 5
+minutes: 5
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58097665"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+**One-line answer.** "Every entity carries the verbatim sentence it came from, its character offsets in the source text, and the PDF page. The model's quote is treated as a claim, not a fact: a resolver has to find it in the real text before it becomes an offset, and if it cannot, the entity says `unlocated` instead of guessing. That is what turns a model output into something a doctor will click on."
+
+## 1. Why a doctor needs this
+
+A clinician will not act on "Metformin–renal risk, confidence 0.87". They will act on _"eGFR: 48 mL/min/1.73m2" — page 1, labs panel, 20 Jan 2025_, because they can open the document and check in three seconds. Provenance is the difference between a decision-support tool and a rumour. It is also the hallucination defence: a fabricated entity has no sentence to point at, so it fails resolution and is flagged.
+
+## 2. What was broken before (J10) — say this, it shows judgement
+
+* `raw_text` was documented as "exact span from clinical text" but actually held the model's _canonical name_. It and `normalized_name` were the same string. So "Type 2 Diabetes Mellitus" was recorded as the "raw text" of a sentence that said "T2DM".
+* Character offsets were computed nowhere. The legacy zero-shot stage produced them and the client threw them away.
+* Nothing in either service knew about pages — PDF extraction flattened the document to one string.
+
+Three fixes, two repos: Java preserves page boundaries when it extracts text (a page map alongside the text in S3); the prompts ask every model for the verbatim `span` next to the canonical name; and a resolver turns quotes into offsets.
+
+## 3. How the resolver works
+
+<Mermaid code={`flowchart TD
+    Q[entity.source_span<br>model's quote] --> E{exact substring<br>in source text?}
+    E -->|yes| O[char_start / char_end<br>span_match = exact]
+    E -->|no| N{whitespace / case<br>normalised match?}
+    N -->|yes| O2[offsets from the<br>original string<br>span_match = normalized]
+    N -->|no| U[span_match = unlocated<br>offsets null — no guessing]
+    O --> P[page = page_map.lookup(char_start)]
+    O2 --> P
+    G[GLiNER entity<br>already has offsets] -->|shift only, never re-match| P`} />
+
+Three details interviewers pick on:
+
+1. **Model quotes are not guaranteed substrings.** LLMs "fix" typos, drop double spaces, change case. So the match runs exact → normalised, and only those two — anything fuzzier would let a quote land on the wrong sentence and produce a confident wrong page. Wrong provenance is worse than none.
+2. **GLiNER offsets are trusted, never re-matched.** GLiNER returns character spans natively. In the cascade it ran on masked text, but the mask is space-for-character, so offsets are identical to the original. They are only _shifted_ if the text was windowed.
+3. **Masking preserves coordinates.** This is the trick that ties pages 3 and 5 together: replacing covered spans with spaces (not deleting them) means every later stage's offsets are already in document coordinates. No offset arithmetic, no off-by-one class of bugs.
+
+Real run: `Span resolution complete … total_entities=49 located=49 pages_assigned=49 match_counts={"exact": 49}`.
+
+## 4. Pages
+
+Java's PDFBox extraction writes the text with page boundaries preserved (form-feed separators / a page map of character ranges) into S3 next to the text. The pipeline fetches the page map, and `page = the page whose range contains char_start`, 1-based. Scanned PDFs go through Gemini OCR in Java and produce the same map. When there is no map (older documents), `page` is null and the UI shows a document link instead of a page reference — degrade, do not fabricate.
+
+## 5. What the record looks like end to end
+
+```plaintext
+Source text (page 1, chars 1401–1436):   "- eGFR: 48 mL/min/1.73m2"
+
+Entity                                      Postgres row (patient.medical_entities)
+  source_span  "eGFR: 48 mL/min/1.73m2"      char_start 1412   char_end 1434   page 1
+  raw_text     "eGFR: 48 mL/min/1.73m2"      span_match exact
+  normalized   Glomerular filtration rate    code LOINC 33914-3   value 48.0  unit mL/min/1.73m2
+  s3_entity_key patients/PTN_DEMO_003/entities/2f9c…json   (the PHI lives here, not in the row)
+
+Alert built from it                          UI (planned AlertDetail screen)
+  "CKD Stage 3 or Worse — eGFR 48 below 60"  → quote "eGFR: 48 mL/min/1.73m2" · page 1 · 20 Jan 2025 · open PDF
+```
+
+## 6. Provenance vs PHI isolation — how they coexist
+
+Offsets and page numbers are _not_ PHI: they are integers. The verbatim quote _is_ PHI, so it lives in the S3 entity JSON (encrypted at rest, one object per entity, under the patient prefix) and Postgres carries only the pointer plus the numbers needed to sort and group. A section read fetches the JSONs it needs (see the S3 fan-out story on page 10 for how that went wrong and was fixed).
+
+## 7. Hallucination — the answer they want
+
+"The LLM never creates a fact without a quote; the quote must be found in the source text; unfound quotes are flagged, counted (`span_match` distribution on the dashboard) and shown as unlocated rather than hidden. Codes come from a vocabulary lookup, not the model, wherever MedCAT covered the span. And the sections are computed from entities by deterministic code — the only place free-text reasoning enters is the critical-alerts pass, which returns `related_entities` so each concern points back at the facts it used."
+
+## 8. What is still missing
+
+* No _relation_ provenance — a drug and its dose are two entities linked by proximity, not an explicit edge. A dosage change on page 3 and a drug name on page 1 will not be linked.
+* `normalized` matches (case/whitespace) are honest but coarse; a Levenshtein-bounded third tier with a strict threshold is the next experiment — measured against the gold set, not eyeballed.
+* The AlertDetail screen that shows the quotes is not built yet (frontend U4 in the plan). The data is there; the UI is not.
+
+## 9. Read more
+
+* [Lewis et al., Retrieval-Augmented Generation](https://arxiv.org/abs/2005.11401) — the citations-as-grounding idea provenance descends from
+* ["A Survey on Hallucination in Large Language Models"](https://arxiv.org/abs/2311.05232) (Huang et al., 2023) — taxonomy you can quote: factuality vs faithfulness
+* [HHS: de-identification and the 18 PHI identifiers](https://www.hhs.gov/hipaa/for-professionals/privacy/special-topics/de-identification/index.html) — why quotes are PHI and offsets are not
+* [Apache PDFBox](https://pdfbox.apache.org/) — how Java keeps page boundaries during text extraction
+* [spaCy Span API](https://spacy.io/api/span) — the char-offset conventions (start inclusive, end exclusive) we mirror
+

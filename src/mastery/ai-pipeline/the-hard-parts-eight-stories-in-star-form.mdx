@@ -1,0 +1,119 @@
+---
+title: "10. The hard parts — eight stories in STAR form"
+description: "Each story is Situation → Task → Action → Result, then the one-sentence lesson to close with. Pick two before an interview; know the numbers in them cold…"
+project: "ai-pipeline"
+order: 10
+minutes: 7
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58195969"
+synced: "2026-09-11"
+---
+
+Each story is **Situation → Task → Action → Result**, then the one-sentence _lesson_ to close with. Pick two before an interview; know the numbers in them cold. When asked "what was the most challenging part", lead with story 1 or 3 — they are technical, measurable, and end in a design principle.
+
+## 1. The section read that took 100 seconds — S3 fan-out
+
+**S.** After the end-to-end chain worked, one document took 131 s. Per-stage progress events showed NER done at 15 s and a 115 s hole in `PROFILE_MERGE`, whose only work was recomputing critical alerts. The Gemini reasoning call inside it was 32 s. Eighty seconds were unaccounted for.
+
+**T.** Find the 80 seconds without guessing.
+
+**A.** Read the metrics rather than the code first: `s3_operation_duration_seconds_sum / count` for `get_object` = 359 calls, 18,826 s → **52 s average per GET**. Absurd for S3. Reproduced in the container: a single GET took 60 ms; 20 concurrent GETs with per-call clients took 1.07 s. So the primitive was fine — the pattern was not. The section code fetched every entity JSON for the patient (\~700) with an _unbounded_ `asyncio.gather`, each call creating its own `aioboto3.Session().client()`: 700 clients and TCP handshakes at the same instant, starving each other. Fix: one lazily-created shared client with a connection pool sized to the concurrency, and an `asyncio.Semaphore(32)` around the fetch.
+
+**R.** Next document: **55 s** end to end; the merge stage collapsed to the reasoning call alone (31 s). Average GET back to \~0.5 s including queueing.
+
+**Lesson.** Concurrency without a bound is a load test against yourself. And per-stage telemetry found this in minutes; a single "processing time" number never would have.
+
+## 2. The model that ate the Docker daemon — MedCAT v2 and the v1 pack
+
+**S.** Local stack kept dying: Postgres unreachable, portal errors, `docker ps` hanging. The medcat container was at 13.5–16 GB in a 19.5 GB Docker Desktop VM.
+
+**T.** Make MedCAT usable locally without taking the machine down, and understand why.
+
+**A.** Traced it to MedCAT 2.x silently auto-converting the v1 UMLS pack in-process on every start (`cat.py`, with an env flag misspelt `MEDCAT_AVOID_LECACY_CONVERSION`). Rather than convert, ran the pack on the library it was built for: pinned `medcat[meta-cat,spacy]==1.16.12`, CPU-only torch from the PyTorch index, `--only-binary :all:` so blis/thinc never compile from source on Python 3.12. Put the container behind a compose profile with `mem_limit: 6g`, removed it from other services' `depends_on` so `docker compose up grafana` could not resurrect it.
+
+**R.** 1.5 GB resident, 1.2 s per note, 38–68 concepts with UMLS codes; the daemon has not wedged since.
+
+**Lesson.** A model server is infrastructure — provision it like a database: memory limits, no implicit start-up, and read the migration notes of the library you upgrade.
+
+## 3. The 4× latency that was hidden inside the model — Gemini thinking
+
+**S.** Gemini extraction calls took 40 s. Everyone assumed "LLMs are slow".
+
+**T.** Decide whether to switch models or accept it.
+
+**A.** Looked at `usage_metadata`: 7,004 _thought_ tokens per call — the model's hidden reasoning, billed as output, never returned. Structured extraction is not a reasoning task. Set `thinking_budget=0` on the extraction calls only; kept it on for the clinical-reasoning pass and made that a setting.
+
+**R.** 40.3 s → 10.2 s on the same prompt and schema; comparable output. Then measured 3.8-flash vs 2.5-flash on five notes: 9.6 s vs 25.4 s median, with counts that matched the notes.
+
+**Lesson.** Read the usage metadata before blaming the model. Defaults are tuned for chat, not for pipelines.
+
+## 4. The webhook that 401'd for four different reasons
+
+**S.** Python's `section-ready` webhook to Java always returned 401.
+
+**T.** Get one authenticated service-to-service call working, and understand the whole chain.
+
+**A.** Three causes by reading: no `/internal/**` matcher so the chain ended in `anyRequest().authenticated()`; the service-auth filter validated the token but never set an `Authentication`; header name mismatch (`X-Internal-Token` vs the monorepo's `X-Service-Auth`). Then a fourth by running it: the `RateLimiterFilter` ran _after_ security, keyed its bucket on a user JWT, and rejected the request that Spring had just authorised. Fixed all four; Python switched header (one config), Java became the standard.
+
+**R.** 4 × 202 per document, 60–100 ms each. And the fourth cause revealed that an existing production internal endpoint was broken the same way — its test had mocked the rate limiter out.
+
+**Lesson.** Filter order is behaviour. A test that mocks a filter tests a chain that does not exist.
+
+## 5. The page that reloaded itself, and the auth rewrite underneath
+
+**S.** The upload list vanished mid-run twice. The frontend branch was 54 commits behind develop.
+
+**T.** Make the screen robust, and get the branch mergeable.
+
+**A.** Persisted in-flight upload rows in `sessionStorage` so a reload cannot blank them. Merged develop — and discovered develop had replaced cookie-based auth with an auth-service round-trip (`/auth/me`), which meant two more Java services to run locally. Judgement call with the lead: revert the merge, rebuild the feature as a single commit on latest develop with nothing else in it, and schedule the auth stack for the next day.
+
+**R.** One clean PR (38 files) that will merge; two superseded PRs closed; a plan for the auth stack with a 90-minute time box.
+
+**Lesson.** Don't merge upstream into a feature branch mid-task without asking — and separate "bring the branch current" from "add the feature" so each is reviewable on its own.
+
+## 6. Flyway V74 twice — schema numbering across branches
+
+**S.** Rebuilding the local integration branch, patient-service refused to boot: two migrations named V74, two named V75. Develop had merged other teams' migrations while our stack was open.
+
+**T.** Unblock without losing the applied history on developer databases.
+
+**A.** Renumbered ours to V76/V77 on the PR branches; on the local DB renumbered the two `flyway_schema_history` rows and enabled `out-of-order` once so develop's real V74/V75 could apply behind them. Also found a second Flyway failure: a `${REDIS_ENABLED:false}` quoted in a SQL comment was parsed as a placeholder.
+
+**R.** Boots; two rules written down: take the migration number on merge day, and never quote a placeholder in a migration comment.
+
+**Lesson.** Schema versioning is a coordination problem, not a technical one.
+
+## 7. The cards that weren't ours — finding the real J3
+
+**S.** The cards updated live and everyone was pleased. While removing dead Java code I read what filled them.
+
+**T.** Confirm where the section content actually came from.
+
+**A.** Traced: Java generated a Gemini _summary_ per document on upload, then aggregated summaries and asked Gemini _again_ per section. The pipeline's NER output fed only RAG and its own alerts. Two Gemini bills per document, and the clinician saw prose never grounded in the span-located entities. Stopped the dead-code PR from deleting the summary path (it was live input) and moved the source swap (J3) to the top of the plan.
+
+**R.** A plan that fixes the right thing: persist sections in the pipeline (J14), point Java at them (J3), delete the summary generator afterwards.
+
+**Lesson.** "It works" and "it does what we think" are different claims. Verify data lineage, not just the UI.
+
+## 8. Dashboards that lied — dead counters
+
+**S.** Four Grafana dashboards, several panels permanently empty, one that read as "consumer down".
+
+**T.** Make one dashboard where every panel is true.
+
+**A.** Grepped every metric name against the code: several counters were declared and never incremented; one histogram was exported under a name Prometheus renamed (`_total`/`_bucket` suffix rules). Deleted the dead ones, fixed the increments (the three NER stage counters had never moved in a year), removed a `patient_id` label (unbounded cardinality, and a patient identifier in a metrics store). Built one dashboard, one row per pipeline stage, plus a Pushgateway board for one-shot benchmarks.
+
+**R.** Every panel moves when a document is processed; the MedGemma benchmark went to DevOps as a screenshot with numbers, not a paragraph.
+
+**Lesson.** A dashboard is a claim about the system; audit it like code.
+
+## Quick picks by question
+
+| If they ask… | Tell |
+| --- | --- |
+| "Most challenging technical problem?" | 1 (S3 fan-out) or 2 (MedCAT memory) |
+| "A time you found a performance issue?" | 1 or 3 |
+| "A time you disagreed / changed course?" | 5 or 7 |
+| "Debugging across services?" | 4 |
+| "Working with other teams' code?" | 6 or 4 |
+| "Observability?" | 8, then 1 (found by telemetry) |
+

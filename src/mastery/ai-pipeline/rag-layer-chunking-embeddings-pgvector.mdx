@@ -1,0 +1,92 @@
+---
+title: "8. RAG layer: chunking, embeddings, pgvector"
+description: "One-line answer. \"Every document is split into 512-token chunks with 50-token overlap along clinical section headers, embedded with MedCPT — a biomedical encoder — into…"
+project: "ai-pipeline"
+order: 8
+minutes: 6
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58163201"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+**One-line answer.** "Every document is split into 512-token chunks with 50-token overlap along clinical section headers, embedded with MedCPT — a biomedical encoder — into 768-dimensional vectors, and stored in pgvector with an HNSW index next to the entities. The index is live and filled; the retrieval endpoint that reads it is the next story. I chose Postgres + pgvector over a vector database because the vectors must be filtered by patient and tenant, joined to entities, and covered by the same backups and access control as the rest of the record."
+
+## 1. Why a RAG layer at all, when the sections are computed?
+
+The four sections answer fixed questions. A clinician's next question is open: "has this patient ever had a reaction to contrast?", "what did the cardiologist say in 2023?". That needs retrieval over the text, not over entities. RAG (retrieve relevant chunks → give them to an LLM with the question) is how you answer open questions without the model hallucinating a history. The indexing half is built; the querying half (stories 404/405R) is deliberately sequenced after the sections path is single-sourced.
+
+## 2. Chunking — tokens, not characters, and along the note's own structure
+
+```python
+# chunking_service.py
+chunk_size=512,      # TOKENS (tiktoken cl100k), not characters — LLM context is priced in tokens
+chunk_overlap=50,    # so a sentence split across a boundary is fully present in one of the two chunks
+# Separators are tried in order: clinical section headers ("ASSESSMENT AND PLAN:", "CURRENT MEDICATIONS:")
+# first, then paragraphs, then sentences — a chunk should be a clinical unit, not a random window.
+```
+
+Real numbers: a 2 KB demo note → 3 chunks, \~228 tokens each (short notes; the 512 cap bites on discharge summaries). Each chunk row carries `patient_id`, `tenant_id`, `document_id`, its text (this one _is_ in Postgres — a deliberate exception to the PHI split, because you cannot vector-search S3), the embedding, and metadata.
+
+**Why these numbers.** 512 is the MedCPT encoder's context; anything longer is truncated, so chunking at the model's limit wastes nothing. 50 overlap ≈ one long sentence. Header-first splitting means a "labs" chunk is all labs, which makes retrieval sharper than fixed windows.
+
+## 3. Embeddings — MedCPT, and why not a general model
+
+`ncbi/MedCPT-Article-Encoder` (NCBI, 2023): a biomedical bi-encoder trained on 255 million PubMed user click logs. 768 dimensions. It runs in its own container (`embedding-service`) on CPU, batched. Why not OpenAI/Gemini embeddings: PHI leaves the building; and why not a general open model: medical vocabulary ("SOB", "s/p", "HbA1c") embeds far better with a domain encoder. Honest caveat: MedCPT was trained on _articles_, not clinical notes; ClinicalBERT-family or a fine-tuned encoder on note pairs is the experiment I would run once retrieval has an evaluation set.
+
+## 4. pgvector and HNSW — the parameters and what they mean
+
+```sql
+CREATE TABLE document_chunks (..., embedding vector(768), ...);
+CREATE INDEX idx_chunks_embedding_hnsw ON document_chunks
+  USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);
+-- at query time (pgvector ≥ 0.8): SET hnsw.iterative_scan = strict_order;  -- protects recall under WHERE filters
+```
+
+* **HNSW** (Hierarchical Navigable Small World) is a graph index for approximate nearest neighbour: each vector links to its `m` nearest neighbours across layers; a search greedily walks the graph. `m = 16` is the pgvector default — more links, better recall, more memory. `ef_construction = 64` is how hard it works to find good neighbours while building — higher is slower to build, better graph. Query-time `ef_search` (default 40) trades latency for recall.
+* **Cosine ops** because MedCPT vectors are compared by angle; magnitude carries no meaning.
+* **The filter trap**, which interviewers love: `WHERE patient_id = ? ORDER BY embedding <=> ? LIMIT 10`. HNSW finds the global top-k _then_ the filter drops most of them, so a patient with few chunks gets fewer than 10 results — silently. pgvector 0.8's `iterative_scan` keeps walking the graph until the filter is satisfied. That is why the setting is there and why the version matters.
+* **Why not IVFFlat:** needs training on existing data and re-clustering as data grows; HNSW builds incrementally, which suits a stream of uploads.
+
+## 5. Why pgvector and not Pinecone / Weaviate / Milvus
+
+1. **Tenancy and access control are already in Postgres.** The vectors must be filtered by patient and tenant on every query; doing that in the same database as the row-level rules is one filter, not two systems to keep in sync.
+2. **Joins.** A retrieved chunk should link to the entities found in it and to the document's page. That is a SQL join, not an API round-trip.
+3. **Operations.** One backup, one HA story, one set of credentials — in a HIPAA context that is not laziness, it is fewer systems holding PHI.
+4. **Scale.** Millions of vectors per instance is fine for pgvector; we are at thousands per patient. If we ever hit hundreds of millions, the answer changes — and I would say so.
+
+## 6. The retrieval design that is planned (stories 404 / 405R)
+
+<Mermaid code={`flowchart LR
+    Q[clinician question] --> HY[hybrid retrieval]
+    HY --> V[vector top-k<br>pgvector HNSW, patient-filtered]
+    HY --> B[BM25 / tsvector top-k<br>exact drug names, codes, numbers]
+    V --> RRF[reciprocal rank fusion]
+    B --> RRF
+    RRF --> RR[cross-encoder reranker<br>MedCPT-Cross-Encoder, top-20 → top-5]
+    RR --> P[prompt: question + chunks + structured sections]
+    P --> LLM[answer with chunk citations<br>→ page + document]`} />
+
+* **Hybrid** because embeddings are bad at exact tokens — "lisinopril 20mg" or "eGFR 48" are better found lexically. Postgres gives BM25-ish search via `tsvector` for free.
+* **Reciprocal rank fusion** merges the two ranked lists without tuning weights: score = Σ 1/(k + rank), k≈60.
+* **Cross-encoder rerank** reads (question, chunk) pairs jointly — far more accurate than bi-encoder similarity, too slow for the whole corpus, right for the top 20.
+* **Grounding**: the answer cites chunk ids → document + page. Same provenance principle as the entities.
+* **Evaluation** (story 407): a question set with known answers per demo patient; measure recall@k for retrieval and faithfulness/answer-relevance for generation (RAGAS-style), before and after each change.
+
+## 7. Honest status
+
+* Indexing: live, every document, 1.5–2 s per note, runs concurrently with NER.
+* Reads: **nothing reads the vectors yet.** Say it plainly. The reason is sequencing: the four sections are what the product ships first; retrieval has no consumer until the Main screen exists.
+* Known trap: chunk tenancy falls back to a DB lookup of the document row and to null if the row is missing — the event carries `tenantId` and should be used.
+
+## 8. Read more
+
+* Lewis et al., [Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks](https://arxiv.org/abs/2005.11401) (2020) — the original RAG paper
+* Jin et al., [MedCPT: Contrastive Pre-trained Transformers with Large-scale PubMed Search Logs](https://arxiv.org/abs/2307.00589) (2023) · [model card](https://huggingface.co/ncbi/MedCPT-Article-Encoder)
+* [pgvector README](https://github.com/pgvector/pgvector) — HNSW/IVFFlat parameters, iterative scan, filtering
+* Malkov & Yashunin, [Efficient and robust approximate nearest neighbor search using HNSW graphs](https://arxiv.org/abs/1603.09320) (2016)
+* Cormack et al., [Reciprocal Rank Fusion](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf) (2009)
+* [Sentence-Transformers: retrieve & re-rank](https://www.sbert.net/examples/applications/retrieve_rerank/README.html) — bi-encoder vs cross-encoder, explained
+* [RAGAS](https://docs.ragas.io/) — faithfulness, answer relevance, context recall metrics
+* [Chunking strategies for LLM applications](https://www.pinecone.io/learn/chunking-strategies/) — a good survey of the options
+

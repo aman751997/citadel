@@ -1,0 +1,124 @@
+---
+title: "1. Architecture & Data Flow"
+description: "Imagine a hospital chain with 40 branches. The finance head wants \"revenue by branch this month\". A branch manager wants \"no-shows by doctor this week\"…"
+project: "reporting-engine"
+order: 1
+minutes: 7
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/54263809"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+## In plain words first
+
+Imagine a hospital chain with 40 branches. The finance head wants "revenue by branch this month". A branch manager wants "no-shows by doctor this week". A pharmacist wants "top 20 medicines dispensed". Before this service, each of those was a ticket to a developer. Now each is a _row in a table_: a small JSON recipe saying which data source, group by what, measure what, filter how. When someone opens the dashboard, the engine reads the recipe, checks it against an allow-list, writes SQL with every safety rule already inside, runs it read-only against the owning service's database, records who ran it, and returns rows for a chart.
+
+If you know **Grafana with Prometheus**, you already understand the shape: data sources are registered once, panels are declarative queries, dashboards are lists of panels, and provisioning from Git is how they ship. What Grafana does not do, and we had to, is tenant isolation from a JWT, PII allow-listing, k-anonymity, per-tenant timezones and a regulator-grade audit row. That is the whole reason a service exists instead of an embedded BI tool.
+
+## Picture 1 — who talks to whom
+
+<Mermaid code={`flowchart LR
+    UI["Admin UI<br>(dashboards, report builder)"] -->|"JWT"| RS["reporting-service :8088"]
+    RS -->|"writes: definitions, dashboards,<br>schedules, audit"| OWN[("reporting_db<br>schema reporting")]
+    RS -->|"read-only pool"| P[("patient_db")]
+    RS -->|"read-only pool"| B[("billing_db")]
+    RS -->|"read-only pool"| PH[("pharmacy_db")]
+    RS -->|"read-only pool (optional)"| L[("lead_db")]
+    RS -.->|"tenant timezone (cached 10 min)"| ADM["admin-service"]
+    RS -.->|"scheduled CSV by email"| NOT["notification-service"]
+    RS -.->|"result cache (optional)"| RED[("Redis")]`} />
+
+Two arrows to remember: **writes go to our own database; reads fan out to the service databases.** The compiled query carries its own routing key (`source_connection` on the datasource row), so the adapter knows which pool to use without the compiler knowing where data lives.
+
+## Picture 2 — what happens inside the engine
+
+<Mermaid code={`flowchart LR
+    A["Access scope<br>from JWT roles + claims"] --> V["Validate<br>vs catalog snapshot"]
+    V --> C["Compile<br>DSL → SQL + params"]
+    C --> X["Execute<br>read-only · 3 s · bulkhead 10"]
+    X --> R["Result rows<br>+ column metadata<br>+ audit row"]
+    CAT[("Catalog snapshot<br>AtomicReference,<br>reloaded every 5 min")] -.-> V
+    CAT -.-> C`} />
+
+## Picture 3 — how a dashboard load fans out (why the bulkhead matters)
+
+<Mermaid code={`sequenceDiagram
+    participant UI
+    participant RS as reporting-service
+    participant DB as patient_db (read-only pool)
+    UI->>RS: GET /dashboards/{id}
+    RS-->>UI: items = [def1 half, def2 full, def3 half, def4 half]
+    par tile 1
+        UI->>RS: POST /reports/def1/run
+        RS->>DB: SELECT ... (bulkhead slot 1)
+    and tile 2
+        UI->>RS: POST /reports/def2/run
+        RS->>DB: SELECT ... (slot 2)
+    and tile 3
+        UI->>RS: POST /reports/def3/run
+        RS->>DB: SELECT ... (slot 3)
+    and tile 4
+        UI->>RS: POST /reports/def4/run
+        RS-->>UI: 429 when bulkhead was 3 (fixed 2026-09-01 → 10)
+    end`} />
+
+A dashboard with four tiles is four parallel runs. With `maxConcurrentCalls: 3` and `maxWaitDuration: 0`, the fourth tile got an immediate 429 by design. Two admins opening dashboards at once made it worse. The fix was a config change (PR #1706), and the lesson is on page 4.
+
+## The Grafana mapping, component by component
+
+| Component | Grafana analogue | Role | One thing to say about it |
+| --- | --- | --- | --- |
+| **Catalog** (`catalog_datasource`, `catalog_field`) | Data sources + metric names/labels | The allow-list. Which fact tables and columns may be queried, with allowed aggregations and operators per field, and tenant / branch / date / soft-delete columns per datasource. | Loaded into an immutable in-memory snapshot (`AtomicReference`), reloaded every 5 min per pod. Seeded by Flyway, not by UI: catalog changes are security changes and go through PR review. |
+| **CatalogValidator** | Query editor validation | First gate. Rejects unknown fields, disallowed aggregation or operator, PII column patterns (`*_vault_id`, `*_token`, `*_hash`), DSL bounds (≤5 dims, ≤10 filters, ≤100 values, limit ≤5000). | Runs at save and again at run. Field-level HTTP 400. |
+| **QueryCompiler** | PromQL engine | The only class that builds SQL text. DSL + access scope → parameterised SQL + column metadata + timezone. | Identifiers from catalog, values bound, aliases sanitised, GROUP BY / ORDER BY by ordinal. Injects tenant, branch, k-anonymity, LIMIT, soft-delete, timezone. |
+| **PostgresJdbcAdapter** | Data source plugin | Executes the compiled query on the datasource's own read-only pool. | Bulkhead of 10, `SET LOCAL statement_timeout = '3000ms'`, truncation flag at 5000 rows, synchronous audit row. |
+| **ReportEngineService** | — | Seam: validate → compile → execute. Two beans behind one flag. | `reporting.engine.stub=false` selects the real engine; `true` selects canned data. Lets the engine ship dark and flip per environment. |
+| **ReportAccessPolicy** | Org / team permissions (but from JWT) | JWT roles → scope. | SUPER_ADMIN / ADMIN → ALL; BRANCH_ADMIN → RESTRICTED to the branch claim; platform RGT\_\* roles → denied (break-glass only). |
+| **ExportDateRangeResolver** | Time range picker | TODAY / THIS_WEEK / THIS_MONTH → BETWEEN on the datasource's default date column, in the tenant's timezone. | Upper bound is start-of-next-period minus 1 µs so boundaries never double count. One definition serves all ranges. |
+| **Scheduler** | Alerting / reports | Cron delivery of a saved definition as CSV by email. | ShedLock on our own DB so one pod fires. Compiles with the _creator's_ stored scope, not ALL. |
+| **Dashboards** (`report_dashboard`) | Dashboard JSON | `items` JSONB = list of `{definitionId, layoutHint}`; default date range and branch scope. | The UI runs one report per tile in parallel; that is the fan-out in picture 3. |
+
+## Two databases, one direction each
+
+| Database | Purpose | Isolation mechanism |
+| --- | --- | --- |
+| `reporting_db` (own, `@Primary`, writable) | `report_definition`, `report_dashboard`, `report_schedule`, `report_artifact`, `report_run_audit`, `catalog_*`, `shedlock` | Hibernate `@Filter` on `tenant_id`, armed by the request's tenant context |
+| Source DBs (`patient_db`, `billing_db`, `pharmacy_db`, `lead_db`) | Fact tables and views the catalog exposes | One **read-only Hikari pool per service DB**; compiler injects `tenant_id = :tenant_id` unconditionally and refuses a datasource without a tenant column |
+
+Read-only is enforced three times: Hikari `readOnly`, `DataSourceTransactionManager.enforceReadOnly`, `TransactionTemplate.readOnly`. Pointing a pool at the read replica is a URL change; that swap happened with zero code change when the CloudNativePG cluster landed. Why per-service pools: production is separate databases per service, and a Postgres connection cannot span databases. A blank URL (`LEAD_DB_URL` today) means the pool is skipped with a warning, and a datasource pointing at it fails fast naming the missing config key.
+
+## Guardrails, always applied
+
+| Guardrail | Where it lives | Failure it prevents |
+| --- | --- | --- |
+| Tenant predicate | compiler, `WHERE tenant_id = :tenant_id` | cross-tenant read |
+| Branch predicate | compiler, `branch_id::text IN (:branch_ids)` for RESTRICTED | branch admin seeing other branches |
+| Soft-delete predicate | compiler, `deleted_at IS NULL` when the datasource declares the column | counting deleted rows |
+| Allow-list | catalog + validator | querying an unlisted column, raw PII columns |
+| k-anonymity | compiler, `HAVING COUNT(*) >= :min_group_size` | re-identifying a patient from a tiny group |
+| Row cap after forced sort | compiler `LIMIT`, adapter `truncated` flag | a million rows into JVM memory; arbitrary truncation |
+| Statement timeout | adapter, `SET LOCAL` | one query holding a connection |
+| Bulkhead | adapter, resilience4j | reporting flooding its own JVM / the DB |
+| Timezone bucketing | compiler, `date_trunc(..., col AT TIME ZONE :tz)` | 02:00 IST on Jun 1 landing in May |
+| Audit row | adapter, synchronous insert | no trail of who ran what (DPDP) |
+
+## The API surface (for "what endpoints exist?")
+
+| Path under `/api/v1/reporting` | What |
+| --- | --- |
+| `POST /reports/preview` | Run an unsaved DSL (30 s cache). Optional `range`. |
+| `POST /reports/{id}/run` | Run a saved definition (60 s cache). Optional params / range / dates. |
+| `POST/GET/PUT/DELETE /reports`, `POST /reports/{id}/clone` | Definition CRUD; clone copies a system template into a tenant-owned row. |
+| `POST /reports/{id}/export` | CSV artifact. |
+| `/dashboards` CRUD + `/{id}/clone` | Tile lists. |
+| `/schedules` CRUD | Cron + recipients + stored creator scope. |
+| `GET /catalog`, `POST /catalog/refresh` | What the UI's report builder can offer; force a snapshot reload. |
+
+## Read more
+
+* [Grafana data sources](https://grafana.com/docs/grafana/latest/datasources/) and [dashboard JSON model](https://grafana.com/docs/grafana/latest/dashboards/build-dashboards/view-dashboard-json-model/) — compare with `catalog_datasource` and `report_dashboard.items`.
+* [Fowler: Patterns of Distributed Systems](https://martinfowler.com/articles/patterns-of-distributed-systems/) — the "immutable snapshot" idea behind the catalog.
+* [Database per service](https://microservices.io/patterns/data/database-per-service.html) — why one read-only pool per service DB.
+* [PostgreSQL hot standby](https://www.postgresql.org/docs/current/hot-standby.html) — what "the replica is a URL change" relies on.
+

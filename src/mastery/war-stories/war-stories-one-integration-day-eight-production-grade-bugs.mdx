@@ -1,0 +1,85 @@
+---
+title: "War Stories — One Integration Day, Eight Production-Grade Bugs"
+description: "What this is: real debugging stories from 2026-07-21 — the day ai-pipeline-service went live end-to-end against the shared ecosystem database…"
+project: "war-stories"
+order: 0
+minutes: 8
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/39026689"
+synced: "2026-09-11"
+---
+
+**What this is:** real debugging stories from 2026-07-21 — the day ai-pipeline-service went live end-to-end against the shared ecosystem database. Every bug was hit, root-caused and fixed live. Each entry: symptom → investigation → root cause → fix → the interview sound bite. These are STAR stories with receipts.
+
+## The one-line summary
+
+Took an event-driven medical NER pipeline from "works against its own toy database" to "live against the shared production-shaped Postgres, real uploads, 4 AI sections serving real clinical data" in one day — through eight genuinely distinct classes of failure: IAM error masking, connection-pool session semantics, ORM-vs-migration schema ownership, silent ML model truncation, cross-service contract drift, broker state durability, type-system mismatches, and a wrong call on constraints that a senior review reversed.
+
+## 1. The S3 403 that was actually a 404 — and the contract drift behind it
+
+* **Symptom:** pipeline failed fetching extracted text: `AccessDenied: not authorized to perform s3:ListBucket`. Looks like an IAM problem.
+* **Investigation:** the same credentials had fetched from that bucket before. Dumped the raw request from debug logs — the S3 _object key_ was literally `s3://healthcare-phi-text/healthcare/patients/.../v1.txt`. A full URI used as a key.
+* **Root cause (two layers):** (1) S3 deliberately masks "object does not exist" as `AccessDenied` when the caller lacks `ListBucket` — otherwise a 404 would leak object-existence information. (2) The Java publisher put `job.getExtractedTextS3Uri()` (full URI) into an event field whose own javadoc says "raw S3 key". Producer violated its own contract; consumer trusted it verbatim.
+* **Fix:** both ends — Java publisher strips to the raw key (honor the contract at the source), Python adds a pydantic `field_validator` that normalizes either form (defensive consumer, protects against old events and future regressions).
+* **Sound bite:** _"S3 returns 403 for missing objects when you can't ListBucket — I stopped trusting error names and started reading raw requests. And cross-service contract bugs get fixed at both ends: strict producer, tolerant consumer."_
+
+## 2. asyncpg pools silently reset session state — SET search_path evaporates
+
+* **Symptom:** schema search path configured in the pool's per-connection init hook. First queries fine; later queries hit the wrong schema — `document_meta_not_found` for rows that provably existed; bootstrap DDL recreated tables in `public` that I had deleted.
+* **Investigation:** reproduced inside the container: run the init hook manually → search_path correct, row found. So the hook works — but runtime behaves differently. Difference: the pool _recycles_ connections.
+* **Root cause:** asyncpg executes `RESET ALL` when a connection is released back to the pool. `RESET ALL` reverts every session variable to its _startup default_ — and a `SET` from an init hook is not a startup default. First acquire works; every acquire after the first release is back on the default search_path.
+* **Fix:** pass the search path via `create_pool(server_settings={"search_path": ...})` — connection _startup_ parameters are exactly what `RESET ALL` resets **to**. Verified with an acquire → release → acquire test asserting the setting survives.
+* **Sound bite:** _"Connection pools recycle session state. Anything you need on every connection must be a startup default, not a post-connect SET — because RESET ALL restores startup defaults, and pools run RESET ALL behind your back."_
+
+## 3. Hibernate ddl-auto=update resurrects what Flyway drops
+
+* **Symptom:** a Flyway migration drops three FK constraints; history says `success = true`. Minutes later the constraints exist again and inserts still fail.
+* **Investigation:** constraints present in `pg_constraint`, migration recorded as applied, file content correct. Something recreated them _after_ Flyway ran. Who runs DDL after Flyway at boot? Hibernate.
+* **Root cause:** `spring.jpa.hibernate.ddl-auto: update` + JPA entities mapping `@ManyToOne(Patient)` with named `@ForeignKey`. On every boot, Hibernate diffs entity mappings against the schema and re-adds the "missing" FKs Flyway just dropped. Two schema owners fighting; the second one always wins.
+* **Resolution:** the specific FK-drop was later reversed on review (see story 8 — the constraints turned out to be right), but the mechanism finding stands independently: with `ddl-auto: update` any migration that contradicts an entity mapping is silently undone at next boot. Recommended: `ddl-auto: none`, Flyway as sole schema owner.
+* **Sound bite:** _"A schema needs exactly one owner. ddl-auto=update alongside Flyway means every migration is provisional — Hibernate will quietly undo whatever contradicts the entity model, and the failure shows up as 'the migration ran but nothing changed'."_
+
+## 4. The ML model that silently reads only the first 384 tokens
+
+* **Symptom:** GLiNER found 2 entities on a short note, **0** on a rich multi-page lab report. No error anywhere in the pipeline.
+* **Investigation:** called the model service directly; buried in _its_ stderr: `UserWarning: Sentence of length 1320 has been truncated to 384`. The pipeline sent whole documents; the model scored only the first \~384 word tokens and silently dropped the rest. Short docs fit → worked; real docs didn't → 0 entities, looking exactly like "no clinical content".
+* **Fix:** overlapping-window scan in the model service (300-word windows, 50-word overlap), entity char-spans offset-corrected back to document coordinates, cross-window dedup. Verified with a synthetic doc placing entities at char 4000+ — found with correct offsets.
+* **Sound bite:** _"Every ML model has a context limit and most fail open — they process what fits and stay silent about the rest. Silent truncation is the worst failure mode because it looks identical to 'correctly found nothing'. Know the limit, window the input, test with content past the cliff."_
+
+## 5. Two schemas, one database — the parallel-worlds bug
+
+* **Symptom:** migration V41 failed with `relation "document_chunks" does not exist` — for a table I could see with `\dt`.
+* **Investigation:** `\dt` shows the _search-path_ schema. Java/Flyway runs with `currentSchema=patient`; the Python service (asyncpg default) lived in `public`. Two complete parallel table sets in one database — the pipeline had been happily bootstrapping and querying its own `public` stubs while the real data sat in `patient.*`.
+* **Fix:** made the pipeline schema-aware (search_path `patient,public` — see story 2), wrote migrations dual-path (create-if-absent for baselined environments, alter-in-place for fresh installs), cleaned the stray stubs.
+* **Sound bite:** _"In Postgres, a database is not a namespace — schemas are. Two services with different search paths can operate on entirely different tables while connected to the same database, and every query 'works'. When data seems to vanish, ask WHERE a query resolves before asking WHY it fails."_
+
+## 6. Durable queues that weren't — broker state and container lifecycles
+
+* **Symptom:** after a service rebuild, RabbitMQ queues were gone — including the DLQ holding a parked poison message. "Durable" queues, vanished.
+* **Root cause:** the broker container had **no volume** — durable means "survives broker restart", but broker state lived in the container filesystem, so container recreation wiped everything. Bonus subtlety: RabbitMQ persists under `/var/lib/rabbitmq/mnesia/<node-name>`, and the default node name embeds the (random) container hostname — a volume alone isn't enough without pinning `RABBITMQ_NODENAME`.
+* **Fix:** named volume + fixed hostname/node name. The lost message was unrecoverable (fire-and-forget publisher) — re-triggered the source action.
+* **Sound bite:** _"Durability guarantees are layered: a durable queue on an ephemeral broker is ephemeral. I now trace every persistence claim down to the actual disk it lands on — and RabbitMQ's node-name-derived data path is a classic trap."_
+
+## 7. Small but real: enum ≠ text, uuid ≠ str
+
+* **Symptoms:** `operator does not exist: medical_entity_type_enum = text` on a section query; pydantic `ValidationError: Input should be a valid string, input_value=UUID(...)` on another.
+* **Root cause:** the dev bootstrap schema used `VARCHAR` everywhere; the real Flyway schema uses a Postgres `ENUM` and native `UUID` columns. Postgres has no implicit enum=text operator, and asyncpg returns `uuid.UUID` objects for uuid columns.
+* **Fix:** `entity_type::text = ANY($1::text[])` (cast the column — works against both schemas) and `str()` casts at the repository boundary, so type normalization lives in exactly one place.
+* **Sound bite:** _"Dev-parity bugs hide in type systems: everything stringly-typed in dev, properly typed in prod. Normalize at the repository boundary, not scattered through business logic."_
+
+## 8. The constraint I dropped — and the pushback that put it back
+
+* **Symptom:** every entity insert failed with an FK violation — `patient_id not present in table patients`. The `patients` table had **zero rows**, yet `documents` referencing those patient ids existed and the platform "worked".
+* **My call at the time:** `documents` itself has no FK to `patients`, so I inferred "patient ids are external references, not FK targets" — and shipped a migration dropping the AI-table patient FKs. E2E went green. I even wrote it up as "constraints should model reality".
+* **The pushback:** review called it correctly — documents existing for unregistered patient ids is an **integrity bug**, not a platform contract. The FK wasn't contradicting reality; it was the only thing _catching_ a real upstream violation (uploads accepting unregistered patients). Dropping it didn't fix the bug — it institutionalized it.
+* **Resolution:** reverted the same day — FKs restored, migration withdrawn, entity mappings back; follow-up filed to root-cause the upload/registration path. Correct system behavior now: pipeline writes fail for unregistered patients, loudly.
+* **Sound bite:** _"I optimized for making my pipeline green and mistook a bug for a platform invariant — the constraint was doing its job, and the fix belonged upstream. Now when a constraint blocks me, I first ask which side is wrong before deciding which side to change. Being reversed on this taught me more than the seven bugs I got right."_
+
+## Bonus reel
+
+* **Gemini 2.0 Flash retired mid-project** (404 with a migration notice) — model names are dependencies with lifecycles; pin them in one place, monitor deprecations. The fix PR existed a week before the outage; unmerged fixes rot.
+* **Spring Security 401 on a nonexistent endpoint** — default-deny means "missing route" and "bad auth" look identical from outside. Confirmed by grepping the codebase for the route, not by iterating on tokens.
+* **Funnel architecture win:** MedCAT → GLiNER → Gemini enrichment → Gemini _discovery backstop_ (one full-text LLM call only for entity types earlier stages found nothing for). Blocked dependency (UMLS license) → designed around it: degraded-but-complete now, upgrades in place later with zero code changes. 71 entities from a real lab report with no MedCAT at all.
+* **Meta-lesson on observability:** half these bugs were invisible until logging was fixed — structlog was configured without `format_exc_info`, so `exc_info=True` silently dropped every traceback. First hour of debugging bought all the later hours back.
+
+**How to use in interviews:** stories 2, 3 and 4 are senior-level system-design differentiators (pool semantics, schema ownership, ML failure modes). Story 1 shows debugging discipline under misleading signals. Story 8 is the growth/behavioral answer — a wrong call, a reversal accepted, and the sharper mental model that came out of it. Lead with the symptom, let the interviewer guess, then walk the investigation — the reasoning path is the material, not the fix.
+

@@ -1,0 +1,134 @@
+---
+title: "1. The pitch and the architecture"
+description: "Hospitals accumulate paper — discharge summaries, lab reports, consultation notes. A doctor opening a patient's record has ninety seconds to answer three questions: what medicines…"
+project: "ai-pipeline"
+order: 1
+minutes: 6
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/57999362"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+## The 60-second pitch (memorise this)
+
+"Hospitals accumulate paper — discharge summaries, lab reports, consultation notes. A doctor opening a patient's record has ninety seconds to answer three questions: what medicines is this person on, what are the labs doing, and is anything dangerous going on. I built the service that reads every uploaded document and keeps four live sections of the record up to date: active medications, recent labs, a patient timeline, and critical alerts. It is a Python service driven by RabbitMQ events from our Java patient-service. Each document goes through a three-stage clinical NER pipeline — MedCAT for UMLS concepts, GLiNER for spans MedCAT missed, and an LLM for normalisation and discovery — then the entities are stored with verbatim span provenance, embedded into pgvector for retrieval, and the four sections are recomputed. Java is told over an authenticated webhook, and the browser gets a STOMP push so the cards update live. End to end a document takes about 55 seconds on a laptop, 49–75 entities per note, every span located back to its page."
+
+That paragraph contains the six things every follow-up question hangs off: **event-driven**, **three-stage NER**, **provenance**, **sections**, **RAG index**, **numbers**. Each has its own page.
+
+## The picture to draw
+
+<Mermaid code={`flowchart TB
+    B[Browser — patient portal] -->|multipart upload| J[Java patient-service :8010]
+    J -->|PDF + row| S3[(S3)]
+    J -->|PDFBox / Gemini OCR| J
+    J -->|ExtractionCompletedEvent<br>pointer, no text| MQ[(RabbitMQ topic exchange)]
+    MQ -->|extraction.completed| P[Python ai-pipeline :8000<br>prefetch 5 · semaphore 1 · DLQ]
+    P -->|fetch text| S3
+    P --> N[NER: MedCAT → GLiNER → Gemini<br>span resolver]
+    P --> C[Chunk 512/50 → MedCPT 768-d → pgvector HNSW]
+    N --> PG[(Postgres)]
+    N --> S3
+    C --> PG
+    N --> M[Profile merge → CRITICAL_ALERTS<br>YAML rules + Gemini reasoning]
+    M -->|4 × section-ready, X-Service-Auth| J
+    J -->|section job → result row| PG
+    J -->|STOMP /topic/patients.id.ai-sections| B`} />
+
+```plaintext
+BROWSER (patient portal, React)
+   │ multipart POST /patients/{id}/documents/upload
+   ▼
+JAVA patient-service (Spring Boot, :8010)
+   ├─ documents row + PDF → S3
+   ├─ extraction job → RabbitMQ extraction.jobs.queue (Java-internal)
+   ├─ ExtractionJobListener: PDFBox text (or Gemini OCR for scans) → S3 extracted text
+   └─ publish ExtractionCompletedEvent ──► exchange, routing key extraction.completed
+                                              │  (payload = pointers, never text)
+                                              ▼
+PYTHON ai-pipeline (FastAPI + aio-pika consumer, :8000)
+   ai-pipeline.extraction-completed queue  (prefetch 5, semaphore 1, DLQ on reject)
+   │
+   ├─ fetch text from S3
+   ├─ ┌─ CLINICAL_EXTRACTION (NER)            ─┐  run concurrently
+   │  │  MedCAT → GLiNER (uncovered spans)    │
+   │  │  → Gemini enrich + discover            │
+   │  │  → span resolver (offsets, pages)      │
+   │  │  → entity JSON to S3, row to Postgres  │
+   │  └─ SEMANTIC_INDEXING                    ─┘
+   │     512-token chunks → MedCPT embeddings (768-d) → pgvector HNSW
+   ├─ PROFILE_MERGE  → CRITICAL_ALERTS = YAML rules + Gemini reasoning, persisted
+   └─ 4 × POST /internal/ai/section-ready (X-Service-Auth, idempotency key)
+                                              │
+                                              ▼
+JAVA  InternalAiSectionController → ai.section.jobs.queue → PatientInsightProcessor
+      → document_ai_section_result row → STOMP /topic/patients.{id}.ai-sections
+                                              │
+                                              ▼
+BROWSER  useAiSections re-fetches the one section → card flips "Rebuilt at 18:00"
+```
+
+Practise until you can draw the boxes in two minutes. When they ask "where does the LLM sit", point at three places: enrichment/discovery inside NER, the reasoning pass inside critical alerts, and (in Java, being retired) the section generator.
+
+## Why event-driven and not a REST call?
+
+Interviewers ask this first. Three reasons, in order of weight:
+
+1. **Latency mismatch.** Reading a document takes tens of seconds to minutes (a 27B model reading a page is slow; even Gemini takes 10 s per call). No HTTP client should hold a connection that long, and the uploader should get a 201 immediately. The upload returns in about a second; the analysis finishes when it finishes.
+2. **Decoupled failure.** If the AI service is down, uploads still work. Events queue in RabbitMQ and are processed when it comes back. If Java is down when analysis finishes, the webhook retries and the sections stay readable through the pipeline's own API. Neither side can take the other down.
+3. **Back-pressure and fan-out.** The broker holds the load. Concurrency is a single knob on the consumer (`MAX_CONCURRENT_EVENTS`). A second consumer (say, a de-identification job) subscribes to the same exchange without touching Java.
+
+The honest trade-off: _debugging is harder_ (a request has no single stack trace) and _ordering is not guaranteed_. We paid for that with per-stage progress events (J11) and idempotency keys (page 2).
+
+## The two services and who owns what
+
+| Concern | Owner | Why there |
+| --- | --- | --- |
+| Documents, patients, users, auth, tenants | Java patient-service | Existing system of record; JWT, tenancy, RBAC already live |
+| PDF → text (PDFBox, Gemini OCR for scans) | Java | It already had the file and the S3 client; text extraction is not "AI" |
+| Clinical NER, provenance, entity store | Python pipeline | Python ML ecosystem: MedCAT, GLiNER, transformers, aioboto3 |
+| Chunking, embeddings, vector index | Python | Same |
+| Section computation (meds, labs, timeline, alerts) | Python computes; Java caches, serves, pushes | Java already had the result table, the job queue with retries, S3 persistence, the WebSocket relay — a whole "AI section subsystem". The integration is a source swap behind that machine, not a rebuild |
+| Database schema | Java (Flyway) owns it; Python writes three tables directly | One shared Postgres. A known trap: two repos, one schema (page 9) |
+
+## The stack, one line each
+
+* **Python 3.12, FastAPI, aio-pika, asyncpg, aioboto3, pydantic, structlog, prometheus_client** — the service is \~8,100 lines under `app/`, 361 unit tests.
+* **RabbitMQ** — topic exchange for events, dead-lettering, STOMP plugin on 61613 for the browser relay.
+* **Postgres 18 + pgvector 0.8** — shared with Java; entities, chunks, health profile.
+* **S3 (ap-south-1)** — every entity is its own JSON object under `patients/{id}/entities/{uuid}.json`; Postgres holds only pointers and non-PHI columns. That is the PHI isolation rule.
+* **MedCAT 1.16 + UMLS Small pack** (573k concepts), **GLiNER medium v2.1**, **MedCPT** article encoder (768-d), **Gemini 2.5/3.8 Flash** via AI Studio, **MedGemma 27B** self-hosted (parked, page 7).
+* **Prometheus + Grafana** — one dashboard, one row per stage; Pushgateway for one-shot benchmarks.
+* **Docker Compose** locally; the model services (medcat, gliner, embedding) are separate containers with memory limits.
+
+## Numbers to say without looking
+
+| Number | What it is |
+| --- | --- |
+| **55 s** | Upload → four webhooks, one demo note, laptop. Was 131 s before the S3 fan-out fix |
+| **12–24 s** | The NER stage for a 1.6–2.2 KB note |
+| **49–75** | Entities per note; MedCAT 38–68, GLiNER 6–13, LLM discovery 5–10 |
+| **100%** | Spans located back to character offsets (`match_counts {exact: 49}`) |
+| **4 × 202, 60–100 ms** | Webhooks per document and their latency |
+| **10 s vs 40 s** | One Gemini extraction call with thinking off vs default |
+| **8.3 tok/s** | MedGemma 27B Q4 decode on an NVIDIA L4 — why it is parked |
+| **512 / 50 / 768** | Chunk tokens, overlap tokens, embedding dimensions |
+| **361** | Unit tests, green |
+
+## Likely follow-ups and one-line answers
+
+* _"Why Python for the pipeline when the company is Java?"_ — The models are Python-native (MedCAT, GLiNER, transformers). Java owns the record; Python owns the reading. The boundary is a queue and two authenticated HTTP contracts.
+* _"Why RabbitMQ and not Kafka?"_ — It was already the platform broker, we need work-queue semantics (ack per message, dead-letter, retry) rather than a replayable log, and the STOMP plugin gives the browser relay for free. Kafka would be the answer if we needed replay or multiple independent consumer groups reading history.
+* _"Why not one LLM call per document and be done?"_ — Cost, latency, PHI, and provenance. Page 3.
+* _"Multi-tenant?"_ — Java enforces tenancy (JWT `tenantId`, Hibernate filter, per-tenant uniqueness). The pipeline receives `tenantId` on the event and forwards it on progress events; entity rows carry it. Honest gap: chunk tenancy depends on a DB lookup, page 9.
+
+## Read more
+
+* Martin Fowler, ["What do you mean by 'Event-Driven'?"](https://martinfowler.com/articles/201701-event-driven.html) — the four meanings; ours is event notification + event-carried state via pointer
+* Sam Newman, [Building Microservices](https://samnewman.io/books/building_microservices_2nd_edition/), ch. 4 (communication styles) and ch. 6 (workflow)
+* [Enterprise Integration Patterns](https://www.enterpriseintegrationpatterns.com/patterns/messaging/) — Publish-Subscribe Channel, Claim Check, Dead Letter Channel, Idempotent Receiver
+* [RabbitMQ tutorial 5: topics](https://www.rabbitmq.com/tutorials/tutorial-five-python) — exchanges and routing keys in ten minutes
+* [FastAPI](https://fastapi.tiangolo.com/) · [aio-pika](https://aio-pika.readthedocs.io/) · [asyncpg](https://magicstack.github.io/asyncpg/current/) — the three libraries the service is built on
+* Designing Data-Intensive Applications (Kleppmann), ch. 11 "Stream Processing" — the best chapter on at-least-once, idempotence and exactly-once myths
+* [Google Cloud Architecture Framework: reliability](https://cloud.google.com/architecture/framework/reliability) — vocabulary for "production-ready" answers
+

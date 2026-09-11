@@ -1,0 +1,237 @@
+---
+title: "2. Request Lifecycle & Emitted SQL"
+description: "Three worked examples, from simple to tricky. Each shows the saved DSL, the SQL the compiler emits, and a clause-by-clause explanation…"
+project: "reporting-engine"
+order: 2
+minutes: 10
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/54296577"
+synced: "2026-09-11"
+---
+
+import Mermaid from '../../components/Mermaid.astro';
+
+Three worked examples, from simple to tricky. Each shows the saved DSL, the SQL the compiler emits, and a clause-by-clause explanation. Cast for all three: tenant `drbasu`, timezone Asia/Kolkata. Code pinned to `develop` 2026-09-11.
+
+## The twelve steps every run goes through
+
+<Mermaid code={`sequenceDiagram
+    autonumber
+    actor U as Branch admin
+    participant F as JWT filters
+    participant S as ReportRunService
+    participant P as AccessPolicy
+    participant E as Engine
+    participant Q as QueryCompiler
+    participant J as JdbcAdapter
+    participant R as reporting_db
+    participant D as patient_db
+
+    U->>F: POST /reports/{id}/run
+    F->>S: tenant + branch context set from token
+    S->>R: load definition (tenant-filtered or system template)
+    S->>P: resolve scope
+    P-->>S: (drbasu, RESTRICTED, [BR-DIL])
+    S->>S: apply date range in tenant TZ (optional)
+    S->>S: Redis cache lookup (optional)
+    S->>E: run(dsl, scope)
+    E->>E: CatalogValidator
+    E->>Q: compile
+    Q-->>E: SQL + params + source key + column metadata
+    E->>J: execute
+    J->>D: read-only tx · SET LOCAL statement_timeout · SELECT ... LIMIT
+    D-->>J: rows
+    J->>R: INSERT report_run_audit
+    J-->>E: ReportResult (truncated flag)
+    E-->>S: overlay column aliases + timezone
+    S-->>U: 200 JSON (cached for 60 s)`} />
+
+| # | Step | Where | What to say |
+| --- | --- | --- | --- |
+| 1 | JWT filters | `config/SecurityConfig.java` | Stateless. `JwtTokenFilter` → `BranchContextFilter` → `TenantContextFilter`. Tenant and branch **headers are ignored**; everything derives from the token. |
+| 2 | `@TenantScoped` | `ReportRunController` (class level) | Shared AOP aspect: HTTP 400 if no tenant in context. Also arms the Hibernate tenant filter for our own DB. |
+| 3 | `@PreAuthorize` | controller method | `REPORT_VIEW` authority or admin roles. Coarse gate; the policy in step 6 is the real one. |
+| 4 | Controller | `ReportRunController.run` | Unpack optional body (`params`, `range`, dates). Nothing else. |
+| 5 | Load definition | `ReportRunServiceImpl.run` | Tenant-filtered lookup, **or** a native-query fallback for `is_system=true` templates (Hibernate filters do not apply to native queries — deliberate, so any tenant can _run_ a platform template). 404 otherwise. |
+| 6 | Resolve scope | `ReportAccessPolicy.resolve` | RGT\_\* platform roles → 403. SUPER_ADMIN / ADMIN → `ALL`. BRANCH_ADMIN → `RESTRICTED` with the branch claim; missing claim → 403. |
+| 7 | Date window | `ExportDateRangeResolver.applyRange` | If the body had `range=THIS_MONTH`: compute the full calendar month in the **tenant's timezone** and append a `BETWEEN` filter on the datasource's `default_date_column`; upper bound = start of next period minus 1 µs. No range → DSL unchanged. |
+| 8 | Cache | `ReportRunServiceImpl` | Only if a Redis bean exists. Key = `rpt:run:&#123;definitionId&#125;:sha256(tenant | branches | canonical DSL | sorted params)`. Hit → `meta.cached=true`. |
+| 9 | Validate | `CompilingReportEngineService` → `CatalogValidator` | Unknown field, disallowed agg / operator, PII column pattern, bounds → 400 with per-field messages. |
+| 10 | Compile | `QueryCompiler.compile` | Produces the SQL below. Refuses DENY scope and any datasource without a tenant column. |
+| 11 | Execute + audit | `PostgresJdbcAdapter.execute` | Bulkhead → registry lookup by source key (unknown = fail fast with the missing config key named) → read-only tx → `SET LOCAL statement_timeout` → query → `truncated = rows ≥ 5000` → synchronous audit row (failure logged, never fails the report). |
+| 12 | Overlay + return | engine + service | Compiler's column metadata (human alias + dimension / measure role) replaces the adapter's inferred names; `meta.timezone`, `meta.elapsedMs`; write cache; return. |
+
+## Example 1 — the simple bar: "Appointments by status" as a branch admin
+
+Cast: `BRANCH_ADMIN`, branch `BR-DIL`.
+
+```json
+{
+  "datasource": "patient.appointments",
+  "chartType": "BAR",
+  "dimensions": [ { "field": "status", "alias": "Status" } ],
+  "measures":   [ { "agg": "COUNT", "field": "count", "alias": "Appointments" } ],
+  "filters":    [ { "field": "status", "operator": "IN", "values": ["COMPLETED", "NO_SHOW"] } ],
+  "sort":       [ { "by": "Appointments", "order": "DESC" } ],
+  "limit": 20,
+  "privacy": { "excludePatientIdentifiers": true, "minimumGroupSize": 5 }
+}
+```
+
+```sql
+SELECT status::text AS "Status", COUNT(*) AS "Appointments"
+FROM patient.appointments
+WHERE tenant_id = :tenant_id
+  AND branch_id::text IN (:branch_ids)
+  AND status::text IN (:flt_0)
+GROUP BY 1
+HAVING COUNT(*) >= :min_group_size
+ORDER BY 2 DESC
+LIMIT :row_limit
+
+-- params: tenant_id="drbasu"  branch_ids=["BR-DIL"]  flt_0=["COMPLETED","NO_SHOW"]
+--         min_group_size=5    row_limit=20
+```
+
+Clause by clause:
+
+* `status::text` — enum column cast so a bound varchar compares (Postgres has no enum = varchar operator). Same trick for UUID columns catalogued as STRING.
+* `COUNT(*)` — the catalog field `count` has `physical_column='*'`. `COUNT_DISTINCT` on `*` is rejected as meaningless.
+* `"Status"` — the user's alias, sanitised to `[A-Za-z0-9_ ]`, de-duplicated, quoted.
+* `tenant_id = :tenant_id` — injected by the compiler. Not in the DSL.
+* `branch_id::text IN (:branch_ids)` — injected because scope is RESTRICTED. A SUPER_ADMIN would not get this line.
+* `GROUP BY 1` / `ORDER BY 2 DESC` — output ordinals. "Appointments" resolved to position 2; no user string shapes the statement.
+* `HAVING COUNT(*) >= :min_group_size` — k-anonymity in the SQL itself; a group of 3 patients is suppressed.
+* `LIMIT :row_limit` — 20 here; hard cap 5000 regardless of the DSL. With no user sort, the compiler forces `ORDER BY <first measure> DESC` so the biggest groups survive truncation.
+
+```json
+{ "columns": [ {"alias":"Status","role":"dimension"}, {"alias":"Appointments","role":"measure"} ],
+  "rows":    [ ["COMPLETED",128], ["NO_SHOW",14] ],
+  "meta":    { "rowCount":2, "truncated":false, "cached":false, "elapsedMs":12, "timezone":"Asia/Kolkata" } }
+```
+
+## Example 2 — the time series: "Appointment volume trend" with THIS_MONTH
+
+Cast: `SUPER_ADMIN` (scope ALL), body `{"range":"THIS_MONTH"}`, run on 2026-09-11. This is seeded template `…0002` in V9.
+
+```json
+{
+  "datasource": "patient.appointments",
+  "chartType": "LINE",
+  "dimensions": [ { "field": "start_at", "timeBucket": "DAY", "alias": "Day" } ],
+  "measures":   [ { "agg": "COUNT", "field": "count", "alias": "Appointments" } ],
+  "filters":    [],
+  "sort":       [ { "by": "Day", "order": "ASC" } ],
+  "limit": 90,
+  "privacy": { "excludePatientIdentifiers": true, "minimumGroupSize": 5 }
+}
+```
+
+Step 7 first rewrites the DSL: the resolver looks up the tenant timezone (admin-service, cached), computes the month window in that zone, and appends a filter on the datasource's `default_date_column` (`start_at`):
+
+```json
+{ "field": "start_at", "operator": "BETWEEN",
+  "values": ["2026-09-01T00:00:00+05:30", "2026-09-30T23:59:59.999999+05:30"] }
+```
+
+Then the compiler emits:
+
+```sql
+SELECT date_trunc('day', start_at AT TIME ZONE :tz) AS "Day",
+       COUNT(*) AS "Appointments"
+FROM patient.appointments
+WHERE tenant_id = :tenant_id
+  AND start_at BETWEEN :flt_0_lo::timestamptz AND :flt_0_hi::timestamptz
+GROUP BY 1
+HAVING COUNT(*) >= :min_group_size
+ORDER BY 1 ASC
+LIMIT :row_limit
+
+-- params: tenant_id="drbasu"  tz="Asia/Kolkata"
+--         flt_0_lo="2026-09-01T00:00:00+05:30"  flt_0_hi="2026-09-30T23:59:59.999999+05:30"
+--         min_group_size=5  row_limit=90
+```
+
+What is different from example 1 and why:
+
+* **No branch predicate.** Scope is ALL, so the compiler adds nothing. Same DSL, different SQL, decided by the token.
+* `AT TIME ZONE :tz` **before** `date_trunc`**.** `start_at` is `timestamptz` (stored as UTC). An appointment at 02:00 IST on 1 September is 20:30 UTC on 31 August. Truncating in UTC would put it in August. Converting to the tenant zone first, inside the database, fixes that. The zone is a _bound parameter_, so no injection surface, and cached 10 minutes with an Asia/Kolkata fallback.
+* **Cast on the parameter, not the column**: `:flt_0_lo::timestamptz`. Casting the column (`start_at::text`) would defeat the index on `start_at`. Casting the parameter keeps the index usable. The catalog's `data_type='TIMESTAMPTZ'` is what tells the compiler which cast to add (war story 3).
+* **Upper bound minus 1 µs.** `BETWEEN` is inclusive; using `2026-10-01T00:00:00` would double count a midnight appointment into both September and October.
+* `ORDER BY 1 ASC` — the user's sort on "Day" resolved to ordinal 1. A time series wants chronological order, so this DSL sets it explicitly; otherwise the compiler would force `ORDER BY 2 DESC`.
+* **HOUR_OF_DAY variant.** For the "hourly patient flow 8 a.m.–8 p.m." chart, the bucket compiles to `EXTRACT(HOUR FROM start_at AT TIME ZONE :tz)`, giving a 0–23 distribution across the whole range instead of one point per hour per day.
+
+## Example 3 — the lookup join: "Leads by source" with a display name
+
+Cast: `ADMIN` of the lead datasource. After migration V13 the field `lead_source_name` on `lead.leads` is no longer a denormalised column; it is the FK `source_id` with lookup metadata `lookup_table='lead.lead_sources'`, `lookup_key='id'`, `lookup_display_column='name'`.
+
+```json
+{
+  "datasource": "lead.leads",
+  "chartType": "BAR",
+  "dimensions": [ { "field": "lead_source_name", "alias": "Source" } ],
+  "measures":   [ { "agg": "COUNT", "field": "count", "alias": "Leads" },
+                  { "agg": "AVG",   "field": "days_to_convert", "alias": "Avg days to convert" } ],
+  "filters":    [ { "field": "status", "operator": "EQUALS", "values": ["CONVERTED"] } ],
+  "sort":       [ { "by": "Leads", "order": "DESC" } ],
+  "limit": 20,
+  "privacy": { "excludePatientIdentifiers": true, "minimumGroupSize": 5 }
+}
+```
+
+```sql
+SELECT lk0.name AS "Source",
+       COUNT(*) AS "Leads",
+       AVG(EXTRACT(EPOCH FROM (f.converted_at - f.created_at)) / 86400) AS "Avg days to convert"
+FROM lead.leads f
+LEFT JOIN lead.lead_sources lk0 ON lk0.id = f.source_id
+WHERE f.tenant_id = :tenant_id
+  AND f.deleted_at IS NULL
+  AND f.status::text = :flt_0
+GROUP BY 1
+HAVING COUNT(*) >= :min_group_size
+ORDER BY 2 DESC
+LIMIT :row_limit
+```
+
+What to point at:
+
+* **The fact table gets alias** `f` **only because a lookup exists.** Without lookups the SQL is byte-identical to before V13 (no alias, no qualification). This was the promise made when the feature shipped, and `QueryCompilerTest` asserts it.
+* **One** `LEFT JOIN` **per distinct FK**, aliased `lk0`, `lk1`… Two dimensions on the same FK share one join. `LEFT` so a lead with a deleted source still counts, under a NULL label.
+* **Filters bind on the fact column** (`f.source_id` if you filtered by source), never on the joined label. Index-friendly and unambiguous.
+* `{f}.` **placeholder in computed columns.** The catalog stores `days_to_convert` as `EXTRACT(EPOCH FROM ({f}.converted_at - {f}.created_at)) / 86400`. The compiler substitutes `f.` when aliased and empty string otherwise. This exists because master tables share column names (`created_at`, `status`, `tenant_id`) and an unqualified reference became ambiguous the day the first join landed (war story 4).
+* **Soft-delete predicate** appears because this datasource declares `soft_delete_column='deleted_at'`; appointments does not, so examples 1 and 2 have no such line.
+
+## When things go wrong — the error paths
+
+<Mermaid code={`flowchart TD
+    R["POST /run"] --> T{"tenant in token?"}
+    T -- no --> E400a["400 no tenant context"]
+    T -- yes --> A{"role allowed?"}
+    A -- "RGT_* or no branch claim" --> E403["403 AccessDenied"]
+    A -- yes --> D{"definition visible?"}
+    D -- no --> E404["404"]
+    D -- yes --> V{"validator"}
+    V -- "unknown field / PII / bounds" --> E400b["400 with field errors"]
+    V -- ok --> B{"bulkhead slot?"}
+    B -- "10 busy" --> E429["429 try again"]
+    B -- yes --> X{"query"}
+    X -- "> 3 s" --> E500["error: statement timeout<br>connection freed"]
+    X -- ok --> OK["200 rows · truncated flag · audit row"]`} />
+
+| Status | Cause | Who fixes it |
+| --- | --- | --- |
+| 400 | No tenant context; unknown field; disallowed agg/operator; PII field; too many dims/filters/values; limit > 5000; datasource without tenant column | Report author (UI shows field-level messages) |
+| 403 | RGT\_\* platform role; BRANCH_ADMIN without branch claim | Identity / roles |
+| 404 | Definition not in tenant and not a system template | Caller |
+| 429 | Bulkhead full (10 concurrent source queries) | UI retries; ops tune the instance |
+| 5xx | Statement timeout at 3 s; unknown source key (config missing); DB down | Ops; catalog author |
+
+**Footprint of one successful run.** Source DB: one read-only transaction, one statement, ≤3 s, ≤5000 rows, every predicate bound. Own DB: one audit INSERT. Redis: one GET and one SET. That is the whole cost of a report.
+
+## Read more
+
+* [PostgreSQL AT TIME ZONE](https://www.postgresql.org/docs/current/functions-datetime.html#FUNCTIONS-DATETIME-ZONECONVERT) — read the two-way semantics carefully; timestamptz → timestamp is the direction we use.
+* [Use The Index, Luke: obfuscated conditions](https://use-the-index-luke.com/sql/where-clause/obfuscation) — why casting the column kills the index and casting the parameter does not.
+* [GROUP BY with ordinals](https://www.postgresql.org/docs/current/queries-table-expressions.html#QUERIES-GROUP) — supported in Postgres; the reason our structure can be user-string-free.
+* [Spring NamedParameterJdbcTemplate](https://docs.spring.io/spring-framework/reference/data-access/jdbc/core.html#jdbc-NamedParameterJdbcTemplate) — how `:flt_0` lists expand safely into `IN (?, ?, ?)`.
+

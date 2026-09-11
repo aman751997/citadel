@@ -57,6 +57,19 @@
 - War Room (battle-tested, from prod code): patterns-why (18 dossiers), inventory, build-drills, cheatsheet — ✅ live at `/lld/war/…`. SD War Room: 6 case studies at `/sd/war/…`. Doctrine: theory first, War Room = live examples.
 - Remaining LLD work = REPS, not lessons: the classic-problems drill order (parking lot → splitwise → vending machine → LRU → BookMyShow → elevator → logger → rate limiter), timed with the buddy, post-mortems logged. Lesson infra: MDX in `src/lld-lessons/`, modules in `src/lld-modules.ts`.
 
+## Mastery status — SYNCED FROM CONFLUENCE (2026-09-11)
+
+| Dossier | Chapters | Source |
+|---------|----------|--------|
+| AI Document Pipeline | 15 | Confluence `57966593` |
+| Reporting Engine | 8 | Confluence `54231041` |
+| Telemedicine PoC | 5 | Confluence `58294374` |
+| War Stories (one integration day, 8 bugs) | 1 | Confluence `39026689` |
+
+- Generated wing: `scripts/confluence-to-mdx.mjs` converts raw wiki markdown → MDX, `scripts/verify-mdx.mjs` round-trips it back and diffs (29/29 clean). Page manifests in `content-sync/<project>/meta.json`; protocol in `content-sync/README.md`.
+- Doctrine: Confluence is the source of truth for this wing — edit there, re-sync, never hand-edit `src/mastery/**`.
+- Use: the résumé half of the loop ("walk me through something you built"). Reread the relevant dossier before any round where that work is on the CV.
+
 ## Coverage map
 `src/bank.ts` (46 SD questions) → all map to forged theory; 17 walkthroughs queued. `src/dsa.ts` (144 problems) → 8/20 pattern lessons forged (all of Act I). DSA page now has click-to-mark solves + copy-progress (localStorage overlay; baked flags stay the synced truth).
 

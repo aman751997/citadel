@@ -1,0 +1,113 @@
+---
+title: "4. Design Decisions, War Stories, Q&A & Further Reading"
+description: "S. Patient joined audio-only with camera off, sometimes with mic off too. Doctor pressed REC; nothing happened on the phone. T. Find why a reliable data-channel message vanished…"
+project: "telemedicine-poc"
+order: 4
+minutes: 11
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/57933912"
+synced: "2026-09-11"
+---
+
+## Design decisions and trade-offs
+
+| Decision | Explain it to a friend | Alternatives | Why this | Revisit when |
+| --- | --- | --- | --- | --- |
+| **LiveKit (self-hosted) as the SFU** | "An open-source video server we run ourselves; it forwards packets, records tracks, and emits webhooks." | Twilio Video / Daily / Agora (managed); raw WebRTC mesh | Data residency (PHI stays on our infra), per-track egress out of the box, server SDK for tokens and room control, no per-minute billing for a POC. | If ops cost of running the SFU outweighs managed pricing at production scale; LiveKit Cloud is a drop-in. |
+| **Track egress per mic, no diarization** | "Record each person separately so we never have to guess who said what." | Room composite + pyannote / WhisperX | Exact labels; no GPU diarization pass; Opus pass-through. Moves difficulty to alignment and half-silent tracks, both solved deterministically. | Three or more participants with cross-talk; then per-track still works, alignment just has more tracks. |
+| **Whisper on-device (MLX)** | "Transcribe on the Mac's own GPU so audio never leaves the machine during the demo." | Cloud STT (Deepgram, Sarvam, Google); faster-whisper on a CUDA box | Zero data egress for audio, no API cost, under a minute for demo-length calls. The provider seam is one function. | Production: managed Indic STT (Sarvam) or a GPU worker pool; laptops are not servers. |
+| **Consent as a set that must empty** | "Recording starts only when the last person says yes." | Boolean flag; implied consent by joining | Late joiners are not covered; decline aborts; revoke is distinct from stop. Matches DPDP purpose-and-consent principles and the Telemedicine Practice Guidelines. | Never loosen. Tighten by persisting consent events with timestamps. |
+| **Dual-path control messages** | "Send every control message two ways and de-duplicate, because one way fails for silent participants." | Data channel only; HTTP only | Mic-less participants have no publisher connection; data-channel sends time out. HTTP relay via `sendData` reaches the subscriber side. Receivers are idempotent. | If we move to a proper backend, control messages go through the server only. |
+| **Redis on the host, not in Docker** | "Docker's port forwarding added enough lag that the video server kept thinking its recorder had died." | Redis in compose | Docker Desktop's host→container port proxy was flaky; LiveKit routing depends on low-latency Redis keepalives. Egress reaches Redis via `host.docker.internal`. | On Linux hosts (no Docker Desktop proxy) it can go back into compose. |
+| **Filesystem as the database** | "Each recording session is a folder; the files are the state." | Postgres + S3 | POC speed; easy to demo the compliance close by showing an empty folder. The layout is already the shape of an object-store prefix. | Production, immediately: metadata in Postgres, blobs in object storage with lifecycle rules. |
+| **Serialised transcription** | "One Whisper job at a time so two calls do not fight for the GPU." | Parallel jobs; external queue | Single GPU; a promise chain is a queue with zero infrastructure. Failed jobs keep their audio for retry. | Production: a real queue (RabbitMQ, as in the AI pipeline) and a worker pool. |
+| **Synchronous delete after success** | "The moment the transcript is written, the audio is gone." | Retention by default | Data minimisation; `KEEP_AUDIO=1` models the 30-day hospital opt-in. Failure path retains for retry. | Per-tenant retention policy in production, with the same default. |
+| **Write-once signed note** | "You can sign once. The original machine transcript is never touched." | Editable note; overwrite transcript | Medico-legal: immutable source, attributable human edits, 409 on re-sign. | Add amendment records (new versions with reasons) rather than allowing edits. |
+
+## War stories (STAR)
+
+### 1. The consent modal never appeared on the patient's phone
+
+**S.** Patient joined audio-only with camera off, sometimes with mic off too. Doctor pressed REC; nothing happened on the phone. **T.** Find why a reliable data-channel message vanished. **A.** Traced to WebRTC topology: a participant who publishes nothing has no publisher peer connection, and data-channel sends from that side time out. Rather than force everyone to publish, added an HTTP relay through the server's `sendData` and sent every control message both ways, with receiver-side de-duplication so only the first copy of the final accept starts recording. **R.** Consent works for silent participants; double delivery is harmless. **Lesson.** Know the transport's topology before trusting "reliable".
+
+### 2. Whisper said "Thank you." to an empty room
+
+**S.** Per-speaker tracks are half silence. Transcripts contained "Thank you.", "Thanks for watching.", and a Russian "to be continued". **T.** Remove hallucinations without dropping real speech. **A.** Disabled `condition_on_previous_text` so one hallucination could not seed the next; stacked Whisper's own three quality signals plus a minimum duration; then added the decisive gate: measure the segment window's peak with `ffmpeg volumedetect` and drop anything below −35 dBFS. **R.** Outro phrases gone from silent windows; real speech untouched. Some short repeated phrases still leak, which I say up front. **Lesson.** When a model's confidence is unreliable, check the physical signal.
+
+### 3. Speakers appeared in the wrong order
+
+**S.** Two files, each starting at 0:00. Interleaving by file time put the patient's answer before the doctor's question. **T.** Put both on one clock. **A.** Harvested `startedAt` (ns) from each egress result, added it as a per-track offset, sorted, rebased to the first utterance. Found the result record is written asynchronously, so finalise polls `listEgress` until COMPLETE (≤10 s) before writing the manifest. Added a relative-time fallback when any timestamp is missing. **R.** Measured skew of 29–74 ms is corrected; order is right. **Lesson.** Independent recorders need a shared reference, and the reference arrives late.
+
+### 4. LiveKit kept losing its recorder (Redis latency)
+
+**S.** Egress StartEgress calls timed out; LiveKit logged stale keepalives. **T.** Stabilise coordination between the server binary and the Docker egress. **A.** Root cause was Docker Desktop's host→container port proxy adding latency and stalling. Moved Redis to the host via Homebrew; egress connects through `host.docker.internal`. Also replaced LiveKit `--dev` mode with a config file, since egress needs shared Redis. **R.** Recording start became reliable. **Lesson.** Latency-sensitive coordination should not cross a virtualised network boundary on a laptop.
+
+### 5. Docker wedged before every demo
+
+**S.** Docker Desktop hung intermittently (CLI hangs, port proxy stalls), making egress calls time out. **T.** Make the start script self-healing so a demo never depends on a manual restart. **A.** Probe the daemon with `curl --unix-socket … /_ping --max-time 4`; on failure, quit Docker Desktop via AppleScript, kill the backend, reopen, retry up to 40 × 5 s; then run health checks (Redis PONG, 200s on 7880/3001/5173, compose status). **R.** "Everything must say 200 / PONG / Up" became a one-command pre-demo gate. **Lesson.** Automate the flaky dependency's recovery, and make the health check explicit.
+
+### 6. The patient's screen kept showing a dead call
+
+**S.** Doctor pressed End and just left; the patient saw one frozen tile. **T.** Make End mean end. **A.** End now finalises the recording first, then `deleteRoom`; clients receive `ROOM_DELETED` and render "Consultation ended"; the doctor is routed to the notes screen. **R.** Clean close for both parties, and the egress stops before the room disappears. **Lesson.** Order of operations at shutdown matters: stop recorders, then tear down the room.
+
+### 7. A browser crash mid-call would have lost the recording
+
+**S.** Finalise only ran when a button was pressed. **T.** Cover the "tab closed" path. **A.** Registered the `room_finished` webhook, verified with the raw body and the LiveKit signature, calling the same idempotent finalise that removes the room from the active map before any await and ignores already-ended egresses. **R.** Three entry points, one outcome. **Lesson.** Every background path needs the same idempotent handler as the happy path.
+
+## What I would change for production (say this unprompted)
+
+| Gap today | Production change |
+| --- | --- |
+| `/token` is unauthenticated; role is a client-chosen string; API key/secret are `devkey`/`secret` | Authenticate users (our auth-service JWT), derive role server-side, mint LiveKit tokens with short TTL and scoped grants (`roomRecord` only for the service), rotate secrets |
+| Privileged routes (start/stop/end/sign/relay) open to anyone | Authorisation per route; only the consulting doctor may record, end, or sign |
+| Self-signed TLS; plaintext internal hops; Redis unauthenticated; no E2EE | CA-signed TLS, TLS or private network for internal hops, Redis auth; evaluate LiveKit E2EE for media |
+| Filesystem state; `activeRecordings` in memory (lost on restart) | Postgres for sessions and consent events; object storage with lifecycle rules for artefacts |
+| Whisper on a laptop; serialised in-process queue | Managed Indic STT (Sarvam) or GPU workers behind RabbitMQ; the `transcribe_file()` seam is already there |
+| Hallucination gates leak short repeated phrases | Silero VAD in front of Whisper; cross-segment repetition filter; per-tenant language lock |
+| Egress poll gives up at 10 s → silent relative alignment | Poll longer or subscribe to `egress_ended` webhook; fail loudly if timestamps are missing |
+| Transcripts and summaries retained forever | Retention policy per tenant; purge job; audit of access |
+| No tests | Unit tests for gates and alignment (pure functions), contract tests for the API, a Playwright E2E for consent |
+| `livekit/egress:latest`; duplicated `parseIdentity` in client and server | Pin versions; share a types package |
+
+## Question bank
+
+| Question | 15-second answer | Deeper |
+| --- | --- | --- |
+| Why per-track egress instead of composite plus diarization? | Labels exact by construction; no diarization model; Opus pass-through. Cost moves to alignment, solved with egress timestamps. | Page 2 |
+| How do you align two independent recordings? | Each egress reports `startedAt` in ns; add it as the track's offset, sort, rebase to first utterance. Poll until COMPLETE because the record arrives late. Fallback to relative time with a warning. | Page 3 §3 |
+| Whisper hallucinates. How did you handle it? | Disable conditioning on previous text; gates on no_speech_prob, compression ratio, avg_logprob, duration; then measure the window's peak with ffmpeg and drop anything under −35 dBFS. | Page 3 §2 |
+| Why did consent messages fail for some participants? | No publisher connection when nothing is published, so data-channel sends time out. Fixed with an HTTP relay via `sendData` plus receiver de-duplication. | Page 2 |
+| How is consent enforced? | A set of remote identities that must empty; any decline aborts; revoke stops recording and names who revoked. Late joiners are not covered. | Page 2 |
+| What if the doctor's browser dies mid-call? | LiveKit's `room_finished` webhook (signature-verified on the raw body) calls the same idempotent finalise. | Page 1 |
+| How did phones on the LAN get mic access? | HTTPS dev server with one self-signed cert, proxying both the API and the signalling websocket so there is one origin and no mixed content. Media goes direct over UDP. | Page 1 |
+| Where does patient data go? | Audio and transcripts stay on the machine; audio deleted after transcription; the transcript text goes once to RGT's self-hosted MedGemma over HTTPS. "Never leaves RGT", not "never leaves the device". | Page 3 §5 |
+| How do you keep the AI summary safe? | Grounding prompt, five fixed sections, labelled draft, non-fatal on failure, nothing enters the chart unsigned, signed note write-once with the machine transcript preserved. | Page 3 §5–6 |
+| What is the production path? | Auth and server-derived roles, CA TLS, Postgres + object storage, managed Indic STT or GPU workers behind a queue, VAD, retention policy, tests. The STT seam is one function. | This page |
+| What is an SFU and why not peer-to-peer? | An SFU forwards each participant's streams to the others without mixing; P2P mesh does not scale past two or three and cannot record server-side. LiveKit is an SFU. | WebRTC for the Curious |
+| Why Opus? | WebRTC's mandatory audio codec: low latency, good at speech from 6 to 510 kbps, built-in packet-loss concealment. Recording it as-is avoids a transcode. | RFC 6716 |
+
+## Closed-book self-check
+
+1. Draw the process diagram with ports. Which hop carries media, and why does it bypass the proxy?
+2. Name the three paths into finalise and what makes it idempotent.
+3. Write the five gates with thresholds and the reason for each.
+4. Explain alignment with a 74 ms skew example.
+5. Describe the consent state machine including revoke.
+6. Tell the dual-path signalling story in 60 seconds.
+7. List five production gaps and the fix for each.
+
+## Further reading
+
+* [WebRTC for the Curious](https://webrtcforthecurious.com/) — free, the best single resource.
+* [LiveKit docs](https://docs.livekit.io/): [Egress](https://docs.livekit.io/home/egress/overview/), [Webhooks](https://docs.livekit.io/home/server/webhooks/), [Data messages](https://docs.livekit.io/home/client/data/messages/), [Tokens](https://docs.livekit.io/home/get-started/authentication/).
+* [RFC 6716 Opus](https://www.rfc-editor.org/rfc/rfc6716), [RFC 7845 Ogg Opus](https://www.rfc-editor.org/rfc/rfc7845), [RFC 5764 DTLS-SRTP](https://www.rfc-editor.org/rfc/rfc5764).
+* [Whisper paper](https://arxiv.org/abs/2212.04356); [Careless Whisper (hallucination study)](https://arxiv.org/abs/2402.08021); [Silero VAD](https://github.com/snakers4/silero-vad).
+* [MedGemma](https://developers.google.com/health-ai-developer-foundations/medgemma).
+* [India Telemedicine Practice Guidelines 2020](https://telemedicine.gov.in/); [DPDP Act 2023](https://www.meity.gov.in/data-protection-framework).
+* [Sarvam AI](https://www.sarvam.ai/) — the planned Indic STT provider.
+* [Fowler: Seam](https://martinfowler.com/bliki/Seam.html) — the vocabulary for `transcribe_file()`.
+
+## Add after each interview
+
+* \[ \] Question I was asked that is not here:
+* \[ \] Answer I fumbled and the better version:
+

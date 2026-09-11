@@ -1,0 +1,100 @@
+---
+title: "11. Question bank with model answers"
+description: "Sixty questions in the order interviewers tend to ask them: architecture → messaging → NLP → LLM → data → ops → behavioural…"
+project: "ai-pipeline"
+order: 11
+minutes: 10
+source: "https://ratnaglobaltech-team-vqcmu8hm.atlassian.net/wiki/spaces/~712020902e4ce290c34998bf3d5a7efed0c42e/pages/58195991"
+synced: "2026-09-11"
+---
+
+Sixty questions in the order interviewers tend to ask them: architecture → messaging → NLP → LLM → data → ops → behavioural. Each answer is the two-to-four sentences you would actually say. Add the ones that stump you at the bottom the same evening.
+
+## A. Architecture and design (page 1)
+
+1. **Walk me through the system.** — The 60-second pitch on page 1. Upload → Java → RabbitMQ event with an S3 pointer → Python: three-stage NER + chunking in parallel → merge → four webhooks → Java section jobs → STOMP push → cards. 55 s per document.
+2. **Why is it event-driven?** — Latency mismatch (analysis takes a minute; the upload must return now), decoupled failure (either side can be down), and the broker as the throttle and fan-out point. Trade-off: harder debugging, no ordering — paid for with progress events and idempotency keys.
+3. **Why RabbitMQ over Kafka?** — Work-queue semantics: per-message ack, dead-letter, retry, plus the STOMP plugin for the browser relay. Kafka wins when you need replay or many independent consumer groups reading history; we don't yet.
+4. **Why Python for the pipeline in a Java shop?** — The models are Python-native. Java owns the record, Python owns the reading, and the boundary is a queue and two authenticated HTTP contracts.
+5. **Where does the LLM sit?** — Three places: enrichment and discovery inside NER (thinking off), the reasoning pass inside critical alerts (thinking on), and — being retired — Java's own section generator.
+6. **How does the browser get updates?** — Java publishes to `/topic/patients.{id}.ai-sections` via a STOMP relay to RabbitMQ; the portal's single multiplexed STOMP client subscribes with a Bearer JWT; CONNECT is authenticated and each SUBSCRIBE authorised against a verified user–patient link.
+7. **Multi-tenancy?** — Enforced in Java (JWT `tenantId`, Hibernate filter, tenant-scoped uniqueness). The event carries `tenantId`; entities and chunks store it. Gap: chunk tenancy still falls back to a DB lookup.
+8. **What would you change if you started over?** — Persist the sections from day one (J14), one owner for the schema, quorum queues from the start, and a gold set before the first prompt.
+
+## B. Messaging and reliability (page 2)
+
+9. **Exactly-once?** — Doesn't exist across a broker, two databases and an HTTP call. At-least-once delivery plus idempotent side effects gives effectively-once outcomes.
+10. **What happens if the consumer crashes mid-document?** — The message is unacked; RabbitMQ redelivers to the next consumer; every write is a replace (delete-by-document, re-insert) and the webhook carries a fresh idempotency key because the work really was redone.
+11. **How do you stop a poison message looping?** — `message.process(requeue=False)`: an exception rejects without requeue, the dead-letter exchange routes it to `ai-pipeline.dlq`.
+12. **Prefetch vs concurrency?** — Prefetch is how many unacked messages the broker hands us (a buffer, 5); the semaphore is how many we run (1 locally). Prefetch above concurrency keeps the next message warm without over-committing.
+13. **Retries?** — Honestly: none today. The code checks `x-delivery-count`, which only quorum queues set; ours are classic. Fix is quorum queues or explicit republish-with-delay, plus a DLQ alert and redrive.
+14. **How do you make the webhook idempotent?** — Key `patient:section:document:pipeline_run_id`; Java `INSERT … ON CONFLICT DO NOTHING`; a no-op insert is a replay. Run id is per handler invocation, so redelivery = fresh key, notifier retry = same key.
+15. **What is the claim-check pattern and where do you use it?** — The message carries a pointer (S3 key), not the payload. The broker never holds clinical text; the consumer fetches it.
+16. **Outbox pattern?** — Dual-write problem: row + publish. Java writes the row first, marks it `*_PENDING_MQ` if publish fails, and a scheduler republishes. Outbox-lite: the job row is the outbox. Gap: a crash between commit and publish leaves a row at QUEUED nothing revisits.
+17. **Ordering between two documents of one patient?** — Not guaranteed and not needed: sections recompute from all entities on every merge, so the final state is the same whichever finishes last.
+18. **Back-pressure?** — The queue absorbs bursts; the semaphore is the knob; webhooks run outside it so a dead Java cannot hold a pipeline slot.
+
+## C. Clinical NLP (pages 3–5)
+
+19. **Why three stages instead of one LLM?** — Cost, latency, PHI surface, and codes/provenance. MedCAT is free and gives UMLS codes; GLiNER reads context MedCAT misses; the LLM handles the long tail. Each stage narrows the next one's input.
+20. **What is MedCAT?** — A UMLS concept linker on spaCy with context-vector disambiguation and MetaCAT meta-annotations (Status, Subject). Fast, deterministic, code-linked. Needs a UMLS licence.
+21. **What is GLiNER?** — A small bi-encoder transformer for zero-shot span NER: give it label names, get spans. No codes, so we use it only on text MedCAT left uncovered.
+22. **How do you avoid the stages double-tagging?** — Space-mask MedCAT's covered spans so every remaining character keeps its offset; GLiNER and the LLM see only leftovers.
+23. **How does negation work?** — Page 4 one-liner: NegEx-style cue before the mention in the same sentence with no scope breaker; MetaCAT Status recorded but not trusted (Affirmed at 0.54 on "denies chest pain").
+24. **How would you improve negation?** — Measure first (gold set, i2b2 labels), then ConText (pseudo-negation, termination, Experiencer, Temporality), section-aware scope, fine-tune MetaCAT on our annotations, LLM adjudication only for disagreements, carry three assertion fields instead of one boolean.
+25. **Why is "not" not a negation cue?** — "Not well controlled hypertension" is a real hypertension. Precision on affirmations matters more than catching every "not".
+26. **Provenance — how does a doctor trust an extraction?** — Verbatim span, character offsets, page. The model's quote is a claim; a resolver finds it in the source or marks it unlocated. 49/49 exact on the measured runs.
+27. **Hallucinations?** — No fact without a quote; unfound quotes flagged, not hidden; codes from vocabulary lookups where possible; sections computed by deterministic code; the reasoning pass returns the entities it used.
+28. **Precision and recall?** — Not yet measured, and I say so. Counts match ground truth on five notes (10 labs → 10). The gold set is the first item after the sections path is single-sourced.
+29. **What does the pipeline miss clinically?** — Allergies entirely; relations (drug ↔ dose linked by proximity only); Experiencer/Temporality beyond a boolean.
+30. **Entity types?** — DIAGNOSIS, CONDITIONS, MEDICATIONS, LAB_VALUE, VITAL_SIGN, PROCEDURES, ANATOMY. Codes: UMLS CUI (with ICD-10/SNOMED lists), RxNorm, LOINC.
+
+## D. Sections and clinical logic (page 6)
+
+31. **Rules or LLM for alerts?** — Both, with a contract: YAML threshold rules for single-value facts; one LLM pass for cross-variable patterns, told not to repeat what rules cover. Real output: "Triple whammy" ACEi + diuretic + NSAID with falling eGFR.
+32. **Why group labs by LOINC?** — Names vary by phrasing; codes don't. Grouping by display name once made a rule for "hba1c" never match a group called "Hemoglobin A1c".
+33. **Unit normalisation?** — Before grouping, or a mg/dL vs mmol/L series looks like a crash. An early version computed it and threw it away; now a regression test.
+34. **Why order labs by clinical date, not ingestion?** — Documents arrive out of order; a trend needs the collection date.
+35. **Why is CRITICAL_ALERTS fast and the others slow?** — It is persisted after every merge and served from a row (30 ms); the others compute on read and fetch entity JSONs from S3 (5–20 s cold). Persisting all four is J14.
+36. **Can a clinician dismiss an alert?** — Not yet: LLM concerns get a fresh UUID each run, so dismissal would not survive re-analysis. J13 gives them a deterministic key from category + entities.
+
+## E. LLM engineering (page 7)
+
+37. **How do you guarantee JSON?** — `response_mime_type=application/json` plus a `response_schema`. The schema enforces shape and field names; a prompt only asks.
+38. **How did you cut latency 4×?** — Found 7,004 hidden thought tokens per call in `usage_metadata`; set `thinking_budget=0` for extraction. 40 s → 10 s.
+39. **Which Gemini and why?** — Measured: 3.8-flash 9.6 s median vs 2.5-flash 25.4 s on five notes, with counts matching the notes; 2.5 re-extracts duplicates. Model is config; default flips after the gold set.
+40. **On-prem or cloud?** — Intent is on-prem for PHI. MedGemma 27B on an L4 measured 8.3 tok/s decode (\~154 s/doc) — bandwidth-bound, not misconfigured. Recommendation: 4B for extraction, or bigger GPU, or Vertex AI with a BAA. Decision has numbers and an owner.
+41. **Cost per document?** — Roughly: two extraction calls (\~1.5k output tokens) plus one reasoning call (\~1k answer + up to 7k thought tokens) on 2.5-flash ≈ a few cents; thought tokens dominate. The counter under-reported 4× until the price table was fixed.
+42. **Prompt injection?** — Schema bounds the output shape, no tools, the reasoning pass sees structured fields not free text. Content-level defences are still on the list.
+43. **Determinism?** — No. Same input gave 7 vs 9 concerns. Design tolerates it: stable ids, rules for the non-negotiables.
+44. **PHI and compliance?** — AI Studio key has no BAA → synthetic data only. Vertex AI switch exists; on-prem measured. Entity text in S3, pointers in Postgres, nothing in the broker or logs.
+
+## F. Data and RAG (page 8)
+
+45. **Why pgvector, not a vector DB?** — Tenancy filters and joins live in Postgres already; one backup and one credential set in a HIPAA context; scale is thousands of vectors per patient.
+46. **HNSW parameters?** — `m=16, ef_construction=64`, cosine. Filter trap: HNSW finds global top-k then filters; pgvector 0.8 `iterative_scan` keeps walking until the patient filter is satisfied.
+47. **Chunking?** — 512 tokens (the encoder's limit) with 50 overlap, split on clinical section headers first. Tokens, not characters.
+48. **Embedding model?** — MedCPT article encoder, 768-d, biomedical, self-hosted. Caveat: trained on articles, not notes.
+49. **Is retrieval built?** — Indexing yes; querying no. Plan: hybrid (vector + tsvector), reciprocal rank fusion, cross-encoder rerank, cited answers, RAGAS-style evaluation.
+50. **Where does PHI live?** — S3 only (entity JSON, extracted text). Postgres holds pointers, codes, numbers, offsets — and chunk text, a deliberate exception because you cannot vector-search S3.
+
+## G. Operations and production readiness (page 9)
+
+51. **Production or POC?** — Pre-production: chain proven, contracts authenticated and idempotent, 361 tests, metrics, DLQ. Gaps named: retries, DLQ drain, gold set, BAA path.
+52. **How do you know it's healthy?** — Processed vs dead-lettered per hour, p95 per stage, webhook 2xx ratio, span-located ratio, Gemini errors/429s, DLQ depth alert, a synthetic upload every 15 minutes.
+53. **What broke in observability?** — Dead counters, a mis-named histogram, a `patient_id` label, a stale price table. Replaced four dashboards with one where every panel is incremented by code.
+54. **Rollback for the Java switch (J3)?** — One config row per section key.
+55. **Two repos, one schema — how?** — Java owns Flyway; Python writes three tables. Coordinated releases; number migrations on merge day (we collided on V74/V75 once).
+56. **Biggest risk you'd fix first?** — J14 + J3: the cards a clinician sees are not yet built from the pipeline's entities. Then the data-loss window on entity writes.
+
+## H. Behavioural (page 10)
+
+57. **Most challenging part?** — Story 1 (S3 fan-out: 131 → 55 s, found through per-stage telemetry and metric arithmetic) or story 2 (MedCAT eating the Docker daemon).
+58. **A time you were wrong?** — Story 5: merged develop into a feature branch mid-task, dragged in an auth rewrite, reverted and rebuilt the feature as one clean commit. Or the "three retries" that were none.
+59. **A cross-team bug?** — Story 4: four causes of a 401 across two repos, including a filter-order bug that was already breaking a production endpoint.
+60. **What did you learn?** — Verify data lineage, not just the UI (story 7). Audit dashboards like code (story 8). Bound every concurrency (story 1). Read the model's usage metadata (story 3).
+
+## Add here after each interview
+
+- [ ] Question that stumped me: … → answer I should have given: …
+

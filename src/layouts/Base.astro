@@ -58,12 +58,13 @@ const { title, description = 'Personal interview prep portal', track } = Astro.p
         )}
       </div>
       <span id="xp-badge" class="xp-badge" title="Lessons completed"></span>
+      <button id="sync-ctl" class="sync-ctl" type="button" title="Progress → git sync"></button>
     </nav>
     <main>
       <slot />
     </main>
     <footer>
-      Forged for one engineer's climb to the FAANG Citadel · progress lives in your browser
+      Forged for one engineer's climb to the FAANG Citadel · progress auto-syncs to git when linked
     </footer>
   </body>
 </html>
@@ -137,6 +138,20 @@ const { title, description = 'Personal interview prep portal', track } = Astro.p
     font-weight: 600;
     font-family: var(--mono);
   }
+  .sync-ctl {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 99px;
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    font-family: var(--mono);
+    padding: 0.15rem 0.6rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .sync-ctl:hover { border-color: var(--accent-dim); color: var(--text); }
+  .sync-ctl.on { border-color: rgba(63, 185, 80, 0.5); color: var(--green); }
+  .sync-ctl.err { border-color: var(--red); color: var(--red); }
   main { max-width: 880px; margin: 0 auto; padding: 2.2rem 1.4rem 4rem; }
   footer {
     text-align: center;
@@ -197,8 +212,48 @@ const { title, description = 'Personal interview prep portal', track } = Astro.p
 </style>
 
 <script>
-  // XP badge in nav: completed lesson count from localStorage
-  const done = JSON.parse(localStorage.getItem('sdc-progress') || '[]');
+  // XP badge in nav: baked (git-synced) completions + localStorage overlay of unsynced ones
+  import { SD_DONE } from '../progress';
+  import { getToken, setToken, clearToken, sync, hasPending } from '../sync';
+
+  const local = JSON.parse(localStorage.getItem('sdc-progress') || '[]');
+  const done = new Set([...SD_DONE, ...local]);
   const badge = document.getElementById('xp-badge');
-  if (badge && done.length > 0) badge.textContent = `⚡ ${done.length} cleared`;
+  if (badge && done.size > 0) badge.textContent = `⚡ ${done.size} cleared`;
+
+  // Git-sync control: shows link state, click to link a token or force a sync now.
+  const ctl = document.getElementById('sync-ctl') as HTMLButtonElement;
+  const paint = (msg?: string) => {
+    ctl.classList.toggle('on', !!getToken());
+    ctl.classList.remove('err');
+    ctl.textContent = msg ?? (getToken() ? '🔗 git sync on' : '🔗 link git sync');
+    if (msg?.startsWith('⚠️')) ctl.classList.add('err');
+  };
+  paint();
+
+  const TOKEN_HELP = [
+    'Link progress auto-sync to GitHub.',
+    '',
+    'Create a fine-grained personal access token at',
+    'github.com → Settings → Developer settings → Fine-grained tokens:',
+    '  • Repository access: ONLY aman751997/citadel',
+    '  • Permissions: Contents → Read and write (nothing else)',
+    '',
+    'The token is stored only in this browser and sent only to api.github.com.',
+    'Paste it here (leave empty + OK to unlink):',
+  ].join('\n');
+
+  ctl.addEventListener('click', async () => {
+    if (!getToken()) {
+      const t = window.prompt(TOKEN_HELP);
+      if (t === null) return;
+      if (!t.trim()) { clearToken(); paint(); return; }
+      setToken(t);
+    }
+    await sync(paint);
+    setTimeout(() => paint(), 3000);
+  });
+
+  // On-load sweep: anything completed while sync was failing/offline gets pushed now.
+  if (getToken() && hasPending()) void sync(paint).then(() => setTimeout(() => paint(), 3000));
 </script>

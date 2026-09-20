@@ -2,12 +2,16 @@
 import { getCollection } from 'astro:content';
 import Base from '../../layouts/Base.astro';
 import { DSA, DSA_DEFERRED } from '../../dsa';
+import { DSA_SOLVED } from '../../progress';
 import { BASE } from '../../paths';
 
 const dsaLessons = await getCollection('dsa');
 const lessonBySlug = new Map(dsaLessons.map((l) => [l.id, l]));
+// Baked = dsa.ts done flags (buddy/Notion sync) OR progress.json (browser auto-sync)
+const solvedJson = new Set(DSA_SOLVED);
+const isDone = (q: { done?: boolean; lc: string }) => !!q.done || solvedJson.has(q.lc);
 const total = DSA.reduce((s, p) => s + p.problems.length, 0);
-const done = DSA.reduce((s, p) => s + p.problems.filter((q) => q.done).length, 0);
+const done = DSA.reduce((s, p) => s + p.problems.filter(isDone).length, 0);
 const diffColor: Record<string, string> = { E: 'diff-e', M: 'diff-m', H: 'diff-h' };
 ---
 <Base title="DSA Arsenal" description="All patterns, all problems, all links — the whole coding-round map on one page" track="dsa">
@@ -18,13 +22,14 @@ const diffColor: Record<string, string> = { E: 'diff-e', M: 'diff-m', H: 'diff-h
     💎 = LeetCode premium (free LintCode mirror linked).
   </p>
   <p class="lede dim">
-    Statuses mirror Notion (tracker of record). Solved something? <strong>Click its ⬜ to mark it</strong> (saves in this browser),
-    then <button id="copy-dsa-progress" type="button">📋 Copy progress</button> and paste to the buddy — Notion + this page's baked flags both get updated.
+    Statuses mirror Notion (tracker of record). Solved something? <strong>Click its ⬜ to mark it</strong> —
+    it auto-commits to git when “🔗 git sync” is linked in the nav. Hit <button id="copy-dsa-progress" type="button">📋 Copy progress</button>
+    and paste to the buddy when you also want Notion updated.
   </p>
 
   {DSA.map((pat) => {
     const lesson = pat.lesson ? lessonBySlug.get(pat.lesson) : undefined;
-    const patDone = pat.problems.filter((q) => q.done).length;
+    const patDone = pat.problems.filter(isDone).length;
     return (
       <section class="pattern">
         <h2>{pat.id}. {pat.title} <span class="count">{patDone}/{pat.problems.length}</span></h2>
@@ -39,8 +44,8 @@ const diffColor: Record<string, string> = { E: 'diff-e', M: 'diff-m', H: 'diff-h
             <thead><tr><th></th><th>Problem</th><th>Sub-pattern</th><th>Diff</th><th>Trigger</th><th>Links</th></tr></thead>
             <tbody>
               {pat.problems.map((q) => (
-                <tr class={q.done ? 'row-done' : ''} data-baked={q.done ? '1' : '0'} data-slug={q.lc}>
-                  <td><button class="solve-toggle" type="button" title={q.done ? 'Solved (synced)' : 'Click when solved'}>{q.done ? '✅' : '⬜'}</button></td>
+                <tr class={isDone(q) ? 'row-done' : ''} data-baked={isDone(q) ? '1' : '0'} data-slug={q.lc}>
+                  <td><button class="solve-toggle" type="button" title={isDone(q) ? 'Solved (synced)' : 'Click when solved'}>{isDone(q) ? '✅' : '⬜'}</button></td>
                   <td class="pname">{q.name}{q.b75 && <span class="tag">B75</span>}{q.premium && <span class="tag prem">💎</span>}</td>
                   <td class="dim">{q.sub}</td>
                   <td><span class={diffColor[q.diff]}>{q.diff}</span></td>
@@ -100,6 +105,7 @@ const diffColor: Record<string, string> = { E: 'diff-e', M: 'diff-m', H: 'diff-h
 <script>
   // Local solve overlay: baked flags come from src/dsa.ts (synced truth); clicks store
   // NEW solves in localStorage until the buddy flips the baked flags, then they dedupe away.
+  import { queueSync } from '../../sync';
   const KEY = 'sdc-dsa-solves';
   const local: string[] = JSON.parse(localStorage.getItem(KEY) || '[]');
   const rows = [...document.querySelectorAll<HTMLTableRowElement>('tr[data-slug]')];
@@ -129,6 +135,7 @@ const diffColor: Record<string, string> = { E: 'diff-e', M: 'diff-m', H: 'diff-h
       if (i >= 0) local.splice(i, 1); else local.push(slug);
       localStorage.setItem(KEY, JSON.stringify(local));
       paint(row);
+      queueSync();
     });
   });
 

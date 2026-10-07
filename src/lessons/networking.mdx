@@ -1,64 +1,807 @@
 ---
-title: 'Networking Essentials'
-description: 'DNS to gRPC — the request path every design starts with, and the protocol choices interviewers probe.'
+title: 'Networking: The Path of a Request, and Everything In Between'
+description: 'The morning Kestrel launched in Delhi and the server answered in 50 ms while the phones waited 670. DNS to QUIC, REST to WebSockets, proxies to retries — the network every design is drawn on.'
 module: 1
 order: 4
-minutes: 25
+minutes: 75
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
 import Mermaid from '../components/Mermaid.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { dns, roundTrips, transport, apiStyles, realtime, balancing, retries, drills } from '../data/sd/networking';
+import { BASE } from '../paths';
 
-## The anatomy of one request
+<PatternHub
+  pattern="sd-networking"
+  start="prologue"
+  logline="Every arrow you draw on a whiteboard is a conversation across a wire that can be slow, lossy, or silent. Count its round trips, name who is speaking for whom, and decide what happens when the answer never comes — and the arrows stop being decoration."
+  cast={[
+    { name: 'You', role: 'A month into your job at Kestrel. You have shipped APIs for years. You have never counted the round trips under one.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Draws timelines instead of boxes, and asks how many times a message crosses the ocean.' },
+    { name: 'Dev Okafor', role: 'SRE. Reads packet captures the way other people read novels. Calm about everything except unset timeouts.' },
+    { name: 'Iris Tan', role: 'Product lead. Launching Kestrel in India this week. Every sentence she says ends with “oh, and also…”.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has seen a connection pool take down a database more times than a bad query.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · The path of one request', description: 'DNS, handshakes, and the round trips before the first byte.', links: [['one-request', 'Six hundred and seventy milliseconds'], ['dns', 'Asking for directions'], ['handshakes', 'Three handshakes before hello']] },
+    { name: 'Part Two · How the bytes travel', description: 'Transports, HTTP versions, API styles, real-time push.', links: [['tcp-udp', 'The registered letter and the shout'], ['http-versions', 'One road, many lanes'], ['api-styles', 'Three ways to ask'], ['realtime', 'When the server speaks first']] },
+    { name: 'Part Three · The boxes in the middle', description: 'Proxies, load balancers, gateways, the edge, and NAT.', links: [['proxies', 'Whose side are you on?'], ['l4-l7', 'Envelopes and letters'], ['edge', 'Moving the handshake'], ['nat', 'Doors that only open outward']] },
+    { name: 'Part Four · When the network lies', description: 'Timeouts, retries, idempotency, and connection pools.', links: [['timeouts-retries', 'The request that might have happened'], ['pooling', 'Keep the line open']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Make the calls interviewers probe, with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="Read one part per sitting. Part One is the spine; come back to the round-trip table in Chapter 3 before any mock."
+/>
 
-Every design you'll ever draw starts with "client sends a request." Here's what actually happens, because interviewers probe it:
+<h2 id="prologue">Prologue · The missing 620 milliseconds</h2>
 
-<Mermaid code={`sequenceDiagram
-    participant C as Client
-    participant D as DNS
-    participant LB as Load Balancer
-    participant S as App Server
-    C->>D: where is api.example.com?
-    D-->>C: 34.120.x.x (cached with TTL)
-    C->>LB: TCP handshake + TLS handshake
-    C->>LB: HTTPS request
-    LB->>S: forward (health-checked pool)
-    S-->>C: response`} />
+<Scene chapter="Prologue" title="Launch week" mood="dawn">
 
-**DNS** resolves name → IP. It's a hierarchical, heavily cached system — the TTL on a record is a real design lever: low TTL (60s) lets you fail over fast but increases lookup load; high TTL (24h) means a bad record haunts you for a day. GeoDNS returns different IPs by region — the cheapest form of "route users to the nearest datacenter."
+Kestrel goes live in India on a Monday. By Tuesday, Iris has a slide titled *"Why does the app feel slow in Delhi?"*
 
-**TCP** gives you reliable, ordered bytes — at the cost of a handshake round trip. **TLS** adds encryption — another round trip or two. This is why HTTPS connection setup to a far region is slow, and why we keep connections alive and pooled.
+Dev has the numbers ready, as always. *"Our servers in Virginia answer in 50 milliseconds. I checked. On a fresh session, the phones in Delhi wait 670 milliseconds for the first byte."*
 
-## TCP vs UDP — the one-liner each
+Mara stands, uncaps a marker and draws a phone on the left edge of the whiteboard and a server rack on the right. Between them she draws nothing at all — just a very long gap.
 
-| | TCP | UDP |
-|--|-----|-----|
-| Guarantees | delivery, ordering | none — fire and forget |
-| Cost | handshake, head-of-line blocking | nearly free |
-| Use | almost everything (HTTP, DBs) | video calls, game state, DNS — where a late packet is worse than a lost one |
+*"The server did its job in 50,"* she says. *"So where did the other 620 go?"*
 
-Interview line: "Zoom uses UDP because a 2-second-old video frame is garbage — better to drop it than block newer frames behind it (head-of-line blocking)." That sentence covers 90% of UDP questions.
+</Scene>
 
-## HTTP versions — what changed and why you care
+Most system design answers start with "the client sends a request" and move straight to the boxes. This lesson is about that first arrow — and every arrow after it. It is a Module 1 lesson because **every design you will ever draw runs on it**: the latency budget, the protocol between services, how the server pushes updates, where TLS ends, and what happens when a call times out.
 
-- **HTTP/1.1** — one request at a time per connection. Browsers open ~6 parallel connections to cope.
-- **HTTP/2** — multiplexes many requests over one connection, binary framing, header compression. Killed the "bundle everything into one file" era.
-- **HTTP/3 (QUIC)** — runs on UDP to remove TCP's head-of-line blocking; faster handshakes, connection survives IP change (mobile).
+Interviewers probe it in three ways:
 
-You need one design-relevant fact: HTTP/2 multiplexing is why gRPC (built on it) handles many concurrent internal calls on few connections.
+1. **Directly**: "What happens when you type a URL and press enter?" — a favourite opener, because the answer shows whether you know the layers or just the names.
+2. **Inside a design**: "Why gRPC here?" "How does the driver's location reach the rider?" "Your load balancer is L4 or L7?"
+3. **Under failure**: "The call to payments timed out. Did the payment happen?"
 
-## REST vs gRPC vs GraphQL
+**Your stakes.** Two entries in your gap register live here. **Layer conflation** — saying "the load balancer" when you mean three different boxes doing three different jobs, or mixing up what TCP promises with what HTTP promises. And **silent skips** — drawing an arrow without saying what travels over it. This lesson gives every arrow a sentence.
 
-| | Best for | Why |
-|--|---------|-----|
-| **REST + JSON** | public APIs, interviews' default | universal, cacheable, debuggable |
-| **gRPC** | internal service-to-service | binary protobuf (small, fast), streaming, generated clients — but browsers can't speak it natively |
-| **GraphQL** | client-shaped reads over many resources | one round trip for nested data; costs server complexity, caching gets harder |
+<Figure caption="The map of this lesson. Every chapter is one stretch of this path, or one thing that can go wrong on it.">
+  <Mermaid code={`flowchart LR
+    P["Phone"] -->|"1 · DNS\nname to IP"| E["Edge / CDN\nanycast IP"]
+    E -->|"2 · TCP + TLS\nhandshakes"| LB["L4 / L7\nload balancer"]
+    LB -->|"3 · HTTP/1.1, 2, 3\nREST, gRPC, GraphQL"| GW["API gateway"]
+    GW --> S["Services\n(stateless)"]
+    S -->|"pooled\nconnections"| DB[("Database")]`} />
+</Figure>
 
-Default in interviews: **REST for the public API, gRPC inside** if microservices come up. Only reach for GraphQL when the problem is literally "mobile clients need flexible nested reads" (e.g., a content app aggregating many entities per screen).
+<Part n="Part One" title="The path of one request">
 
-## Where TLS terminates, and the stateless rule
+Before you can make a request fast, you have to know what it costs. That cost is counted in round trips.
 
-The load balancer usually terminates TLS (decrypts), so app servers see plain HTTP — simpler, and lets the LB route on the URL (L7 — next lessons). Everything behind it should be **stateless**: any server can handle any request, session identity comes from a signed token (JWT) or a shared session store, not server memory. Stateless servers = horizontal scaling = the assumption every design you draw depends on. If a server holds state (WebSocket connections, in-progress uploads), you must say how requests find the right server — that's a deep dive, not an accident.
+</Part>
+
+<h2 id="one-request">Chapter 1 · Six hundred and seventy milliseconds</h2>
+
+<Scene chapter="Chapter 1" title="Six hundred and seventy milliseconds">
+
+Mara hands you the marker. *"Walk the request. Every message that crosses the gap gets an arrow. Every arrow that crosses the ocean costs us."*
+
+You draw the first arrow, labelled *GET /feed*. She shakes her head. *"Before that. The phone doesn't know where Kestrel is yet. It doesn't even have a connection."*
+
+</Scene>
+
+Here is everything that happens on a **cold start** — the phone has never talked to Kestrel today, so it has no cached address and no open connection:
+
+<Figure caption="One request, cold. The phone asks where Kestrel is, opens a connection, secures it, and only then asks its real question. TLS ends at the load balancer; everything behind it is inside the data centre.">
+  <Mermaid code={`sequenceDiagram
+    participant C as Phone
+    participant R as DNS resolver
+    participant LB as Load balancer
+    participant S as App server
+    C->>R: where is api.kestrel.example?
+    R-->>C: 203.0.113.10 (TTL 60 s)
+    C->>LB: TCP SYN
+    LB-->>C: SYN-ACK
+    C->>LB: ACK + TLS ClientHello
+    LB-->>C: ServerHello, certificate, Finished
+    C->>LB: Finished + GET /feed
+    LB->>S: GET /feed (plain HTTP, pooled connection)
+    S-->>LB: 200 OK
+    LB-->>C: 200 OK, first byte`} />
+</Figure>
+
+| Step | What it buys | Cost on a cold connection |
+|---|---|---|
+| **DNS lookup** | The server's IP address | Zero if cached on the phone; one short trip to a nearby resolver if cached there; several trips if nobody has it (Chapter 2) |
+| **TCP handshake** | A reliable, ordered byte stream | 1 round trip to the server |
+| **TLS 1.3 handshake** | Encryption and proof of the server's identity | 1 more round trip (TLS 1.2 needed 2) |
+| **HTTP request → response** | The actual answer | 1 round trip + server time + more trips for large responses |
+| **Inside the data centre** | Load balancer → app → cache → database | About 0.5 ms per hop, plus the work |
+
+**The round-trip time (RTT)** is how long one message takes to go there and back. It is set by physics before any software runs: light in optical fibre covers about **200 km per millisecond**. Delhi to Virginia is roughly 12,000 km, so even a perfectly straight cable gives a round trip of at least `2 × 12,000 / 200 = 120 ms`. Real cables wander and routers queue, so assume **about 200 ms**.
+
+Now the arithmetic Dev needed (assumptions: RTT 200 ms, DNS answer cached at a resolver 20 ms away, server time 50 ms):
+
+`20 (DNS) + 200 (TCP) + 200 (TLS 1.3) + 200 (request and response) + 50 (server) = 670 ms`
+
+That is Dev's 670 ms. **Three round trips across the ocean before the first byte, and only one of them carries the question.** Every fix in this lesson attacks one of those round trips: reuse the connection, shorten the handshake, or move the handshake closer to the user.
+
+**Catch the trap:** "The request goes to the server and the server responds." That sentence skips four steps and three round trips. In an interview, say the steps once, briefly — DNS, TCP, TLS, HTTP, where TLS terminates — and the interviewer knows you understand the layers.
+
+<h2 id="dns">Chapter 2 · Asking for directions</h2>
+
+<Scene chapter="Chapter 2" title="Asking for directions" mood="dusk">
+
+Theo has a DNS story, and he tells it with a straight face. Two years ago, Kestrel's primary region failed. The team flipped the DNS record to the standby region within two minutes. The outage lasted fifty-eight more.
+
+*"The record had a one-hour TTL,"* he says. *"We changed the truth in two minutes. The internet believed the old truth for an hour."*
+
+Mara writes on the board: **Who remembers the answer, and for how long?**
+
+</Scene>
+
+**DNS turns a name into an IP address.** It is a distributed, hierarchical, heavily cached database. Nobody holds the whole thing; everyone caches pieces of it.
+
+When the phone needs `api.kestrel.example`, the lookup walks down until someone has the answer:
+
+<Figure caption="A fully cold lookup. In practice almost every step is answered from a cache: the browser's, the operating system's, or — most often — the recursive resolver's.">
+  <Mermaid code={`sequenceDiagram
+    participant P as Phone (stub resolver)
+    participant R as Recursive resolver
+    participant Root as Root server
+    participant TLD as .example TLD server
+    participant A as Kestrel authoritative
+    P->>R: api.kestrel.example?
+    R->>Root: api.kestrel.example?
+    Root-->>R: ask the .example servers
+    R->>TLD: api.kestrel.example?
+    TLD-->>R: ask Kestrel's name servers
+    R->>A: api.kestrel.example?
+    A-->>R: A 203.0.113.10, TTL 60
+    R-->>P: 203.0.113.10 (cached for 60 s)`} />
+</Figure>
+
+- **Stub resolver** — the small client in the phone's operating system. It asks one recursive resolver and caches the reply.
+- **Recursive resolver** — run by the ISP, the company network, or a public service. It does the walk on your behalf and caches every answer, so for popular names the walk almost never happens.
+- **Authoritative server** — holds Kestrel's records. Kestrel controls it, and with it the **TTL**.
+- DNS queries normally travel over **UDP port 53**: one small question, one small answer, no handshake. Large responses fall back to TCP; encrypted DNS (DNS over HTTPS or TLS) exists for privacy.
+
+Records you should be able to name: **A** (name → IPv4), **AAAA** (name → IPv6), **CNAME** (name → another name, e.g. `api.kestrel.example` → a load balancer's hostname), **NS** (who is authoritative for a zone). Failed lookups are cached too ("negative caching"), so a name queried before it existed can stay "not found" for a while.
+
+**The TTL is a design lever.** It says how long every cache may keep the answer.
+
+| TTL | Good | Bad |
+|---|---|---|
+| **Low (30–60 s)** | Fast failover and migrations; changes reach users in about a minute | More cache misses, so more users pay a full lookup; more queries to your authoritative servers |
+| **High (hours to a day)** | Lookups almost always cached; tiny DNS load | A wrong or stale record haunts users for the full TTL |
+
+**Worked numbers.** Suppose 10,000 recursive resolvers around the world serve Kestrel's users. Each fetches the record about once per TTL. At a 60 s TTL that is `10,000 / 60 ≈ 167` queries per second to Kestrel's DNS; at 24 hours it is `10,000 / 86,400 ≈ 0.12` per second. Either is trivial for a DNS provider. The real cost of a low TTL is **latency for users whose resolver has to look again**, not the DNS bill.
+
+**DNS as a traffic tool:**
+
+- **GeoDNS / latency-based DNS** — return a different IP depending on where the query comes from. The cheapest form of "send users to the nearest data centre".
+- **Weighted DNS** — send 5% of answers to the new region for a canary.
+- **Health-checked failover** — stop returning the IP of a dead region. Only as fast as the TTL lets caches notice.
+
+<Trace title="The TTL decides" steps={dns} takeaway="A DNS change reaches users only as fast as the old TTL expires. Lower TTLs before a planned move, never during the outage." />
+
+<Reveal q="GeoDNS sent a user in Delhi to the Frankfurt servers instead of Mumbai. How can that happen?">
+
+The authoritative server never sees the phone. It sees the **recursive resolver** that asked — and if the user's phone uses a public resolver whose nearest site is in Europe, or a company VPN that exits in Europe, GeoDNS maps the resolver's location, not the user's. The EDNS Client Subnet extension lets a resolver pass along part of the client's address to fix this, but not every resolver sends it. Anycast (Chapter 10) sidesteps the problem by routing on the packet's actual path.
+
+</Reveal>
+
+**Catch the trap:** "We'll fail over with DNS — it's instant." It is only as fast as the TTL that was cached *before* the failure, and some clients cache longer than the TTL says (application runtimes keep their own DNS caches — the JVM's `networkaddress.cache.ttl` setting is the classic one to check). Serious failover pairs DNS with anycast or load-balancer health checks.
+
+<h2 id="handshakes">Chapter 3 · Three handshakes before hello</h2>
+
+<Scene chapter="Chapter 3" title="Three handshakes before hello" mood="night">
+
+Mara redraws the gap as a timeline: time running down the board, the phone on the left, Virginia on the right. Every message becomes a diagonal line sloping down across the gap.
+
+*"Each line takes a hundred milliseconds to cross,"* she says. *"Count the lines before the server even learns what we wanted."*
+
+You count. You count again. Iris, reading over your shoulder, says what everyone is thinking: *"Why does saying hello take longer than the actual conversation?"*
+
+</Scene>
+
+**TCP's three-way handshake.** The client sends **SYN** ("I want to talk, my starting sequence number is x"). The server replies **SYN-ACK** ("got it, mine is y"). The client sends **ACK** — and is allowed to put data in that same packet. So TCP costs **one round trip** before the client can send.
+
+**TLS 1.3's handshake** rides on top. The client's first message (**ClientHello**) already carries its half of a key exchange. The server answers in one flight: **ServerHello** with its half, then — already encrypted — its **certificate** (proof it really is `api.kestrel.example`), a signature over the handshake, and **Finished**. The client checks the certificate, sends its own **Finished**, and sends the HTTP request right behind it. TLS 1.3 costs **one round trip**. The older TLS 1.2 full handshake needed **two**.
+
+**QUIC (the transport under HTTP/3)** runs over UDP and merges both handshakes: its first packets carry the TLS 1.3 ClientHello, so transport and encryption are agreed together in **one round trip**.
+
+<Figure caption="A cold HTTPS connection over TCP with TLS 1.3. The request leaves after two round trips; its first response byte arrives after the third.">
+  <Mermaid code={`sequenceDiagram
+    participant C as Phone (Delhi)
+    participant S as Server (Virginia)
+    Note over C,S: RTT 1 · TCP
+    C->>S: SYN
+    S-->>C: SYN-ACK
+    Note over C,S: RTT 2 · TLS 1.3
+    C->>S: ACK + ClientHello (key share)
+    S-->>C: ServerHello, certificate, Finished
+    Note over C,S: RTT 3 · HTTP
+    C->>S: Finished + GET /feed
+    S-->>C: 200 OK (first byte)`} />
+</Figure>
+
+**Worked example: how many round trips before the first byte?** Same assumptions as Chapter 1: RTT 200 ms, DNS 20 ms (cached at a nearby resolver), server time 50 ms.
+
+| Connection | Round trips before the request leaves | Round trips to first byte | Time to first byte |
+|---|---|---|---|
+| TCP + TLS 1.2 (full handshake) | 3 | 4 | 20 + 4 × 200 + 50 = **870 ms** |
+| **TCP + TLS 1.3** | **2** | **3** | 20 + 3 × 200 + 50 = **670 ms** |
+| TCP + TLS 1.3 0-RTT resumption | 1 (TCP still needs its round trip) | 2 | 20 + 2 × 200 + 50 = **470 ms** |
+| **QUIC (HTTP/3), first visit** | **1** | **2** | 20 + 2 × 200 + 50 = **470 ms** |
+| QUIC 0-RTT resumption | 0 | 1 | 20 + 200 + 50 = **270 ms** |
+| Reused, already-open connection | 0 | 1 | 200 + 50 = **250 ms** (no DNS needed) |
+
+Read the table from the bottom up and you have the whole performance strategy: **the cheapest handshake is the one you never do again.** Keep connections alive and reuse them (Chapter 13); use TLS 1.3; offer HTTP/3; and when you can't avoid a handshake, do it close to the user (Chapter 10).
+
+**0-RTT, and its catch.** A client that connected recently holds a resumption ticket from the server. Next time it can send the request *inside its very first flight* ("early data") — zero round trips of waiting. Three caveats, and interviewers who ask about 0-RTT want all of them:
+
+1. **It needs a previous visit.** A first-ever connection is always at least 1 RTT (QUIC) or 2 RTT (TCP + TLS 1.3).
+2. **Early data can be replayed.** An attacker who records the first flight can resend it, and TLS 1.3 gives early data no inherent replay protection (servers can narrow the window, not close it everywhere). So servers accept only **safe, idempotent requests** (a `GET` of the feed) in early data. A `POST /payments` waits for the full handshake. HTTP even has a status code for this: **425 Too Early**.
+3. **The server may refuse it** — then the client simply resends after the normal handshake, and you are back to the 1-RTT numbers.
+
+<Trace title="Count the round trips" steps={roundTrips} takeaway="TCP + TLS 1.3: two round trips before the request, three to the first byte. QUIC: one before. 0-RTT: none — for idempotent requests on a return visit only." />
+
+<Reveal q="The handshakes are done. Why does a 100 KB response on a brand-new connection still take longer than the same response on a warm one?">
+
+**TCP slow start.** A new connection doesn't know how much the network can carry, so it begins with a small congestion window — commonly 10 segments, about 14 KB — and roughly doubles it each round trip while nothing is lost. In the ideal case a 100 KB response goes out in three flights (about 14 KB, then 29 KB, then 58 KB), so the last byte lands about **two round trips after the first**. A warm connection has already grown its window and sends it in one go. Another reason to reuse connections.
+
+</Reveal>
+
+**Catch the trap:** "HTTPS is slow because encryption is expensive." The CPU cost of modern encryption is small. The cost users feel is **round trips** — and TLS 1.3 cut its share to one.
+
+<Part n="Part Two" title="How the bytes travel">
+
+Once the connection exists, what it promises — and what you build on top of it — decides how your system behaves when the network misbehaves.
+
+</Part>
+
+<h2 id="tcp-udp">Chapter 4 · The registered letter and the shout</h2>
+
+<Scene chapter="Chapter 4" title="The registered letter and the shout">
+
+Iris, in the product review: *"Oh, and also — buyers and sellers want to video-call before a big purchase."*
+
+Dev joins the next call from a train. His video freezes for a full second, then fast-forwards, his voice suddenly chipmunk-quick as it catches up. *"Sorry,"* he says. *"Tunnel."*
+
+Mara doesn't smile. *"That freeze,"* she says, *"is what happens when you send live video by registered mail."*
+
+</Scene>
+
+**TCP is registered mail.** It promises a **reliable, ordered byte stream**: every byte arrives, exactly once, in the order sent. To keep that promise it numbers every byte, waits for acknowledgements, and **retransmits** anything that goes missing. It also runs **flow control** (don't overrun the receiver) and **congestion control** (slow start and backing off when the network drops packets — so one connection doesn't flood the internet).
+
+**UDP is shouting across a room.** It sends independent **datagrams** with port numbers and a checksum, and nothing else: no handshake, no acknowledgements, no retransmission, no ordering. A datagram may arrive late, twice, out of order, or not at all. Anything more, the application builds itself.
+
+| | **TCP** | **UDP** |
+|---|---|---|
+| Guarantees | Delivery, ordering, no duplicates; congestion control | None — fire and forget |
+| Connection | Handshake first (1 RTT) | None |
+| Unit | A byte stream — no message boundaries, so apps add framing (length prefixes) | Datagrams — each one a message |
+| Cost | Handshake, retransmission waits, **head-of-line blocking** | Nearly free; the app owns loss and congestion |
+| Use | Almost everything: HTTP/1.1 and HTTP/2, databases, most RPC | Live audio and video, game state, DNS, and QUIC — where a late packet is worse than a lost one, or where you want to build your own reliability |
+
+**Head-of-line blocking** is the cost of the ordering promise. If packet 42 is lost, packets 43, 44 and 45 may already have arrived — but TCP **cannot hand them to the application** until 42 is retransmitted, which takes at least one more round trip.
+
+<Figure caption="Packet 42 is lost. TCP holds 43–45 back until 42 is resent: the frozen video. UDP hands 43–45 over at once; the app hides the 20 ms gap and moves on.">
+  <ArrayStrip name="TCP" values={['41', '42', '43', '44', '45']} indices={false} pointers={[{ at: 1, label: 'LOST', tone: 'red' }]} tones={{ 0: 'done', 1: 'out', 2: 'ghost', 3: 'ghost', 4: 'ghost' }} regions={[{ from: 2, to: 4, label: 'arrived, held back', tone: 'dim' }]} />
+  <ArrayStrip name="UDP" values={['41', '42', '43', '44', '45']} indices={false} pointers={[{ at: 1, label: 'LOST', tone: 'red' }]} tones={{ 0: 'done', 1: 'out', 2: 'done', 3: 'done', 4: 'done' }} regions={[{ from: 2, to: 4, label: 'played on time', tone: 'green' }]} />
+</Figure>
+
+**When UDP wins:**
+
+- **Late data is worthless.** A video frame from two seconds ago is garbage; audio must play on schedule. Drop it and conceal the gap.
+- **The newest message replaces the old one.** A game sends the player's position 30 times a second; a lost update is superseded by the next.
+- **One tiny question, one tiny answer.** DNS: a handshake would cost more than the query.
+- **You want different reliability rules.** QUIC builds its own per-stream reliability on top of UDP, precisely to escape TCP's head-of-line blocking.
+
+The interview line you wrote for yourself still covers most UDP questions: **"Video calls use UDP because a two-second-old frame is garbage — better to drop it than block newer frames behind it (head-of-line blocking)."** Real-time media in browsers (WebRTC) runs over UDP for exactly this reason, falling back to TCP-based relays only when a network blocks UDP.
+
+<Reveal q="If UDP has no congestion control, what stops a video app from flooding the network?">
+
+The app must do it. Real-time media stacks measure loss and delay and **adapt the bitrate** — sending lower-quality video when the path is congested. QUIC implements congestion control itself, just as TCP does. "UDP is faster" is only true because you've taken on TCP's jobs yourself; a UDP sender that ignores congestion hurts everyone sharing the link, including itself.
+
+</Reveal>
+
+**Catch the trap:** "UDP is faster, so use it for performance." For ordinary request/response traffic you'd have to rebuild acknowledgements, retransmission, ordering and congestion control — badly. Use UDP when **late is as bad as lost**, or use a protocol (QUIC) that already did the rebuilding.
+
+<h2 id="http-versions">Chapter 5 · One road, many lanes</h2>
+
+<Scene chapter="Chapter 5" title="One road, many lanes" mood="storm">
+
+The marketplace listing page loads 80 small files: thumbnails, icons, scripts. On the office Wi-Fi it is instant. On Dev's train it crawls, even though the servers speak HTTP/2.
+
+*"HTTP/2 multiplexes,"* someone says. *"It should be fine on one connection."*
+
+*"It is one connection,"* Dev says. *"That's the problem."*
+
+</Scene>
+
+Each HTTP version fixed the biggest bottleneck of the one before — and left the next one exposed.
+
+**HTTP/1.1.** Connections are **persistent by default** (keep-alive), so many requests can reuse one TCP + TLS handshake. But each connection carries **one request at a time**: the next request waits for the previous response. (Pipelining — sending several requests without waiting — is in the spec, but responses must come back in order and broken proxies mishandled it, so browsers never turned it on.) Browsers cope by opening **about six parallel connections per host**, and sites coped with hacks: domain sharding, sprite sheets, concatenated files.
+
+**HTTP/2.** One connection, many **streams**. Requests and responses are cut into binary **frames**, interleaved on the wire, and reassembled per stream — so 80 requests go out at once without waiting for each other. Headers are compressed (HPACK), which matters when every request repeats the same cookies. Its server-push feature never caught on and browsers have largely dropped it. HTTP/2 made domain sharding and sprite hacks unnecessary. **What it couldn't fix:** all those streams share **one TCP byte stream**, so one lost packet stalls *every* stream until it is retransmitted. On a lossy network, one HTTP/2 connection can do worse than six HTTP/1.1 connections.
+
+**HTTP/3.** The same HTTP semantics over **QUIC**, which runs on UDP and does its own reliability **per stream**. A lost packet delays only the stream it belonged to. QUIC also brings TLS 1.3 inside the transport (1-RTT setup, 0-RTT on resumption) and identifies connections by a **connection ID** instead of the IP-and-port pair — so a phone moving from Wi-Fi to cellular keeps its connection instead of starting a new handshake. HTTP/3 compresses headers with QPACK, a cousin of HPACK designed for streams that may arrive out of order.
+
+<Figure caption="The stacks. HTTP/1.1 and HTTP/2 sit on TLS over TCP. HTTP/3 sits on QUIC, which contains TLS 1.3 and runs on UDP.">
+  <Mermaid code={`flowchart TB
+    subgraph A["HTTP/1.1 and HTTP/2"]
+      direction TB
+      H1["HTTP/1.1 or HTTP/2"] --> T1["TLS 1.2 / 1.3"] --> TCP["TCP"] --> IP1["IP"]
+    end
+    subgraph B["HTTP/3"]
+      direction TB
+      H3["HTTP/3"] --> Q["QUIC\n(streams, loss recovery,\nTLS 1.3 built in)"] --> UDP["UDP"] --> IP2["IP"]
+    end`} />
+</Figure>
+
+| Version | Fixed | Left broken |
+|---|---|---|
+| **HTTP/1.0** | — | New TCP connection per request by default |
+| **HTTP/1.1** | Persistent connections (keep-alive) | One request at a time per connection; browsers open ~6 connections per host |
+| **HTTP/2** | Multiplexed streams on one connection; header compression | **TCP-level** head-of-line blocking: one lost packet stalls every stream |
+| **HTTP/3 (QUIC)** | Independent streams; 1-RTT handshake (0-RTT resume); connection migration | Needs UDP to get through; more CPU per byte on many servers today; first visit usually still starts on HTTP/2 |
+
+**Worked numbers.** 80 small files, 50 ms RTT, bandwidth not the bottleneck. HTTP/1.1 with 6 connections: `⌈80 / 6⌉ = 14` request rounds in sequence ≈ `14 × 50 = 700 ms`. HTTP/2 on one connection: all 80 requests leave together, so about one round trip plus transfer time — until a packet is lost, when every stream waits.
+
+**How a browser finds HTTP/3.** It usually first connects over TCP (HTTP/2), and the server advertises HTTP/3 in an `Alt-Svc` response header (or a DNS HTTPS record). Later connections try QUIC; if a network blocks UDP, the browser falls back to TCP. So "we support HTTP/3" never means "we stop supporting HTTP/2".
+
+**The one design fact from your old notes:** HTTP/2 multiplexing is why **gRPC**, which is built on it, carries many concurrent internal calls over a handful of connections. Inside a data centre, packet loss is low, so HTTP/2 between services is fine; HTTP/3's gains matter most at the **edge, on mobile**.
+
+<Trace title="What each version fixed" steps={transport} takeaway="TCP orders bytes, so one loss blocks everything behind it. HTTP/2 fixed blocking between requests; only QUIC fixed blocking between packets." />
+
+**Catch the trap:** "HTTP/2 makes everything faster." It removed the one-request-per-connection limit, but it put all your eggs on one TCP connection. Say what changes on a lossy mobile network — and that HTTP/3 is the fix.
+
+<h2 id="api-styles">Chapter 6 · Three ways to ask</h2>
+
+<Scene chapter="Chapter 6" title="Three ways to ask">
+
+The architecture review has three camps. The mobile team wants GraphQL. The platform team wants gRPC everywhere. The partnerships team needs a public API that "any developer with curl" can use.
+
+Iris looks at Mara. *"Which one is right?"*
+
+Mara doesn't pick. She draws three arrows — partner to edge, phone to edge, service to service — and asks: *"Who is calling, what shape do they need, and what has to cache it?"*
+
+</Scene>
+
+These are three styles of API on top of HTTP. Each solves a different problem.
+
+**REST + JSON.** Resources at URLs (`/listings/42`), verbs with meaning (`GET` reads, `POST` creates, `PUT` replaces, `DELETE` removes), status codes everyone understands. Its superpower is that it **is the web**: a `GET` response can be cached by browsers, CDNs and proxies with standard headers (`Cache-Control`, `ETag`), any language can call it, and you can debug it with curl. Its weaknesses: the server decides the response shape, so clients **over-fetch** (a 40-field listing when the card shows 4) or **under-fetch** (one request for the feed, then one per author). A schema is optional (OpenAPI), not enforced.
+
+**gRPC.** You write the contract in a `.proto` file; tools generate typed client and server code in every language. Messages are **Protocol Buffers** — compact binary, typically smaller and faster to parse than the same data as JSON. It runs on **HTTP/2**, so many calls share one connection, and it supports four call shapes: unary (one request, one response), **server streaming**, **client streaming** and **bidirectional streaming**. Deadlines travel with each call, so a downstream service knows how long the caller will wait. Weaknesses: **browsers can't call it natively** (their APIs don't expose HTTP/2 framing and trailers — gRPC-Web through a proxy covers unary and server streaming only); payloads aren't human-readable; and long-lived HTTP/2 connections need **request-aware load balancing** (Chapter 9).
+
+**GraphQL.** One endpoint and a typed **schema** of everything the API can return; the client sends a query naming **exactly the fields it wants**, across related objects, and gets that shape back in one response. It fixes over- and under-fetching for clients with many different screens. The costs move to the server: each field is resolved by a function, so a naive implementation fires **N+1 queries** (one for the posts, then one per author) — fixed by **batching** resolvers (the DataLoader pattern). Queries arrive as `POST`s to one URL, so ordinary **HTTP caching stops working** unless you use persisted queries over `GET`. A client can ask for an enormous nested query, so you need **depth and cost limits**. Real-time updates come through **subscriptions**, usually over WebSockets.
+
+| | **REST + JSON** | **gRPC** | **GraphQL** |
+|---|---|---|---|
+| Contract | Optional (OpenAPI) | Required `.proto`, code-generated | Required schema, typed |
+| Payload | JSON text | Protobuf binary | JSON text |
+| Transport | Any HTTP version | HTTP/2 | Usually HTTP `POST` (subscriptions over WebSockets) |
+| Streaming | Not built in (use SSE, chunked responses) | Server, client and bidirectional | Subscriptions |
+| Browser support | Native | Needs gRPC-Web + proxy | Native |
+| Fetch shape | Fixed per endpoint: over- and under-fetching | Fixed per method | Client chooses fields |
+| HTTP/CDN caching | Easy for `GET` | Not with standard HTTP caches | Hard (one `POST` URL); persisted `GET` queries help |
+| Best for | Public APIs, CRUD, the interview default | Internal service-to-service, streaming between services | Many client screens with nested, varied reads |
+
+**Worked numbers.** Kestrel's home screen needs the user, the 20 latest posts in their feed, and each post's author. With REST, that's `1 + 1 + 20 = 22` requests. HTTP/2 can run them in parallel, but the authors can't be requested until the feed arrives — at least **2 dependent round trips**, `2 × 200 = 400 ms` from Delhi. With GraphQL (or a purpose-built REST endpoint like `/home` — a "backend for frontend"), it's **1 round trip**, 200 ms. Note the second option: the round trip saving is real, but you don't need GraphQL to get it for one screen. GraphQL earns its cost when there are *many* screens with *changing* needs.
+
+Your default, from your own notes, still holds: **REST for the public API, gRPC inside** when microservices come up. Reach for GraphQL only when the problem is literally "many clients need flexible nested reads" — a content app aggregating many entities per screen.
+
+<Trace title="Pick the API style" steps={apiStyles} takeaway="Ask who is calling. Outside callers and browsers: REST. Your own services: gRPC. Many screens with varied nested reads: GraphQL, with batching and query limits." />
+
+<Reveal q="The interviewer says, “GraphQL solves N+1.” Do you agree?">
+
+Only from the client's side. The client makes one request instead of N+1 — but a naive server then runs one database query per author, which is N+1 moved from the network to the database. The fix is **batching**: collect every author id requested in one tick and load them with a single `WHERE id IN (…)` query (the DataLoader pattern), plus caching per request.
+
+</Reveal>
+
+**Catch the trap:** "gRPC, because it's faster." Faster is true and incomplete. Say the two catches in the same breath: browsers need a REST or gRPC-Web edge, and the load balancer must balance requests, not connections.
+
+<h2 id="realtime">Chapter 7 · When the server speaks first</h2>
+
+<Scene chapter="Chapter 7" title="When the server speaks first" mood="dusk">
+
+Iris again. *"Oh, and also — when a buyer makes an offer, the seller should see it instantly. Not when they refresh. Instantly."*
+
+You start to say "WebSockets". Mara holds up a hand. *"How often do offers arrive? Does the seller's screen ever need to talk back? And how many sellers are watching at once?"*
+
+</Scene>
+
+HTTP is **the client asks, the server answers**. When the server has news first, there are four ways to deliver it:
+
+**Short polling.** The client asks every N seconds: "anything new?" Simple, stateless, works through every proxy. Latency up to N seconds; most responses are empty.
+
+**Long polling.** The client asks, and the server **holds the request open** until there is news (or a timeout, say 30 s). Then it responds and the client immediately asks again. Near-instant delivery over plain HTTP — but every message costs a full response plus a new request, and the client must send a cursor ("everything after message 1,042") so nothing falls in the gap between requests.
+
+**Server-Sent Events (SSE).** One long-lived HTTP response with `Content-Type: text/event-stream`; the server writes events into it as they happen. **Server-to-client only**, UTF-8 text only. The browser's `EventSource` API **reconnects automatically** and sends a `Last-Event-ID` header so the server can resume where it left off. Over HTTP/1.1, each SSE stream holds one of the browser's ~6 connections per host (shared across tabs); HTTP/2 lifts that limit by multiplexing.
+
+**WebSockets.** Starts as an HTTP/1.1 request with `Upgrade: websocket`; the server answers **101 Switching Protocols**, and the same TCP connection becomes a **full-duplex** channel of text or binary frames in both directions. Lowest overhead per message. No built-in reconnect or replay — you write those. Works through most networks when run over TLS on port 443 (`wss://`).
+
+<Figure caption="Long polling: the server holds each request until it has news, then the client asks again at once. SSE keeps one response open and writes many events into it.">
+  <Mermaid code={`sequenceDiagram
+    participant C as Seller app
+    participant S as Server
+    C->>S: GET /offers?after=1042
+    Note right of S: holds the request open
+    S-->>C: offer 1043 (after 12 s)
+    C->>S: GET /offers?after=1043
+    Note right of S: nothing for 30 s
+    S-->>C: 204 No Content (timeout)
+    C->>S: GET /offers?after=1043`} />
+</Figure>
+
+| | Latency | Direction | Server cost | Pick when |
+|---|---|---|---|---|
+| **Short polling** | Up to N s | Client asks | One request per client per N s, mostly empty; stateless | Updates are rare or delay is fine: order status, a dashboard refreshing every 30 s |
+| **Long polling** | Near-instant | Client asks, server holds | One held request per client + one request per message | Push is needed but SSE/WebSockets are blocked or unavailable; simple infrastructure |
+| **SSE** | Instant | Server → client | One open connection per client | One-way push: notifications, live scores, LLM token streams, feature-flag updates |
+| **WebSockets** | Instant | Both ways | One open connection per client + connection state | Two-way, frequent: chat with typing indicators, games, collaborative editing |
+
+**Worked numbers.** 1 million sellers watching for offers.
+
+- Short polling every 5 s: `1,000,000 / 5 = 200,000` requests per second, almost all empty.
+- Long polling with a 30 s hold: `1,000,000 / 30 ≈ 33,000` requests per second when idle, plus one per delivered offer.
+- SSE or WebSockets: 1 million open connections and near-zero requests when idle; heartbeats every 30 s add about 33,000 tiny frames per second. If each connection costs roughly 10 KB of server memory (estimate it for your stack), that's about **10 GB** spread across the connection fleet.
+
+The decision rule from the realtime pattern, said verbatim: **"Poll if you can, SSE if the server only pushes, WebSocket only when the client also sends in real time."** Long polling is the fallback when the persistent options are blocked.
+
+Persistent connections make servers **stateful** — it now matters which server holds a user's connection. The routing problem (a connection registry or pub/sub), heartbeats, reconnect with jitter, and catch-up from storage are the deep dive of the <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime pattern</a>. This chapter's job is choosing the transport.
+
+<Trace title="Pick the transport" steps={realtime} takeaway="Rare updates: poll. Server-only push: SSE. Two-way, frequent: WebSockets — and accept the stateful-server problem that comes with them." />
+
+<Reveal q="Long polling and SSE both hold a request open. What is the actual difference?">
+
+**How many events one response carries.** A long-poll response carries one event (or one batch) and then ends; the client must send a new request, paying headers and a round trip each time. An SSE response never ends: it carries event after event on the same response. Both are plain HTTP, both need a resume cursor, but SSE has no per-message request cost.
+
+</Reveal>
+
+**Catch the trap:** "Real-time, so WebSockets." Jumping to the most complex transport for a status page that changes four times an hour is box inflation. Ask the three questions — how often, which direction, how many — out loud, and let the answer pick.
+
+<Part n="Part Three" title="The boxes in the middle">
+
+Between the phone and your code sit proxies, balancers, gateways and edges. Each one is a reverse proxy with a particular job. Name the job, and the box stops being decoration.
+
+</Part>
+
+<h2 id="proxies">Chapter 8 · Whose side are you on?</h2>
+
+<Scene chapter="Chapter 8" title="Whose side are you on?">
+
+The new rate limiter goes live and immediately blocks half of Delhi. Dev pulls the logs: every request appears to come from the same three IP addresses.
+
+*"Those are our own load balancers,"* Theo says, almost fondly. *"Every box between the phone and the database is a proxy. The only question is whose side it's on — and who it's pretending to be."*
+
+</Scene>
+
+A **proxy** sits in the middle of a connection and speaks for someone.
+
+- A **forward proxy** speaks **for clients**. The client is configured to send through it — a company's outbound proxy that filters and logs browsing, for example. The **server sees the proxy's address**, not the client's.
+- A **reverse proxy** speaks **for servers**. Clients think it *is* the server. It hides how many servers there are and where they live. **Load balancers, API gateways and CDN edges are all reverse proxies.**
+
+<Figure caption="Same mechanism, opposite loyalties. A forward proxy hides the clients from the internet; a reverse proxy hides the servers.">
+  <Mermaid code={`flowchart LR
+    subgraph Office["Client side"]
+      U1["Laptop"] --> FP["Forward proxy"]
+      U2["Laptop"] --> FP
+    end
+    FP --> NET(("Internet"))
+    NET --> RP["Reverse proxy\n(LB / gateway / CDN)"]
+    subgraph DC["Server side"]
+      RP --> A1["App 1"]
+      RP --> A2["App 2"]
+    end`} />
+</Figure>
+
+| | Forward proxy | Reverse proxy |
+|---|---|---|
+| Acts for | Clients | Servers |
+| Who knows it exists | The client (configured to use it) | Nobody outside — it looks like the server |
+| Typical jobs | Egress filtering, logging, caching for an office | TLS termination, load balancing, caching, compression, buffering slow clients, hiding topology, absorbing attacks |
+| In a system design | Rarely drawn | On almost every diagram |
+
+**What a reverse proxy does for you:**
+
+- **Terminates TLS.** The load balancer decrypts, so app servers see plain HTTP — simpler, and it lets the proxy read the URL to route (L7, next chapter). Certificates live in one place.
+- **Buffers slow clients.** A phone on a weak signal may take seconds to upload a request. The proxy absorbs it and hands your app server the complete request in one go, so app threads aren't tied up waiting on someone's 3G.
+- **Caches, compresses, shields.** Static responses, gzip/brotli, request size limits, and a single choke point for blocking abusive traffic.
+
+**The client's real address.** Behind a proxy, every connection to your app comes from the proxy. An L7 proxy passes the original address in a header — `X-Forwarded-For`, or the standard `Forwarded` header. An L4 proxy can't add HTTP headers, so it uses the **PROXY protocol** (a small preamble on the TCP connection) if both sides support it. Trust these values **only when your own proxy set them** — a client can send a fake `X-Forwarded-For` of its own. That is the Delhi rate-limiter bug: it limited by the connection's address, which was the load balancer.
+
+<Reveal q="TLS terminates at the load balancer. Is traffic behind it unencrypted — and is that acceptable?">
+
+Often, yes: inside a private network, many systems run plain HTTP behind the load balancer. Whether that's acceptable depends on the threat model and the rules you operate under. Payment and health data regimes, and "zero trust" designs, typically **re-encrypt**: the load balancer opens a new TLS connection to the backend, or services use **mutual TLS** (both sides present certificates), often handled by a service mesh. Say which you chose and why — for a fintech-style system, "TLS to the edge, then mTLS between services" is the safe default.
+
+</Reveal>
+
+**Catch the trap:** rate limiting, geo-blocking or audit logging "by client IP" in a system full of proxies. Name the header you read, and that only your edge is allowed to set it.
+
+<h2 id="l4-l7">Chapter 9 · Envelopes and letters</h2>
+
+<Scene chapter="Chapter 9" title="Envelopes and letters" mood="night">
+
+Dev's 3 a.m. page: *"Feed-ranking: one of ten pods at 90% CPU, other nine idle. Health checks green. Load balancer shows even connection counts."*
+
+In the morning he explains it with a pair of envelopes. *"The load balancer only reads the envelope,"* he says. *"Each client sent one envelope. Inside it were ten thousand letters."*
+
+</Scene>
+
+The **L4 / L7** names come from the OSI model's transport layer (4) and application layer (7). The difference is **what the balancer can see, and so what it can decide**.
+
+- An **L4 load balancer** sees IP addresses and ports — the envelope. It picks a backend **when a connection opens** and forwards that connection's packets there for its whole life. It doesn't read HTTP, so with TLS it usually passes the encrypted bytes straight through. Very fast, protocol-agnostic (anything over TCP or UDP), cheap per connection.
+- An **L7 load balancer** terminates the client's connection (and TLS), **parses each HTTP request**, and opens its own connections to the backends. It can route by path, host, header or cookie, balance **per request**, retry a failed request on another backend, add headers, and rate-limit. It costs more CPU per request — it is a full proxy with two connections for every one.
+
+| | **L4 (transport)** | **L7 (application)** |
+|---|---|---|
+| Sees | IPs, ports, TCP/UDP | Full HTTP: method, path, headers, cookies |
+| Balances | Connections | Requests |
+| TLS | Usually passed through | Terminated (can re-encrypt to backends) |
+| Can do | Spread connections, very fast, any protocol | Route `/video/*` vs `/api/*`, retries, auth, rate limits, header rewrites |
+| Typical examples | AWS NLB, IPVS, many hardware balancers | AWS ALB, nginx, Envoy, HAProxy in HTTP mode |
+
+**The gRPC trap from the scene.** A gRPC client opens **one HTTP/2 connection** and sends all its calls down it as streams. An L4 balancer sees one connection and pins it to one backend — so one busy client puts all its load on one pod, no matter how many pods exist. Fix: an **L7 balancer that understands HTTP/2** and spreads individual calls (Envoy is the usual example), or **client-side load balancing** where the gRPC client itself holds connections to many backends.
+
+**A common real shape** is both: an L4 layer at the front holding one stable address and spreading raw connections across a fleet of L7 proxies, which do TLS and routing.
+
+<Figure caption="L4 spreads connections cheaply and gives the world one stable address; L7 reads each request and routes it by meaning.">
+  <Mermaid code={`flowchart LR
+    C["Clients"] --> L4["L4 load balancer\none virtual IP\nspreads TCP connections"]
+    L4 --> P1["L7 proxy / gateway\nTLS, auth, routing"]
+    L4 --> P2["L7 proxy / gateway\nTLS, auth, routing"]
+    P1 -->|"/api/*"| API["API service"]
+    P1 -->|"/video/*"| MED["Media service"]
+    P2 -->|"/api/*"| API
+    P2 -->|"/video/*"| MED`} />
+</Figure>
+
+**API gateway** — an L7 reverse proxy that also owns the **cross-cutting API concerns**: authenticate the token once at the edge, enforce rate limits and quotas, route to the right microservice, circuit-break failing downstreams, transform requests, and log and trace everything. Monolith or single service: "load balancer" is enough. Microservices with a public API: draw a gateway and **say two of its jobs out loud**. Balancing algorithms (round robin, least connections, consistent hashing), health checks and the gateway in depth live in <a href={`${BASE}sd/lessons/load-balancing/`}>Load balancers & API gateways</a>.
+
+**The stateless rule** — the assumption every design you draw depends on. Everything behind the balancer should be **stateless**: any server can handle any request, and session identity comes from a signed token (a JWT) or a shared session store, not server memory. Stateless servers mean horizontal scaling, rolling deploys and instant failover. If a server holds state — WebSocket connections, an upload in progress — you must say how requests find the right server. That's a deep dive, not an accident.
+
+<Trace title="Which box, and why" steps={balancing} takeaway="L4 balances connections; L7 balances requests. Long-lived multiplexed connections (gRPC, HTTP/2) need L7 or client-side balancing. Stateless servers make all of it work." />
+
+<Reveal q="A million phones hold WebSocket connections. L4 or L7 in front?">
+
+Either can work; the reasoning is what counts. Each connection is one long "request" lasting hours, so per-request smarts are used once, at connect time — the job is spreading and **pinning** long-lived connections cheaply, which L4 does well. An L7 balancer works too if it supports the upgrade and long idle timeouts, and it can route the initial handshake by path or consistently hash on user id. What breaks things is re-balancing mid-connection, or an idle timeout shorter than your heartbeat interval.
+
+</Reveal>
+
+**Catch the trap:** "Isn't the load balancer a single point of failure?" Have the sentence ready: balancers run as redundant pairs or fleets behind a floating virtual IP, several addresses can be published in DNS, and at global scale **anycast** (next chapter) announces one address from many places.
+
+<h2 id="edge">Chapter 10 · Moving the handshake</h2>
+
+<Scene chapter="Chapter 10" title="Moving the handshake" mood="dawn">
+
+Back to the Delhi slide. Iris asks the obvious question: *"Can't we just build a data centre in India?"*
+
+*"Eventually,"* Mara says. *"That's a year and a database migration. But look at the table again."* She circles the handshake rows. *"We can't move Virginia closer. Can we move the handshake?"*
+
+</Scene>
+
+A **CDN** is a network of reverse proxies — **points of presence (PoPs)** — in hundreds of cities. It does two jobs, and interviews usually only mention the first:
+
+1. **Cache responses near users.** Images, video segments, scripts, public pages. A hit never leaves the city. (Keys, TTLs and invalidation are the caching lesson's four promises; immutable, fingerprinted URLs are the usual trick.)
+2. **Terminate connections near users — even for responses it can't cache.** The phone's TCP and TLS handshakes go to a PoP 10 ms away. The PoP keeps **warm, pooled connections** to the origin, so only the request itself crosses the ocean.
+
+**Worked numbers.** Delhi phone, cold, uncacheable `GET /feed`. Assume RTT 20 ms to a PoP in Delhi, 200 ms from the PoP to Virginia over an already-open connection, DNS 20 ms, server 50 ms.
+
+| Path | Arithmetic | First byte |
+|---|---|---|
+| Direct to Virginia (Chapter 3) | 20 + 200 (TCP) + 200 (TLS) + 200 (request) + 50 | **670 ms** |
+| Via the Delhi PoP | 20 + 20 (TCP) + 20 (TLS) + 20 (request to PoP) + 200 (PoP to origin and back, warm) + 50 | **330 ms** |
+
+Same server, same code, same ocean: **half the wait**, because two of the three ocean round trips became trips across town. That is the answer to Iris's slide, available this week.
+
+**How does the phone reach the nearest PoP?** Two techniques:
+
+- **GeoDNS** (Chapter 2): the CDN's DNS returns a different PoP's IP depending on the resolver's location.
+- **Anycast**: **the same IP address is announced from every PoP** using BGP, the internet's routing protocol. Routers forward packets along the best route they know, so a packet to that address lands at the PoP that is **closest in routing terms** — usually, though not always, the closest geographically. If a PoP goes down, it stops announcing the address and traffic flows to the next-nearest one as routing updates — no client TTLs involved. Attack traffic is spread across every PoP instead of landing on one. The DNS root servers use anycast for exactly these reasons.
+
+| | GeoDNS | Anycast |
+|---|---|---|
+| How | Different answers per resolver location | One IP announced from many places |
+| Failover speed | Bounded by DNS TTLs and caches | As fast as routing updates; no client caches |
+| Accuracy | Location of the resolver, not the user | Location in the routing graph |
+| Watch out | Users on far-away public resolvers or VPNs | A route change mid-connection can send packets to a PoP that has no state for that connection |
+
+<Reveal q="Anycast sends packets to the nearest site. What happens to a TCP connection if the routing changes halfway through?">
+
+The new packets arrive at a different PoP that has never seen the connection, and it gets reset. Routes rarely change within the lifetime of a typical connection, so CDNs accept the rare reset — and clients reconnect. That is why anycast was first a natural fit for single-packet UDP exchanges like DNS, and why operators running TCP over anycast watch route stability closely.
+
+</Reveal>
+
+**Catch the trap:** "Put the API behind the CDN so it gets cached." Per-user, authenticated responses mostly can't be cached at a shared edge. Say what the CDN does for them anyway: **terminates TLS near the user and reuses warm connections to the origin**. Media and static assets are the cacheable part — see <a href={`${BASE}sd/lessons/blob-cdn/`}>Blob storage & CDNs</a>.
+
+<h2 id="nat">Chapter 11 · Doors that only open outward</h2>
+
+<Scene chapter="Chapter 11" title="Doors that only open outward">
+
+Iris, reasonably: *"When an offer arrives, why can't our server just connect to the seller's phone and tell it?"*
+
+Dev laughs, then apologises. *"We don't know where the phone is. Its address is shared with ten thousand other phones, and its front door only opens from the inside."*
+
+</Scene>
+
+You need just enough NAT and firewall knowledge to explain four design decisions. Here it is.
+
+**NAT (network address translation).** Most devices don't have their own public IP address. A home router — or a mobile carrier's **carrier-grade NAT**, shared by thousands of phones — rewrites outgoing packets so they come from one public address, and remembers the mapping (`private address:port ↔ public address:port`) so replies can find their way back. **Unsolicited inbound packets have no mapping and are dropped.**
+
+What that means for designs:
+
+1. **Servers can't call phones.** All push is built on connections **the client opened**: long polling, SSE, WebSockets — or the platform push services (APNs on iOS, FCM on Android), which keep one such connection per device on your behalf.
+2. **Idle mappings expire.** NAT devices, firewalls and load balancers forget connections that have been silent for a while — sometimes after tens of seconds, sometimes minutes, and often configurable on your own load balancers. That's why long-lived connections send **heartbeats** at an interval shorter than the shortest idle timeout on the path.
+3. **Many users share one address.** Rate limiting purely by IP throttles an entire mobile carrier's users together. Limit by account or API key, and by IP only as a coarse backstop.
+4. **Peer-to-peer is hard.** Two phones behind NAT can't simply connect; video calls use **STUN** to discover public addresses and attempt a direct path, and **TURN** relays when that fails. One sentence in an interview is enough.
+
+**Firewalls and private subnets.** In a cloud design, only the load balancer is reachable from the internet, usually on **443 only** (plus 80 to redirect to HTTPS). App servers and databases live in **private subnets** with no public address; security groups allow just the traffic each tier needs (load balancer → app on its port, app → database on its port). Servers reach out to the internet — to call a payment provider, say — through a **NAT gateway**. Corporate networks often allow little besides 443, and some block UDP entirely, which is why WebSockets run over `wss://` on 443 and why HTTP/3 always keeps a TCP fallback.
+
+<Figure caption="Inbound traffic enters only through the load balancer. Outbound traffic from private servers leaves through a NAT gateway. Nothing on the internet can open a connection to the app or the database.">
+  <Mermaid code={`flowchart LR
+    I(("Internet"))
+    subgraph VPC["Kestrel network"]
+      subgraph PUB["Public subnet"]
+        LB["Load balancer\n:443 open"]
+        NAT["NAT gateway"]
+      end
+      subgraph PRIV["Private subnets"]
+        APP["App servers"]
+        DB[("Database")]
+      end
+    end
+    I -->|"HTTPS in"| LB --> APP --> DB
+    APP -->|"calls out"| NAT --> I`} />
+</Figure>
+
+**Catch the trap:** "The server sends the notification to the phone's IP." There is no reachable phone IP. Push rides on a connection the phone opened and keeps alive.
+
+<Part n="Part Four" title="When the network lies">
+
+Every remote call can succeed, fail, or vanish. The third outcome is the one that breaks systems — and the one interviewers ask about.
+
+</Part>
+
+<h2 id="timeouts-retries">Chapter 12 · The request that might have happened</h2>
+
+<Scene chapter="Chapter 12" title="The request that might have happened" mood="storm">
+
+A support ticket, forwarded with a single question mark from Iris: a buyer was charged twice for one listing.
+
+Dev reconstructs it from the traces. The phone sent the payment. The payment service charged the card and committed. Then the response got lost somewhere on a train in a tunnel. The phone waited ten seconds, decided it had failed, and helpfully tried again.
+
+*"Both requests did exactly what they were told,"* Theo says. *"That's the problem."*
+
+Mara writes on the board: **A timeout is not a failure. It is "I don't know."**
+
+</Scene>
+
+Every network call has **three outcomes**: success, failure, and **unknown**. When a call times out, the request might never have arrived, might have been processed with the response lost, or might still be running. The client cannot tell which. Everything in this chapter follows from that.
+
+**Timeouts — every call needs a number.** An unset timeout is a timeout of infinity: one slow dependency then holds threads and connections until the caller falls over too.
+
+- **Connect timeout** — short; inside a data centre a healthy connect takes about a millisecond, so a second or so is generous.
+- **Request timeout** — from the latency you actually observe (somewhat above the dependency's p99), not a round number pulled from the air.
+- **End-to-end deadline** — the user will wait, say, 2 s in total. Pass the *remaining* budget downstream (gRPC carries deadlines with each call) so a service doesn't keep working on a request its caller has already abandoned.
+
+**Retries — only when the next attempt can differ.**
+
+- Retry **transient** failures: connection refused or reset, `503 Service Unavailable`, `429 Too Many Requests` (honour its `Retry-After`), and timeouts — **only if the operation is idempotent** (below). Never retry a `400`: the same bad request gets the same answer.
+- **Exponential backoff with jitter**: wait about 100 ms, then 200, 400… with randomness, so a thousand clients that failed together don't retry together. "Full jitter" picks a random delay between zero and the backoff cap.
+- **A retry budget**: cap retries at a small fraction of traffic (for example, 10%), so a struggling service gets a little extra load, not triple.
+- **Retry at one layer.** Retries multiply down a call chain:
+
+<Figure caption="Three retrying layers, three attempts each. One tap becomes 27 calls to the service that is already down.">
+  <Mermaid code={`flowchart LR
+    A["App\n1 tap"] -->|"3 attempts"| G["Gateway\nreceives 3"]
+    G -->|"3 each"| O["Orders\nreceives 9"]
+    O -->|"3 each"| I["Inventory (down)\nreceives 27"]`} />
+</Figure>
+
+Multiply that by every user tapping at once, and a brief inventory hiccup becomes a **retry storm** that keeps it down. Retry at the edge (or one chosen layer), fail fast elsewhere, and put a **circuit breaker** in front of a failing dependency so callers stop hammering it and probe for recovery instead (covered in the load-balancing lesson).
+
+**Idempotency — making "try again" safe.** An operation is **idempotent** if doing it twice leaves the same result as doing it once. HTTP defines which methods promise this:
+
+| Method | Safe (no side effects) | Idempotent |
+|---|---|---|
+| `GET`, `HEAD`, `OPTIONS` | Yes | Yes |
+| `PUT`, `DELETE` | No | Yes — setting the same state twice, or deleting twice, ends in the same state |
+| `POST` | No | **No** — two POSTs can create two orders |
+| `PATCH` | No | Not guaranteed |
+
+To make a `POST` safe to retry, use an **idempotency key**:
+
+1. The client generates a unique key (a UUID) **once per logical operation** — per "pay for listing 42", not per attempt — and sends it as a header on every attempt.
+2. The server records the key **in the same transaction as the effect** (a table with a unique constraint on the key), along with the response.
+3. A repeat with the same key returns the **stored response** instead of charging again. If the first attempt is still in progress, the repeat waits or gets a "try later" answer.
+
+<Figure caption="The second attempt carries the same key, so the server returns the first result instead of charging again.">
+  <Mermaid code={`sequenceDiagram
+    participant P as Phone
+    participant S as Payments
+    participant DB as Database
+    P->>S: POST /payments (Idempotency-Key k7)
+    S->>DB: charge + store k7 and result (one transaction)
+    S--xP: response lost in the tunnel
+    Note over P: timeout, retry with the same key
+    P->>S: POST /payments (Idempotency-Key k7)
+    S->>DB: k7 already stored?
+    DB-->>S: yes, payment 991
+    S-->>P: 200 payment 991 (no second charge)`} />
+</Figure>
+
+**Exactly-once delivery over an unreliable network is impossible** — the sender can never be sure the last message arrived. What real systems deliver is **at-least-once delivery plus idempotent processing**, which gives an **effectively-once** result. Say it in those words. You work around payments in your day job; this is the sentence that makes an interviewer lean back.
+
+<Trace title="Retry or not?" steps={retries} takeaway="A timeout means unknown. Retry only transient failures, with backoff, jitter and a budget, at one layer — and only operations made idempotent with a key." />
+
+<Reveal q="PUT is idempotent by definition. So retrying a PUT is always safe?">
+
+Repeating the same `PUT` leaves the same final state — **if nothing else happened in between**. If another client updates the resource between your first attempt and your retry, your retry silently overwrites their change. Conditional requests fix it: send `If-Match` with the `ETag` you read, and the server rejects the write (`412 Precondition Failed`) if the resource changed. Idempotent is about repeating *your* request, not about concurrency with others.
+
+</Reveal>
+
+**Catch the trap:** "If the call fails, we retry." Which failures? How many times, at which layer, with what backoff? And is the operation idempotent — if not, what makes it so? An answer without those is the one interviewers mark down.
+
+<h2 id="pooling">Chapter 13 · Keep the line open</h2>
+
+<Scene chapter="Chapter 13" title="Keep the line open" mood="night">
+
+The autoscaler does its job beautifully on a Friday night: app servers go from 20 to 100 in eight minutes. Then the database stops accepting connections.
+
+Theo doesn't even look at the query graphs. *"Every new server opened its own pool,"* he says. *"We didn't run out of database. We ran out of doors."*
+
+</Scene>
+
+**A new connection is expensive**: a TCP round trip, a TLS round trip, key-exchange CPU on both ends, a fresh slow-start window — and on the server, real resources (PostgreSQL, for example, starts a separate backend process for each connection). Doing that per request is waste.
+
+**A connection pool** keeps a set of open connections and lends them out: borrow, use, return. Requests skip the handshakes, and the number of connections stays bounded. The same idea applies everywhere: app → database, app → cache, service → service over HTTP keep-alive, the CDN PoP → origin.
+
+**Sizing with Little's law.** On average, **busy connections = request rate × time each request holds a connection**.
+
+- One app server: 200 queries per second, 10 ms each → `200 × 0.010 = 2` connections busy on average. A pool of about 10 covers bursts and slow queries.
+- The fleet: `100 servers × 10 = 1,000` connections to one database. PostgreSQL's default `max_connections` is 100, and it handles hundreds or thousands of mostly idle connections poorly. Fix: a **connection pooler** in between (PgBouncer in transaction mode is the standard example) that multiplexes many client connections onto a few dozen real ones.
+
+<Figure caption="Pools multiply with the fleet. A pooler in front of the database keeps the real connection count fixed however many app servers the autoscaler adds.">
+  <Mermaid code={`flowchart LR
+    subgraph Fleet["100 app servers"]
+      A1["App + pool of 10"]
+      A2["App + pool of 10"]
+      A3["… 98 more"]
+    end
+    A1 --> PB["Pooler\n1,000 client connections"]
+    A2 --> PB
+    A3 --> PB
+    PB -->|"about 50 real connections"| DB[("PostgreSQL")]`} />
+</Figure>
+
+**What goes wrong with pools:**
+
+- **Silent idle kills.** A load balancer, NAT or firewall drops a connection that sat idle past its timeout; the pool hands it out and the first query fails. Set the pool's idle and maximum lifetime **below** the shortest idle timeout on the path, and validate connections (or retry once on a dead one).
+- **Pool exhaustion.** Every connection is borrowed by a slow query; new requests wait forever. Set an **acquire timeout** and fail fast.
+- **Stale DNS.** Pooled connections keep talking to the old IP after a failover changes DNS. A maximum connection lifetime makes the pool re-resolve and reconnect.
+- **Bigger is not faster.** A database has a fixed number of cores and disks; past a modest level of concurrency, extra connections just add contention. Size from Little's law plus headroom, not "as many as threads".
+
+With HTTP/2 or gRPC between services, one connection multiplexes many calls, so the pool can be a handful of connections per backend — but keep more than one, so a single slow connection isn't a bottleneck, and so an L7 balancer can spread them.
+
+<Reveal q="The database is slow, so someone doubles every app server's pool size. What happens?">
+
+Usually it gets **slower**. More concurrent queries compete for the same CPU, locks and disk; latency per query rises, which (by Little's law) holds connections longer, which fills the bigger pool too. Throughput tends to peak at a modest concurrency. The fix is fewer, faster queries, a pooler, or more database capacity — not more doors to the same room.
+
+</Reveal>
+
+**Catch the trap:** autoscaling the app tier without saying what happens to downstream connection counts. "Each new server opens 10 connections; at 100 servers that's 1,000, so a pooler sits in front of the database" is one sentence, and it shows you have run this in production.
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The network review" steps={drills} takeaway="Count the round trips. Know what each layer promises. Name who each proxy speaks for. And treat every timeout as “I don’t know”." />
 
 <Quiz questions={[
   {
@@ -93,9 +836,129 @@ The load balancer usually terminates TLS (decrypts), so app servers see plain HT
     ],
     answer: 1,
     why: 'The whole scaling model rests on this. The moment a server holds unique state (say, WebSocket connections), routing to the right server becomes a design problem you must address explicitly.'
+  },
+  {
+    q: 'A cold HTTPS request over TCP with TLS 1.3 crosses a 200 ms round trip. Ignoring DNS and server time, when does the first response byte arrive?',
+    options: [
+      'After 200 ms — one round trip',
+      'After 400 ms — the request leaves after TCP and TLS',
+      'After 600 ms — TCP (1 RTT) + TLS 1.3 (1 RTT) + the request and response (1 RTT)',
+      'After 800 ms — TLS needs two round trips'
+    ],
+    answer: 2,
+    why: 'The request leaves after two round trips and its response takes a third. 800 ms is the old TLS 1.2 full handshake; HTTP/3 over QUIC would make it 400 ms.'
   }
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: narrate the full life of `POST /orders` from a phone in Delhi to a service in us-east — every hop, every handshake, where TLS ends, where state lives. 5 minutes, no notes. This is decomposition practice disguised as networking.
+<Scene title="The interview room" mood="night">
+
+The Interviewer leans back. *"Let's start simple. A user in Delhi opens your app and it loads their feed from your servers in Virginia. Walk me through what happens on the network."*
+
+A month ago you would have said "the request goes to the server". Today you see the timeline, and you start counting.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "First the phone resolves `api.kestrel.example` through DNS — usually answered from a cache at the resolver; the TTL, say 60 seconds, is our failover lever. Then it opens a TCP connection, one round trip, and a TLS 1.3 handshake, one more — so on a cold connection the request leaves after **two round trips** and the first byte comes back after three. At 200 ms Delhi-to-Virginia, that's about 600 ms of pure network before our 50 ms of server time. So I'd do three things: put a CDN edge in Delhi to terminate TCP and TLS 10 ms away and reuse warm connections to the origin — that roughly halves time to first byte; support HTTP/3 so new connections take one round trip instead of two and survive Wi-Fi-to-cellular switches; and keep connections alive. At the origin, an L7 load balancer terminates TLS and routes by path to **stateless** services; the public API is REST, services talk gRPC with deadlines behind request-aware balancing. New offers reach sellers over SSE since it's one-way. Every call has a timeout, retries happen only at the edge with backoff and jitter, and payment POSTs carry an idempotency key so a retry after a lost response can't double-charge."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · Exactly how many round trips before the first byte on a cold HTTPS connection?">
+
+TCP + TLS 1.3: two before the request leaves (TCP, then TLS), three to the first response byte. TLS 1.2 adds one more. HTTP/3 over QUIC merges the handshakes: one before the request, two to the first byte. 0-RTT resumption sends the request in the first flight — but only on a return visit, and only for idempotent requests, because early data can be replayed. Plus the DNS lookup if it isn't cached.
+
+</Reveal>
+
+<Reveal q="2 · Why does your video feature use UDP when everything else uses TCP?">
+
+Because late is as bad as lost. TCP delivers in order, so one lost packet blocks every packet behind it until it's retransmitted — head-of-line blocking, which shows up as a frozen frame. Over UDP the app plays what arrived, conceals the gap, and adapts its bitrate to congestion itself.
+
+</Reveal>
+
+<Reveal q="3 · Why gRPC between services and not REST? Any downsides?">
+
+Typed contracts with generated clients, compact protobuf, HTTP/2 multiplexing, streaming, and deadlines that propagate. Downsides: browsers can't call it natively (REST or gRPC-Web at the edge), payloads aren't human-readable, and because calls ride one long-lived HTTP/2 connection, an L4 balancer pins all of a client's calls to one backend — you need L7 or client-side load balancing.
+
+</Reveal>
+
+<Reveal q="4 · The server needs to tell the client something. How?">
+
+The server can't open a connection to a phone behind NAT, so it rides one the client opened. Rare updates: poll. One-way push: SSE, which reconnects automatically and resumes with Last-Event-ID. Two-way and frequent: WebSockets — and then servers are stateful, so I need a connection registry or pub/sub to find which server holds a user, heartbeats, and catch-up from storage on reconnect.
+
+</Reveal>
+
+<Reveal q="5 · The payment call timed out. What does the client do?">
+
+A timeout means "unknown" — the charge may have happened. The client retries with backoff, sending the **same idempotency key** it generated for this payment. The server stored the key with the result in the same transaction as the charge, so a repeat returns the original result instead of charging again. That's at-least-once delivery with idempotent processing: effectively once.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "What happens when I type a URL?" | DNS (cached, TTL) → TCP (1 RTT) → TLS 1.3 (1 RTT) → HTTP (1 RTT) → where TLS terminates → stateless servers |
+| Far-away users, slow first load | Count round trips; terminate TLS at a nearby edge; HTTP/3; keep-alive; 0-RTT for idempotent requests only |
+| DNS failover, migrations | Low TTL set *before* the move; runtimes cache too; pair with anycast or health checks |
+| Live audio, video, game state | UDP (or WebRTC): late is as bad as lost |
+| Lossy mobile networks | HTTP/2 suffers TCP head-of-line blocking; HTTP/3 over QUIC fixes it |
+| Public API | REST + JSON, cacheable `GET`s |
+| Internal service calls | gRPC: protobuf, HTTP/2, deadlines — with L7 or client-side balancing |
+| Many screens, nested varied reads | GraphQL, with batching (N+1) and query cost limits — or a BFF endpoint |
+| Rare server updates | Short polling |
+| One-way push, token streams | SSE |
+| Two-way, frequent | WebSockets + registry/pub-sub, heartbeats, catch-up |
+| "Your load balancer?" | L7 at the edge (TLS, path routing); L4 for raw connections, non-HTTP, huge connection counts |
+| Client IP behind proxies | `X-Forwarded-For` / `Forwarded` set by your edge only; PROXY protocol at L4 |
+| "Server pushes to the phone" | NAT: the client opens the connection; heartbeats keep it alive |
+| Timeouts and retries | Every call has a timeout; retry transient errors at one layer with backoff, jitter, budget |
+| Retrying a POST | Idempotency key stored with the effect; at-least-once + idempotent = effectively once |
+| Autoscaling the app tier | Pools multiply; Little's law; a pooler in front of the database |
+
+## Five mistakes to leave behind
+
+1. **"The request goes to the server."** Say DNS, TCP, TLS, HTTP, and where TLS ends — in one breath.
+2. **"TLS adds a round trip or two" without knowing which.** TLS 1.3 is one; TCP + TLS 1.3 is two before the request; QUIC is one; 0-RTT is replayable.
+3. **"Real-time means WebSockets."** Poll if you can, SSE if the server only pushes, WebSockets only for frequent two-way traffic.
+4. **"gRPC because it's faster"** without the browser and load-balancing catches.
+5. **Retrying without idempotency.** A timeout is "I don't know"; only a key makes the retry safe.
+
+<Scene title="Mara’s last word" mood="dusk">
+
+Two weeks later, the Delhi slide has a new number on it: 330 milliseconds, after the edge went live. Iris has already moved on to her next "oh, and also".
+
+Mara leaves the timeline on the whiteboard — the phone, the gap, the diagonal lines. Under it, in small letters, she has written: *Count the round trips.*
+
+</Scene>
+
+**Keep it warm:** with the buddy, narrate the full life of `POST /orders` from a phone in Delhi to a service in us-east — every hop, every handshake, where TLS ends, where state lives, what happens if the response is lost. Five minutes, no notes. This is decomposition practice disguised as networking; it also drills your two gaps from this lesson, layer conflation and silent skips.
+
+Related: <a href={`${BASE}sd/lessons/core-concepts/`}>Core concepts</a> (latency numbers) · <a href={`${BASE}sd/lessons/load-balancing/`}>Load balancers & API gateways</a> · <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime pattern</a> (stateful connection fleets) · <a href={`${BASE}sd/lessons/blob-cdn/`}>Blob storage & CDNs</a> · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (HTTP and CDN cache layers) · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> (lives in the gateway) · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a> (timeouts and retries in a real system).
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- [*High Performance Browser Networking*](https://hpbn.co/) (Ilya Grigorik, free online) — TCP, TLS, UDP, HTTP/1.1, HTTP/2, WebSockets and SSE from the latency point of view; the best single companion to Part One and Two.
+- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 8, "The Trouble with Distributed Systems": unreliable networks, timeouts, and why "unknown" is a real outcome.
+- [RFC 8446: TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) — the 1-RTT handshake and the 0-RTT replay warnings, from the source.
+- [RFC 9000: QUIC](https://www.rfc-editor.org/rfc/rfc9000) and [RFC 9114: HTTP/3](https://www.rfc-editor.org/rfc/rfc9114) — streams, connection IDs, migration.
+- [RFC 9110: HTTP Semantics](https://www.rfc-editor.org/rfc/rfc9110) — the definitions of safe and idempotent methods; [RFC 8470](https://www.rfc-editor.org/rfc/rfc8470) — 425 Too Early and early data.
+- [RFC 6455: The WebSocket Protocol](https://www.rfc-editor.org/rfc/rfc6455) and the [HTML standard's server-sent events section](https://html.spec.whatwg.org/multipage/server-sent-events.html).
+- [gRPC documentation](https://grpc.io/docs/) — call types, deadlines, load balancing; [GraphQL: Learn](https://graphql.org/learn/) — schemas, queries, execution.
+- [Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/) (AWS Architecture Blog) — why full jitter beats plain backoff, with simulations.
+- [Designing robust and predictable APIs with idempotency](https://stripe.com/blog/idempotency) (Stripe engineering blog) — idempotency keys in a real payments API.
+
+**Look these up yourself**
+
+- **TCP Fast Open** — data in the SYN on repeat connections; why it saves a round trip and why middleboxes limited its adoption.
+- **Congestion control: CUBIC vs BBR** — loss-based versus model-based; why BBR can help on lossy long-distance links.
+- **Happy Eyeballs (RFC 8305)** — racing IPv6 and IPv4 connections so a broken path doesn't add seconds.
+- **TLS session resumption and forward secrecy** — what session tickets trade away, and why 0-RTT data is not forward-secret.
+- **Hedged requests and "The Tail at Scale"** (Dean & Barroso) — sending a second request after a delay to cut tail latency, and how it interacts with idempotency.
+- **Service meshes (sidecar proxies)** — moving retries, timeouts, mTLS and load balancing out of application code, and the latency it costs.
+- **WebTransport** — a newer browser API over HTTP/3 offering streams and unreliable datagrams, a possible successor for some WebSocket uses.
+- **DNS HTTPS/SVCB records** — advertising HTTP/3 support in DNS so the first connection can skip the TCP detour.

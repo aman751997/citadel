@@ -19,6 +19,7 @@ const dsa = defineCollection({
     description: z.string(),
     order: z.number(),
     minutes: z.number(),
+    sessionMinutes: z.number().positive().optional(),
   }),
 });
 

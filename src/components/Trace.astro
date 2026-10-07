@@ -1,0 +1,154 @@
+---
+// Predict-the-move puzzle. Each step shows a small board, asks one question, and explains every choice.
+// Usage in MDX: <Trace title="Meet in the middle" steps={palindrome} takeaway="..." />
+// Build steps with `row` and `step` from src/lib/trace.ts.
+import type { TraceStep, TraceRow } from '../lib/trace';
+interface Props {
+  title: string;
+  steps: TraceStep[];
+  takeaway: string;
+}
+const { title, steps, takeaway } = Astro.props;
+const first = steps[0];
+const cellClass = (cell: TraceRow['cells'][number]) => ['trace-cell', cell.label && 'marked', cell.tone && `tone-${cell.tone}`].filter(Boolean).join(' ');
+---
+<section class="trace" data-pointer-trace aria-label={title}>
+  <header><strong>{title}</strong><span data-trace-count>Decision 1 of {steps.length}</span></header>
+  <div data-trace-scene>
+    {first.rows.map(row => (
+      <div class="trace-row"><span class="row-name">{row.name}</span><div class="trace-cells">
+        {row.cells.map((cell, index) => <>
+          {row.join && index > 0 && <span class="trace-join" aria-hidden="true">{row.join}</span>}
+          <div class={cellClass(cell)}><strong>{cell.value}</strong><small>{cell.label || ' '}</small></div>
+        </>)}
+      </div></div>
+    ))}
+    <p class="trace-question">{first.question}</p>
+  </div>
+  <div class="trace-choices" data-trace-choices>
+    {first.choices.map((choice, index) => <button type="button" data-choice={index}>{choice.label}</button>)}
+  </div>
+  <p class="trace-feedback" data-trace-feedback role="status" aria-live="polite" aria-atomic="true">Choose a move. It's fine to try and change your mind.</p>
+  <div class="trace-controls">
+    <button type="button" data-trace-next disabled>{steps.length === 1 ? 'Finish this challenge ✓' : 'Next decision →'}</button>
+    <button type="button" data-trace-restart>Try again from the start</button>
+  </div>
+  <noscript>Try the question above, then use the explanation in this lesson. Interactive feedback needs JavaScript.</noscript>
+  <script type="application/json" data-trace-data set:html={JSON.stringify({ steps, takeaway }).replace(/</g, '\\u003c')} />
+</section>
+
+<style>
+  :global(article:has([data-pointer-trace]) h2[id]) { scroll-margin-top: 5rem; }
+  .trace { padding: 1.2rem; margin: 1.4rem 0; background: var(--bg-raised); border: 1px solid var(--accent-dim); border-radius: 12px; }
+  header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem; margin-bottom: 1rem; }
+  header strong { color: var(--accent); }
+  header span, .trace :global(.row-name) { color: var(--text-dim); font-size: .8rem; }
+  .trace :global(.trace-row) { margin: .65rem 0; }
+  .trace :global(.trace-cells) { display: flex; gap: .4rem; overflow-x: auto; padding: .3rem 0; align-items: stretch; }
+  .trace :global(.trace-cell) { flex: 1; min-width: 48px; text-align: center; border: 1px solid var(--border); border-radius: 7px; padding: .35rem; transition: background .2s, border-color .2s; }
+  .trace :global(.trace-cell.marked) { border-color: var(--blue); }
+  .trace :global(.trace-cell.tone-hot) { border-color: var(--accent); background: #e3b34118; }
+  .trace :global(.trace-cell.tone-done) { background: #3fb95018; border-color: #3fb95066; }
+  .trace :global(.trace-cell.tone-out) { opacity: .4; text-decoration: line-through; }
+  .trace :global(.trace-cell.tone-ghost) { border-style: dashed; opacity: .7; }
+  .trace :global(.trace-join) { align-self: center; color: var(--text-dim); font-family: var(--mono); flex: 0 0 auto; }
+  .trace :global(.trace-cell strong) { display: block; font-family: var(--mono); font-size: 1.1rem; white-space: nowrap; }
+  .trace :global(.trace-cell small) { display: block; min-height: 1.2rem; font-size: .65rem; color: var(--blue); white-space: nowrap; }
+  .trace :global(.trace-question) { font-weight: 600; }
+  .trace-choices, .trace-controls { display: flex; gap: .6rem; flex-wrap: wrap; }
+  .trace :global(button) { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: .6rem .8rem; font: inherit; text-align: left; cursor: pointer; }
+  .trace :global(button:hover) { border-color: var(--accent); }
+  .trace :global(button:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .trace :global(button:disabled) { opacity: .6; cursor: default; }
+  .trace :global(button.correct) { border-color: var(--green); }
+  .trace :global(button.wrong) { border-color: var(--red); }
+  .trace-feedback { border-left: 3px solid var(--accent); padding-left: .8rem; }
+  .trace-controls { margin-top: 1rem; }
+  .trace-controls button { font-size: .8rem; }
+  @media (max-width: 480px) { .trace { padding: .85rem; } .trace-choices :global(button) { width: 100%; } }
+</style>
+
+<script>
+  import type { TraceStep } from '../lib/trace';
+  document.querySelectorAll<HTMLElement>('[data-pointer-trace]').forEach(root => {
+    const { steps, takeaway }: { steps: TraceStep[]; takeaway: string } = JSON.parse(root.querySelector('[data-trace-data]')!.textContent!);
+    const scene = root.querySelector<HTMLElement>('[data-trace-scene]')!;
+    const choices = root.querySelector<HTMLElement>('[data-trace-choices]')!;
+    const feedback = root.querySelector<HTMLElement>('[data-trace-feedback]')!;
+    const next = root.querySelector<HTMLButtonElement>('[data-trace-next]')!;
+    const count = root.querySelector<HTMLElement>('[data-trace-count]')!;
+    let index = 0;
+    let answered = false;
+    const element = (tag: string, text: string, className = '') => {
+      const node = document.createElement(tag);
+      node.textContent = text;
+      node.className = className;
+      return node;
+    };
+    const render = () => {
+      const step = steps[index];
+      scene.replaceChildren();
+      step.rows.forEach(row => {
+        const wrapper = element('div', '', 'trace-row');
+        wrapper.append(element('span', row.name, 'row-name'));
+        const cells = element('div', '', 'trace-cells');
+        row.cells.forEach((cell, cellIndex) => {
+          if (row.join && cellIndex > 0) cells.append(element('span', row.join, 'trace-join'));
+          const tile = element('div', '', ['trace-cell', cell.label && 'marked', cell.tone && `tone-${cell.tone}`].filter(Boolean).join(' '));
+          tile.append(element('strong', cell.value), element('small', cell.label || ' '));
+          cells.append(tile);
+        });
+        wrapper.append(cells);
+        scene.append(wrapper);
+      });
+      scene.append(element('p', step.question, 'trace-question'));
+      choices.replaceChildren();
+      step.choices.forEach((choice, choiceIndex) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.choice = String(choiceIndex);
+        button.textContent = choice.label;
+        choices.append(button);
+      });
+      answered = false;
+      next.disabled = true;
+      next.textContent = index === steps.length - 1 ? 'Finish this challenge ✓' : 'Next decision →';
+      count.textContent = `Decision ${index + 1} of ${steps.length}`;
+      feedback.textContent = "Choose a move. It's fine to try and change your mind.";
+    };
+    choices.addEventListener('click', event => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-choice]');
+      if (!button || answered) return;
+      const picked = Number(button.dataset.choice);
+      const step = steps[index];
+      feedback.textContent = step.choices[picked].feedback;
+      if (picked !== step.answer) {
+        button.classList.add('wrong');
+        return;
+      }
+      answered = true;
+      button.classList.add('correct');
+      choices.querySelectorAll<HTMLButtonElement>('button').forEach(option => { option.disabled = true; });
+      next.disabled = false;
+      next.focus();
+    });
+    next.addEventListener('click', () => {
+      if (!answered) return;
+      if (index < steps.length - 1) {
+        index++;
+        render();
+        choices.querySelector<HTMLButtonElement>('button')?.focus();
+      } else {
+        count.textContent = 'Challenge complete';
+        feedback.textContent = takeaway;
+        next.disabled = true;
+        root.querySelector<HTMLButtonElement>('[data-trace-restart]')!.focus();
+      }
+    });
+    root.querySelector('[data-trace-restart]')!.addEventListener('click', () => {
+      index = 0;
+      render();
+      choices.querySelector<HTMLButtonElement>('button')?.focus();
+    });
+  });
+</script>

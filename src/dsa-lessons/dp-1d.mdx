@@ -1,0 +1,1375 @@
+---
+title: '1-D Dynamic Programming'
+description: 'A novel in ten chapters and six side quests. Climb the stair at Highcairn, where the monks write every answer on a scroll so nobody climbs twice, and learn the five-step recipe that turns a counting, cheapest-cost or is-it-possible question you have never seen into a table you fill from the bottom up.'
+order: 14
+minutes: 120
+sessionMinutes: 8
+---
+import PatternHub from '../components/PatternHub.astro';
+import Playground from '../components/Playground.astro';
+import Practice from '../components/Practice.astro';
+import Trace from '../components/Trace.astro';
+import HintLadder from '../components/HintLadder.astro';
+import Reveal from '../components/Reveal.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Mermaid from '../components/Mermaid.astro';
+import { hints } from '../data/dp-1d/hints';
+import { stairs, minCost, robber, circle, decode, coins, words, lis, palindromes, countPal, mixedReview } from '../data/dp-1d/traces';
+import { BASE } from '../paths';
+
+<PatternHub
+  pattern="dp-1d"
+  start="prologue"
+  logline="At Highcairn the monks never climb a step twice. Each answer is written on a scroll, and every new scroll is built from a few older ones. Name the scroll, find the last decision, write the first scrolls by hand, and the rest of the stair fills itself."
+  cast={[
+    { name: 'You', role: 'A novice scribe. Like a loop, you write one scroll at a time, from the bottom of the stair upward.' },
+    { name: 'The Keeper', role: 'Abbess of the Scriptorium. Never writes a scroll for you; asks three questions instead.' },
+    { name: 'Brother Recur', role: 'Tireless and eager. To answer any step he climbs down and re-asks every smaller question, again and again. He is plain recursion.' },
+    { name: 'Sister Memo', role: 'Keeper of the scroll rack. Before anyone climbs, she checks whether the answer is already written. She is the memo table.' },
+    { name: 'Prev and Curr', role: 'Two lantern-bearers who carry only the last two scrolls up the stair, so the rack can be cleared. They are the rolling variables.' },
+    { name: 'Tails', role: 'Librarian of the patience shelves. For every length of rising run, she keeps the smallest ending seen so far.' },
+    { name: 'Centre', role: 'The mirror-reader. Stands in the middle of a line of letters and steps outward while both sides agree.' },
+  ]}
+  parts={[
+    { name: 'Part One · The staircase', description: 'Each scroll is built from the one or two just below it.', links: [['climbing-stairs', 'The pilgrim’s question'], ['min-cost-stairs', 'The toll steps'], ['house-robber', 'The almoner’s round'], ['house-robber-circle', 'The ring of cottages']] },
+    { name: 'Part Two · The last piece', description: 'Stand at the end of a prefix and ask what its last piece was: a letter, a coin, a word.', links: [['decode-ways', 'The cipher of digits'], ['coin-change', 'The offering box'], ['word-break', 'The prayer with no spaces']] },
+    { name: 'Part Three · Looking further back', description: 'When the last decision can reach any earlier position, or the middle of a word.', links: [['lis', 'The rising bells'], ['longest-palindrome', 'The mirror prayer'], ['palindromic-substrings', 'Counting the mirrors']] },
+  ]}
+  extensions={[['delete-and-earn', 'Delete and earn'], ['perfect-squares', 'Squares only'], ['partition-preview', 'Each coin only once'], ['count-lis', 'How many longest?'], ['k-steps', 'Up to k steps at a time'], ['tickets', 'Passes for the pilgrims']]}
+  extras={[['choose-the-tool', 'When the scrolls are overkill'], ['wider-family', 'The neighbouring houses'], ['exit-ticket', 'The novice’s exam'], ['cheat-sheet', 'The Keeper’s scroll notes']]}
+  note="All 9 roadmap problems (House Robber I and II each get a chapter), plus six side quests. Read one chapter per sitting. The five-step recipe is the same every time; that is the point."
+/>
+
+<h2 id="prologue">Prologue · Nobody climbs twice</h2>
+
+<Scene chapter="Prologue" title="The pilgrim’s stair" mood="dawn">
+
+Highcairn is cut into the side of a mountain, and its only road is a stair: one thousand steps from the gate to the Scriptorium. Pilgrims arrive with questions. This morning’s is written on a slate: *In how many different ways can I climb to step thirty, if I take one step or two at a time?*
+
+Brother Recur sets off at once. To count the ways to step thirty, he reasons, he must know the ways to step twenty-nine and to step twenty-eight. For those he needs twenty-seven, twenty-six, twenty-five… By evening he is still on the stair, counting step three for what must be the thousandth time.
+
+The Keeper watches from the gate. Beside her, Sister Memo has set out an empty rack of scrolls, numbered from zero.
+
+*"No one in this house climbs a step twice,"* the Keeper says. *"Write each answer once. Which scroll can you write first?"*
+
+</Scene>
+
+Dynamic programming is one idea: **answer every smaller version of the question once, write it down, and build each bigger answer only out of answers already written.** A written scroll is never rewritten. That is the whole promise.
+
+It works when a problem has two properties:
+
+- **Optimal substructure.** The answer to the big question can be assembled from answers to smaller questions *of the same kind*. The ways to reach step 30 are the ways to reach step 29 (then one step) plus the ways to reach step 28 (then two).
+- **Overlapping subproblems.** The same smaller questions come up again and again. Brother Recur asks “how many ways to step 3?” more than 300,000 times on his way to step 30. A table asks it once.
+
+Without the first, no table helps: the pieces don’t combine. Without the second, there is nothing to save: merge sort splits into halves that never repeat, so it is plain divide and conquer. **Both together is the signal.**
+
+### The five-step recipe
+
+You will use these five steps, in this order, in every chapter of this book. They are what replaces memorising problems:
+
+1. **The state, in words.** Finish the sentence “`dp[i]` = the number of ways / the cheapest cost / whether it is possible … for the first `i` …”. If you can’t say it in one sentence, you can’t build it.
+2. **The recurrence, from the last decision.** Look at the *final* move of any solution. List what it could have been. Each possibility leaves a smaller problem whose answer is a scroll you already have.
+3. **Base cases.** The smallest scrolls the recurrence can’t build. Usually the empty prefix, `dp[0]`.
+4. **Evaluation order.** Every scroll the recurrence reads must be written before the scroll that reads it. In one dimension that is usually left to right.
+5. **Where the answer lives.** Which scroll answers the original question? `dp[n]`? The largest `dp[i]`? Say it before you code.
+
+Then, and only then, **shrink the space**: if the recurrence reads only the last two scrolls, keep two variables and clear the rack.
+
+<Figure caption="The recipe as a pipeline. Steps 1 and 2 are where the thinking happens; 3 to 5 make the table safe to fill; the last box is an optimisation you add once the table is correct.">
+  <Mermaid code={`flowchart LR
+  A["1 · State in words"] --> B["2 · Last decision → recurrence"]
+  B --> C["3 · Base cases"]
+  C --> D["4 · Evaluation order"]
+  D --> E["5 · Where the answer lives"]
+  E --> F["Then: keep only the scrolls you still read"]`} />
+</Figure>
+
+The Keeper asks her three questions here, as everywhere in the realm:
+
+1. **What is settled?** Every scroll already written. It is final; nothing written later can change it.
+2. **Why is this move safe?** The last decision splits every possible solution into cases. Each case is a smaller question whose scroll is already settled, and together the cases miss nothing.
+3. **When do I stop?** When the scroll named in step 5 is written.
+
+### Three kinds of question, three ways to combine
+
+| The question asks… | Combine the cases with | An impossible case counts as | The empty base is usually |
+|---|---|---|---|
+| **How many ways?** (counting) | **sum** | 0 | 1: one way to do nothing |
+| **Cheapest or best?** (optimisation) | **min** or **max** | a sentinel such as “∞”, or skip it | 0 |
+| **Is it possible?** (feasibility) | **OR** | false | true |
+
+One rule hides in that table. **Counting needs cases that don’t overlap**: if one solution fits two cases, a sum counts it twice. Min, max and OR don’t care; seeing the same candidate twice changes nothing.
+
+<Figure caption="The scroll rack for the pilgrim’s question, n = 5. Every scroll is the sum of the two below it: ways[5] = ways[4] + ways[3] = 5 + 3 = 8. Scroll 0 is the empty climb, the one way to stand where you already are.">
+  <ArrayStrip name="ways" values={[1, 1, 2, 3, 5, 8]} pointers={[{ at: 3, label: 'i − 2', tone: 'blue' }, { at: 4, label: 'i − 1', tone: 'blue' }, { at: 5, label: 'i' }]} tones={{ 0: 'done', 1: 'done', 2: 'done', 3: 'blue', 4: 'blue', 5: 'hot' }} />
+</Figure>
+
+### When this pattern fires
+
+- The question asks **how many ways**, **the minimum or maximum**, or **whether it is possible** — over a sequence, a string, or an amount.
+- Each answer is built from a **choice at each position** (take or skip, one step or two, which coin, where the word ends), and the choices interact only through a small summary: the index you’ve reached, the amount left. **That summary is your state.**
+- Brute force would try every sequence of choices: 2ⁿ subsets, or a recursion tree that branches at every step. The table visits each state once, so the cost drops to **(number of states) × (choices per state)**: exponential becomes O(n), O(n²) or O(n × amount).
+- It does **not** fire when you must *list* every solution (the output itself is exponential: that is backtracking), or when one greedy choice is provably always safe (that is greedy, and cheaper). See [When the scrolls are overkill](#choose-the-tool).
+
+<h2 id="playground">The scriptorium tables · You write every scroll</h2>
+
+<Scene title="The practice rack">
+
+Novices don’t touch the real scrolls. They practise at a slate rack in the cloister, chalking one answer at a time. Nobody chalks a cell for you. When you reach for the wrong choice, the Keeper doesn’t wipe the slate; she reads the numbers already on it and tells you exactly which answer you would have spoiled.
+
+</Scene>
+
+Three drills. **The almoner’s round:** fill House Robber’s table cell by cell, choosing “knock” or “skip” — the scroll must hold the larger. **The offering box:** for each amount, choose the coin that makes the best last coin, or declare the amount unreachable. **The cipher:** for each digit, decide whether a one-digit letter, a two-digit letter, both or neither can end here. Say the reason **before** pressing the button.
+
+<Playground lab="dp-1d" />
+
+<Part n="Part One" title="The staircase">
+
+Each scroll is built from the one or two just below it. Learn the recipe here, where the problems are small enough to hold in your head.
+
+</Part>
+
+<h2 id="climbing-stairs">Chapter 1 · The pilgrim’s question</h2>
+
+<Scene chapter="Chapter 1" title="Brother Recur’s long day" mood="dawn">
+
+You follow Brother Recur down the stair with a stick of chalk, marking every step he stops to count. Step 5 sends him to steps 4 and 3. Step 4 sends him to 3 and 2. He reaches step 3 a second time and counts it again from scratch, cheerfully, as if he had never been there.
+
+By the time he answers 8, your chalk marks cover the stair. You count them: fifteen visits, for a question about five steps.
+
+Sister Memo is waiting at the bottom with an empty rack. *"Six different questions,"* she says. *"Steps zero to five. Why did he ask fifteen?"*
+
+The Keeper takes your chalk. *"Then let’s count what he wasted — and then let’s never waste it again."*
+
+</Scene>
+
+**Problem: Climbing Stairs · Fibonacci style, counting**
+
+You climb `n` steps, one or two at a time. How many distinct ways reach the top? This chapter walks the whole journey once — **brute force → memoisation → tabulation → rolling variables** — so every later chapter can start at the table.
+
+### Stage 1 · Brute-force recursion
+
+Look at the **last move** of any climb to step `n`. It was either a single step from `n − 1` or a double step from `n − 2`. Those two groups never overlap (the last move differs) and miss nothing (there is no third kind of move). So:
+
+```java id=climbBrute
+public int climbStairs(int n) {
+    if (n <= 1) return 1;                            // step 0 or step 1: exactly one way
+    return climbStairs(n - 1) + climbStairs(n - 2);  // last move was one step, or two
+}
+```
+
+It is correct. It is also hopeless for large `n`, and the tree shows why.
+
+<Figure caption="Brother Recur’s calls for n = 5. Fifteen calls answer only six different questions: climb(3) is asked twice, climb(2) three times, climb(1) five times, climb(0) three times. The gold subtrees are the work a scroll rack removes: each gold root becomes a one-line lookup and nothing below it is visited — 9 calls instead of 15.">
+  <Mermaid code={`flowchart TD
+  a["climb(5)"] --> b["climb(4)"]
+  a --> c["climb(3)"]
+  b --> d["climb(3)"]
+  b --> e["climb(2)"]
+  d --> h["climb(2)"]
+  d --> i["climb(1)"]
+  h --> n["climb(1)"]
+  h --> o["climb(0)"]
+  e --> j["climb(1)"]
+  e --> k["climb(0)"]
+  c --> f["climb(2)"]
+  c --> g["climb(1)"]
+  f --> l["climb(1)"]
+  f --> m["climb(0)"]
+  classDef repeat fill:#3b2f12,stroke:#e3b341,color:#e6edf3
+  class c,e,f,g,j,k,l,m repeat`} />
+</Figure>
+
+Count the calls: `calls(n) = 1 + calls(n − 1) + calls(n − 2)`, with one call each for `n = 0` and `n = 1`. That gives 1, 1, 3, 5, 9, 15, … which is exactly `2 × ways(n) − 1`. For `n = 30`, that is **2,692,537 calls** to produce the answer 1,346,269. The call count grows by about ×1.618 per step: **exponential time**, O(φⁿ), where φ is the golden ratio.
+
+### Stage 2 · Memoisation (top-down)
+
+Same recursion, one change: **before climbing, check the rack; after climbing, write the scroll.** That is Sister Memo’s whole job.
+
+```java id=climbMemo
+public int climbStairs(int n) {
+    int[] memo = new int[n + 1];                     // 0 = no scroll yet (every real answer is ≥ 1)
+    return climb(n, memo);
+}
+
+private int climb(int i, int[] memo) {
+    if (i <= 1) return 1;
+    if (memo[i] != 0) return memo[i];                // the scroll exists: read it, don't climb
+    memo[i] = climb(i - 1, memo) + climb(i - 2, memo);
+    return memo[i];
+}
+```
+
+Now each step from 2 to `n` is solved once and makes two calls; every later visit is a lookup. That is **2n − 1 calls**: 9 for `n = 5` instead of 15, and 59 for `n = 30` instead of 2.7 million. **O(n) time, O(n) space** for the rack, plus O(n) depth of recursion on the call stack.
+
+The sentinel matters: “0 means not written” is safe only because no real answer is 0. When 0 *can* be an answer, fill the rack with −1 or use `Integer[]` with `null`.
+
+### Stage 3 · Tabulation (bottom-up)
+
+Memoisation still starts at the top and recurses down. Tabulation turns around: write scroll 0, then 1, then 2, … so that **every scroll you need is already on the rack when you need it.** No recursion, no stack. Here is the recipe, visibly:
+
+1. **State:** `ways[i]` = the number of distinct ways to stand on step `i`, starting from the ground (step 0).
+2. **Last decision:** the final move was one step (from `i − 1`) or two (from `i − 2`): `ways[i] = ways[i − 1] + ways[i − 2]`.
+3. **Base cases:** `ways[0] = 1` (the empty climb) and `ways[1] = 1`.
+4. **Order:** `i` from 2 up to `n`; both scrolls it reads are smaller.
+5. **Answer:** `ways[n]`.
+
+```java id=climbTable
+public int climbStairs(int n) {
+    int[] ways = new int[n + 1];
+    ways[0] = 1;                                     // the empty climb: one way to stay put
+    if (n >= 1) ways[1] = 1;
+    for (int i = 2; i <= n; i++)
+        ways[i] = ways[i - 1] + ways[i - 2];         // both scrolls are already written
+    return ways[n];
+}
+```
+
+### Stage 4 · Rolling variables
+
+Look at what the loop reads: only the last two scrolls. Everything below them is never touched again. So Prev and Curr carry those two up the stair, and the rack is cleared.
+
+<Figure caption="Filling the rack for n = 5. Gold is the scroll being written; blue are the two it reads; green are settled. Once scroll 4 is written, scrolls 0 to 2 are never read again — which is why two variables are enough.">
+  <ArrayStrip name="i = 2" values={[1, 1, 2, '·', '·', '·']} tones={{ 0: 'blue', 1: 'blue', 2: 'hot', 3: 'ghost', 4: 'ghost', 5: 'ghost' }} />
+  <ArrayStrip name="i = 3" values={[1, 1, 2, 3, '·', '·']} tones={{ 0: 'done', 1: 'blue', 2: 'blue', 3: 'hot', 4: 'ghost', 5: 'ghost' }} />
+  <ArrayStrip name="i = 4" values={[1, 1, 2, 3, 5, '·']} tones={{ 0: 'done', 1: 'done', 2: 'blue', 3: 'blue', 4: 'hot', 5: 'ghost' }} />
+  <ArrayStrip name="i = 5" values={[1, 1, 2, 3, 5, 8]} pointers={[{ at: 3, label: 'prev', tone: 'blue' }, { at: 4, label: 'curr', tone: 'blue' }]} tones={{ 0: 'done', 1: 'done', 2: 'done', 3: 'blue', 4: 'blue', 5: 'hot' }} />
+</Figure>
+
+<Trace title="Count the climbs" steps={stairs} takeaway="Remember: the last move splits every climb into two groups that never overlap. ways[0] = 1 is the empty climb, and memoisation turns 15 calls into 9 for n = 5." />
+
+**Why it works:** every climb to step `i` ends with exactly one last move, a 1 or a 2. Removing it leaves a climb to `i − 1` or `i − 2`, and every such climb extends in exactly one way. So the two groups are disjoint, complete, and counted by scrolls already written.
+
+**What stays true:** at the top of iteration `i`, `curr = ways[i − 1]` and `prev = ways[i − 2]`. **Narrate the loop exit** — a habit worth building: when the loop ends, `curr = ways[n]` and `prev = ways[n − 1]`, so `curr` is the answer.
+
+<Reveal q="Why is ways[0] = 1? Nobody climbed anything.">
+
+Because the recurrence needs it to be. `ways[2]` must be 2 (1+1, or 2). The recurrence says `ways[2] = ways[1] + ways[0] = 1 + ways[0]`, so `ways[0]` must be 1. In words: **there is exactly one way to do nothing**, and the double step from the ground extends it. Counting problems almost always start with “empty = 1”. Setting it to 0 makes every answer wrong from step 2 on.
+
+</Reveal>
+
+<Reveal q="Isn’t this just Fibonacci?">
+
+Yes, shifted by one: `ways(n) = F(n + 1)` with `F(1) = F(2) = 1`. Knowing that is a bonus, not a method — the next chapter changes one word of the question and the formula is gone, while the recipe still works. It does tell you about overflow: `ways(45) = 1,836,311,903` just fits in an `int` (LeetCode caps `n` at 45), and `ways(46) = 2,971,215,073` would not.
+
+</Reveal>
+
+<HintLadder hints={hints.climb}>
+
+```java id=climbStairs
+public int climbStairs(int n) {
+    int prev = 1, curr = 1;                          // ways[0], ways[1]
+    for (int i = 2; i <= n; i++) {
+        int next = curr + prev;                      // ways[i] = ways[i-1] + ways[i-2]
+        prev = curr;                                 // slide both lanterns up one step
+        curr = next;
+    }
+    return curr;                                     // loop exit: curr = ways[n], prev = ways[n-1]
+}
+```
+
+**O(n) time, O(1) extra space.** The four versions in this chapter all return the same numbers; the checker runs each against an independent count of every climb.
+
+</HintLadder>
+
+**Catch the bug:** sliding the lanterns in the wrong order. `prev = curr; curr = curr + prev;` overwrites `prev` before it is used, so each step just doubles `curr`. For `n = 5` it returns 16 instead of 8. Keep the new value in `next` until both old ones have been read. [Solve Climbing Stairs](https://leetcode.com/problems/climbing-stairs/).
+
+<h2 id="min-cost-stairs">Chapter 2 · The toll steps</h2>
+
+<Scene chapter="Chapter 2" title="The toll steps">
+
+Above the hundredth step the stair is older, and every step carries a small bronze box. Whoever **stands** on a step drops its toll in the box. You may begin on step 0 or step 1 without paying to get there, climb one or two steps at a time, and the top is the landing just past the last step, where nobody collects anything.
+
+A merchant wants the cheapest climb. He has already tried stepping on every cheap step he can see, and paid more than his servant, who skipped a cheap step to avoid an expensive one beyond it.
+
+*"Same stair,"* the Keeper says. *"Same last move. What changes when the question is ‘cheapest’ instead of ‘how many’?"*
+
+</Scene>
+
+**Problem: Min Cost Climbing Stairs · Fibonacci style, optimisation**
+
+Same shape as Chapter 1; the combine changes from **sum** to **min**.
+
+1. **State:** `dp[i]` = the cheapest total toll to **arrive at** position `i`, where positions run from 0 to `n` and position `n` is the top.
+2. **Last decision:** you arrived at `i` by one step from `i − 1` (paying `cost[i − 1]`, the step you stood on) or two from `i − 2` (paying `cost[i − 2]`): `dp[i] = min(dp[i − 1] + cost[i − 1], dp[i − 2] + cost[i − 2])`.
+3. **Base cases:** `dp[0] = dp[1] = 0` — starting on either is free.
+4. **Order:** `i` from 2 to `n`.
+5. **Answer:** `dp[n]`, the top — **not** `dp[n − 1]`, the last step.
+
+<Figure caption="LeetCode’s second example. cost = [1, 100, 1, 1, 1, 100, 1, 1, 100, 1]; the table has n + 1 = 11 cells, and the answer is the last one, dp[10] = 6. The cheapest climb stands on steps 0, 2, 4, 6, 7 and 9 and pays 1 at each, stepping over every 100.">
+  <ArrayStrip name="cost" values={[1, 100, 1, 1, 1, 100, 1, 1, 100, 1]} tones={{ 0: 'blue', 2: 'blue', 4: 'blue', 6: 'blue', 7: 'blue', 9: 'blue' }} />
+  <ArrayStrip name="dp" values={[0, 0, 1, 2, 2, 3, 3, 4, 4, 5, 6]} pointers={[{ at: 10, label: 'top = answer' }]} tones={{ 0: 'done', 1: 'done', 10: 'hot' }} />
+</Figure>
+
+<Trace title="Pay for the step you stand on" steps={minCost} takeaway="Remember: dp[i] = min(dp[i − 1] + cost[i − 1], dp[i − 2] + cost[i − 2]); the top is position n, past the last step." />
+
+**Why it works:** any climb to `i` ends with a single or a double step, and what it paid before that last move is the cost of a climb to `i − 1` or `i − 2`. The cheapest climb to `i` must use the cheapest climb to wherever it came from — swapping in a cheaper prefix could only lower the total. That is optimal substructure in one sentence.
+
+**What stays true:** before iteration `i`, every `dp[0..i − 1]` is the true minimum for its position.
+
+<Reveal q="Counting needed disjoint cases. Does min?">
+
+No. If two last moves led to the same climb, `min` would see the same cost twice and still pick correctly. **Optimisation and feasibility forgive overlap; counting does not.** That is why Chapter 1 had to argue “the last move differs, so the groups are disjoint”, and this chapter only needs “the cases cover every climb”.
+
+</Reveal>
+
+<HintLadder hints={hints.minCost}>
+
+```java id=minCostClimbingStairs
+public int minCostClimbingStairs(int[] cost) {
+    int n = cost.length;
+    int[] dp = new int[n + 1];                       // dp[i] = cheapest way to arrive at position i
+    dp[0] = 0;                                       // you may start on step 0...
+    dp[1] = 0;                                       // ...or on step 1, for free
+    for (int i = 2; i <= n; i++)
+        dp[i] = Math.min(dp[i - 1] + cost[i - 1],    // one step up from i-1, paying for i-1
+                         dp[i - 2] + cost[i - 2]);   // two steps up from i-2, paying for i-2
+    return dp[n];                                    // the top is position n, past the last step
+}
+```
+
+**O(n) time, O(n) space** as written; the loop reads only the last two cells, so two variables give **O(1)** exactly as in Chapter 1. Tolls are at most 999 and there are at most 1000 steps, so totals stay far inside `int`.
+
+</HintLadder>
+
+**Catch the bug:** `return dp[n - 1]` treats the last step as the top. On `[10, 15, 20]` it returns 10 — the price of arriving on the last step, before paying its toll and stepping off — instead of 15 (start on step 1, pay 15, double-step to the top). [Solve Min Cost Climbing Stairs](https://leetcode.com/problems/min-cost-climbing-stairs/).
+
+<h2 id="house-robber">Chapter 3 · The almoner’s round</h2>
+
+<Scene chapter="Chapter 3" title="The almoner’s round" mood="dusk">
+
+Below the monastery runs Lantern Row, a single line of houses. Each evening Brother Almoner collects alms, and each house has promised a different amount. Custom forbids one thing: **never knock at two neighbouring doors on the same night.** Neighbours compare notes, and nobody likes to feel pursued.
+
+The almoner has a habit of knocking at every other door, starting with the first. Tonight the purses are 2, 1, 1 and 2, and his habit brings home 3.
+
+The Keeper unrolls a scroll on the doorstep of the last house. *"Forget the habit. Stand at this door and decide only this door. If you knock, what do you already know? If you don’t?"*
+
+</Scene>
+
+**Problem: House Robber · take or skip, optimisation**
+
+(LeetCode tells it with a burglar and an alarm. Same rule: no two adjacent houses.)
+
+1. **State:** `dp[i]` = the most alms from **the first `i` houses** (houses `0..i − 1`).
+2. **Last decision:** about house `i − 1`. **Knock:** you get `nums[i − 1]`, and house `i − 2` is off-limits, so the rest comes from the first `i − 2` houses: `nums[i − 1] + dp[i − 2]`. **Skip:** the best of the first `i − 1` houses, `dp[i − 1]`. Take the larger.
+3. **Base cases:** `dp[0] = 0` (no houses), `dp[1] = nums[0]`.
+4. **Order:** left to right.
+5. **Answer:** `dp[n]`.
+
+Notice the convention: **`dp` has n + 1 cells and `dp[i]` covers a prefix of length `i`**, so `dp[0]` is the empty street and no index ever goes negative. It is the same trick as the zero line on top of a prefix-sum ledger.
+
+<Figure caption="[2, 7, 9, 3, 1]. dp[3] = max(knock house 2: 9 + dp[1] = 9 + 2 = 11, skip: dp[2] = 7) = 11. The last cell, dp[5] = max(1 + dp[3], dp[4]) = max(12, 11) = 12: houses 0, 2 and 4 (2 + 9 + 1).">
+  <ArrayStrip name="nums" values={[2, 7, 9, 3, 1]} tones={{ 0: 'blue', 2: 'blue', 4: 'blue' }} />
+  <ArrayStrip name="dp" values={[0, 2, 7, 11, 11, 12]} pointers={[{ at: 3, label: 'dp[i − 2]', tone: 'blue' }, { at: 4, label: 'dp[i − 1]', tone: 'blue' }, { at: 5, label: 'dp[5]' }]} tones={{ 0: 'done', 1: 'done', 2: 'done', 5: 'hot' }} />
+</Figure>
+
+<Trace title="Knock or skip?" steps={robber} takeaway="Remember: dp[i] = max(nums[i − 1] + dp[i − 2], dp[i − 1]). The scroll says what the best prefix earns, not whether its last house was used." />
+
+**Why it works:** the best plan for the first `i` houses either uses house `i − 1` or it doesn’t. If it does, it can’t use house `i − 2`, and the rest of it must be a best plan for the first `i − 2` houses — otherwise swap in a better one. If it doesn’t, it is a best plan for the first `i − 1`. Both are settled scrolls.
+
+**What stays true:** before handling house `i − 1`, `curr = dp[i − 1]` and `prev = dp[i − 2]`, the best totals for the two shorter streets.
+
+<Reveal q="Two greedy habits: ‘every other door’ and ‘biggest purse first’. Do either work?">
+
+Neither. **Every other door** on `[2, 1, 1, 2]` collects 2 + 1 = 3 either way, but houses 0 and 3 give 4. **Biggest first** on `[3, 4, 3]` grabs the 4, which blocks both 3s: total 4, when 3 + 3 = 6. One locally attractive door can cost you two good neighbours. The table tries both options at every door and keeps the better one, which is exactly what greedy can’t afford to do.
+
+</Reveal>
+
+<Reveal q="Does dp[i] mean house i − 1 was robbed?">
+
+No — and this is the most common confusion in state design. `dp[i]` is the best **for the prefix**, whichever way it was achieved. Some people define `rob[i]` = the best plan that *does* use house `i`; that works too, but then the answer is the max over all `rob[i]`, and the recurrence must look back two **or three** houses. Pick the state that makes the last decision simplest — and say it in words before you code.
+
+</Reveal>
+
+<HintLadder hints={hints.robber}>
+
+```java id=rob
+public int rob(int[] nums) {
+    int prev = 0, curr = 0;                          // dp[i-2], dp[i-1]: before the street, both 0
+    for (int x : nums) {                             // x = nums[i-1], the house being decided
+        int next = Math.max(curr, prev + x);         // skip it, or knock on top of dp[i-2]
+        prev = curr;
+        curr = next;
+    }
+    return curr;                                     // dp[n]
+}
+```
+
+**O(n) time, O(1) extra space.** At most 100 houses of at most 400 each: no overflow risk.
+
+</HintLadder>
+
+**Catch the bug:** the every-other-door habit, written as code.
+
+```java fragment
+int even = 0, odd = 0;                       // BUG: assumes the best plan alternates perfectly
+for (int i = 0; i < nums.length; i++) if (i % 2 == 0) even += nums[i]; else odd += nums[i];
+return Math.max(even, odd);                  // [2, 1, 1, 2] → 3, but houses 0 and 3 give 4
+```
+
+The best plan may skip **two** doors in a row. [Solve House Robber](https://leetcode.com/problems/house-robber/).
+
+<h2 id="house-robber-circle">Chapter 4 · The ring of cottages</h2>
+
+<Scene chapter="Chapter 4" title="The ring of cottages" mood="night">
+
+Past Lantern Row, the cottages of the hamlet stand in a ring around the old well. The almoner applies his new scroll to the ring and comes home with a fine total — and a complaint. The first cottage and the last one share a garden wall, and he knocked at both.
+
+He spreads his notes on the table. *"On a straight street they weren’t neighbours. On a ring they are. Do I need a new kind of scroll?"*
+
+The Keeper turns the plan so the well is in the middle. *"In any honest plan for this ring, look at the first cottage and the last. Can both be knocked?"*
+
+</Scene>
+
+**Problem: House Robber II · two runs of House Robber I**
+
+The circle adds one constraint: houses `0` and `n − 1` are neighbours. Here is the key observation: **in every valid plan, at least one of them is skipped.** So every valid plan lives entirely inside one of two straight streets:
+
+- houses `0..n − 2` (the last one skipped), or
+- houses `1..n − 1` (the first one skipped).
+
+Each is Chapter 3 exactly, and neither can contain the forbidden pair. Run both and take the larger. One special case: a single house has no neighbour at all, and both streets would be empty, so return `nums[0]` directly.
+
+<Figure caption="The same purses as Chapter 3, now in a ring. The straight-street answer, 12, knocks at houses 0 and 4 — neighbours on the ring. Without house 4 the best is 11 (2 + 9); without house 0 it is 10 (7 + 3). The ring’s answer is max(11, 10) = 11.">
+  <ArrayStrip name="skip last" values={[2, 7, 9, 3, 1]} regions={[{ from: 0, to: 3, label: 'houses 0..3 → 11', tone: 'blue' }]} tones={{ 0: 'blue', 2: 'blue', 4: 'ghost' }} />
+  <ArrayStrip name="skip first" values={[2, 7, 9, 3, 1]} regions={[{ from: 1, to: 4, label: 'houses 1..4 → 10', tone: 'green' }]} tones={{ 0: 'ghost', 1: 'done', 3: 'done' }} />
+</Figure>
+
+<Trace title="Break the ring" steps={circle} takeaway="Remember: some end of the ring is always skipped, so solve houses 0..n − 2 and houses 1..n − 1 with Chapter 3, and take the max. One house is a special case." />
+
+**Why it works:** every valid plan on the ring skips house 0 or house `n − 1` (or both), so it is a valid plan on one of the two streets. Conversely, every valid plan on either street is valid on the ring, because the street leaves out one end of the forbidden pair. So the best on the ring is the best of the two streets.
+
+**What stays true:** each call to `robLine` sees a straight street, where Chapter 3’s invariant holds unchanged.
+
+<Reveal q="Why not run Chapter 3 once on the whole ring and fix it up if it used both ends?">
+
+Because “fixing up” is a new optimisation problem. If the straight answer used both ends, you would need the best plan without one of them — which is the two-street computation anyway. Splitting first means each sub-problem has the clean structure the recipe needs.
+
+</Reveal>
+
+<HintLadder hints={hints.circle}>
+
+```java id=robCircle
+public int rob(int[] nums) {
+    int n = nums.length;
+    if (n == 1) return nums[0];                      // one cottage: no neighbour to worry about
+    return Math.max(robLine(nums, 0, n - 2),         // leave the last cottage alone
+                    robLine(nums, 1, n - 1));        // or leave the first cottage alone
+}
+
+private int robLine(int[] nums, int lo, int hi) {   // Chapter 3 on nums[lo..hi]
+    int prev = 0, curr = 0;
+    for (int i = lo; i <= hi; i++) {
+        int next = Math.max(curr, prev + nums[i]);
+        prev = curr;
+        curr = next;
+    }
+    return curr;
+}
+```
+
+**O(n) time, O(1) extra space** — two passes of Chapter 3.
+
+</HintLadder>
+
+**Catch the bug:** dropping the `n == 1` check. With one cottage both streets are empty (`0..−1` and `1..0`), so `[7]` returns 0 instead of 7. [Solve House Robber II](https://leetcode.com/problems/house-robber-ii/).
+
+<Part n="Part Two" title="The last piece">
+
+Stand at the end of a prefix and ask what its last piece was. The pieces change — a letter, a coin, a word — and the recipe doesn’t.
+
+</Part>
+
+<h2 id="decode-ways">Chapter 5 · The cipher of digits</h2>
+
+<Scene chapter="Chapter 5" title="The cipher of digits" mood="night">
+
+A courier brings a message for the Abbess in the old monastery cipher: every letter is written as its number, A as 1 through Z as 26, with no gaps between them. Tonight’s slip reads **1 1 1 0 6**.
+
+The copyists argue. Is it 1-1-10-6? 11-10-6? Could the 0 stand alone? Could 06 be F? One of them insists there are four readings and starts writing them out.
+
+The Keeper covers all but the last digit with her hand. *"The last letter used either the last digit, or the last two. When is each one allowed?"*
+
+</Scene>
+
+**Problem: Decode Ways · constrained counting**
+
+Count the ways to cut a digit string into letters 1..26.
+
+1. **State:** `dp[i]` = the number of ways to decode **the first `i` digits**.
+2. **Last decision:** the last letter used one digit or two.
+   - **One digit**, `s[i − 1]`: allowed when it is `'1'..'9'`. Adds `dp[i − 1]`.
+   - **Two digits**, `s[i − 2..i − 1]`: allowed when they form **10 to 26** — which rules out a leading zero. Adds `dp[i − 2]`.
+3. **Base cases:** `dp[0] = 1` — the empty prefix decodes one way (to nothing), so that a valid first letter extends it.
+4. **Order:** `i` from 1 to `n`; the two-digit case needs `i ≥ 2`.
+5. **Answer:** `dp[n]`.
+
+**The zero is the whole problem.** A `'0'` can never be a letter on its own, and can only finish a two-digit letter as **10** or **20**. Learn these by heart — interviewers love them:
+
+| Input | Answer | Why |
+|---|---|---|
+| `"0"` | 0 | 0 alone is no letter |
+| `"06"` | 0 | 0 alone fails; “06” has a leading zero, so it is not 6 |
+| `"10"` | 1 | only J (10); “1, 0” fails on the 0 |
+| `"27"` | 1 | 27 > 26, so only B, G |
+| `"100"` | 0 | J leaves a lone 0; “00” is no letter |
+| `"226"` | 3 | 2-2-6, 22-6, 2-26 |
+| `"11106"` | 2 | 1-1-10-6 and 11-10-6 |
+
+<Figure caption="“11106”. dp[4] = 2: the 0 can’t stand alone, so the last letter must be 10, and dp[4] = dp[2] = 2. dp[5] = 2: the 6 stands alone (dp[4] = 2), but “06” is not a letter. The copyist’s four readings were two too many.">
+  <ArrayStrip name="digits" values={['1', '1', '1', '0', '6']} indices={false} tones={{ 2: 'blue', 3: 'blue' }} regions={[{ from: 2, to: 3, label: '10 = J', tone: 'blue' }]} />
+  <ArrayStrip name="dp" values={[1, 1, 2, 3, 2, 2]} pointers={[{ at: 2, label: 'dp[2]', tone: 'blue' }, { at: 4, label: 'dp[4]' }]} tones={{ 0: 'done', 5: 'hot' }} />
+</Figure>
+
+<Trace title="One digit, two digits, both or neither?" steps={decode} takeaway="Remember: one digit needs 1..9; two digits need 10..26. dp[0] = 1, and a zero can only end a 10 or a 20." />
+
+**Why it works:** every decoding of the first `i` digits ends with a one-digit or a two-digit letter, never both — so the two groups are **disjoint**, and counting by sum is safe. Removing the last letter leaves a decoding of the first `i − 1` or `i − 2` digits, already counted.
+
+**What stays true:** `dp[i]` counts decodings of exactly the first `i` digits, using every one of them. A zero that can’t be absorbed makes `dp[i] = 0`, and that 0 then poisons everything after it — correctly.
+
+<Reveal q="dp[0] = 1 for an empty message seems like cheating. What breaks if it is 0?">
+
+`dp[2]` for `"12"` must be 2 (A-B or L). The two-digit case adds `dp[0]`. If `dp[0] = 0`, the reading “L” is never counted and you get 1. **The empty prefix is the one way to have decoded nothing yet**, the same 1 as Chapter 1’s empty climb.
+
+</Reveal>
+
+<HintLadder hints={hints.decode}>
+
+```java id=numDecodings
+public int numDecodings(String s) {
+    int n = s.length();
+    int[] dp = new int[n + 1];                       // dp[i] = decodings of the first i digits
+    dp[0] = 1;                                       // the empty prefix: one way (decode nothing)
+    for (int i = 1; i <= n; i++) {
+        char one = s.charAt(i - 1);
+        if (one != '0') dp[i] += dp[i - 1];          // last letter used one digit: '1'..'9'
+        if (i >= 2) {
+            int two = (s.charAt(i - 2) - '0') * 10 + (one - '0');
+            if (two >= 10 && two <= 26) dp[i] += dp[i - 2];   // last letter used two digits
+        }
+    }
+    return dp[n];
+}
+```
+
+**O(n) time, O(n) space**, or O(1) with two rolling variables (the loop reads only `dp[i − 1]` and `dp[i − 2]`). LeetCode guarantees the answer fits in a 32-bit integer.
+
+</HintLadder>
+
+**Catch the bug:** testing the two-digit letter with `Integer.parseInt(s.substring(i - 2, i)) <= 26`. On `"06"` the parse gives 6, so the code counts “F” and returns 1 instead of 0. The check is `10 ≤ two ≤ 26`, and the 10 is what forbids the leading zero. [Solve Decode Ways](https://leetcode.com/problems/decode-ways/).
+
+<h2 id="coin-change">Chapter 6 · The offering box</h2>
+
+<Scene chapter="Chapter 6" title="The offering box">
+
+The monastery shop sells candles to pilgrims and gives change from a wooden box with three trays: coins of 1, 3 and 4. The brother at the counter always reaches for the biggest coin that fits. For change of 6 he hands over 4, 1 and 1.
+
+A pilgrim weighs the coins in her palm. *"Two threes would have done,"* she says, and leaves.
+
+The Keeper writes the amounts 0 to 6 across a fresh scroll. *"You don’t know the best first coin. Do you know the best way to make every smaller amount?"*
+
+</Scene>
+
+**Problem: Coin Change · unbounded choice, optimisation**
+
+Fewest coins summing exactly to `amount`, each denomination usable any number of times; −1 if impossible.
+
+1. **State:** `dp[a]` = the fewest coins that sum to exactly `a`.
+2. **Last decision:** the last coin, `c`. Whatever came before it sums to `a − c`, and should itself use the fewest coins: `dp[a] = 1 + min over coins c ≤ a of dp[a − c]`.
+3. **Base cases:** `dp[0] = 0`. Every other cell starts as **“unreachable”**.
+4. **Order:** `a` from 1 to `amount`; every `a − c` is smaller.
+5. **Answer:** `dp[amount]`, or **−1** if it is still unreachable.
+
+**The sentinel for “unreachable” needs care.** Use `amount + 1`: no real answer can need more than `amount` coins (the smallest coin is at least 1), so `amount + 1` behaves like infinity, and adding 1 to it can’t overflow. Using `Integer.MAX_VALUE` instead looks natural and is a trap — see the bug below.
+
+<Figure caption="Coins [1, 3, 4], amount 6. dp[6] = 1 + min(dp[5], dp[3], dp[2]) = 1 + min(2, 1, 2) = 2: the last coin is a 3, after the best way to make 3 (one 3). Greedy’s 4 + 1 + 1 uses three.">
+  <ArrayStrip name="dp" values={[0, 1, 2, 1, 1, 2, 2]} pointers={[{ at: 2, label: '6 − 4', tone: 'blue' }, { at: 3, label: '6 − 3', tone: 'green' }, { at: 5, label: '6 − 1', tone: 'blue' }, { at: 6, label: 'amount' }]} tones={{ 0: 'done', 3: 'done', 6: 'hot' }} />
+</Figure>
+
+<Trace title="Which coin went last?" steps={coins} takeaway="Remember: dp[a] = 1 + min dp[a − c] over coins c ≤ a, with unreachable cells as amount + 1. Unreachable at the end means −1." />
+
+**Why it works:** any best collection for `a` has some last coin `c`; the rest is a collection for `a − c`, and it must be a best one, or swapping it in would beat the best. Trying every `c` covers every possible last coin.
+
+**What stays true:** before computing `dp[a]`, every `dp[0..a − 1]` holds the true minimum, or the sentinel `amount + 1` if that amount can’t be made.
+
+<Reveal q="Greedy works for real currencies. Why not here?">
+
+Systems like 1, 2, 5, 10, 20, 50 are *canonical*: greedy happens to be optimal for them. Arbitrary coin sets aren’t. `[1, 3, 4]` with 6 is the smallest kind of counterexample: greedy takes the 4 and is left with two 1s. The table never commits to a coin; it compares every possible last coin against amounts it has already solved.
+
+</Reveal>
+
+<Reveal q="Does it matter whether the coin loop is outside or inside the amount loop?">
+
+**Not for the minimum**: either order fills every `dp[a]` from final values of smaller amounts. **It matters a lot for counting.** If you count the *number of ways* to make an amount, coins-outside counts each combination once (1+2 and 2+1 are the same), while amounts-outside counts ordered sequences (1+2 and 2+1 differ). That is Coin Change II versus Combination Sum IV, and the <a href={`${BASE}dsa/lessons/dp-2d/`}>2-D DP lesson</a> builds it properly.
+
+</Reveal>
+
+<HintLadder hints={hints.coins}>
+
+```java id=coinChange
+public int coinChange(int[] coins, int amount) {
+    int INF = amount + 1;                            // more coins than any real answer needs
+    int[] dp = new int[amount + 1];
+    Arrays.fill(dp, INF);
+    dp[0] = 0;                                       // zero coins make zero
+    for (int a = 1; a <= amount; a++)
+        for (int c : coins)
+            if (c <= a && dp[a - c] + 1 < dp[a])     // c is the LAST coin; dp[a - c] is final
+                dp[a] = dp[a - c] + 1;
+    return dp[amount] == INF ? -1 : dp[amount];
+}
+```
+
+**O(amount × coins) time, O(amount) space.** With LeetCode’s `amount ≤ 10⁴`, `INF + 1` is tiny. If a cell `a − c` is unreachable, `dp[a − c] + 1 = INF + 1` never wins the comparison, so unreachable amounts stay at `INF`.
+
+</HintLadder>
+
+**Catch the bug:** `Integer.MAX_VALUE` as the sentinel, combined with `Math.min(dp[a], dp[a - c] + 1)`.
+
+```java fragment
+Arrays.fill(dp, Integer.MAX_VALUE);          // BUG: MAX_VALUE + 1 wraps to MIN_VALUE
+for (int a = 1; a <= amount; a++)
+    for (int c : coins) if (c <= a) dp[a] = Math.min(dp[a], dp[a - c] + 1);
+// coins [2], amount 3: dp[1] stays MAX_VALUE, so dp[3] = MAX_VALUE + 1 = -2147483648
+```
+
+The overflowed value is the smallest `int` there is, so it *wins* every `min` and the method returns −2147483648 instead of −1. [Solve Coin Change](https://leetcode.com/problems/coin-change/).
+
+<h2 id="word-break">Chapter 7 · The prayer with no spaces</h2>
+
+<Scene chapter="Chapter 7" title="The prayer with no spaces" mood="dawn">
+
+A tired copyist has written a prayer with no spaces at all: **praysong**. The lexicon on the lectern lists the words the order allows. Among them: *pray*, *prays*, *song*.
+
+The copyist’s method is to read from the left and take the longest word he can find. *Prays* — good. Then *ong*, which is not a word. He declares the prayer corrupt and reaches for the scraper.
+
+The Keeper stops his hand. *"Don’t guess the first word,"* she says. *"For every point in the line, ask: could everything before it be read? Then ask where the last word began."*
+
+</Scene>
+
+**Problem: Word Break · feasibility over prefixes**
+
+Can the string be cut into dictionary words (each usable any number of times)?
+
+1. **State:** `dp[i]` = **true** if the first `i` characters can be split into dictionary words.
+2. **Last decision:** where the last word starts. If it is `s[j..i)`, the rest is the first `j` characters: `dp[i] = OR over j of (dp[j] AND s[j..i) is a word)`.
+3. **Base cases:** `dp[0] = true` — the empty prefix needs no words.
+4. **Order:** `i` from 1 to `n`; every `j` is smaller.
+5. **Answer:** `dp[n]`.
+
+Put the words in a `HashSet` for O(1)-expected lookups, and limit `j` to the last `maxLen` positions: a last word can’t be longer than the longest word in the dictionary.
+
+<Figure caption="“praysong” with words pray, prays, song. dp[4] (pray) and dp[5] (prays) are both true. dp[8] is true because dp[4] is true and s[4..8) = song is a word. Greedy-longest committed to prays at position 5, and nothing from 5 onward is a word.">
+  <ArrayStrip name="s" values={['p', 'r', 'a', 'y', 's', 'o', 'n', 'g']} tones={{ 4: 'blue', 5: 'blue', 6: 'blue', 7: 'blue' }} regions={[{ from: 0, to: 3, label: 'pray', tone: 'green' }, { from: 4, to: 7, label: 'song', tone: 'blue' }]} />
+  <ArrayStrip name="dp" values={['T', 'F', 'F', 'F', 'T', 'T', 'F', 'F', 'T']} pointers={[{ at: 4, label: 'j = 4', tone: 'blue' }, { at: 8, label: 'i = 8' }]} tones={{ 0: 'done', 4: 'done', 5: 'done', 8: 'hot' }} />
+</Figure>
+
+<Trace title="Where did the last word start?" steps={words} takeaway="Remember: dp[i] is true if some j has dp[j] true and s[j..i) in the dictionary. dp[0] = true; greedy word choices can paint you into a corner." />
+
+**Why it works:** a split of the first `i` characters ends with some word `s[j..i)`, and what precedes it is a split of the first `j` characters. Trying every `j` covers every possible last word. OR is forgiving: if two splits both work, true is still just true.
+
+**What stays true:** before computing `dp[i]`, `dp[0..i − 1]` say exactly which prefixes are splittable.
+
+<Reveal q="Greedy longest fails on praysong. Does greedy SHORTEST work?">
+
+No. With words `a`, `abc` and `b`, the string `abc` is one word. Shortest-first takes `a`, then `b`, then is stuck on `c`. **Any greedy cut commits too early.** The table keeps every reachable cut point alive at once, so a bad early word can’t hide a good one.
+
+</Reveal>
+
+<Reveal q="What if the question asked for every possible sentence, not just yes or no?">
+
+That is Word Break II, and the output itself can be exponential — a string of 20 `a`s with words `a` and `aa` has 10,946 sentences. A table can’t print them faster than they exist. Use backtracking, pruned by this chapter’s `dp` (never start a word at a position from which the rest can’t be finished).
+
+</Reveal>
+
+<HintLadder hints={hints.words}>
+
+```java id=wordBreak
+public boolean wordBreak(String s, List<String> wordDict) {
+    Set<String> words = new HashSet<>(wordDict);
+    int maxLen = 0;
+    for (String w : wordDict) maxLen = Math.max(maxLen, w.length());
+    int n = s.length();
+    boolean[] dp = new boolean[n + 1];               // dp[i]: the first i characters split cleanly
+    dp[0] = true;                                    // the empty prefix needs no words
+    for (int i = 1; i <= n; i++)
+        for (int j = i - 1; j >= Math.max(0, i - maxLen) && !dp[i]; j--)
+            dp[i] = dp[j] && words.contains(s.substring(j, i));   // last word is s[j..i)
+    return dp[n];
+}
+```
+
+**O(n × L²) time** with `L` the longest word: up to `L` start positions per `i`, each making an O(L) substring and hash. Without the `maxLen` limit it is O(n³). **O(n + total dictionary size) space.**
+
+</HintLadder>
+
+**Catch the bug:** greedy longest-match, which feels like reading. On `"praysong"` it takes *prays* and strands *ong*, returning false. [Solve Word Break](https://leetcode.com/problems/word-break/).
+
+<Part n="Part Three" title="Looking further back">
+
+So far each scroll read one or two scrolls just below it, or a fixed handful. Now the last decision can reach back anywhere — and the state has to remember more.
+
+</Part>
+
+<h2 id="lis">Chapter 8 · The rising bells</h2>
+
+<Scene chapter="Chapter 8" title="The rising bells" mood="dusk">
+
+Along the cloister hangs a row of bells, each tuned by a different founder, in no order at all. On feast days the ringers walk the cloister once, from the first bell to the last, and may strike any bells they like — but each bell struck must sound **higher** than the one before. The ringers want the longest rising peal.
+
+You start to write `dp[i]` = the longest peal among the first `i` bells. Then you stop. To decide whether bell `i` can extend a peal, you need to know the pitch the peal **ended** on, and your scroll doesn’t say.
+
+*"Then write a scroll that does,"* says the Keeper.
+
+</Scene>
+
+**Problem: Longest Increasing Subsequence · O(n²) table, then O(n log n) patience**
+
+A subsequence keeps the original order but may skip elements. Find the length of the longest **strictly** increasing one.
+
+### The O(n²) table: a state that remembers the last pitch
+
+1. **State:** `dp[i]` = the length of the longest increasing subsequence **that ends at index `i`**. This is the key move: the state carries what the next decision needs, the last value.
+2. **Last decision:** what came just before `nums[i]`? Either nothing (`dp[i] = 1`), or some earlier `j` with `nums[j] < nums[i]`, extending the best run that ends there: `dp[i] = 1 + max dp[j]` over those `j`.
+3. **Base cases:** every `dp[i]` starts at 1 — the element alone.
+4. **Order:** `i` left to right; every `j` is smaller.
+5. **Answer:** **the maximum over all `dp[i]`** — not `dp[n − 1]`. The longest run can end anywhere.
+
+<Figure caption="[10, 9, 2, 5, 3, 7, 101, 18]. dp[5] = 3: the 7 extends a length-2 run ending at 5 or at 3. The best is 4, reached at both 101 and 18 — for example 2, 3, 7, 18.">
+  <ArrayStrip name="nums" values={[10, 9, 2, 5, 3, 7, 101, 18]} tones={{ 2: 'blue', 4: 'blue', 5: 'blue', 7: 'blue' }} />
+  <ArrayStrip name="dp" values={[1, 1, 1, 2, 2, 3, 4, 4]} pointers={[{ at: 6, label: 'max' }, { at: 7, label: 'max' }]} tones={{ 6: 'hot', 7: 'hot' }} />
+</Figure>
+
+### The O(n log n) patience shelves
+
+Tails keeps one shelf position per length: **`tails[k]` = the smallest value that ends any increasing subsequence of length `k + 1` seen so far.** A small ending is valuable: it is easier to extend later.
+
+For each new value `x`, find the **first** `k` with `tails[k] ≥ x`:
+
+- if there is none, `x` extends the longest run: append it;
+- otherwise `x` can extend the length-`k` run that ends at `tails[k − 1] < x`, so it ends a run of length `k + 1` with a tail no bigger than the old one: overwrite `tails[k]` with `x`.
+
+The answer is the number of shelves used.
+
+**Why the shelves stay sorted:** any run of length `k + 2` that ends in `t` contains a run of length `k + 1` that ends below `t` (drop its last element). So the smallest length-`(k + 2)` ending is bigger than the smallest length-`(k + 1)` ending: `tails` is **strictly increasing**, always — which is what lets you binary search it.
+
+**And the warning that trips everyone: `tails` is not the subsequence.** On `[3, 4, 1]` the shelves end as `[1, 4]`, but 1 comes after 4 in the input, so `[1, 4]` is no subsequence at all. Only its **length** is the answer. (Recovering an actual LIS needs a parent pointer per element.)
+
+<Figure caption="Tails while reading [10, 9, 2, 5, 3, 7, 101, 18]. The 10, then the 9, then the 2 each take shelf 0 in turn (each is a smaller ending for length 1); the rows start from there. A smaller value replaces the first tail that is ≥ it; a bigger one opens a new shelf. Final length 4. The shelves [2, 3, 7, 18] happen to be a real subsequence here — on [3, 4, 1] they would not be.">
+  <ArrayStrip name="after 2" values={[2]} tones={{ 0: 'hot' }} />
+  <ArrayStrip name="after 5" values={[2, 5]} tones={{ 1: 'hot' }} />
+  <ArrayStrip name="after 3" values={[2, 3]} tones={{ 1: 'hot' }} />
+  <ArrayStrip name="after 7" values={[2, 3, 7]} tones={{ 2: 'hot' }} />
+  <ArrayStrip name="after 101" values={[2, 3, 7, 101]} tones={{ 3: 'hot' }} />
+  <ArrayStrip name="after 18" values={[2, 3, 7, 18]} tones={{ 3: 'hot' }} />
+</Figure>
+
+<Trace title="Shelve the bells" steps={lis} takeaway="Remember: dp[i] ends AT i and the answer is the max; tails[k] is the smallest ending of a length-(k + 1) run, stays strictly increasing, and is not itself the subsequence." />
+
+**Why it works (table):** every increasing subsequence ending at `i` is either `nums[i]` alone or a run ending at some `j < i` with a smaller value, plus `nums[i]`; the best such run is `dp[j]`, settled.
+
+**What stays true (shelves):** after reading a prefix, `tails[k]` is the smallest ending of any length-`(k + 1)` run inside that prefix, `tails` is strictly increasing, and its size is the LIS of the prefix.
+
+<Reveal q="Non-decreasing instead of strictly increasing (7, 7, 7 counts as length 3). What changes?">
+
+In the table: `nums[j] ≤ nums[i]`. On the shelves: search for the first tail **strictly greater** than `x` (an upper bound) instead of the first tail `≥ x`. Then an equal value opens a new shelf rather than overwriting. On `[7, 7, 7, 7]` the strict version answers 1 and the non-decreasing version answers 4.
+
+</Reveal>
+
+<HintLadder hints={hints.lis}>
+
+```java id=lisQuadratic
+public int lengthOfLIS(int[] nums) {
+    int n = nums.length, best = 0;
+    int[] dp = new int[n];                           // dp[i] = longest increasing run ENDING at i
+    for (int i = 0; i < n; i++) {
+        dp[i] = 1;                                   // nums[i] on its own
+        for (int j = 0; j < i; j++)
+            if (nums[j] < nums[i]) dp[i] = Math.max(dp[i], dp[j] + 1);   // extend a run ending at j
+        best = Math.max(best, dp[i]);                // the answer can end anywhere
+    }
+    return best;
+}
+```
+
+**O(n²) time, O(n) space.** Fine for LeetCode’s 2500 elements; the follow-up asks for better.
+
+</HintLadder>
+
+<HintLadder hints={hints.tails}>
+
+```java id=lisTails
+public int lengthOfLIS(int[] nums) {
+    int[] tails = new int[nums.length];              // tails[k] = smallest tail of any length-(k+1) run
+    int size = 0;
+    for (int x : nums) {
+        int lo = 0, hi = size;                       // find the first k with tails[k] >= x
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (tails[mid] < x) lo = mid + 1; else hi = mid;
+        }
+        tails[lo] = x;                               // replace a bigger tail, or open a new shelf
+        if (lo == size) size++;
+    }
+    return size;                                     // tails[0..size) is NOT itself a subsequence
+}
+```
+
+**O(n log n) time, O(n) space.** The binary search is the “first position where the condition flips” search from the <a href={`${BASE}dsa/lessons/binary-search/`}>Binary Search</a> lesson.
+
+</HintLadder>
+
+**Catch the bug:** `return dp[n - 1]` assumes the longest run ends at the last element. On `[1, 3, 2, 0]`, `dp = [1, 2, 2, 1]`: it returns 1 instead of 2. Step 5 of the recipe exists for exactly this. [Solve Longest Increasing Subsequence](https://leetcode.com/problems/longest-increasing-subsequence/).
+
+<h2 id="longest-palindrome">Chapter 9 · The mirror prayer</h2>
+
+<Scene chapter="Chapter 9" title="The mirror prayer" mood="night">
+
+In the oldest book in the library there is a line of letters that some scribe swore contained a mirror prayer — a stretch that reads the same in both directions. Nobody has found the longest one.
+
+A novice has been checking every stretch, start to end, letter by letter. It takes him all night.
+
+Centre, the mirror-reader, does it differently. He puts his finger between two letters, or on one letter, and steps outward: one letter left, one letter right, as long as they match. *"A mirror is a smaller mirror with one more matching pair around it,"* he says. *"So grow it from the middle."*
+
+The Keeper nods at the line. *"Where can a mirror’s middle be?"*
+
+</Scene>
+
+**Problem: Longest Palindromic Substring · expand around every centre**
+
+The overlapping structure is: **`s[i..j]` is a palindrome exactly when `s[i] == s[j]` and `s[i + 1..j − 1]` is one.** You can store that in a 2-D table (below), or use it directly: start at a centre and widen while the ends match.
+
+A palindrome’s centre is **either a letter** (odd length, like `aba`) **or the gap between two letters** (even length, like `abba`). A string of length `n` has `n` letter-centres and `n − 1` gap-centres: **2n − 1 centres**. Forget the gaps and you miss every even palindrome.
+
+<Figure caption="“babad”. From the letter-centre at index 1, Centre widens once (b = b) to “bab”, then stops (index −1 doesn’t exist). The centre at index 2 gives “aba”, equally long; either is a correct answer. Every gap-centre fails at once: no two neighbours match.">
+  <ArrayStrip name="s" values={['b', 'a', 'b', 'a', 'd']} pointers={[{ at: 1, label: 'centre', tone: 'purple' }]} tones={{ 0: 'blue', 1: 'purple', 2: 'blue' }} regions={[{ from: 0, to: 2, label: 'bab', tone: 'gold' }]} />
+</Figure>
+
+<Trace title="Grow the mirror" steps={palindromes} takeaway="Remember: 2n − 1 centres — every letter and every gap. Widen while both ends match; the last matching window is the palindrome." />
+
+**Why it works:** every palindrome has exactly one centre, and widening from that centre finds it (and every shorter palindrome around the same centre) before the first mismatch stops the loop. Trying every centre therefore sees every palindrome’s maximal extent.
+
+**What stays true:** while widening, `s[l + 1..r − 1]` is a palindrome; the loop stops at the first pair that doesn’t match or falls off the string.
+
+**The table alternative.** `pal[i][j] = s[i] == s[j] && (j − i < 2 || pal[i + 1][j − 1])` is a genuine DP — but over **two indexes**, so it costs O(n²) space as well as time. It is worth knowing for its evaluation order (Chapter 10 shows it), and it belongs to the <a href={`${BASE}dsa/lessons/dp-2d/`}>2-D DP lesson</a>. In the interview, lead with centres: same O(n²) time, O(1) space.
+
+<HintLadder hints={hints.longestPal}>
+
+```java id=longestPalindrome
+public String longestPalindrome(String s) {
+    int bestL = 0, bestR = 0;                        // best window s[bestL..bestR], inclusive
+    for (int c = 0; c < s.length(); c++) {
+        int[] odd = expand(s, c, c);                 // centre on a letter: "aba"
+        int[] even = expand(s, c, c + 1);            // centre in the gap after it: "abba"
+        if (odd[1] - odd[0] > bestR - bestL) { bestL = odd[0]; bestR = odd[1]; }
+        if (even[1] - even[0] > bestR - bestL) { bestL = even[0]; bestR = even[1]; }
+    }
+    return s.substring(bestL, bestR + 1);
+}
+
+private int[] expand(String s, int l, int r) {
+    while (l >= 0 && r < s.length() && s.charAt(l) == s.charAt(r)) { l--; r++; }
+    return new int[]{l + 1, r - 1};                  // the last window that still matched
+}
+```
+
+**O(n²) time, O(1) extra space.** LeetCode guarantees at least one character. (Manacher’s algorithm does it in O(n) — see Beyond this page.)
+
+</HintLadder>
+
+**Catch the bug:** expanding only from letters. On `"cbbd"` the only palindromes are single letters and `bb`, whose centre is the gap between the two b’s; the letter-only version returns `"c"` instead of `"bb"`. [Solve Longest Palindromic Substring](https://leetcode.com/problems/longest-palindromic-substring/).
+
+<h2 id="palindromic-substrings">Chapter 10 · Counting the mirrors</h2>
+
+<Scene chapter="Chapter 10" title="Counting the mirrors" mood="dawn">
+
+The librarian is pleased with the longest mirror, and asks for something harder to show off: **how many** mirror stretches does the line contain, counting every position separately? “aaa” alone, she says, has more than you’d think.
+
+Centre doesn’t look worried. Every time his fingers widen and the letters still match, he has found one more mirror. He only has to count the steps instead of remembering the widest.
+
+*"And the novice who wants a table,"* the Keeper adds, *"must tell me which scroll he writes first. His scrolls read the scroll inside them."*
+
+</Scene>
+
+**Problem: Palindromic Substrings · counting with centres**
+
+Same 2n − 1 centres. **Every successful widening is one more palindrome** (the window at that moment is a different substring), so count them.
+
+<Figure caption="“aaa” has 6: letter-centres give 1 (index 0), 2 (index 1: “a”, “aaa”) and 1 (index 2); gap-centres give 1 each (“aa” twice, at different positions). 1 + 2 + 1 + 1 + 1 = 6.">
+  <ArrayStrip name="s" values={['a', 'a', 'a']} pointers={[{ at: 1, label: 'centre 1: 2', tone: 'purple' }]} tones={{ 0: 'blue', 1: 'purple', 2: 'blue' }} regions={[{ from: 0, to: 2, label: 'aaa', tone: 'gold' }]} />
+</Figure>
+
+<Trace title="Count every widening" steps={countPal} takeaway="Remember: each successful widening is one palindrome. In the table version, pal[i][j] reads pal[i + 1][j − 1], so i must run downwards." />
+
+**Why it works:** each palindromic substring has exactly one centre, and is found exactly once, at the widening step that reaches its ends. So the count is exact, with no double counting — which, for a counting problem, is the thing you must argue.
+
+**The table version and its evaluation order.** With `pal[i][j]` as above, `pal[i][j]` reads `pal[i + 1][j − 1]` — a row **below** `i`. So rows must be filled from `i = n − 1` down to `i = 0` (or by increasing length). This is step 4 of the recipe with teeth: fill top-down and `pal[i + 1][j − 1]` is still `false` when you read it, so every palindrome longer than 2 is missed.
+
+<HintLadder hints={hints.countPal}>
+
+```java id=countSubstrings
+public int countSubstrings(String s) {
+    int count = 0;
+    for (int c = 0; c < s.length(); c++) {
+        count += expandCount(s, c, c);               // odd lengths, centred on letter c
+        count += expandCount(s, c, c + 1);           // even lengths, centred after letter c
+    }
+    return count;
+}
+
+private int expandCount(String s, int l, int r) {
+    int found = 0;
+    while (l >= 0 && r < s.length() && s.charAt(l) == s.charAt(r)) { found++; l--; r++; }
+    return found;                                    // every successful widening is one palindrome
+}
+```
+
+The 2-D table, for comparison (O(n²) time **and** space):
+
+```java id=countSubstringsTable
+public int countSubstrings(String s) {
+    int n = s.length(), count = 0;
+    boolean[][] pal = new boolean[n][n];             // pal[i][j]: is s[i..j] a palindrome?
+    for (int i = n - 1; i >= 0; i--)                 // i DOWNWARD: row i + 1 is ready first
+        for (int j = i; j < n; j++) {
+            pal[i][j] = s.charAt(i) == s.charAt(j) && (j - i < 2 || pal[i + 1][j - 1]);
+            if (pal[i][j]) count++;
+        }
+    return count;
+}
+```
+
+**Centres: O(n²) time, O(1) space. Table: O(n²) time, O(n²) space.** The answer is at most n(n + 1)/2 ≈ 500,000 for LeetCode’s 1000 letters: an `int` is plenty.
+
+</HintLadder>
+
+**Catch the bug:** filling the table with `i` going **up**. On `"abba"` the cell for the whole word reads `pal[1][2]` (the inner `bb`) before it has been written, so it counts 5 instead of 6. [Solve Palindromic Substrings](https://leetcode.com/problems/palindromic-substrings/).
+
+<Part n="Part Four" title="The Keeper changes one rule">
+
+Side quests. Same recipe, one rule different. This is where memorised problems break and the five steps don’t.
+
+</Part>
+
+<Scene title="Scrolls with one line crossed out" mood="night">
+
+The night you finish the mirrors, there is a stack of scrolls on your desk. Each is a problem you’ve already solved, with one rule struck through in red and a new rule written above it in the Keeper’s small, careful hand.
+
+*"Anyone can copy a scroll,"* says the note on top. *"Show me you can write the first line of a new one: what does `dp` mean?"*
+
+</Scene>
+
+<h2 id="delete-and-earn">Side quest 1 · Delete and earn</h2>
+
+**The scroll says:** you are given numbers. Pick any number `x` and earn `x` points — but every copy of `x − 1` and `x + 1` is then destroyed. Repeat while numbers remain. Maximise the points.
+
+**The reasoning:** if you take one `x`, you may as well take **every** copy of `x` — its neighbours are already destroyed, and the other copies harm nothing. So collapse each value into one “house” worth `x × count(x)`, line the houses up by value, and the rule “taking `x` destroys `x − 1` and `x + 1`” becomes **“no two adjacent houses”**. That is Chapter 3, over values `0..max`.
+
+<Figure caption="[2, 2, 3, 3, 3, 4] becomes houses by value: earn[2] = 4, earn[3] = 9, earn[4] = 4. House Robber on [0, 0, 4, 9, 4] picks the 9 (all three 3s) for 9; the alternative, 2s and 4s, gives 8.">
+  <ArrayStrip name="earn[v]" values={[0, 0, 4, 9, 4]} tones={{ 3: 'hot', 2: 'out', 4: 'out' }} />
+</Figure>
+
+<Reveal q="Why is it safe to take all copies of x at once?">
+
+Taking one `x` destroys every `x − 1` and `x + 1`, and the remaining copies of `x` are not destroyed by anything except picking `x ± 1`, which no longer exist. So taking them all only adds points and changes no other option. Once that is clear, the order of moves doesn’t matter — only the **set of values** taken, which must contain no two consecutive values.
+
+</Reveal>
+
+<HintLadder hints={hints.earn}>
+
+```java id=deleteAndEarn
+public int deleteAndEarn(int[] nums) {
+    int max = 0;
+    for (int x : nums) max = Math.max(max, x);
+    int[] earn = new int[max + 1];                   // earn[v] = v × (copies of v): one "house" per value
+    for (int x : nums) earn[x] += x;
+    int prev = 0, curr = 0;                          // House Robber over values 0..max
+    for (int v = 0; v <= max; v++) {
+        int next = Math.max(curr, prev + earn[v]);   // take every v (so no v − 1), or skip v
+        prev = curr;
+        curr = next;
+    }
+    return curr;
+}
+```
+
+**O(n + max) time, O(max) space.** Values are at most 10⁴, so the bucket array is small; with huge sparse values, sort the distinct values and treat a gap of more than 1 as “not adjacent”.
+
+</HintLadder>
+
+**Transfer test:** the reduction worked because destruction reached exactly `x ± 1`. What if taking `x` destroyed `x ± 2` instead? (Odd and even values no longer interact at all: split the values into the two parity chains and run House Robber on each, stepping by 2.) [Solve Delete and Earn](https://leetcode.com/problems/delete-and-earn/).
+
+<h2 id="perfect-squares">Side quest 2 · Squares only</h2>
+
+**The scroll says:** what is the fewest perfect squares (1, 4, 9, 16, …) that sum to `n`?
+
+**The reasoning:** this is Chapter 6 with the coins replaced by every square up to `n`. `dp[a] = 1 + min dp[a − r²]` over `r² ≤ a`, `dp[0] = 0`. And because 1 is a square, **every amount is reachable** — so instead of a sentinel, start each cell at `a` (all ones), a true upper bound.
+
+<Reveal q="Greedy: take the biggest square that fits. Does it work for 12?">
+
+Greedy takes 9 and is left with 3 = 1 + 1 + 1: **four** squares. The table finds 4 + 4 + 4: **three**. Same lesson as the offering box — no coin system is safe for greedy unless it is proven so.
+
+</Reveal>
+
+<HintLadder hints={hints.squares}>
+
+```java id=numSquares
+public int numSquares(int n) {
+    int[] dp = new int[n + 1];                       // dp[a] = fewest squares summing to a
+    for (int a = 1; a <= n; a++) {
+        dp[a] = a;                                   // worst case: 1 + 1 + ... + 1, always possible
+        for (int r = 1; r * r <= a; r++)
+            dp[a] = Math.min(dp[a], dp[a - r * r] + 1);   // r² is the last square
+    }
+    return dp[n];
+}
+```
+
+**O(n √n) time, O(n) space.** (Lagrange’s four-square theorem says the answer is never more than 4 — a fact, not a method.)
+
+</HintLadder>
+
+**Transfer test:** count the **number of ways** to write `n` as a sum of squares, where order doesn’t matter. Which chapter’s Reveal tells you which loop goes outside? (Squares outside, amounts inside: combinations, as in Coin Change II.) [Solve Perfect Squares](https://leetcode.com/problems/perfect-squares/).
+
+<h2 id="partition-preview">Side quest 3 · Each coin only once</h2>
+
+**The scroll says:** can the numbers be split into two groups with equal sums? Each number goes in exactly one group.
+
+**The reasoning:** the two groups have equal sums exactly when one of them sums to `total / 2` (so an odd total is an instant no). That is Chapter 6’s amount table with booleans — `can[s]` = “some subset of the numbers seen so far sums to `s`” — with one new rule: **each number may be used at most once.** This is the 0/1 knapsack, a 2-D problem (numbers × sums) compressed into one row; the <a href={`${BASE}dsa/lessons/dp-2d/`}>2-D DP lesson</a> builds the full table.
+
+The compression has one trap: **the inner loop must run backwards**, from `target` down to `x`. Reading `can[s − x]` must mean “reachable **without** this `x`”. Going backwards, `can[s − x]` hasn’t been touched yet this round, so it still holds last round’s value. Going forwards, it may already have been set **by this same `x`**, which silently uses `x` twice.
+
+<Figure caption="[1, 2, 5], target 4. No subset sums to 4, so the answer is false. Forwards, the very first number already breaks it: with x = 1, can[1] becomes true, then can[2] reads the fresh can[1], can[3] reads can[2], can[4] reads can[3] — four uses of a single 1.">
+  <ArrayStrip name="forwards, x = 1" values={['T', 'T', 'T', 'T', 'T']} tones={{ 2: 'out', 3: 'out', 4: 'out' }} />
+  <ArrayStrip name="backwards, x = 1" values={['T', 'T', 'F', 'F', 'F']} tones={{ 1: 'done' }} />
+</Figure>
+
+<HintLadder hints={hints.partition}>
+
+```java id=canPartition
+public boolean canPartition(int[] nums) {
+    int total = 0;
+    for (int x : nums) total += x;
+    if (total % 2 != 0) return false;                // an odd total can't split evenly
+    int target = total / 2;
+    boolean[] can = new boolean[target + 1];         // can[s]: some subset of the numbers so far sums to s
+    can[0] = true;                                   // the empty subset
+    for (int x : nums)
+        for (int s = target; s >= x; s--)            // BACKWARDS: can[s - x] is still last round's value
+            can[s] = can[s] || can[s - x];
+    return can[target];
+}
+```
+
+**O(n × total) time, O(total) space.** This is *pseudo-polynomial*: fast because LeetCode keeps the total at most 200 × 100 = 20,000.
+
+</HintLadder>
+
+**Transfer test:** flip the loop to run forwards. Which problem from this book have you just solved instead? (Unlimited copies of each number: Chapter 6’s unbounded choice, as a yes/no question.) [Solve Partition Equal Subset Sum](https://leetcode.com/problems/partition-equal-subset-sum/).
+
+<h2 id="count-lis">Side quest 4 · How many longest?</h2>
+
+**The scroll says:** not the length of the longest rising peal — the **number** of different longest peals (different sets of positions).
+
+**The reasoning:** keep Chapter 8’s `len[i]` (longest run ending at `i`) and add `cnt[i]` = how many runs ending at `i` reach that length. When an earlier `j` (with `nums[j] < nums[i]`) gives a **longer** run, it replaces: `cnt[i] = cnt[j]`. When it gives an **equal** run, it adds: `cnt[i] += cnt[j]`. At the end, sum `cnt[i]` over every `i` whose `len[i]` is the overall maximum.
+
+<Reveal q="[1, 3, 5, 4, 7]: what are len, cnt and the answer?">
+
+`len = [1, 2, 3, 3, 4]` and `cnt = [1, 1, 1, 1, 2]`. The 7 can extend a length-3 run ending at 5 **or** at 4: two ways of equal length, so `cnt = 1 + 1 = 2`. The answer is **2**: 1-3-5-7 and 1-3-4-7. The shelves of Chapter 8 can’t do this — they keep one tail per length and throw away how many runs reached it.
+
+</Reveal>
+
+<HintLadder hints={hints.countLis}>
+
+```java id=findNumberOfLIS
+public int findNumberOfLIS(int[] nums) {
+    int n = nums.length, bestLen = 0, total = 0;
+    int[] len = new int[n], cnt = new int[n];        // longest run ending at i, and how many reach it
+    for (int i = 0; i < n; i++) {
+        len[i] = 1; cnt[i] = 1;
+        for (int j = 0; j < i; j++) {
+            if (nums[j] >= nums[i]) continue;
+            if (len[j] + 1 > len[i]) { len[i] = len[j] + 1; cnt[i] = cnt[j]; }   // longer: replace
+            else if (len[j] + 1 == len[i]) cnt[i] += cnt[j];                    // tie: add
+        }
+        if (len[i] > bestLen) { bestLen = len[i]; total = cnt[i]; }
+        else if (len[i] == bestLen) total += cnt[i];
+    }
+    return total;
+}
+```
+
+**O(n²) time, O(n) space.** LeetCode promises the answer fits in a 32-bit integer.
+
+</HintLadder>
+
+**Transfer test:** on `[2, 2, 2, 2, 2]` the answer is 5. Why does a strictly-increasing rule make every single element its own longest run? [Solve Number of Longest Increasing Subsequence](https://leetcode.com/problems/number-of-longest-increasing-subsequence/).
+
+<h2 id="k-steps">Side quest 5 · Up to k steps at a time</h2>
+
+**The scroll says:** the pilgrim from Chapter 1 has longer legs. Moves of 1, 2, …, up to `k` steps are allowed.
+
+**The reasoning:** the last move is now one of `k` sizes, so `ways[i] = ways[i − 1] + … + ways[i − k]` (skipping negative indexes), with `ways[0] = 1`. Summing `k` scrolls per step is O(n × k). But the sum is a **window** sliding up the rack: add the newest scroll, drop the one that fell out of reach — O(n) total. For `k = 3` with Tribonacci’s own base cases, this is LeetCode’s N-th Tribonacci Number.
+
+<Reveal q="Tribonacci is T(0) = 0, T(1) = T(2) = 1, then the sum of the last three. The k = 3 stairs are 1, 1, 2, 4, 7, 13… Same recurrence — same sequence?">
+
+Same recurrence, **different base cases**, so a shifted sequence: `ways(n) = T(n + 1)`. Tribonacci runs 0, 1, 1, 2, 4, 7, 13, so `ways(0) = T(1) = 1` and `ways(3) = T(4) = 4`. The recurrence says how scrolls relate; **the base cases decide which sequence you get.** Copying a recurrence without its base cases is how two correct-looking solutions disagree.
+
+</Reveal>
+
+<HintLadder hints={hints.kSteps}>
+
+```java id=climbK
+public long climbK(int n, int k) {                   // ways to reach step n with moves of 1..k
+    long[] ways = new long[n + 1];
+    ways[0] = 1;                                     // the empty climb
+    long window = 0;                                 // ways[i-1] + ... + ways[i-k]
+    for (int i = 1; i <= n; i++) {
+        window += ways[i - 1];                       // the newest scroll comes into reach
+        if (i - k - 1 >= 0) window -= ways[i - k - 1];   // the one k + 1 below falls out of reach
+        ways[i] = window;
+    }
+    return ways[n];
+}
+```
+
+```java id=tribonacci
+public int tribonacci(int n) {
+    if (n == 0) return 0;
+    int a = 0, b = 1, c = 1;                         // T(i-3), T(i-2), T(i-1) for i = 3
+    for (int i = 3; i <= n; i++) {
+        int next = a + b + c;
+        a = b; b = c; c = next;
+    }
+    return c;                                        // n = 1 or 2 never enter the loop: T = 1
+}
+```
+
+**O(n) time each; O(n) space for `climbK`, O(1) for Tribonacci.** `T(37) = 2,082,876,103` is the largest LeetCode asks for, and it fits in an `int`.
+
+</HintLadder>
+
+**Transfer test:** some steps are cracked and can’t be stood on. What changes in the recipe? (Their scrolls are written as 0 — and they still have to leave the window correctly.) [Solve N-th Tribonacci Number](https://leetcode.com/problems/n-th-tribonacci-number/).
+
+<h2 id="tickets">Side quest 6 · Passes for the pilgrims</h2>
+
+**The scroll says:** a pilgrim plans to visit on certain days of the year (sorted, between 1 and 365). Passes cost `costs[0]` for 1 day, `costs[1]` for 7 consecutive days, `costs[2]` for 30. What is the cheapest way to cover every visit?
+
+**The reasoning:** let the state run over **calendar days**: `dp[d]` = the cheapest cover for every visit on days `1..d`. On a day with no visit, nothing new is needed: `dp[d] = dp[d − 1]`. On a visit day, look at the **last pass bought** — the one covering day `d`. A 1-day pass covers `d` alone: `dp[d − 1] + costs[0]`. A 7-day pass ending on `d` covers `d − 6..d`: `dp[d − 7] + costs[1]`. A 30-day pass: `dp[d − 30] + costs[2]`. Clamp negative days to 0.
+
+<Reveal q="Isn’t it wrong to assume a 7-day pass ends exactly on day d? Pilgrims buy passes that start on a visit day.">
+
+Shifting a pass later never helps and never hurts once it covers the same visits, so you may picture the last pass as **ending** on `d`. Every visit in `d − 6..d` is covered by it, and everything before `d − 6` must be covered by earlier passes, at cost `dp[d − 7]`. Any real purchase plan maps to one of the three cases, so the minimum over them is exact.
+
+</Reveal>
+
+<HintLadder hints={hints.tickets}>
+
+```java id=mincostTickets
+public int mincostTickets(int[] days, int[] costs) {
+    int last = days[days.length - 1];
+    boolean[] visit = new boolean[last + 1];
+    for (int d : days) visit[d] = true;
+    int[] dp = new int[last + 1];                    // dp[d] = cheapest cover for every visit on days 1..d
+    for (int d = 1; d <= last; d++) {
+        if (!visit[d]) { dp[d] = dp[d - 1]; continue; }      // a quiet day costs nothing
+        dp[d] = Math.min(dp[d - 1] + costs[0],               // last pass: 1 day, covering d
+                Math.min(dp[Math.max(0, d - 7)] + costs[1],  // 7 days, covering d-6..d
+                         dp[Math.max(0, d - 30)] + costs[2]));   // 30 days, covering d-29..d
+    }
+    return dp[last];
+}
+```
+
+**O(last day) time and space**, at most 365. On `[1, 4, 6, 7, 8, 20]` with costs `[2, 7, 15]` the answer is 11: a 1-day pass for day 1, a 7-day pass for days 4..8 (bought on day 2, 3 or 4), and a 1-day pass for day 20.
+
+</HintLadder>
+
+**Transfer test:** the state here is the **day**, not the index of the visit. What would `dp[i]` over visits look like, and why does it need a pointer that skips forward past every visit a pass covers? [Solve Minimum Cost For Tickets](https://leetcode.com/problems/minimum-cost-for-tickets/).
+
+<Part n="Epilogue" title="Beyond the Scriptorium">
+
+When the scrolls are the wrong tool, who lives next door, and the exam that proves you can write a scroll nobody showed you.
+
+</Part>
+
+<h2 id="choose-the-tool">When the scrolls are overkill</h2>
+
+<Scene title="The river of stones" mood="storm">
+
+A storm takes the bridge below Highcairn, and the monks must cross the river on stepping stones. Each stone is marked with how far you can leap from it. Brother Recur begins a scroll for every stone — *can this stone be reached?* — checking every earlier stone against it.
+
+The ferryman on the bank laughs. He walks along the stones once, keeping in his head only the farthest stone anyone could reach so far, and stops the moment he finds a stone beyond it.
+
+The Keeper watches both. *"The scrolls give the right answer,"* she says. *"So does the ferryman. One of them did a hundred times more work. Why is he allowed to forget?"*
+
+</Scene>
+
+A table is the right tool when **choices interact** and the same sub-questions repeat. It is the wrong tool when:
+
+- **One choice is provably always safe.** Jump Game asks only “can I reach the end?” The farthest reachable index, carried forward, already contains everything a table would store — so greedy does it in O(n) where the table is O(n²). Greedy needs a proof; when you can’t find one, the table is the safe fallback.
+- **You must list every solution.** Word Break II, all decodings, all subsets: the output is exponential, so use backtracking (pruned by a feasibility table if you like).
+- **The sub-questions never repeat.** Merge sort, binary search, tree traversals: plain recursion or divide and conquer, no memo needed.
+- **The state is too big.** If the honest state is “which items have I used” over 40 items, that is 2⁴⁰ scrolls. Look for structure (sorting, greedy, meet in the middle) before you write the table.
+
+<Reveal q="Show me both Jump Game solutions, and why the greedy one is safe.">
+
+**Greedy invariant:** before index `i`, `reach` is the farthest index reachable from index 0 using only indexes before `i`. If `i > reach`, nothing can ever cross the gap. Otherwise `i` is reachable, and `i + nums[i]` may extend the reach. The table stores “reachable or not” per index, but every reachable index is ≤ `reach` and every index ≤ `reach` is reachable — so one number holds the whole table.
+
+```java id=canJump
+public boolean canJump(int[] nums) {
+    int reach = 0;                                   // farthest index reachable so far
+    for (int i = 0; i < nums.length; i++) {
+        if (i > reach) return false;                 // a gap nobody can cross
+        reach = Math.max(reach, i + nums[i]);
+    }
+    return true;
+}
+
+public boolean canJumpTable(int[] nums) {           // the DP version: correct, but O(n²)
+    int n = nums.length;
+    boolean[] ok = new boolean[n];                   // ok[i]: index i can be reached
+    ok[0] = true;
+    for (int i = 1; i < n; i++)
+        for (int j = 0; j < i && !ok[i]; j++)
+            ok[i] = ok[j] && j + nums[j] >= i;       // the last jump came from j
+    return ok[n - 1];
+}
+```
+
+</Reveal>
+
+<h2 id="wider-family">The neighbouring houses · How the other roadmap patterns connect</h2>
+
+The Scriptorium shares walls with several other houses in the realm. The shared idea: **name the smaller question, answer it once, build on it.**
+
+| Shared idea | Where it shows up | Where it belongs |
+|---|---|---|
+| Recursion that re-asks the same question | Add a memo to a backtracking search when the state repeats (that is how Word Break gets fast) | <a href={`${BASE}dsa/`}>Backtracking · roadmap</a> |
+| A table over two indexes | LCS, edit distance, unique paths, the full 0/1 knapsack, `pal[i][j]` | <a href={`${BASE}dsa/lessons/dp-2d/`}>2-D Dynamic Programming</a> |
+| Best answer ending here | Maximum Subarray (Kadane): `best[i] = max(nums[i], best[i − 1] + nums[i])` | <a href={`${BASE}dsa/lessons/prefix-sum/`}>Prefix Sum</a> |
+| A sorted table you search | LIS shelves are binary-searched for the first tail ≥ x | <a href={`${BASE}dsa/lessons/binary-search/`}>Binary Search</a> |
+| A window of recent scrolls | k-step stairs keep a running sum of the last k cells | <a href={`${BASE}dsa/lessons/sliding-window/`}>Sliding Window</a> |
+| One safe choice instead of a table | Jump Game, interval scheduling, gas station | <a href={`${BASE}dsa/`}>Greedy · roadmap</a> |
+| Scrolls on a tree | House Robber III: each node returns “best if robbed” and “best if not” | <a href={`${BASE}dsa/`}>Trees (DFS) · roadmap</a> |
+
+**Memoisation is backtracking that remembers.** If a backtracking search ever calls itself twice with the same arguments, and the result depends only on those arguments, cache it — you have just written top-down DP.
+
+**Prefix sums are the simplest DP.** `prefix[i + 1] = prefix[i] + nums[i]` is a one-scroll recurrence with base case 0. Kadane’s algorithm is its optimisation cousin: the best sum of a run ending at `i`.
+
+<h2 id="exit-ticket">The novice’s exam · Build a solution with the labels removed</h2>
+
+<Scene title="No chapter titles" mood="dawn">
+
+On the morning of the exam the Keeper hands you a slate with three problems on it and no chapter names. Above the door, carved in stone, are her three questions.
+
+*"Pick one,"* she says. *"Before you write a line of code, tell me what your scroll means, what the last decision was, and which scroll answers me."*
+
+</Scene>
+
+Choose one. Keep the chapters closed. Write the five steps before the code.
+
+1. **The tiled cloister.** A walkway 2 units wide and `n` long is paved with 2 × 1 slabs (either orientation) and 2 × 2 slabs. How many ways? Test `n = 0, 1, 2, 3`.
+2. **The divisible chain.** Given distinct positive integers, find the size of the largest subset in which, for every pair, one divides the other. Test `[1, 2, 3]`, `[1, 2, 4, 8]`, `[3, 5, 7]`.
+3. **Ordered offerings.** Given distinct coin values and a target, count the **ordered** sequences of coins that sum to the target (1 + 2 and 2 + 1 are different). Test `[1, 2, 3]` with target 4.
+
+<Reveal q="I’ve written and tested it. What should my reasoning contain?">
+
+**The tiled cloister:** `dp[i]` = tilings of length `i`. Last decision at the right end: one vertical 2 × 1 slab (`dp[i − 1]`), two horizontal slabs stacked (`dp[i − 2]`), or one 2 × 2 slab (`dp[i − 2]`). So `dp[i] = dp[i − 1] + 2 × dp[i − 2]`, `dp[0] = dp[1] = 1`: 1, 1, 3, 5, 11. The three last-pieces are disjoint, so the sum is safe.
+
+**The divisible chain:** sort first; then in a valid subset each element divides the next, so it is Chapter 8 with “divides” in place of “less than”: `dp[i]` = the largest chain **ending** at `nums[i]`, extend from any `j < i` with `nums[i] % nums[j] == 0`, answer = max. Answers: 2, 4, 1.
+
+**Ordered offerings:** `dp[a]` = ordered sequences summing to `a`, `dp[0] = 1`. Last coin `c`: `dp[a] = sum of dp[a − c]`. Amounts in the **outer** loop, so every order is counted. For `[1, 2, 3]` and 4: 1, 1, 2, 4, **7**.
+
+Now explain why a slightly wrong version fails one of your tests: `dp[0] = 0`, the max taken from `dp[n − 1]`, the loops swapped. That counterexample is stronger evidence than a memorised template.
+
+</Reveal>
+
+Passing this once is a useful checkpoint. Rebuild one of these on another day, with a changed input and without the headings choosing the pattern for you.
+
+<h2 id="mixed-recall">Quick recall · Keep the rule warm</h2>
+
+Close the code. For each question, name the state, the last decision and the answer cell before you choose.
+
+<Trace title="Which scroll, which tool?" steps={mixedReview} takeaway="Now try the independent session: no pattern title, a new input, and your five steps before the rubric." />
+
+<h2 id="independent-practice">Night scrolls · The problem won’t name its pattern</h2>
+
+The review queue starts with due concepts, then new ones. Hints or corrected attempts bring a concept back tomorrow. Successful recall at a scheduled review stretches the interval to 3, 7, then 14 days. Your reasoning is **self-checked**; nothing here automatically marks a roadmap problem solved.
+
+<Practice pattern="dp-1d" />
+
+<h2 id="cheat-sheet">The Keeper’s scroll notes</h2>
+
+| When you see… | Start with… | The promise to keep |
+|---|---|---|
+| Ways to climb with 1 or 2 steps | `ways[i] = ways[i − 1] + ways[i − 2]`, `ways[0] = ways[1] = 1` | Last move splits climbs into disjoint groups |
+| Cheapest climb, pay per step stood on | `dp[i] = min(dp[i − 1] + cost[i − 1], dp[i − 2] + cost[i − 2])` | The top is position n; answer `dp[n]` |
+| Max sum, no two adjacent | `dp[i] = max(nums[i − 1] + dp[i − 2], dp[i − 1])` | `dp[i]` is the best for the first i, used or not |
+| …in a circle | Max of houses `0..n − 2` and `1..n − 1`; one house alone | Some end is always skipped |
+| Count decodings of digits | One digit if 1..9 adds `dp[i − 1]`; two if 10..26 adds `dp[i − 2]`; `dp[0] = 1` | A zero only ends a 10 or a 20 |
+| Fewest coins for an amount | `dp[a] = 1 + min dp[a − c]`, sentinel `amount + 1`, −1 if unreached | `dp[a − c]` is final before `dp[a]` |
+| Split a string into dictionary words | `dp[i] = OR (dp[j] && word(s[j..i)))`, `dp[0] = true` | Every reachable cut point stays alive |
+| Longest increasing subsequence | `dp[i]` ends at i, answer the max; or tails + binary search | Tails stays strictly increasing; it is not the LIS |
+| Longest palindromic substring | Expand around 2n − 1 centres | Letters and gaps; widen while ends match |
+| Count palindromic substrings | Count every successful widening | Each palindrome has exactly one centre |
+| Take x, lose x ± 1 | Bucket `x × count(x)` by value, then House Robber | Taking one x means taking them all |
+| Fewest squares summing to n | Coin change with squares; start at `dp[a] = a` | 1 is a square: always reachable |
+| Two equal-sum groups, each item once | Boolean `can[s]`, inner loop **backwards** | `can[s − x]` is still last round’s value |
+| Number of longest increasing runs | `len[i]`, `cnt[i]`: longer replaces, equal adds | Sum `cnt` where `len` is max |
+| Up to k steps per move | Running window of the last k scrolls | Same recurrence, base cases pick the sequence |
+| Cheapest passes covering travel days | `dp[d]` over calendar days; the last pass ends on d | Quiet days copy `dp[d − 1]` |
+
+Space is not automatic. The rolling variables work only when the recurrence reads a **fixed** number of recent scrolls (Chapters 1–5, Delete and Earn, k steps). Coin Change, Word Break, LIS and Tickets read back arbitrarily far, so they keep the whole row.
+
+## Five bugs the Keeper keeps in her pocket
+
+1. **The wrong empty base.** Counting starts at `dp[0] = 1` (one way to do nothing); feasibility at `true`; costs at 0. `dp[0] = 0` in a counting problem zeroes everything above it.
+2. **Overflowing the sentinel.** `Integer.MAX_VALUE + 1` wraps negative and wins every `min`. Use `amount + 1`, or skip unreachable cells.
+3. **The answer in the wrong cell.** Min Cost’s top is `dp[n]`, not `dp[n − 1]`; LIS’s answer is the max over all `dp[i]`. Say step 5 aloud before coding.
+4. **Overwrite before use.** Rolling variables need a `next` temporary; a 0/1 knapsack row needs its inner loop backwards. Both bugs read a value that has already been replaced.
+5. **Zero and the two-digit letter.** `"06"` is not F. The two-digit check is `10 ≤ value ≤ 26`, not just `≤ 26`.
+
+## Coming back to the Scriptorium
+
+<Scene title="The Keeper’s last word" mood="dusk">
+
+At the end of the season the Keeper walks you down the stair one last time. Sister Memo’s rack is full. Prev and Curr are trimming their lanterns. Brother Recur, who has finally learned to check the rack before he climbs, waves from step 412.
+
+*"You will forget which problem was which,"* the Keeper says. *"That is fine. Don’t forget the first line of the scroll — what `dp[i]` means, in words. Everything else follows from asking what the last decision was."*
+
+</Scene>
+
+For each chapter, aim to do three things on a fresh input: **say the five steps, explain why the cases are complete (and disjoint, when you count), and code it without the solution open.** If one feels shaky, that is your next short session.
+
+DP is where you’ve said you freeze most — the famous problems memorised, a new one met with a blank page. The cure is mechanical on purpose: **write the state sentence first, then the last decision**, out loud, before any code. A good drill plan: **Climbing Stairs** as a two-minute warm-up narrating all four stages, **House Robber II** or **Decode Ways** as the boss (say every edge case before typing), then one exit-ticket problem cold. Revisit tomorrow and again a few days later, and mix families so the chapter title doesn’t choose the method for you. And keep the habit you are building elsewhere: **state the time and space and the invariant before coding, and narrate the variables at loop exit.**
+
+All **9 problems from your 1-D DP roadmap** are covered above, with six side quests around them. The neighbouring patterns live in their own books: <a href={`${BASE}dsa/lessons/dp-2d/`}>2-D Dynamic Programming</a> for tables over two indexes, <a href={`${BASE}dsa/lessons/binary-search/`}>Binary Search</a> for the search inside LIS, and <a href={`${BASE}dsa/lessons/prefix-sum/`}>Prefix Sum</a> for the simplest recurrence of all. Use the <a href={`${BASE}dsa/`}>full DSA roadmap</a> to continue across patterns.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study** — next reps once the nine above feel calm:
+
+- [Maximum Subarray](https://leetcode.com/problems/maximum-subarray/) — Kadane’s algorithm, the “best ending here” state in its purest form.
+- [Maximum Product Subarray](https://leetcode.com/problems/maximum-product-subarray/) — the state must carry both the largest and the smallest product ending here.
+- [Combination Sum IV](https://leetcode.com/problems/combination-sum-iv/) — exit ticket 3 as a real problem: ordered counting.
+- [Word Break II](https://leetcode.com/problems/word-break-ii/) — when the output is exponential: backtracking pruned by Chapter 7’s table.
+- [House Robber III](https://leetcode.com/problems/house-robber-iii/) — Chapter 3 on a binary tree; each node returns two scrolls.
+- [Russian Doll Envelopes](https://leetcode.com/problems/russian-doll-envelopes/) — LIS shelves in two dimensions, after a clever sort.
+- [Decode Ways II](https://leetcode.com/problems/decode-ways-ii/) — Chapter 5 with wildcards and a modulus.
+- [Dynamic programming (Wikipedia)](https://en.wikipedia.org/wiki/Dynamic_programming) — Bellman’s principle of optimality and the history of the name.
+- [Longest increasing subsequence (cp-algorithms)](https://cp-algorithms.com/sequences/longest_increasing_subsequence.html) — the shelves, with reconstruction of the actual sequence.
+- [Manacher’s algorithm (cp-algorithms)](https://cp-algorithms.com/string/manacher.html) — every palindrome around every centre in O(n).
+
+**Look these up yourself** — real ideas this book didn’t have room for:
+
+- **Reconstructing the solution** — store which choice won in each cell (a parent pointer), then walk back from the answer cell to print the actual plan, not just its value.
+- **Matrix exponentiation** — any fixed linear recurrence (Climbing Stairs, Tribonacci) can be computed in O(log n) by raising a small matrix to a power.
+- **State-machine DP** — Best Time to Buy and Sell Stock with cooldown: several scrolls per day, one per state (holding, sold, resting).
+- **Pseudo-polynomial time** — why the knapsack table is “fast” only when the numbers are small, and why the general problem is NP-hard.
+- **Patience sorting and Dilworth’s theorem** — the card game behind Tails, and why the number of piles equals the LIS.
+- **Bitmask DP** — when the state is a set of up to ~20 items (travelling salesman on small inputs).
+- **Digit DP** — counting numbers up to N with a property, one digit at a time; Decode Ways’ grown-up relative.

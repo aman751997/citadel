@@ -1,150 +1,1557 @@
 ---
 title: 'Heaps / Priority Queue'
-description: 'Top-K with the counterintuitive heap choice, two-heaps for streaming medians, and K-way merge — PriorityQueue mastery in Java.'
+description: 'A novel in eight chapters and six side quests. Join the Wardens of Ringhold, where one guard decides who enters the arena, and learn to keep "who is best right now?" cheap while everything around it changes.'
 order: 8
-minutes: 30
+minutes: 100
+sessionMinutes: 8
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Playground from '../components/Playground.astro';
+import Practice from '../components/Practice.astro';
+import Trace from '../components/Trace.astro';
+import HintLadder from '../components/HintLadder.astro';
+import Reveal from '../components/Reveal.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
 import Mermaid from '../components/Mermaid.astro';
+import { hints } from '../data/heaps/hints.ts';
+import { pyramid, kthLargest, topK, closest, median, windowMedian, mergeK, scheduler, mixedReview } from '../data/heaps/traces.ts';
+import { BASE } from '../paths';
 
-## When this pattern fires
+<PatternHub
+  pattern="heaps"
+  start="prologue"
+  logline="Ringhold's arena seats only the best k fighters of the season, and a single guard decides who gets in. Learn why that guard is the weakest of the chosen, and a small pyramid of plinths will tell you who is best right now, however fast the crowd changes."
+  cast={[
+    { name: 'You', role: 'The newest apprentice of the Wardens’ Guild. At a glance you can see only the top of a pyramid; everything else costs a climb.' },
+    { name: 'The Keeper', role: 'Runs the Guild. Never gives the answer; asks three questions instead.' },
+    { name: 'The Guard', role: 'Stands on the top plinth, the weakest of everyone inside. In code: peek().' },
+    { name: 'Up & Down', role: 'The ushers. Up walks a newcomer upward (sift-up). Down walks a fallen leader downward (sift-down).' },
+    { name: 'Low & High', role: 'The two stands at the Scales. Low holds the smaller half with its biggest on top; High holds the larger half with its smallest on top.' },
+    { name: 'The Herald', role: 'Calls the next fighter out of k sorted tunnels. Only the front of each tunnel competes.' },
+    { name: 'The Bench', role: 'Where a drill rests before it may run again. In code: the cooldown queue.' },
+  ]}
+  parts={[
+    { name: 'Part One · The pyramid', description: 'Build the tool once by hand. Then trust it.', links: [['build-the-pyramid', 'The pyramid of plinths']] },
+    { name: 'Part Two · The door guard', description: 'Keep the best k. The weakest of them guards the door.', links: [['the-door-guard', 'The door guard'], ['top-k-frequent', 'The loudest names'], ['k-closest', 'The flipped gate']] },
+    { name: 'Part Three · Two stands', description: 'The middle lives where two heaps meet.', links: [['running-median', 'The Scales'], ['window-median', 'The ones who leave']] },
+    { name: 'Part Four · Many tunnels, one gate', description: 'Only the fronts compete. Everyone else waits.', links: [['merge-k', 'The herald of k tunnels'], ['task-scheduler', 'The resting bench']] },
+  ]}
+  extensions={[['kth-in-a-stream', 'The gate that never closes'], ['last-stone', 'The smashing ring'], ['reorganize-string', 'No twins side by side'], ['ipo', 'Unlock, then choose'], ['smallest-range', 'One from every tunnel'], ['sorted-matrix', 'The sorted grid']]}
+  extras={[['choose-the-tool', 'When to leave the gate'], ['wider-family', 'The neighbouring guilds'], ['exit-ticket', 'The Wardens’ exam'], ['cheat-sheet', "The Keeper's notebook"]]}
+  note="All 7 roadmap problems, a heap you build by hand, and six side quests that test whether the idea transfers. Read one chapter per sitting; the story keeps your place."
+/>
 
-You need **repeated access to the min or max of a changing collection**: "Kth largest", "top K frequent", "merge K sorted", "running median", "schedule the highest-priority next". Sorting gives order once; a heap gives you the extreme *continuously* as elements come and go — insert and extract in O(log n), peek in O(1).
+<h2 id="prologue">Prologue · The weakest at the door</h2>
 
-Java: `PriorityQueue<T>` is a **min-heap** by default. Max-heap = reversed comparator. Know the three spellings cold:
+<Scene chapter="Prologue" title="The weakest at the door" mood="dawn">
 
-```java
-PriorityQueue<Integer> min = new PriorityQueue<>();
-PriorityQueue<Integer> max = new PriorityQueue<>(Comparator.reverseOrder());
-PriorityQueue<int[]> byField = new PriorityQueue<>((a, b) -> a[1] - b[1]); // careful: overflow-safe → Integer.compare(a[1], b[1])
+Ringhold is a town built around an arena, and once a year its whole life narrows to a single door. Fighters arrive all season, in no particular order, each carrying a score scratched on a wooden tag. The final hall has room for exactly **k** of them.
+
+On your first morning at the Wardens’ Guild, the Keeper walks you to that door. A guard stands on a stone plinth beside it, and every newcomer must face her.
+
+*"She is the weakest of everyone inside,"* the Keeper says.
+
+You frown. Surely the strongest should guard the hall?
+
+*"Think about who a newcomer actually has to beat,"* she says. *"Not the champion. Only the person who would lose their seat. Why would you put anyone else at the door?"*
+
+</Scene>
+
+A **heap** keeps one value within reach at all times: the smallest (a **min-heap**) or the largest (a **max-heap**). Values come and go; the best one is always on top. Java calls it a `PriorityQueue`.
+
+| Operation | Cost | Story |
+|---|---|---|
+| `peek()`: look at the top | O(1) | Glance at the guard |
+| `offer(x)`: add a value | O(log n) | A newcomer climbs to their plinth |
+| `poll()`: remove the top | O(log n) | The guard leaves; someone sinks into place |
+
+Before every move, answer the Keeper’s three questions, adapted for this town:
+
+1. **What is settled?** Who is on top, and why nobody below can beat them.
+2. **Why is this move safe?** Which value may leave, or which swap restores order without breaking anything above it.
+3. **When do I stop?** When the moving value fits, when the gate has no more arrivals, or when only the answer remains.
+
+**When this pattern fires.** You need the min or max of a collection **again and again while it changes**:
+
+- “kth largest”, “top k”, “k closest”: the best k of many.
+- “…from a stream”, “too much data to hold”: keep only k values, O(k) memory.
+- “running median”: two heaps that meet in the middle.
+- “merge k sorted …”: a heap of the k current fronts.
+- “always do the most urgent / most frequent / cheapest thing next”: a heap inside a simulation loop.
+
+The brute force it replaces is re-scanning (O(n) per question) or re-sorting (O(n log n) per question). With 100,000 changes and a question after each, scanning costs about 10¹⁰ steps. A heap costs about 100,000 × log₂ 100,000 ≈ 1.7 million.
+
+<Figure caption="The same min-heap twice. Drawn as a pyramid, every parent is ≤ its children. Stored as an array, row by row: the children of index i sit at 2i + 1 and 2i + 2. So 3, at index 1, rests on 7 and 4 at indexes 3 and 4. Small numbers beside the circles are array indexes.">
+  <svg viewBox="0 0 235 220" width="235" height="220" style="display:block;margin:0 auto" role="img" aria-label="A min-heap drawn as a tree: 1 at the root; 3 and 2 below it; 7, 4, 5, 8 on the bottom row." font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="117.30000000000001" y="16" text-anchor="middle" font-size="12" fill="#9198a1">parent ≤ children, everywhere</text>
+    <line x1="105.4" y1="65.5" x2="72.6" y2="102.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="129.2" y1="65.5" x2="162.0" y2="102.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="53.4" y1="132.5" x2="39.6" y2="163.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="67.9" y1="132.5" x2="81.7" y2="163.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="166.7" y1="132.5" x2="152.9" y2="163.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="181.2" y1="132.5" x2="195.0" y2="163.5" stroke="#4b5563" stroke-width="1.4" />
+    <circle cx="117.3" cy="52" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="117.3" y="57" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">1</text>
+    <text x="139.3" y="40" text-anchor="start" font-size="10" fill="#9198a1">0</text>
+    <circle cx="60.7" cy="116" r="18" fill="#3a2f12" stroke="#e3b341" stroke-width="1.6" />
+    <text x="60.7" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">3</text>
+    <text x="40.7" y="104" text-anchor="end" font-size="10" fill="#9198a1">1</text>
+    <circle cx="174.0" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="174.0" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">2</text>
+    <text x="194.0" y="104" text-anchor="start" font-size="10" fill="#9198a1">2</text>
+    <circle cx="32.3" cy="180" r="18" fill="#12253a" stroke="#58a6ff" stroke-width="1.6" />
+    <text x="32.3" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">7</text>
+    <text x="32.3" y="211" text-anchor="middle" font-size="10" fill="#9198a1">3</text>
+    <circle cx="89.0" cy="180" r="18" fill="#12253a" stroke="#58a6ff" stroke-width="1.6" />
+    <text x="89.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">4</text>
+    <text x="89.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">4</text>
+    <circle cx="145.6" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="145.6" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">5</text>
+    <text x="145.6" y="211" text-anchor="middle" font-size="10" fill="#9198a1">5</text>
+    <circle cx="202.3" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="202.3" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">8</text>
+    <text x="202.3" y="211" text-anchor="middle" font-size="10" fill="#9198a1">6</text>
+  </svg>
+  <ArrayStrip values={[1, 3, 2, 7, 4, 5, 8]} pointers={[{ at: 1, label: 'i = 1' }, { at: 3, label: '2i+1', tone: 'blue' }, { at: 4, label: '2i+2', tone: 'blue' }]} tones={{ 1: 'hot', 3: 'blue', 4: 'blue' }} />
+</Figure>
+
+That is the whole promise: **the best is always on top, and keeping it there costs one walk up or down the pyramid**, about log₂ n steps. The rest of this book is what you can build once “who is best right now?” costs almost nothing.
+
+<h2 id="playground">The practice gate · You make every move</h2>
+
+<Scene title="The training door">
+
+Behind the gatehouse is a practice door with chalk numbers on the floor. Apprentices play the guard here before they are trusted with the real season. Nothing moves unless you move it. When you choose wrong, the Keeper doesn’t scold; she tells you, with the numbers on the board, exactly who you would have wronged.
+
+</Scene>
+
+Three playgrounds: **the door guard** (keep the best k), **sink the root** (sift-down by hand), and **two stands** (the running-median dance). Each has an easy case, a case with repeated values, and a tiny or empty one. Say the reason **before** you press the button.
+
+<Playground lab="heaps" />
+
+<Part n="Part One" title="The pyramid">
+
+Before you trust a tool, build it once by hand.
+
+</Part>
+
+<h2 id="build-the-pyramid">Chapter 1 · The pyramid of plinths</h2>
+
+<Scene chapter="Chapter 1" title="The pyramid of plinths" mood="night">
+
+Inside the gatehouse stands a pyramid of stone plinths: one at the top, two beneath it, four beneath those, each row filled left to right before the next begins. The wardens number the plinths row by row, starting from 0 at the top.
+
+One rule is carved into the base: **nobody may stand above someone weaker than themselves.** So the weakest person in the pyramid always ends up on top.
+
+Two ushers keep the rule. Up walks newcomers upward; Down walks people downward. A newcomer always takes the next empty plinth at the bottom.
+
+*"Here is a newcomer with tag 0,"* says the Keeper, *"and plinths 0 to 6 are full. How many people must move to keep the rule? All of them, or just a few?"*
+
+</Scene>
+
+**Problem: build a min-heap · array layout, sift-up, sift-down**
+
+A heap is a **complete binary tree**: every row is full except perhaps the last, which fills from the left. No gaps means no pointers: number the seats row by row and store them in an array.
+
+- The **parent** of index i is `(i - 1) / 2` (integer division).
+- The **children** of index i are `2i + 1` and `2i + 2`, when those are less than the size.
+- Indexes from `n / 2` to `n - 1` are **leaves**. The height is ⌊log₂ n⌋.
+
+The **heap rule** is only vertical: every parent ≤ its children. Siblings and cousins are in no particular order. That is why the root is the minimum, and also why the array is **not** sorted: `[1, 3, 2, 7, 4, 5, 8]` is a perfectly good heap.
+
+**Push (Up’s job).** Put the value in the next free seat, index `size`, so the tree stays complete. Then, while it is smaller than its parent, swap them.
+
+<Figure caption="Pushing 0 into [1, 3, 2, 7, 4, 5, 8]. It lands at index 7, whose parent is (7 − 1) / 2 = 3. It climbs past 7, 3 and 1: three swaps, one per row. Result: [0, 1, 2, 3, 4, 5, 8, 7].">
+  <svg viewBox="0 0 928 284" width="928" height="284" style="display:block;margin:0 auto" role="img" aria-label="push 0: it takes seat 7, then climbs past 7, 3 and 1 to the root: 0, 1, 2, 3, 4, 5, 8, 7" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="220" y="16" text-anchor="middle" font-size="12" fill="#9198a1">push 0: next free seat (index 7)</text>
+    <line x1="204.5" y1="61.2" x2="127.5" y2="106.8" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="235.5" y1="61.2" x2="312.5" y2="106.8" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="100.4" y1="129.8" x2="69.6" y2="166.2" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="123.6" y1="129.8" x2="154.4" y2="166.2" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="316.4" y1="129.8" x2="285.6" y2="166.2" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="339.6" y1="129.8" x2="370.4" y2="166.2" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="51.0" y1="196.6" x2="38.0" y2="227.4" stroke="#4b5563" stroke-width="1.4" />
+    <circle cx="220.0" cy="52" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="220.0" y="57" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">1</text>
+    <text x="242.0" y="40" text-anchor="start" font-size="10" fill="#9198a1">0</text>
+    <circle cx="112.0" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="112.0" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">3</text>
+    <text x="92.0" y="104" text-anchor="end" font-size="10" fill="#9198a1">1</text>
+    <circle cx="328.0" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="328.0" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">2</text>
+    <text x="348.0" y="104" text-anchor="start" font-size="10" fill="#9198a1">2</text>
+    <circle cx="58.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="58.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">7</text>
+    <text x="38.0" y="168" text-anchor="end" font-size="10" fill="#9198a1">3</text>
+    <circle cx="166.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="166.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">4</text>
+    <text x="166.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">4</text>
+    <circle cx="274.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="274.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">5</text>
+    <text x="274.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">5</text>
+    <circle cx="382.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="382.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">8</text>
+    <text x="382.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">6</text>
+    <circle cx="31.0" cy="244" r="18" fill="#3a2f12" stroke="#e3b341" stroke-width="1.6" />
+    <text x="31.0" y="249" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">0</text>
+    <text x="31.0" y="275" text-anchor="middle" font-size="10" fill="#9198a1">7</text>
+    <text x="464" y="58" text-anchor="middle" font-size="22" fill="#9198a1">→</text>
+    <text x="708" y="16" text-anchor="middle" font-size="12" fill="#9198a1">after climbing: 3 swaps</text>
+    <line x1="692.5" y1="61.2" x2="615.5" y2="106.8" stroke="#e3b341" stroke-width="2.6" />
+    <line x1="723.5" y1="61.2" x2="800.5" y2="106.8" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="588.4" y1="129.8" x2="557.6" y2="166.2" stroke="#e3b341" stroke-width="2.6" />
+    <line x1="611.6" y1="129.8" x2="642.4" y2="166.2" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="804.4" y1="129.8" x2="773.6" y2="166.2" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="827.6" y1="129.8" x2="858.4" y2="166.2" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="539.0" y1="196.6" x2="526.0" y2="227.4" stroke="#e3b341" stroke-width="2.6" />
+    <circle cx="708.0" cy="52" r="18" fill="#3a2f12" stroke="#e3b341" stroke-width="1.6" />
+    <text x="708.0" y="57" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">0</text>
+    <text x="730.0" y="40" text-anchor="start" font-size="10" fill="#9198a1">0</text>
+    <circle cx="600.0" cy="116" r="18" fill="#13301c" stroke="#3fb950" stroke-width="1.6" />
+    <text x="600.0" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">1</text>
+    <text x="580.0" y="104" text-anchor="end" font-size="10" fill="#9198a1">1</text>
+    <circle cx="816.0" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="816.0" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">2</text>
+    <text x="836.0" y="104" text-anchor="start" font-size="10" fill="#9198a1">2</text>
+    <circle cx="546.0" cy="180" r="18" fill="#13301c" stroke="#3fb950" stroke-width="1.6" />
+    <text x="546.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">3</text>
+    <text x="526.0" y="168" text-anchor="end" font-size="10" fill="#9198a1">3</text>
+    <circle cx="654.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="654.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">4</text>
+    <text x="654.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">4</text>
+    <circle cx="762.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="762.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">5</text>
+    <text x="762.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">5</text>
+    <circle cx="870.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="870.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">8</text>
+    <text x="870.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">6</text>
+    <circle cx="519.0" cy="244" r="18" fill="#13301c" stroke="#3fb950" stroke-width="1.6" />
+    <text x="519.0" y="249" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">7</text>
+    <text x="519.0" y="275" text-anchor="middle" font-size="10" fill="#9198a1">7</text>
+  </svg>
+</Figure>
+
+**Pop (Down’s job).** Save the root. Move the **last** value into the root (the tree stays complete), then, while some child is smaller, swap it with the **smaller** child.
+
+<Figure caption="Popping from [1, 2, 3, 4, 5, 6, 7]. 1 leaves; 7 jumps to the root. Its children are 2 and 3, so it swaps with 2; then its children are 4 and 5, so it swaps with 4; then it has no children. Result: [2, 4, 3, 7, 5, 6].">
+  <svg viewBox="0 0 544 220" width="544" height="220" style="display:block;margin:0 auto" role="img" aria-label="pop: 1 leaves, 7 moves to the root and sinks past 2 and 4: 2, 4, 3, 7, 5, 6" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="135.8" y="16" text-anchor="middle" font-size="12" fill="#9198a1">pop: 1 leaves, 7 jumps to the root</text>
+    <line x1="122.9" y1="64.5" x2="82.8" y2="103.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="148.7" y1="64.5" x2="188.8" y2="103.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="61.7" y1="132.0" x2="45.2" y2="164.0" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="78.1" y1="132.0" x2="94.6" y2="164.0" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="193.5" y1="132.0" x2="177.0" y2="164.0" stroke="#4b5563" stroke-width="1.4" />
+    <circle cx="135.8" cy="52" r="18" fill="#3a2f12" stroke="#e3b341" stroke-width="1.6" />
+    <text x="135.8" y="57" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">7</text>
+    <text x="157.8" y="40" text-anchor="start" font-size="10" fill="#9198a1">0</text>
+    <circle cx="69.9" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="69.9" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">2</text>
+    <text x="49.9" y="104" text-anchor="end" font-size="10" fill="#9198a1">1</text>
+    <circle cx="201.7" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="201.7" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">3</text>
+    <text x="221.7" y="104" text-anchor="start" font-size="10" fill="#9198a1">2</text>
+    <circle cx="37.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="37.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">4</text>
+    <text x="37.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">3</text>
+    <circle cx="102.9" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="102.9" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">5</text>
+    <text x="102.9" y="211" text-anchor="middle" font-size="10" fill="#9198a1">4</text>
+    <circle cx="168.8" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="168.8" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">6</text>
+    <text x="168.8" y="211" text-anchor="middle" font-size="10" fill="#9198a1">5</text>
+    <text x="295.6" y="58" text-anchor="middle" font-size="22" fill="#9198a1">→</text>
+    <text x="431.6" y="16" text-anchor="middle" font-size="12" fill="#9198a1">after sinking: 2 swaps</text>
+    <line x1="420.0" y1="65.8" x2="389.2" y2="102.2" stroke="#e3b341" stroke-width="2.6" />
+    <line x1="443.2" y1="65.8" x2="474.0" y2="102.2" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="370.6" y1="132.6" x2="357.6" y2="163.4" stroke="#e3b341" stroke-width="2.6" />
+    <line x1="384.6" y1="132.6" x2="397.6" y2="163.4" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="478.6" y1="132.6" x2="465.6" y2="163.4" stroke="#4b5563" stroke-width="1.4" />
+    <circle cx="431.6" cy="52" r="18" fill="#13301c" stroke="#3fb950" stroke-width="1.6" />
+    <text x="431.6" y="57" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">2</text>
+    <text x="453.6" y="40" text-anchor="start" font-size="10" fill="#9198a1">0</text>
+    <circle cx="377.6" cy="116" r="18" fill="#13301c" stroke="#3fb950" stroke-width="1.6" />
+    <text x="377.6" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">4</text>
+    <text x="357.6" y="104" text-anchor="end" font-size="10" fill="#9198a1">1</text>
+    <circle cx="485.6" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="485.6" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">3</text>
+    <text x="505.6" y="104" text-anchor="start" font-size="10" fill="#9198a1">2</text>
+    <circle cx="350.6" cy="180" r="18" fill="#3a2f12" stroke="#e3b341" stroke-width="1.6" />
+    <text x="350.6" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">7</text>
+    <text x="350.6" y="211" text-anchor="middle" font-size="10" fill="#9198a1">3</text>
+    <circle cx="404.6" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="404.6" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">5</text>
+    <text x="404.6" y="211" text-anchor="middle" font-size="10" fill="#9198a1">4</text>
+    <circle cx="458.6" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="458.6" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">6</text>
+    <text x="458.6" y="211" text-anchor="middle" font-size="10" fill="#9198a1">5</text>
+  </svg>
+</Figure>
+
+<Trace title="Climb or sink?" steps={pyramid} takeaway="Remember: children at 2i + 1 and 2i + 2, parent at (i − 1) / 2. A newcomer climbs while smaller than its parent; a fallen value sinks toward its smaller child." />
+
+**Why it works.** Up: the parent that steps down was already ≤ everything below it, so it is safe in its new seat; the climber that steps up is smaller than that parent, so it is also smaller than its new sibling. Down: the child that rises was the smaller child, so it is ≤ its sibling, and it was smaller than the sinking value, so it is ≤ that too.
+
+**What stays true:** every parent ≤ its children, except at the one value that is moving, and only between it and its neighbours on its path. When it stops, the rule holds everywhere.
+
+**When to stop:** Up stops at the root or when the parent ≤ the value. Down stops when no child is smaller, or there are no children. Each step moves one row, so both are **O(log n)**.
+
+<Reveal q="Why must a sinking value swap with the SMALLER child?">
+
+Try the larger one. In `[7, 2, 3]`, swapping 7 with 3 gives `[3, 2, 7]`: now 3 is the parent of 2, which breaks the rule, and `peek()` says 3 while 2 is inside. Swapping with 2 gives `[2, 7, 3]`, and 2 is ≤ both children. The smaller child is the only one that can sit above the other.
+
+</Reveal>
+
+<Reveal q="Building a heap from n values: pushing them one by one is O(n log n). Why can bottom-up building be O(n)?">
+
+Bottom-up building (often called **heapify**) sinks every parent, starting from the last parent, `n / 2 − 1`, and moving back to the root. Each value sinks at most as far as the height **below** it, and most values live near the bottom:
+
+<Figure caption="Heapify [9, 5, 8, 1, 4, 7, 2]: sink index 2 (8 swaps with 2), then index 1 (5 swaps with 1), then index 0 (9 swaps with 1, then with 4). Four swaps, and four is also the worst case for seven values: 1 × 2 + 2 × 1 + 4 × 0.">
+  <svg viewBox="0 0 657 220" width="657" height="220" style="display:block;margin:0 auto" role="img" aria-label="Bottom-up heapify of 9, 5, 8, 1, 4, 7, 2 gives 1, 4, 2, 5, 9, 7, 8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="112" y="16" text-anchor="middle" font-size="12" fill="#9198a1">any array (7 values)</text>
+    <line x1="100.4" y1="65.8" x2="69.6" y2="102.2" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="123.6" y1="65.8" x2="154.4" y2="102.2" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="51.0" y1="132.6" x2="38.0" y2="163.4" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="65.0" y1="132.6" x2="78.0" y2="163.4" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="159.0" y1="132.6" x2="146.0" y2="163.4" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="173.0" y1="132.6" x2="186.0" y2="163.4" stroke="#4b5563" stroke-width="1.4" />
+    <circle cx="112.0" cy="52" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="112.0" y="57" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">9</text>
+    <text x="134.0" y="40" text-anchor="start" font-size="10" fill="#9198a1">0</text>
+    <circle cx="58.0" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="58.0" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">5</text>
+    <text x="38.0" y="104" text-anchor="end" font-size="10" fill="#9198a1">1</text>
+    <circle cx="166.0" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="166.0" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">8</text>
+    <text x="186.0" y="104" text-anchor="start" font-size="10" fill="#9198a1">2</text>
+    <circle cx="31.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="31.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">1</text>
+    <text x="31.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">3</text>
+    <circle cx="85.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="85.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">4</text>
+    <text x="85.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">4</text>
+    <circle cx="139.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="139.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">7</text>
+    <text x="139.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">5</text>
+    <circle cx="193.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="193.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">2</text>
+    <text x="193.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">6</text>
+    <text x="234" y="56" font-size="11" fill="#9198a1">1 node · sinks ≤ 2</text>
+    <text x="234" y="120" font-size="11" fill="#9198a1">2 nodes · sink ≤ 1</text>
+    <text x="234" y="184" font-size="11" fill="#9198a1">4 leaves · sink 0</text>
+    <text x="398" y="58" text-anchor="middle" font-size="22" fill="#9198a1">→</text>
+    <text x="539.3" y="16" text-anchor="middle" font-size="12" fill="#9198a1">after sinking parents 2, 1, 0</text>
+    <line x1="527.4" y1="65.5" x2="494.6" y2="102.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="551.2" y1="65.5" x2="584.0" y2="102.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="475.4" y1="132.5" x2="461.6" y2="163.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="489.9" y1="132.5" x2="503.7" y2="163.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="588.7" y1="132.5" x2="574.9" y2="163.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="603.2" y1="132.5" x2="617.0" y2="163.5" stroke="#4b5563" stroke-width="1.4" />
+    <circle cx="539.3" cy="52" r="18" fill="#13301c" stroke="#3fb950" stroke-width="1.6" />
+    <text x="539.3" y="57" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">1</text>
+    <text x="561.3" y="40" text-anchor="start" font-size="10" fill="#9198a1">0</text>
+    <circle cx="482.6" cy="116" r="18" fill="#13301c" stroke="#3fb950" stroke-width="1.6" />
+    <text x="482.6" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">4</text>
+    <text x="462.6" y="104" text-anchor="end" font-size="10" fill="#9198a1">1</text>
+    <circle cx="596.0" cy="116" r="18" fill="#13301c" stroke="#3fb950" stroke-width="1.6" />
+    <text x="596.0" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">2</text>
+    <text x="616.0" y="104" text-anchor="start" font-size="10" fill="#9198a1">2</text>
+    <circle cx="454.3" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="454.3" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">5</text>
+    <text x="454.3" y="211" text-anchor="middle" font-size="10" fill="#9198a1">3</text>
+    <circle cx="511.0" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="511.0" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">9</text>
+    <text x="511.0" y="211" text-anchor="middle" font-size="10" fill="#9198a1">4</text>
+    <circle cx="567.6" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="567.6" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">7</text>
+    <text x="567.6" y="211" text-anchor="middle" font-size="10" fill="#9198a1">5</text>
+    <circle cx="624.3" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="624.3" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">8</text>
+    <text x="624.3" y="211" text-anchor="middle" font-size="10" fill="#9198a1">6</text>
+  </svg>
+</Figure>
+
+About half the nodes are leaves (0 swaps), a quarter sink at most 1, an eighth at most 2, and so on: n/4 · 1 + n/8 · 2 + n/16 · 3 + … stays below n. So the total is O(n). Pushing one at a time can be worse: values arriving in decreasing order into a min-heap each climb all the way to the root, giving O(n log n).
+
+</Reveal>
+
+<HintLadder hints={hints.minHeap}>
+
+```java id=minHeap
+class MinHeap {
+    private int[] a = new int[8];
+    private int size = 0;
+
+    public int size() { return size; }
+
+    public int peek() {
+        if (size == 0) throw new NoSuchElementException();
+        return a[0];                                  // the root: smallest of all
+    }
+
+    public void push(int x) {
+        if (size == a.length) a = Arrays.copyOf(a, size * 2);
+        a[size] = x;                                  // take the next free seat...
+        siftUp(size++);                               // ...then climb while smaller than the parent
+    }
+
+    public int pop() {
+        int top = peek();
+        a[0] = a[--size];                             // the last seat's occupant moves to the root...
+        siftDown(0);                                  // ...then sinks below any smaller child
+        return top;
+    }
+
+    // Build from n values in O(n): sink every parent, starting from the last parent.
+    public void buildFrom(int[] values) {
+        a = Arrays.copyOf(values, Math.max(8, values.length));
+        size = values.length;
+        for (int i = size / 2 - 1; i >= 0; i--) siftDown(i);
+    }
+
+    private void siftUp(int i) {
+        while (i > 0) {
+            int parent = (i - 1) / 2;
+            if (a[parent] <= a[i]) return;            // order holds: stop climbing
+            swap(i, parent);
+            i = parent;
+        }
+    }
+
+    private void siftDown(int i) {
+        while (true) {
+            int left = 2 * i + 1, right = left + 1, smallest = i;
+            if (left < size && a[left] < a[smallest]) smallest = left;
+            if (right < size && a[right] < a[smallest]) smallest = right;
+            if (smallest == i) return;                // no child is smaller: stop sinking
+            swap(i, smallest);
+            i = smallest;
+        }
+    }
+
+    private void swap(int i, int j) { int t = a[i]; a[i] = a[j]; a[j] = t; }
+}
 ```
 
-## Form 1 — Top-K (the counterintuitive choice)
+**push and pop: O(log n). peek: O(1). buildFrom: O(n). Space: O(n).** This `pop` throws on an empty heap, like `PriorityQueue.remove()`; `PriorityQueue.poll()` returns `null` instead.
 
-**Kth LARGEST → keep a MIN-heap of size k.** Backwards-feeling, and the exact thing interviewers probe:
+</HintLadder>
 
-```java
-// Kth Largest Element
+**The tool you will actually use.** `java.util.PriorityQueue` is a **min-heap by default**. A max-heap is the same class with a reversed comparator. Know the three spellings cold:
+
+```java id=spellings
+PriorityQueue<Integer> minHeap = new PriorityQueue<>();                          // smallest on top
+PriorityQueue<Integer> maxHeap = new PriorityQueue<>(Comparator.reverseOrder()); // largest on top
+PriorityQueue<int[]> bySecond = new PriorityQueue<>((a, b) -> Integer.compare(a[1], b[1])); // any key you like
+```
+
+| PriorityQueue method | Cost (from the Javadoc) |
+|---|---|
+| `offer`, `add`, `poll`, `remove()` | O(log n) |
+| `peek`, `element`, `size` | O(1) |
+| `remove(Object)`, `contains(Object)` | O(n): it scans the array |
+
+Two Java facts interviewers love:
+
+- **Write comparators with `Integer.compare`, never subtraction.** `(a, b) -> a[1] - b[1]` looks fine until the difference overflows. With 2,000,000,000 and −2,000,000,000, the subtraction wraps to a negative number, and the bigger value lands on top of your min-heap.
+
+```java fragment
+PriorityQueue<int[]> heap = new PriorityQueue<>((a, b) -> a[1] - b[1]); // BUG near ±2^31
+```
+
+- **Iterating a PriorityQueue is not sorted order.** Offer 3, 1, 2 and print it: you get `[1, 3, 2]`, the array layout. Only repeated `poll()` drains in order. Printing a heap while debugging will lie to you.
+
+**Catch the bug:** a sift-down that only ever looks at the **left** child. Pop from `[1, 4, 2, 5, 6, 3]`: 3 moves to the root, sees its left child 4, and stops, so `peek()` says 3 while 2 is still inside. Compare with both children, every time. To practise heap sort with your own heap, try [Sort an Array](https://leetcode.com/problems/sort-an-array/).
+
+<Part n="Part Two" title="The door guard">
+
+Keep the best k. The weakest of them guards the door.
+
+</Part>
+
+<h2 id="the-door-guard">Chapter 2 · The door guard</h2>
+
+<Scene chapter="Chapter 2" title="The door guard" mood="dawn">
+
+The first trial day. Fighters stream toward the arena gate one at a time, each holding up a tag: **3, 2, 1, 5, 6, 4**. This season the final hall seats only two.
+
+The first two walk straight in; there is room. The guard on the plinth is now the 2, the weaker of the pair. Then a fighter with tag 1 steps up, looks past the guard into the hall, and squares her shoulders.
+
+You open your mouth to call the champion over. The Keeper stops you.
+
+*"Who does she need to beat to get a seat?"*
+
+"…Only the guard."
+
+*"And if she can’t beat the guard?"*
+
+</Scene>
+
+**Problem: Kth Largest Element in an Array · Top K with a size-k min-heap**
+
+Here is the move that feels backwards and that interviewers probe: **to find the kth LARGEST, keep a MIN-heap of size k.**
+
+The heap holds the k largest values seen so far. Its root is the **weakest of the elite**: the door guard. Each newcomer either beats the guard (the guard is evicted and the newcomer walks in) or is turned away. When the queue is empty, the guard is the weakest of the k largest, which is exactly the kth largest.
+
+<Figure caption="The door guard at work on [3, 2, 1, 5, 6, 4] with k = 2. The final hall holds 5 and 6, and the guard, 5, is the 2nd largest.">
+  <ArrayStrip name="arrivals" values={[3, 2, 1, 5, 6, 4]} tones={{ 3: 'done', 4: 'done', 0: 'out', 1: 'out', 2: 'out', 5: 'out' }} />
+
+| Arrives | Guard before | Verdict | Inside after (guard first) |
+|---|---|---|---|
+| 3 | none | room left: admit | 3 |
+| 2 | 3 | room left: admit | 2, 3 |
+| 1 | 2 | 1 ≤ 2: turn away | 2, 3 |
+| 5 | 2 | 5 > 2: evict 2, admit 5 | 3, 5 |
+| 6 | 3 | 6 > 3: evict 3, admit 6 | 5, 6 |
+| 4 | 5 | 4 ≤ 5: turn away | 5, 6 |
+
+</Figure>
+
+<Trace title="Beat the guard or bounce" steps={kthLargest} takeaway="Remember: a min-heap of size k. The root is the weakest of the best k: beat it to enter. At the end, the root is the answer." />
+
+**Why it works:** suppose the heap holds the k largest of everything seen so far. A newcomer x that beats the guard g makes g the (k + 1)th largest, so g leaves and x joins. A newcomer with x ≤ g has at least k seen values ahead of it, so it can never be among the k largest. (If x equals g, swapping one for the other changes nothing.)
+
+**What stays true:** after each arrival, the heap holds exactly the k largest values seen so far (or all of them, before k have arrived). The code does “offer, then poll if the size passed k”, which is the same verdict as comparing with the guard first.
+
+Cost: **O(n log k) time and O(k) space.** That space bound is why this beats sorting, and why it works on a **stream** you could never store. Say that word in the interview; it upgrades the answer.
+
+| Approach | Time | Extra space | Works on a stream? |
+|---|---|---|---|
+| Sort, then index | O(n log n) | depends on the sort | no |
+| Max-heap of everything, poll k times | O(n + k log n) with heapify | O(n) | no |
+| **Size-k min-heap (the guard)** | **O(n log k)** | **O(k)** | **yes** |
+| Quickselect ([choose the tool](#choose-the-tool)) | O(n) expected, O(n²) worst | O(1), reorders input | no |
+
+<Reveal q="Why not a max-heap? And what if k is huge, say k = n − 2?">
+
+A max-heap trimmed to size k evicts its **largest** value every time, so it keeps the k **smallest**. On `[3, 2, 1, 5, 6, 4]` with k = 2 it returns 2, not 5. An untrimmed max-heap of everything is correct, but needs O(n) space and fails the “it’s a stream” follow-up.
+
+When k is close to n, flip the question: the kth largest is the (n − k + 1)th **smallest**. With k = n − 2 that is the 3rd smallest, so keep a max-heap of size 3 instead of a min-heap of size n − 2.
+
+</Reveal>
+
+<HintLadder hints={hints.kthLargest}>
+
+```java id=findKthLargest
 public int findKthLargest(int[] nums, int k) {
-    PriorityQueue<Integer> heap = new PriorityQueue<>();   // MIN-heap!
+    PriorityQueue<Integer> heap = new PriorityQueue<>();  // MIN-heap: the guard stands on top
     for (int x : nums) {
         heap.offer(x);
-        if (heap.size() > k) heap.poll();   // evict the smallest of the k
+        if (heap.size() > k) heap.poll();                 // k + 1 inside: the weakest leaves
     }
-    return heap.peek();   // smallest of the k largest = the kth largest
+    return heap.peek();                                   // weakest of the k largest = kth largest
 }
 ```
 
-<Mermaid code={`flowchart LR
-    A["stream: 3 2 1 5 6 4, k=2"] --> B["min-heap holds the\n2 largest so far:\n{3,2}→{3,2}? no: {2,3}→{3,5}→{5,6}"]
-    B --> C["peek = 5 = 2nd largest\nroot guards the door:\nbeat the smallest of the elite\nor you don't get in"]`} />
+**O(n log k) time, O(k) space.** Duplicates count separately: in `[3, 2, 3, 1, 2, 4, 5, 5, 6]`, the 4th largest is 4.
 
-The logic: the heap holds the k best; the **root is the weakest of the elite** — the door guard. A newcomer either beats the guard (guard evicted) or is rejected. O(n log k) time, **O(k) space** — the space bound is why this beats sorting, and why it works on **streams** (say that word; it upgrades the answer).
+</HintLadder>
 
-**Top K Frequent**: count with a HashMap, then same size-k min-heap ordered by frequency. (Mention bucket-sort-by-frequency exists for true O(n) — then use the heap anyway unless pushed.) **K Closest Points**: size-k MAX-heap by distance — flip everything: to keep the k smallest, the guard is the *largest* of the elite. Deriving the flip yourself, out loud, is the rep.
+**Catch the bug:** `new PriorityQueue<>(Comparator.reverseOrder())` in this code returns 2 on `[3, 2, 1, 5, 6, 4]`, k = 2. The guard must be the weakest of the elite, so the heap must be a **min**-heap. [Solve Kth Largest Element in an Array](https://leetcode.com/problems/kth-largest-element-in-an-array/).
 
-## Form 2 — Two Heaps (streaming median)
+<h2 id="top-k-frequent">Chapter 3 · The loudest names</h2>
 
-**Find Median from Data Stream**: split all numbers into a **max-heap `low`** (smaller half — its root is the largest small) and a **min-heap `high`** (larger half — its root is the smallest large). The median lives at the roots.
+<Scene chapter="Chapter 3" title="The loudest names" mood="dusk">
 
-```java
-PriorityQueue<Integer> low = new PriorityQueue<>(Comparator.reverseOrder());
-PriorityQueue<Integer> high = new PriorityQueue<>();
+After the trials the crowd chants names, and a clerk tallies every cheer on a slate: **1, 1, 1, 2, 2, 3**. Fighter 1 was cheered three times, fighter 2 twice, fighter 3 once.
 
-void addNum(int num) {
-    low.offer(num);                 // 1. always enter through low
-    high.offer(low.poll());         // 2. push low's best up — order restored
-    if (high.size() > low.size())   // 3. rebalance: low holds equal or one extra
-        low.offer(high.poll());
-}
-double findMedian() {
-    return low.size() > high.size() ? low.peek()
-         : (low.peek() + high.peek()) / 2.0;
+The Herald must announce the **two** most-cheered fighters. He glances at the gate: the guard is still on her plinth, but the tags in her hand mean nothing now. Fighter 3 has the biggest number on his tag and the quietest crowd.
+
+*"Same door,"* says the Keeper. *"Same guard. What does she measure tonight?"*
+
+</Scene>
+
+**Problem: Top K Frequent Elements · count, then the gate by count**
+
+Two steps. First, **count** with a `HashMap`. Then run Chapter 2’s gate over the distinct values, comparing **counts** instead of values: a min-heap by count, trimmed to size k. The guard is the least frequent of the chosen k, and any more frequent value can evict her.
+
+<Figure caption="Count first. The heap never compares the values 1, 2, 3 against each other, only their counts 3, 2, 1.">
+  <ArrayStrip name="cheers" values={[1, 1, 1, 2, 2, 3]} tones={{ 0: 'hot', 1: 'hot', 2: 'hot', 3: 'blue', 4: 'blue' }} />
+  <ArrayStrip name="value" values={[1, 2, 3]} indices={false} tones={{ 0: 'done', 1: 'done', 2: 'out' }} />
+  <ArrayStrip name="count" values={[3, 2, 1]} indices={false} tones={{ 0: 'done', 1: 'done', 2: 'out' }} />
+</Figure>
+
+<Trace title="What does the guard measure?" steps={topK} takeaway="Remember: count with a map, then keep k values in a min-heap ordered by count. The least frequent of the chosen k guards the door." />
+
+**Why it works:** it is Chapter 2 with a different key. A value counted more often than the guard makes the guard the (k + 1)th most frequent, so she leaves. A value counted no more often than the guard has k values at least as frequent ahead of it. The problem promises the answer is unique, and accepts any order.
+
+**What stays true:** after each distinct value is offered, the heap holds the k most frequent values offered so far, and never more than k entries.
+
+<Reveal q="Counts can never exceed n. Can you avoid the heap entirely?">
+
+Yes: **bucket sort by frequency.** Make buckets 0 to n, put each value into the bucket of its count, then walk from bucket n downward collecting values until you have k. That is O(n) time and O(n) space. Mention it when asked for better than O(n log k), then use the heap anyway unless pushed: the heap version is the one that generalises (a stream, a custom tie-break).
+
+```java id=topKFrequentBuckets
+public int[] topKFrequentBuckets(int[] nums, int k) {
+    Map<Integer, Integer> count = new HashMap<>();
+    for (int x : nums) count.merge(x, 1, Integer::sum);
+    List<List<Integer>> bucket = new ArrayList<>();     // bucket[f] = values seen exactly f times
+    for (int f = 0; f <= nums.length; f++) bucket.add(new ArrayList<>());
+    for (Map.Entry<Integer, Integer> e : count.entrySet()) bucket.get(e.getValue()).add(e.getKey());
+    int[] result = new int[k];
+    int filled = 0;
+    for (int f = nums.length; f >= 1 && filled < k; f--)
+        for (int value : bucket.get(f))
+            if (filled < k) result[filled++] = value;
+    return result;
 }
 ```
 
-The add-then-rebalance dance (through low, top to high, rebalance back) maintains both invariants — **every low ≤ every high** and **sizes within 1** — without any case analysis. Memorize the dance; deriving it live is fumble-prone. (Sliding Window Median adds lazy deletion on top — flag it as the Hard extension, fight it later.)
+</Reveal>
 
-## Form 3 — K-Way Merge
+<HintLadder hints={hints.topK}>
 
-**Merge K Sorted Lists**: min-heap of the k current heads; pop the smallest, append it, push its successor:
+```java id=topKFrequent
+public int[] topKFrequent(int[] nums, int k) {
+    Map<Integer, Integer> count = new HashMap<>();
+    for (int x : nums) count.merge(x, 1, Integer::sum);
+    // MIN-heap by frequency: the least frequent of the chosen k guards the door.
+    PriorityQueue<Integer> heap = new PriorityQueue<>(
+        (a, b) -> Integer.compare(count.get(a), count.get(b)));
+    for (int value : count.keySet()) {
+        heap.offer(value);
+        if (heap.size() > k) heap.poll();
+    }
+    int[] result = new int[k];
+    for (int i = k - 1; i >= 0; i--) result[i] = heap.poll();  // most frequent ends up first
+    return result;
+}
+```
 
-```java
+With u distinct values: **O(n + u log k) time, O(u + k) space.** The lambda reads `count`, which is never reassigned, so Java accepts it.
+
+</HintLadder>
+
+**Catch the bug:** a heap ordered by **value** keeps the k biggest values. On `[1, 1, 1, 2, 2, 3]`, k = 2, it returns 2 and 3, but 1 is the most frequent. Order by `count.get(...)`. [Solve Top K Frequent Elements](https://leetcode.com/problems/top-k-frequent-elements/).
+
+<h2 id="k-closest">Chapter 4 · The flipped gate</h2>
+
+<Scene chapter="Chapter 4" title="The flipped gate" mood="storm">
+
+Wind rattles the flags over the archery yard. The prize tonight goes to the **two** arrows that land closest to the centre stake. Arrows thud into the sand at (3, 3), then (5, −1), then (−2, 4).
+
+You reach for the gate rule: the guard is the weakest of the elite, and the weakest is the smallest… You stop. Tonight, smaller is **better**. A small distance wins.
+
+The Keeper takes the chalk and writes the pyramid’s rule upside down on the board.
+
+*"You keep the closest two. Which one of them is in danger?"*
+
+</Scene>
+
+**Problem: K Closest Points to Origin · the flipped gate (size-k max-heap)**
+
+Flip everything. To keep the k **smallest** distances, the guard must be the **largest** of them: the farthest point still inside. So the heap is a **max-heap** by distance, trimmed to size k. Deriving this flip yourself, out loud, is the rep. Don’t memorise “max for smallest”; ask *who among the chosen is in danger?*
+
+Compare **squared** distances, x² + y². Square root only ever grows as its input grows, so the order is identical, and you avoid floating point entirely.
+
+<Figure caption="(3, 3) at squared distance 18 and (−2, 4) at 20 are inside the dashed circle of squared radius 20. (−2, 4) is the guard: the farthest of the chosen two. (5, −1) at 26 is outside.">
+  <svg viewBox="0 0 490 340" width="490" height="340" style="display:block;margin:0 auto" role="img" aria-label="Three points and the circle of squared radius 20 around the origin. (3, 3) at 18 and (-2, 4) at 20 are inside; (5, -1) at 26 is outside." font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <line x1="80" y1="14" x2="80" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="14" x2="392" y2="14" stroke="#1f262f" stroke-width="1" />
+    <line x1="106" y1="14" x2="106" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="40" x2="392" y2="40" stroke="#1f262f" stroke-width="1" />
+    <line x1="132" y1="14" x2="132" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="66" x2="392" y2="66" stroke="#1f262f" stroke-width="1" />
+    <line x1="158" y1="14" x2="158" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="92" x2="392" y2="92" stroke="#1f262f" stroke-width="1" />
+    <line x1="184" y1="14" x2="184" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="118" x2="392" y2="118" stroke="#1f262f" stroke-width="1" />
+    <line x1="210" y1="14" x2="210" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="144" x2="392" y2="144" stroke="#1f262f" stroke-width="1" />
+    <line x1="236" y1="14" x2="236" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="170" x2="392" y2="170" stroke="#1f262f" stroke-width="1" />
+    <line x1="262" y1="14" x2="262" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="196" x2="392" y2="196" stroke="#1f262f" stroke-width="1" />
+    <line x1="288" y1="14" x2="288" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="222" x2="392" y2="222" stroke="#1f262f" stroke-width="1" />
+    <line x1="314" y1="14" x2="314" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="248" x2="392" y2="248" stroke="#1f262f" stroke-width="1" />
+    <line x1="340" y1="14" x2="340" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="274" x2="392" y2="274" stroke="#1f262f" stroke-width="1" />
+    <line x1="366" y1="14" x2="366" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="300" x2="392" y2="300" stroke="#1f262f" stroke-width="1" />
+    <line x1="392" y1="14" x2="392" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="326" x2="392" y2="326" stroke="#1f262f" stroke-width="1" />
+    <line x1="80" y1="170" x2="392" y2="170" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="236" y1="14" x2="236" y2="326" stroke="#4b5563" stroke-width="1.4" />
+    <circle cx="236" cy="170" r="116.3" fill="#e3b34112" stroke="#e3b341" stroke-width="1.6" stroke-dasharray="6 4" />
+    <circle cx="236" cy="170" r="4" fill="#9198a1" /><text x="242" y="186" font-size="11" fill="#9198a1">(0, 0)</text>
+    <circle cx="314" cy="92" r="7" fill="#3fb950" stroke="#3fb950" stroke-width="1.6" />
+    <text x="325" y="83" text-anchor="start" font-size="12" font-weight="600" fill="#e6edf3">(3, 3) · 18</text>
+    <circle cx="366" cy="196" r="7" fill="#0d1117" stroke="#9198a1" stroke-width="1.6" />
+    <text x="377" y="187" text-anchor="start" font-size="12" font-weight="600" fill="#9198a1">(5, -1) · 26</text>
+    <circle cx="184" cy="66" r="7" fill="#e3b341" stroke="#e3b341" stroke-width="1.6" />
+    <text x="172" y="62" text-anchor="end" font-size="12" font-weight="600" fill="#e6edf3">(-2, 4) · 20 · GUARD</text>
+  </svg>
+</Figure>
+
+<Trace title="Who is in danger now?" steps={closest} takeaway="Remember: keeping the k smallest means the guard is the largest of them. Max-heap by squared distance, trimmed to k." />
+
+**Why it works:** Chapter 2 with “better” reversed. The heap holds the k closest points seen so far; the root is the farthest of those. A closer newcomer evicts it; a farther one can never be among the k closest.
+
+**What stays true:** after each point, the heap holds the k closest points seen so far, with the farthest of them on top.
+
+<HintLadder hints={hints.kClosest}>
+
+```java id=kClosest
+public int[][] kClosest(int[][] points, int k) {
+    // MAX-heap by squared distance: the FARTHEST of the chosen k guards the door.
+    PriorityQueue<int[]> heap = new PriorityQueue<>(
+        (a, b) -> Long.compare(dist(b), dist(a)));
+    for (int[] p : points) {
+        heap.offer(p);
+        if (heap.size() > k) heap.poll();                 // evict the farthest of k + 1
+    }
+    return heap.toArray(new int[0][]);                    // any order is accepted
+}
+
+private long dist(int[] p) {
+    return (long) p[0] * p[0] + (long) p[1] * p[1];       // squared: no sqrt, no rounding
+}
+```
+
+**O(n log k) time, O(k) space.** The answer may be in any order, so returning the heap’s array is fine. The squares are computed in `long`: the problem’s coordinates (|x| ≤ 10⁴) fit in `int`, but 50,000² + 50,000² does not.
+
+</HintLadder>
+
+**Catch the bug:** a **min**-heap trimmed to k throws away the closest point at every overflow. On `[[1, 3], [-2, 2]]`, k = 1, it keeps (1, 3), but (−2, 2) is closer (8 versus 10). [Solve K Closest Points to Origin](https://leetcode.com/problems/k-closest-points-to-origin/).
+
+<Part n="Part Three" title="Two stands">
+
+The middle lives where two heaps meet.
+
+</Part>
+
+<h2 id="running-median">Chapter 5 · The Scales</h2>
+
+<Scene chapter="Chapter 5" title="The Scales" mood="night">
+
+At the far end of the arena stand the Scales: two wooden stands facing each other across a narrow gap. The judges want the **middle score** of every fighter so far, after every arrival, and they want it instantly.
+
+Low’s stand holds the smaller half of the scores, its biggest at the top. High’s stand holds the larger half, its smallest at the top. The middle lives in the gap, between the two tops.
+
+A fighter with tag 8 walks in. You start working out which stand she belongs on, comparing her with both tops, worrying about an empty stand…
+
+*"Stop,"* says the Keeper. *"Everyone enters through Low. Every time. Now tell me why that’s enough."*
+
+</Scene>
+
+**Problem: Find Median from Data Stream · two heaps**
+
+Split all the numbers into two heaps:
+
+- **low**: a **max-heap** of the smaller half. Its top is the largest small value.
+- **high**: a **min-heap** of the larger half. Its top is the smallest large value.
+
+Keep two promises: **every value in low ≤ every value in high**, and **low has the same size as high, or exactly one more**. Then the median is low’s top (odd count) or the average of both tops (even count).
+
+The **dance** that keeps both promises, with no case analysis:
+
+1. Offer the newcomer to **low**.
+2. Move low’s top up to **high**. (Order restored.)
+3. If high is now bigger than low, move high’s top back to **low**. (Sizes restored.)
+
+<Figure caption="After [5, 2, 8, 1, 9, 4, 7]: low holds 1, 2, 4, 5 with 5 on top; high holds 7, 8, 9 with 7 on top. Seven values, low has the extra one, so the median is 5. Each tree is drawn in its real array layout.">
+  <svg viewBox="0 0 498 220" width="498" height="220" style="display:block;margin:0 auto" role="img" aria-label="After 5, 2, 8, 1, 9, 4, 7: Low (max-heap) 5, 4, 2, 1; High (min-heap) 7, 9, 8; median 5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="117.30000000000001" y="16" text-anchor="middle" font-size="12" fill="#9198a1">Low · max-heap · smaller half</text>
+    <line x1="105.4" y1="65.5" x2="72.6" y2="102.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="129.2" y1="65.5" x2="162.0" y2="102.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="53.4" y1="132.5" x2="39.6" y2="163.5" stroke="#4b5563" stroke-width="1.4" />
+    <circle cx="117.3" cy="52" r="18" fill="#3a2f12" stroke="#e3b341" stroke-width="1.6" />
+    <text x="117.3" y="57" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">5</text>
+    <text x="139.3" y="40" text-anchor="start" font-size="10" fill="#9198a1">0</text>
+    <circle cx="60.7" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="60.7" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">4</text>
+    <text x="40.7" y="104" text-anchor="end" font-size="10" fill="#9198a1">1</text>
+    <circle cx="174.0" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="174.0" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">2</text>
+    <text x="174.0" y="147" text-anchor="middle" font-size="10" fill="#9198a1">2</text>
+    <circle cx="32.3" cy="180" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="32.3" y="185" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">1</text>
+    <text x="32.3" y="211" text-anchor="middle" font-size="10" fill="#9198a1">3</text>
+    <text x="117.3" y="28" text-anchor="middle" font-size="10.5" font-weight="700" letter-spacing="0.06em" fill="#e3b341">TOP</text>
+    <text x="379.90000000000003" y="16" text-anchor="middle" font-size="12" fill="#9198a1">High · min-heap · larger half</text>
+    <line x1="368.0" y1="65.5" x2="335.2" y2="102.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="391.8" y1="65.5" x2="424.6" y2="102.5" stroke="#4b5563" stroke-width="1.4" />
+    <circle cx="379.9" cy="52" r="18" fill="#12253a" stroke="#58a6ff" stroke-width="1.6" />
+    <text x="379.9" y="57" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">7</text>
+    <text x="401.9" y="40" text-anchor="start" font-size="10" fill="#9198a1">0</text>
+    <circle cx="323.3" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="323.3" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">9</text>
+    <text x="323.3" y="147" text-anchor="middle" font-size="10" fill="#9198a1">1</text>
+    <circle cx="436.6" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="436.6" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">8</text>
+    <text x="436.6" y="147" text-anchor="middle" font-size="10" fill="#9198a1">2</text>
+    <text x="379.9" y="28" text-anchor="middle" font-size="10.5" font-weight="700" letter-spacing="0.06em" fill="#e3b341">TOP</text>
+  </svg>
+</Figure>
+
+<Trace title="Through Low, every time" steps={median} takeaway="Remember: offer to low, move low's top to high, and move high's top back if high got bigger. The median is at the tops." />
+
+**Why it works.** Step 2 moves the largest of low-plus-newcomer into high. Everything left in low is ≤ that moved value, and was already ≤ everything in high, so the order promise holds. Step 3 moves high’s smallest down, which keeps the order too. For sizes: before the add, low = high or low = high + 1. After step 2, high gained one. If they were equal, high is now bigger, and step 3 moves one back; if low had the extra, they are now equal and step 3 does nothing.
+
+**What stays true:** low ≤ high, and low’s size minus high’s size is 0 or 1. So `findMedian` is a peek or two: **O(1)**.
+
+<Reveal q="Why go THROUGH low every time, instead of placing the number on the correct side directly?">
+
+Both can be correct. Direct placement means comparing with both tops, handling an empty heap on either side, and then a size fix in either direction: the classic fumble zone under interview pressure. The dance handles every case mechanically, including the very first number. Choosing the fumble-proof form is the senior move.
+
+You’ve noted before that deriving the dance live is where you slip. So don’t derive it in the room. Practise it until your hands know it, then explain the two promises it keeps.
+
+</Reveal>
+
+<Reveal q="Follow-up: what if every number is an integer from 0 to 100? And what if 99% of them are?">
+
+All in 0–100: skip the heaps. Keep a count array of size 101 and a total. To find the median, walk the counts until you pass the middle position: O(101) per query, O(1) per add.
+
+99% in range: keep the same count array plus counts of how many values fell below 0 and above 100. The median almost always lands inside the array; only if the outliers are numerous enough to contain it do you need them in sorted form (for example, in a small heap or sorted list on each side).
+
+</Reveal>
+
+<HintLadder hints={hints.median}>
+
+```java id=medianFinder
+class MedianFinder {
+    // low: the smaller half, largest on top. high: the larger half, smallest on top.
+    private final PriorityQueue<Integer> low = new PriorityQueue<>(Comparator.reverseOrder());
+    private final PriorityQueue<Integer> high = new PriorityQueue<>();
+
+    public void addNum(int num) {
+        low.offer(num);                     // 1. always enter through low
+        high.offer(low.poll());             // 2. low's largest steps up: order restored
+        if (high.size() > low.size())       // 3. sizes: low keeps the extra one, never high
+            low.offer(high.poll());
+    }
+
+    public double findMedian() {
+        if (low.size() > high.size()) return low.peek();
+        return ((double) low.peek() + high.peek()) / 2.0;   // widen BEFORE adding
+    }
+}
+```
+
+**addNum: O(log n)** (one offer and up to two moves). **findMedian: O(1). Space: O(n).** The `(double)` cast comes **before** the addition.
+
+</HintLadder>
+
+**Catch the bug:** two classics. (1) Rebalancing with `high.size() >= low.size()`: on `[1, 2]`, the 2 is pulled back into low, low ends two bigger, and the median comes out 2.0 instead of 1.5. The threshold is strictly greater. (2) `(low.peek() + high.peek()) / 2.0` adds two `Integer`s as `int` first: with two copies of 2,147,483,647 it returns −1.0. Widen before adding. [Solve Find Median from Data Stream](https://leetcode.com/problems/find-median-from-data-stream/).
+
+<h2 id="window-median">Chapter 6 · The ones who leave</h2>
+
+<Scene chapter="Chapter 6" title="The ones who leave" mood="storm">
+
+New rule from the judges: the Scales now weigh only the **last k fighters**. Each round one fighter arrives and the oldest one leaves.
+
+Arriving is easy; you know the dance. Leaving is the problem. The stands are pyramids, and only the top plinth has a door. Tonight the fighter who must leave is buried in the middle of Low’s stand, three people deep.
+
+You start planning how to pull him out through the crowd.
+
+*"You can’t reach him,"* says the Keeper. *"So stop trying. What if he simply stops counting?"*
+
+</Scene>
+
+**Problem: Sliding Window Median · two heaps with lazy deletion**
+
+For every window of k consecutive numbers, report its median. It is Chapter 5 plus one new move: **remove an arbitrary value**. A heap removes its top in O(log n), but `PriorityQueue.remove(Object)` scans the array: O(k) per slide, O(n·k) overall. With n = 100,000 and k = 50,000 that is billions of steps.
+
+**Lazy deletion:** when a value leaves the window, don’t remove its entry. Mark it **dead** by fixing the bookkeeping now, and pop it later, only when it reaches a top (the only place a heap can remove cheaply).
+
+Three design choices make this clean:
+
+- **Store indexes, not values,** ordered by value and then by index. Every entry is distinct, so “which entry is this?” is never ambiguous. And “dead” needs no extra map: an index is dead exactly when it is below the window’s `start`. (The classic version stores values plus a map of pending deletions. It works, but equal values can sit in both heaps, and the bookkeeping gets delicate.)
+- **Keep live counts,** `lowLive` and `highLive`. Physical heap sizes include dead entries, so they cannot be used for balancing.
+- **Keep both tops live:** after anything that can change a top, pop dead entries off it.
+
+Each step, for the new index i:
+
+1. **Admit** i: into low if it comes before low’s top in the (value, index) order, else into high. Count it as live there.
+2. **Retire** `i - k`: compare it with low’s top. Low’s top is live and is the largest live entry in low, and every live high entry is larger, so “≤ low’s top” means “it is in low”. Decrement that side’s live count. Leave the entry where it is.
+3. **Prune** dead tops, then **rebalance by live counts**: low may hold the same number as high, or one more. Before the step the live difference was 0 or 1; admitting and retiring each change it by one, so it lands between −2 and 3. One move shifts it by 2: −2 → 0, −1 → 1, 2 → 0, 3 → 1. **One move is always enough.** Prune the heap you moved from.
+4. **Read** the median from the live tops once the window is full, averaging in `double`.
+
+<Figure caption="nums = [3, 5, 6, 1], k = 3, window [5, 6, 1]. The 3 has left the window, but its entry is still buried in low. Low physically holds 3 entries and high holds 1; the live counts are 2 and 1, which is balanced. The median is low’s live top, 5.">
+  <ArrayStrip name="nums" values={[3, 5, 6, 1]} regions={[{ from: 1, to: 3, label: 'window', tone: 'gold' }]} tones={{ 0: 'out' }} />
+  <svg viewBox="0 0 431 156" width="431" height="156" style="display:block;margin:0 auto" role="img" aria-label="Window [5, 6, 1]: Low holds 5, a dead 3 and 1; High holds 6." font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+    <text x="98.80000000000001" y="16" text-anchor="middle" font-size="12" fill="#9198a1">Low · max-heap · live: 2</text>
+    <line x1="88.1" y1="66.5" x2="62.1" y2="101.5" stroke="#4b5563" stroke-width="1.4" />
+    <line x1="109.5" y1="66.5" x2="135.5" y2="101.5" stroke="#4b5563" stroke-width="1.4" />
+    <circle cx="98.8" cy="52" r="18" fill="#3a2f12" stroke="#e3b341" stroke-width="1.6" />
+    <text x="98.8" y="57" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">5</text>
+    <text x="120.8" y="40" text-anchor="start" font-size="10" fill="#9198a1">0</text>
+    <circle cx="51.4" cy="116" r="18" fill="#0d1117" stroke="#4b5563" stroke-width="1.6" stroke-dasharray="4 3" />
+    <text x="51.4" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#5c6570">3</text>
+    <text x="51.4" y="147" text-anchor="middle" font-size="10" fill="#f85149">1 · dead</text>
+    <circle cx="146.2" cy="116" r="18" fill="#0f141b" stroke="#39414c" stroke-width="1.6" />
+    <text x="146.2" y="121" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">1</text>
+    <text x="146.2" y="147" text-anchor="middle" font-size="10" fill="#9198a1">2</text>
+    <text x="98.8" y="28" text-anchor="middle" font-size="10.5" font-weight="700" letter-spacing="0.06em" fill="#e3b341">TOP</text>
+    <text x="328.1" y="16" text-anchor="middle" font-size="12" fill="#9198a1">High · min-heap · live: 1</text>
+    <circle cx="328.1" cy="52" r="18" fill="#12253a" stroke="#58a6ff" stroke-width="1.6" />
+    <text x="328.1" y="57" text-anchor="middle" font-size="15" font-weight="600" fill="#e6edf3">6</text>
+    <text x="350.1" y="40" text-anchor="start" font-size="10" fill="#9198a1">0</text>
+    <text x="328.1" y="28" text-anchor="middle" font-size="10.5" font-weight="700" letter-spacing="0.06em" fill="#e3b341">TOP</text>
+  </svg>
+</Figure>
+
+<Trace title="Stop counting, don't stop running" steps={windowMedian} takeaway="Remember: a leaving value only changes the live count. Pop dead entries when they reach a top, and balance by live counts, never by heap.size()." />
+
+**What stays true** after every step: (1) every live entry in low comes before every live entry in high; (2) `lowLive − highLive` is 0 or 1; (3) both tops are live. Promise 3 is what makes steps 2 and 4 safe: you only ever compare against, or read, a live top.
+
+<Reveal q="Isn't there a structure that can just delete from the middle?">
+
+Yes. Two `TreeSet`s of indexes, ordered by (value, index), delete any entry in O(log k). Then Chapter 5’s dance works unchanged: remove the leaving index from whichever set holds it, then offer through low. It is shorter and uses O(k) space. Know both; the heap version teaches lazy deletion, which comes back in Dijkstra’s shortest paths.
+
+```java id=medianSlidingWindowTree
+public double[] medianSlidingWindowTree(int[] nums, int k) {
+    Comparator<Integer> order = (a, b) -> nums[a] != nums[b]
+        ? Integer.compare(nums[a], nums[b]) : Integer.compare(a, b);
+    TreeSet<Integer> low = new TreeSet<>(order), high = new TreeSet<>(order);
+    double[] result = new double[nums.length - k + 1];
+    for (int i = 0; i < nums.length; i++) {
+        if (i >= k && !low.remove(i - k)) high.remove(i - k);  // a real O(log k) delete
+        low.add(i);                                            // Chapter 5's dance, unchanged
+        high.add(low.pollLast());
+        if (high.size() > low.size()) low.add(high.pollFirst());
+        if (i >= k - 1) {
+            result[i - k + 1] = k % 2 == 1 ? nums[low.last()]
+                : ((double) nums[low.last()] + nums[high.first()]) / 2.0;
+        }
+    }
+    return result;
+}
+```
+
+</Reveal>
+
+<HintLadder hints={hints.windowMedian}>
+
+```java id=medianSlidingWindow
+public double[] medianSlidingWindow(int[] nums, int k) {
+    // Heaps hold INDEXES, ordered by value and then by index, so no two entries tie.
+    Comparator<Integer> order = (a, b) -> nums[a] != nums[b]
+        ? Integer.compare(nums[a], nums[b]) : Integer.compare(a, b);
+    PriorityQueue<Integer> low = new PriorityQueue<>(order.reversed()); // smaller half
+    PriorityQueue<Integer> high = new PriorityQueue<>(order);           // larger half
+    int lowLive = 0, highLive = 0;          // entries still inside the window
+    double[] result = new double[nums.length - k + 1];
+    for (int i = 0; i < nums.length; i++) {
+        // 1. Admit index i on the side where it belongs.
+        if (low.isEmpty() || order.compare(i, low.peek()) < 0) { low.offer(i); lowLive++; }
+        else { high.offer(i); highLive++; }
+        // 2. Retire index i - k: change the live count now, remove the entry later.
+        int out = i - k;
+        if (out >= 0) {
+            if (order.compare(out, low.peek()) <= 0) lowLive--;
+            else highLive--;
+        }
+        int start = i - k + 1;              // indexes below start are dead
+        prune(low, start);
+        prune(high, start);
+        // 3. Rebalance by LIVE counts. One move is always enough.
+        if (lowLive > highLive + 1) {
+            high.offer(low.poll()); lowLive--; highLive++; prune(low, start);
+        } else if (highLive > lowLive) {
+            low.offer(high.poll()); highLive--; lowLive++; prune(high, start);
+        }
+        // 4. Once the window is full, read the median from the live tops.
+        if (start >= 0) {
+            result[start] = k % 2 == 1 ? nums[low.peek()]
+                : ((double) nums[low.peek()] + nums[high.peek()]) / 2.0;
+        }
+    }
+    return result;
+}
+
+// Lazy deletion: dead entries leave only when they reach the top.
+private void prune(PriorityQueue<Integer> heap, int start) {
+    while (!heap.isEmpty() && heap.peek() < start) heap.poll();
+}
+```
+
+**O(n log n) time, O(n) space in the worst case.** Dead entries only leave when they surface, and some never do: on a steadily rising input, old small values stay buried at the bottom of low, which ends up holding nearly all n entries. The TreeSet version is **O(n log k) time, O(k) space.** Both average in `double`: the window `[2147483647, 2147483647]` must give 2147483647.0, not −1.0.
+
+</HintLadder>
+
+**Catch the bug:** balancing with `low.size()` and `high.size()` counts the dead. On `[3, 5, 6, 1]`, k = 3, the buried 3 makes low look two bigger, the 5 is pushed up to high, and the second median comes out **1** instead of **5**. [Solve Sliding Window Median](https://leetcode.com/problems/sliding-window-median/).
+
+<Part n="Part Four" title="Many tunnels, one gate">
+
+Only the fronts compete. Everyone else waits their turn.
+
+</Part>
+
+<h2 id="merge-k">Chapter 7 · The herald of k tunnels</h2>
+
+<Scene chapter="Chapter 7" title="The herald of k tunnels" mood="dawn">
+
+On parade day the fighters enter the arena through three tunnels. Inside each tunnel they already stand in order of their tags: tunnel A holds 1, 4, 5; tunnel B holds 1, 3, 4; tunnel C holds 2, 6.
+
+The Herald must announce every fighter in one sorted order. He asks you to fetch the full lists from all three tunnels so he can sort them.
+
+The Keeper shakes her head and points at the three tunnel mouths, where three fighters stand blinking in the light.
+
+*"Who could possibly be next?"*
+
+</Scene>
+
+**Problem: Merge K Sorted Lists · a min-heap of heads (k-way merge)**
+
+The next node of the answer is always one of the k **current heads**: everything behind a head is at least as large as it. So keep a min-heap holding exactly one head per list. Poll the smallest, append it, and push **its** successor.
+
+<Figure caption="Only the fronts compete: 1 (A), 1 (B), 2 (C). After the Herald announces A’s 1, A’s next fighter, 4, steps up to the heap.">
+  <ArrayStrip name="A" values={[1, 4, 5]} join="→" indices={false} tones={{ 0: 'hot' }} />
+  <ArrayStrip name="B" values={[1, 3, 4]} join="→" indices={false} tones={{ 0: 'hot' }} />
+  <ArrayStrip name="C" values={[2, 6]} join="→" indices={false} tones={{ 0: 'hot' }} />
+  <ArrayStrip name="heap" values={[1, 1, 2]} pointers={[{ at: 0, label: 'NEXT OUT' }]} tones={{ 0: 'hot' }} />
+</Figure>
+
+<Trace title="Only the fronts compete" steps={mergeK} takeaway="Remember: one head per non-empty list in the heap. Poll the smallest, append it, push its next. N nodes, k lists: O(N log k)." />
+
+**Why it works:** each list is sorted, so the smallest unannounced node of a list is its head, and the smallest unannounced node overall is the smallest head.
+
+**What stays true:** the output is the sorted merge of everything announced so far, and the heap holds the current head of every non-empty list, never more than k entries. That is why it costs **O(N log k)**, not O(N log N): the bound comes from the heap’s **size**, not the total data, exactly like the size-k gate.
+
+<Reveal q="Is there a heap-free way with the same cost?">
+
+Yes: **divide and conquer.** Merge the lists in pairs (1 with 2, 3 with 4, …), then merge the results in pairs, and so on. There are log k rounds and each round touches all N nodes: O(N log k), with no heap. Name it, then pick one.
+
+The heap shape is also the SD wing’s multi-way merge: combining sorted results from many shards, merging sorted log files, the merge phase of an external sort. Same machinery. Say the connection out loud.
+
+</Reveal>
+
+<HintLadder hints={hints.mergeK}>
+
+```java id=mergeKLists
 public ListNode mergeKLists(ListNode[] lists) {
     PriorityQueue<ListNode> heap = new PriorityQueue<>((a, b) -> Integer.compare(a.val, b.val));
-    for (ListNode h : lists) if (h != null) heap.offer(h);
+    for (ListNode head : lists) if (head != null) heap.offer(head);   // one head per list
     ListNode dummy = new ListNode(0), tail = dummy;
     while (!heap.isEmpty()) {
-        ListNode n = heap.poll();
-        tail.next = n; tail = n;
-        if (n.next != null) heap.offer(n.next);
+        ListNode node = heap.poll();          // the smallest head of all
+        tail.next = node;
+        tail = node;
+        if (node.next != null) heap.offer(node.next);   // its list sends the next in line
     }
     return dummy.next;
 }
 ```
 
-N total nodes, k lists → **O(N log k)** — the heap never holds more than k. (Alternative: divide-and-conquer pairwise merging, same complexity — name it, pick one.) This shape is also the SD wing's multi-way merge: sharded query results, log merging — same machinery, say the connection.
+**O(N log k) time, O(k) extra space** for the heap. Nodes are relinked, not copied.
 
-## Form 4 — Simulation / Scheduling
+</HintLadder>
 
-**Task Scheduler**: always run the most-frequent remaining task → max-heap by count, with a cooldown queue of (task, ready-time) re-entering the heap when eligible. (The pure-math slot formula also exists; the heap version generalizes and is easier to defend.) This is greedy + heap — the heap is just "give me the best current choice" machinery, previewing the Greedy pattern.
+**Catch the bug:** pushing `node.next` without checking for `null`. `PriorityQueue` throws a `NullPointerException` on `offer(null)`, and an empty input list has a `null` head too. Guard both places. And compare with `Integer.compare(a.val, b.val)`, not `a.val - b.val`. [Solve Merge K Sorted Lists](https://leetcode.com/problems/merge-k-sorted-lists/).
 
-## Recognition table
+<h2 id="task-scheduler">Chapter 8 · The resting bench</h2>
 
-| You see | Move |
-|---------|------|
-| "Kth largest / top K / K closest" | size-k heap of the OPPOSITE kind (min-heap for largest) |
-| "…from a stream / can't hold all data" | same — the O(k) space is the point |
-| "running median" | two heaps, add-then-rebalance dance |
-| "merge K sorted anything" | min-heap of k heads, O(N log k) |
-| "always process highest priority / most frequent next" | heap + simulation loop |
-| "kth smallest in sorted matrix" | k-way merge in disguise (rows = lists) |
+<Scene chapter="Chapter 8" title="The resting bench" mood="dusk">
 
-## Bug bestiary (pre-loaded)
+The training yard runs drills, one per time unit. Each drill has a letter, and after a drill runs it must sit on the Bench for **n** units before it may run again. When every remaining drill is resting, the yard simply idles, and the idle units still count.
 
-- **Max-heap for Kth largest** — holds all n elements (O(n) space) and polls k times; works, but misses the entire size-k insight and fails the "what if it's a stream?" follow-up.
-- **`(a, b) -> a - b` comparator overflow** on values near ±2³¹ — `Integer.compare` on reflex.
-- **Two heaps: adding directly to the "correct" side** — case analysis breeds bugs; the through-low dance handles everything.
-- **Rebalance threshold `>=` vs `>`** — sizes may differ by exactly 1 (low's extra); over-eager rebalancing oscillates.
-- **K-way merge: pushing null successors** — guard `n.next != null`.
-- **Java PQ iteration is NOT sorted order** — only poll() drains in order; iterating/toString for debugging lies to you.
+Tonight’s list is **A A A B B B**, with n = 2. The drill master wants the shortest possible evening.
 
-<Quiz questions={[
-  {
-    q: 'Kth largest from a stream of millions of numbers. Why a MIN-heap of size k?',
-    options: [
-      'Min-heaps are faster than max-heaps',
-      'The heap holds the k largest seen; its root is the SMALLEST of those — the door guard. Newcomers beat the guard or bounce. O(k) memory works on unbounded streams; a max-heap of everything is O(n) and dies there',
-      'Max-heaps cannot be size-limited',
-      'To return results in ascending order'
-    ],
-    answer: 1,
-    why: 'The guard-at-the-door model derives the counterintuitive choice instead of memorizing it — and the stream framing is exactly where an interviewer takes this next.'
-  },
-  {
-    q: 'Two-heaps median: why does every addNum go THROUGH low (offer to low, poll to high, maybe rebalance)?',
-    options: [
-      'low is the max-heap so it is faster',
-      'The dance re-establishes both invariants (all low ≤ all high; sizes within 1) mechanically, with zero case analysis — direct placement requires comparing against both roots and handling empty-heap edges, the classic fumble zone',
-      'Numbers must be processed in sorted order',
-      'It halves the number of comparisons'
-    ],
-    answer: 1,
-    why: 'Both approaches can be correct; the dance is the one you won\'t fumble under interview pressure. Choosing the fumble-proof form IS the senior move.'
-  },
-  {
-    q: 'Merge K sorted lists, N total nodes. Why is the heap version O(N log k) and not O(N log N)?',
-    options: [
-      'log k and log N are asymptotically equal',
-      'The heap only ever contains at most k elements (one head per list) — each of the N nodes passes through one offer and one poll costing O(log k)',
-      'Linked lists make heap operations O(1)',
-      'It is O(N log N) — the claim is wrong'
-    ],
-    answer: 1,
-    why: 'The bound comes from heap SIZE, not total data. Same reason top-K is O(n log k) — spotting "the heap stays small" across both is the pattern-level insight.'
-  }
-]} />
+You start writing orders on a slate: A, A… and stop, because A can’t follow A.
 
-## Drill hand-off
+*"Two questions,"* says the Keeper. *"Which drill runs first? And what happens when everyone ready to work is sitting on the Bench?"*
 
-With the buddy: **Kth Largest + Top K Frequent** one session (guard-at-the-door narrated twice, second time flipped for K Closest) → **Merge K Sorted Lists** (bridges back to linked lists) → **Find Median from Data Stream** (the dance, closed-book). That completes patterns 1–8 — Act I's entire DSA surface has lessons behind it.
+</Scene>
+
+**Problem: Task Scheduler · greedy with a max-heap and a cooldown queue**
+
+At every time unit, run the **ready** task with the **most copies left**. It has the longest chain of rests ahead of it; starting it early lets other tasks fill those rests. Tasks that just ran wait on the Bench, a FIFO queue of `{copies left, last time unit of the rest}`, and return to the heap when their rest ends. If the heap is empty, the unit is idle.
+
+The letters don’t matter, only the counts. That is why the heap holds plain integers.
+
+<Figure caption="AAABBB with n = 2: A B · A B · A B. Each A is followed by 2 units that are not A. The two idle units (dashed) are forced: 8 units in all.">
+  <ArrayStrip name="time 1 to 8" values={['A', 'B', '·', 'A', 'B', '·', 'A', 'B']} indices={false} tones={{ 2: 'ghost', 5: 'ghost', 0: 'hot', 3: 'hot', 6: 'hot' }} regions={[{ from: 0, to: 2, label: 'frame 1', tone: 'blue' }, { from: 3, to: 5, label: 'frame 2', tone: 'blue' }, { from: 6, to: 7, label: 'last row', tone: 'green' }]} />
+</Figure>
+
+<Trace title="Who runs, who rests" steps={scheduler} takeaway="Remember: run the ready task with the most copies left; tasks that just ran wait n units on the bench. Idle units count." />
+
+**Why the greedy is safe** (a lower bound, plus a check). Say the largest count is f, and t tasks share it. Each of those t tasks runs f times with n units between runs, so its last run comes at least (f − 1)(n + 1) units after its first. The t tasks start at t different units, so the one that starts last starts at unit t or later. **No schedule can finish before (f − 1)(n + 1) + t**, and none can finish before the number of tasks. Running the ready task with the most copies left always reaches the larger of those two bounds. The full argument is longer, so the lesson’s checker compares this simulation with an exhaustive search over every possible schedule, on thousands of small inputs.
+
+**What stays true:** the ready heap holds exactly the tasks allowed to run now, with their copies left; the Bench holds every other unfinished task, in the order their rests end. Stop when both are empty.
+
+<Reveal q="Is there a formula? Derive it from the frames in the figure.">
+
+Yes. Let f be the largest count and t the number of tasks that have it. The most frequent task forces f − 1 full **frames** of n + 1 units, plus a **last row** holding each of the t tied tasks once: (f − 1) × (n + 1) + t. Other tasks slot into the frames’ gaps. If there are more tasks than gaps, there are no idle units at all and the answer is simply the number of tasks. So the answer is max(tasks, (f − 1)(n + 1) + t). For AAABBB, n = 2: max(6, 2 × 3 + 2) = 8.
+
+```java id=leastIntervalFormula
+public int leastIntervalFormula(char[] tasks, int n) {
+    int[] count = new int[26];
+    for (char t : tasks) count[t - 'A']++;
+    int maxFreq = 0, tiedAtMax = 0;
+    for (int c : count) {
+        if (c > maxFreq) { maxFreq = c; tiedAtMax = 1; }
+        else if (c == maxFreq && c > 0) tiedAtMax++;
+    }
+    return Math.max(tasks.length, (maxFreq - 1) * (n + 1) + tiedAtMax);
+}
+```
+
+The formula is O(number of tasks). The heap version generalises (it can return the actual schedule, not just its length) and is easier to defend step by step. Know both.
+
+</Reveal>
+
+<HintLadder hints={hints.scheduler}>
+
+```java id=leastInterval
+public int leastInterval(char[] tasks, int n) {
+    int[] count = new int[26];
+    for (char t : tasks) count[t - 'A']++;
+    PriorityQueue<Integer> ready = new PriorityQueue<>(Comparator.reverseOrder()); // remaining counts
+    for (int c : count) if (c > 0) ready.offer(c);
+    Deque<int[]> cooling = new ArrayDeque<>();   // {remaining count, last time unit of its rest}
+    int time = 0;
+    while (!ready.isEmpty() || !cooling.isEmpty()) {
+        time++;
+        if (!ready.isEmpty()) {
+            int left = ready.poll() - 1;         // run the task with the most copies left
+            if (left > 0) cooling.offer(new int[]{left, time + n});
+        }                                        // (an empty ready heap means: idle)
+        if (!cooling.isEmpty() && cooling.peek()[1] == time) ready.offer(cooling.poll()[0]);
+    }
+    return time;
+}
+```
+
+The heap holds at most 26 entries, so each unit costs O(1): **O(total time units) time, O(1) extra space.** The total is at most max(tasks, (f − 1)(n + 1) + 26). This is **greedy + heap**: the heap is just “give me the best current choice” machinery. The Greedy pattern on your roadmap builds on exactly this.
+
+</HintLadder>
+
+**Catch the bug:** off-by-one rests. Storing `time + n + 1` and returning the task when `peek()[1] == time` makes every task rest one unit too long: AA with n = 1 then takes 4 units (A · · A) instead of 3 (A · A). A task that ran at time t may run again at t + n + 1, so its rest ends at the end of t + n. [Solve Task Scheduler](https://leetcode.com/problems/task-scheduler/).
+
+<Part n="Part Five" title="The Keeper changes one rule">
+
+Side quests. Same gate, same pyramid, one rule different. This is where memorised templates break and understanding doesn’t.
+
+</Part>
+
+<Scene title="Side quests" mood="night">
+
+The evening you finish Chapter 8, a stack of cards sits on your bunk in the Keeper’s handwriting. Each is a problem you already know, with one rule crossed out and a new one written above it.
+
+*"Anyone can repeat a route,"* says the note on top. *"Show me you know why the gate works."*
+
+</Scene>
+
+<h2 id="kth-in-a-stream">Side quest 1 · The gate that never closes</h2>
+
+**The card says:** the queue never ends. After **every** arrival, someone asks for the kth largest so far.
+
+**The reasoning:** Chapter 2’s gate already holds the answer after every arrival; you just never asked it before the end. Keep the heap as a field, trimmed to k. Each `add` offers, trims, and returns the guard. The constructor can feed the starting numbers through the same `add`.
+
+<Reveal q="Why not keep every number and sort after each add?">
+
+That is O(n log n) per add and O(n) memory, and it grows forever. The gate is O(log k) per add and O(k) memory, forever. Anything evicted from the gate can never be the kth largest again, because the gate only ever gets stronger.
+
+</Reveal>
+
+<HintLadder hints={hints.streamKth}>
+
+```java id=kthLargestStream
+class KthLargest {
+    private final PriorityQueue<Integer> heap = new PriorityQueue<>(); // never more than k inside
+    private final int k;
+
+    public KthLargest(int k, int[] nums) {
+        this.k = k;
+        for (int x : nums) add(x);
+    }
+
+    public int add(int val) {
+        heap.offer(val);
+        if (heap.size() > k) heap.poll();
+        return heap.peek();
+    }
+}
+```
+
+**O(n log k) to build, O(log k) per add, O(k) space.** The problem guarantees at least k numbers exist whenever you are asked, so the root is never missing. Example: k = 3, start `[4, 5, 8, 2]`, adds 3, 5, 10, 9, 4 → 4, 5, 5, 8, 8.
+
+</HintLadder>
+
+**Transfer test:** now the stream can also **delete** a number. Why does the gate stop working, and which chapter’s idea would you reach for? [Solve Kth Largest Element in a Stream](https://leetcode.com/problems/kth-largest-element-in-a-stream/).
+
+<h2 id="last-stone">Side quest 2 · The smashing ring</h2>
+
+**The card says:** no k this time. In the smashing ring, the two heaviest stones collide each turn. Equal stones both shatter; otherwise the lighter shatters and the heavier loses that much weight. What remains at the end?
+
+**The reasoning:** each turn needs the two largest of a collection that keeps changing: a **max-heap** simulation. The leftover goes **back** into the heap, because it may be lighter than stones still waiting.
+
+<Reveal q="[2, 7, 4, 1, 8, 1]: trace it. What is left?">
+
+8 and 7 → 1 remains: `[2, 4, 1, 1, 1]`. 4 and 2 → 2: `[2, 1, 1, 1]`. 2 and 1 → 1: `[1, 1, 1]`. 1 and 1 → both gone: `[1]`. The last stone weighs **1**. Notice how the 1 left by the first smash had to wait behind heavier stones.
+
+</Reveal>
+
+<HintLadder hints={hints.stones}>
+
+```java id=lastStoneWeight
+public int lastStoneWeight(int[] stones) {
+    PriorityQueue<Integer> heap = new PriorityQueue<>(Comparator.reverseOrder());
+    for (int s : stones) heap.offer(s);
+    while (heap.size() > 1) {
+        int y = heap.poll(), x = heap.poll();   // the two heaviest, y >= x
+        if (y > x) heap.offer(y - x);           // equal stones both vanish
+    }
+    return heap.isEmpty() ? 0 : heap.peek();
+}
+```
+
+Each turn removes at least one stone: **O(n log n) time, O(n) space.**
+
+</HintLadder>
+
+**Transfer test:** now you may choose **any** two stones each turn and want the **smallest possible** final stone. Does the heap still work? (It doesn’t: that version is a subset-sum partition, a dynamic-programming problem. See Last Stone Weight II in Beyond this page.) [Solve Last Stone Weight](https://leetcode.com/problems/last-stone-weight/).
+
+<h2 id="reorganize-string">Side quest 3 · No twins side by side</h2>
+
+**The card says:** line up the letters of a string so that **no two neighbours are equal**, or report that it can’t be done.
+
+**The reasoning:** the most common letter is the dangerous one; leave it for the end and it piles up. So, greedily, place the letter with the **most copies left**, but never the letter you just placed. That letter sits on a **bench of one** for a turn, then goes back into the max-heap: Chapter 8 with n = 1. If the heap runs dry while a letter is still benched, there is nowhere to put it.
+
+<Reveal q="When is it impossible? Check 'aab' and 'aaab'.">
+
+It is possible exactly when the most common letter appears at most ⌈n / 2⌉ times. `aab`: 2 of 3, limit 2, so `aba`. `aaab`: 3 of 4, limit 2, impossible. Each copy of the top letter needs a different letter between it and the next one.
+
+</Reveal>
+
+<HintLadder hints={hints.reorganize}>
+
+```java id=reorganizeString
+public String reorganizeString(String s) {
+    int[] count = new int[26];
+    for (char c : s.toCharArray()) count[c - 'a']++;
+    PriorityQueue<int[]> heap = new PriorityQueue<>((a, b) -> Integer.compare(b[1], a[1])); // {letter, left}
+    for (int c = 0; c < 26; c++) if (count[c] > 0) heap.offer(new int[]{c, count[c]});
+    StringBuilder out = new StringBuilder();
+    int[] benched = null;                        // the letter just placed sits out one turn
+    while (!heap.isEmpty()) {
+        int[] top = heap.poll();                 // most copies left, and not the last letter
+        out.append((char) ('a' + top[0]));
+        top[1]--;
+        if (benched != null) heap.offer(benched);
+        benched = top[1] > 0 ? top : null;
+    }
+    return benched == null ? out.toString() : "";   // someone still waiting: impossible
+}
+```
+
+With an alphabet of 26 letters the heap stays tiny: **O(n log 26) = O(n) time, O(n) space** for the output. The heap holds `{letter, copies}` pairs, and a pair is changed only after it has been polled. Changing a value while it sits inside a heap breaks the heap silently.
+
+</HintLadder>
+
+**Transfer test:** now equal letters must be at least **k** apart. Which chapter’s Bench do you need, and how long is it? [Solve Reorganize String](https://leetcode.com/problems/reorganize-string/).
+
+<h2 id="ipo">Side quest 4 · Unlock, then choose</h2>
+
+**The card says:** you start with w coins and may finish at most k projects, one after another. Each project needs at least its required capital to start (the coins are not spent), and its profit is added when it is done. End with as many coins as possible.
+
+**The reasoning:** every round asks two questions. *What can I afford?* A **min-heap by capital** holds the locked projects, cheapest first; unlock from its top while affordable. *What pays most?* A **max-heap by profit** holds the unlocked ones. Take its top. Coins only grow, so an unlocked project stays unlocked: nothing ever moves back.
+
+<Reveal q="Why is taking the biggest affordable profit never a mistake?">
+
+Take any best plan and compare it with the greedy first move, the top profit p you can afford now. If the plan uses p later, doing it first only raises your coins sooner, so everything after it stays affordable. If the plan never uses p, swap p in for the plan’s first project: that project was affordable now too and paid no more than p, so every later step is still affordable and you finish with at least as many coins. Either way a best plan can start with p; repeat the argument for the next round. It needs profits ≥ 0. Example: w = 0, k = 2, profits `[1, 2, 3]`, capital `[0, 1, 1]`. Only project 0 is affordable: w = 1. Now projects 1 and 2 unlock; take profit 3: **w = 4**.
+
+</Reveal>
+
+<HintLadder hints={hints.ipo}>
+
+```java id=findMaximizedCapital
+public int findMaximizedCapital(int k, int w, int[] profits, int[] capital) {
+    // locked: projects you cannot afford yet, cheapest first.
+    PriorityQueue<Integer> locked = new PriorityQueue<>((a, b) -> Integer.compare(capital[a], capital[b]));
+    // open: profits of projects you can afford, best first.
+    PriorityQueue<Integer> open = new PriorityQueue<>(Comparator.reverseOrder());
+    for (int i = 0; i < profits.length; i++) locked.offer(i);
+    for (int round = 0; round < k; round++) {
+        while (!locked.isEmpty() && capital[locked.peek()] <= w) open.offer(profits[locked.poll()]);
+        if (open.isEmpty()) break;               // nothing affordable, now or ever
+        w += open.poll();                        // take the best profit on offer
+    }
+    return w;
+}
+```
+
+Each project enters and leaves each heap at most once: **O(n log n) time, O(n) space.**
+
+</HintLadder>
+
+**Transfer test:** if a project could **lose** money, would the greedy still be safe? Find the first step of the argument that breaks. [Solve IPO](https://leetcode.com/problems/ipo/).
+
+<h2 id="smallest-range">Side quest 5 · One from every tunnel</h2>
+
+**The card says:** k sorted lists. Find the **narrowest** range that contains at least one number from each list (ties go to the smaller start).
+
+**The reasoning:** hold one candidate from each list, as in Chapter 7. Those k candidates span `[their minimum, their maximum]`, and that range covers every list. To try for a narrower one, the only useful move is to **advance the list holding the minimum**: advancing anything else only raises the maximum. Track the maximum yourself; the heap gives the minimum. Stop when the minimum’s list runs out, because no later range can cover that list.
+
+<Figure caption="The classic input. The heap holds one value per list; the best range found is [20, 24], using 24 from the first list, 20 from the second and 22 from the third.">
+  <ArrayStrip name="list 1" values={[4, 10, 15, 24, 26]} indices={false} tones={{ 3: 'hot' }} />
+  <ArrayStrip name="list 2" values={[0, 9, 12, 20]} indices={false} tones={{ 3: 'hot' }} />
+  <ArrayStrip name="list 3" values={[5, 18, 22, 30]} indices={false} tones={{ 2: 'hot' }} />
+</Figure>
+
+<HintLadder hints={hints.smallestRange}>
+
+```java id=smallestRange
+public int[] smallestRange(List<List<Integer>> nums) {
+    PriorityQueue<int[]> heap = new PriorityQueue<>((a, b) -> Integer.compare(a[0], b[0])); // {value, list, position}
+    int max = Integer.MIN_VALUE;
+    for (int i = 0; i < nums.size(); i++) {
+        int v = nums.get(i).get(0);
+        heap.offer(new int[]{v, i, 0});
+        max = Math.max(max, v);
+    }
+    int bestLo = heap.peek()[0], bestHi = max;
+    while (true) {
+        int[] min = heap.poll();                 // [min, max] covers one value from every list
+        if ((long) max - min[0] < (long) bestHi - bestLo) { bestLo = min[0]; bestHi = max; }
+        int next = min[2] + 1;
+        if (next == nums.get(min[1]).size()) break;   // that list is spent: no later range covers it
+        int v = nums.get(min[1]).get(next);
+        heap.offer(new int[]{v, min[1], next});
+        max = Math.max(max, v);
+    }
+    return new int[]{bestLo, bestHi};
+}
+```
+
+With N numbers in total: **O(N log k) time, O(k) space.** Widths are compared in `long`, so even a range from −2³¹ to 2³¹ − 1 is measured correctly. Because minimums are processed in increasing order, the strict `<` keeps the earlier, smaller start on ties.
+
+</HintLadder>
+
+**Transfer test:** why is it safe to stop the moment one list runs out, even if other lists still have values? [Solve Smallest Range Covering Elements from K Lists](https://leetcode.com/problems/smallest-range-covering-elements-from-k-lists/).
+
+<h2 id="sorted-matrix">Side quest 6 · The sorted grid</h2>
+
+**The card says:** an n × n grid where every row and every column is sorted. Find the kth smallest value.
+
+**The reasoning:** each **row is a sorted list**. So this is Chapter 7 in disguise: a heap of row fronts, popping the smallest k − 1 times and pushing the next cell in the same row. Seed it with the first column, but only the first min(n, k) rows can matter.
+
+<Reveal q="[[1, 5, 9], [10, 11, 13], [12, 13, 15]], k = 8. What comes out?">
+
+Pops in order: 1, 5, 9, 10, 11, 12, 13 (that is k − 1 = 7 pops), and the root is then the other **13**. The answer is 13: duplicates count separately. Reading the grid row by row would give 13 too here, but only by luck; rows overlap in value in general.
+
+</Reveal>
+
+<HintLadder hints={hints.matrixKth}>
+
+```java id=kthSmallest
+public int kthSmallest(int[][] matrix, int k) {
+    int n = matrix.length;
+    PriorityQueue<int[]> heap = new PriorityQueue<>((a, b) -> Integer.compare(a[0], b[0])); // {value, row, col}
+    for (int r = 0; r < Math.min(n, k); r++) heap.offer(new int[]{matrix[r][0], r, 0});
+    for (int taken = 1; taken < k; taken++) {
+        int[] cur = heap.poll();                 // the next smallest overall
+        if (cur[2] + 1 < n) heap.offer(new int[]{matrix[cur[1]][cur[2] + 1], cur[1], cur[2] + 1});
+    }
+    return heap.peek()[0];
+}
+```
+
+**O(k log min(n, k)) time, O(min(n, k)) space.** A classic alternative ignores the heap: binary search on the **value**, counting how many cells are ≤ a guess with a staircase walk, in O(n log(max − min)).
+
+</HintLadder>
+
+**Transfer test:** the columns are no longer sorted, only the rows. Does the heap version still work? Does the binary-search version? [Solve Kth Smallest Element in a Sorted Matrix](https://leetcode.com/problems/kth-smallest-element-in-a-sorted-matrix/).
+
+<Part n="Epilogue" title="Beyond the gate">
+
+When the heap is the wrong tool, who lives next door, and the exam that proves you can find your own way.
+
+</Part>
+
+<h2 id="choose-the-tool">When to leave the gate</h2>
+
+<Scene title="The fixed roster" mood="storm">
+
+At the end of the season the Keeper hands you the final roster: a thousand scores, written in ink, never to change. *"The third best,"* she says.
+
+You build the gate, offer all thousand scores, trim to three, and read the guard. Proud, you hand her the answer.
+
+She nods. *"Correct. And what did the gate protect you from?"*
+
+You think. Nobody was arriving. Nobody was leaving. The roster would never change again.
+
+*"A heap earns its keep when the crowd keeps moving,"* she says. *"This crowd went home."*
+
+</Scene>
+
+A heap pays off when you ask “who is best?” **again and again while the collection changes**. When it doesn’t change, cheaper tools exist:
+
+<Mermaid code={`flowchart TD
+  Q["Need the best item, or the kth best?"] --> C{"Does the collection change<br/>between questions?"}
+  C -- "no, and it is sorted" --> I["Index into it: O(1)"]
+  C -- "no, unsorted" --> S["Scan for one extreme: O(n)<br/>kth: quickselect, expected O(n)"]
+  C -- "yes" --> W{"Do items leave in arrival order?<br/>(sliding window max or min)"}
+  W -- "yes" --> D["Monotonic deque: O(n) total"]
+  W -- "no" --> H["Heap: O(log n) per change"]`} />
+
+**Quickselect** answers “kth largest of a fixed array” in **expected O(n)**. Pick a random pivot, partition into less than / equal to / greater than the pivot (the same three-zone partition as Sort Colors in Arraytown), and keep only the side that contains the target index n − k. Each round discards a constant fraction of the array on average.
+
+<HintLadder hints={hints.quickselect}>
+
+```java id=quickselect
+public int findKthLargestQuick(int[] nums, int k) {
+    int target = nums.length - k;                // kth largest sits at index n - k once sorted
+    int lo = 0, hi = nums.length - 1;
+    Random random = new Random();
+    while (true) {
+        int pivot = nums[lo + random.nextInt(hi - lo + 1)];
+        int lt = lo, i = lo, gt = hi;            // [lo, lt) < pivot, [lt, i) == pivot, (gt, hi] > pivot
+        while (i <= gt) {
+            if (nums[i] < pivot) swap(nums, lt++, i++);
+            else if (nums[i] > pivot) swap(nums, i, gt--);
+            else i++;
+        }
+        if (target < lt) hi = lt - 1;
+        else if (target > gt) lo = gt + 1;
+        else return pivot;                       // target landed in the == pivot block
+    }
+}
+
+private void swap(int[] a, int i, int j) { int t = a[i]; a[i] = a[j]; a[j] = t; }
+```
+
+**Expected O(n) time, O(1) extra space**; the worst case is O(n²) with persistently unlucky pivots (random pivots make that vanishingly unlikely). It **reorders the input**, and it needs the whole array in memory, so it cannot handle a stream. Say both trade-offs out loud; the heap answer is often the safer one to offer first.
+
+</HintLadder>
+
+<Reveal q="Sliding window maximum: why is a heap the wrong tool, even though it works?">
+
+A max-heap of the window with lazy deletion (Chapter 6’s trick) works in O(n log n). But in a window, values leave in **arrival order**, and a value that has a bigger value after it can never be the maximum again. A monotonic deque throws such values away immediately and gets O(n) total. When removals follow arrival order, reach for the deque.
+
+</Reveal>
+
+<h2 id="wider-family">The neighbouring guilds · How the other roadmap patterns connect</h2>
+
+Ringhold’s gate shows up all over the roadmap. The shared idea: **keep a small set of candidates and always know the best one.**
+
+| Where | What the heap (or its cousin) does | Lesson |
+|---|---|---|
+| Merge two sorted arrays / lists | The k = 2 case of Chapter 7: two fronts, no heap needed | <a href={`${BASE}dsa/lessons/two-pointers/`}>Two Pointers</a> · <a href={`${BASE}dsa/lessons/linked-lists/`}>Linked Lists</a> |
+| Quickselect’s partition | Three zones, exactly like Sort Colors | <a href={`${BASE}dsa/lessons/two-pointers/`}>Two Pointers</a> |
+| Meeting Rooms II | A min-heap of end times: the earliest-finishing meeting is the next room to free up | <a href={`${BASE}dsa/lessons/intervals/`}>Intervals</a> |
+| Windows with running state | Window median adds two heaps to the window; window max prefers a deque | <a href={`${BASE}dsa/lessons/sliding-window/`}>Sliding Window</a> · <a href={`${BASE}dsa/lessons/stacks/`}>Stacks</a> |
+| Kth smallest by value | Binary search on the answer instead of a heap of fronts | <a href={`${BASE}dsa/lessons/binary-search/`}>Binary Search</a> |
+| Greedy scheduling, Dijkstra, Prim, Huffman | A heap as the “best current choice” engine; Dijkstra uses Chapter 6’s lazy deletion | <a href={`${BASE}dsa/`}>Greedy and graph patterns in the roadmap</a> |
+
+**The k = 2 case needs no heap.** Comparing two fronts is one `if`. The heap earns its O(log k) only when k grows.
+
+**A deque is not a heap.** It keeps candidates in arrival order and throws away the dominated ones; a heap keeps everyone and only knows the best.
+
+<h2 id="exit-ticket">The Wardens’ exam · Build a solution with the labels removed</h2>
+
+<Scene title="No chapter titles" mood="dawn">
+
+On exam morning the Keeper hands you a sheet with no chapter names and no hints: just three problems, a pen, and the three questions carved over the gate.
+
+*"Pick one,"* she says. *"Before you write code, tell me who is on top of your heap, why each eviction is safe, and when you stop."*
+
+</Scene>
+
+Choose one. Keep the lesson closed. Write down what your heap holds, what its top means, and your stopping rule before you code.
+
+1. **Ties decide.** Given a list of words, return the k most frequent; equal counts are ordered alphabetically. Test ties at the k-th place, k equal to the number of distinct words, and a single word.
+2. **Rooms for everyone.** Given meeting intervals, find the fewest rooms so no two overlapping meetings share one. A meeting ending at 5 and one starting at 5 may share. Test nested meetings, touching meetings, and one meeting.
+3. **Glue the sticks.** Joining two sticks costs the sum of their lengths, and the result is one stick. Join all sticks into one for the least total cost. Test one stick (cost 0), equal sticks, and lengths that make the total exceed 2³¹.
+
+<Reveal q="I've written and tested it. What should my reasoning contain?">
+
+**Ties decide:** count words; keep a size-k min-heap whose top is the **worst** candidate: lower count first, and for equal counts the alphabetically **later** word (it is the one to evict). Poll into the result from the back. The tie-break flips inside the heap, and that is the whole trap.
+
+**Rooms:** sort meetings by start; keep a min-heap of end times of meetings in progress. For each meeting, if the earliest end is ≤ its start, that room frees up (poll); then push this meeting’s end. The largest heap size is the answer. `≤`, not `<`, is the touching-meetings test.
+
+**Sticks:** a min-heap of lengths. Repeatedly poll the two shortest, add their sum to the cost, push the sum back. Joining the two shortest first is safe because the shortest sticks are counted in the most later joins (this is Huffman coding’s argument). Use `long` for the cost.
+
+Now explain why a slightly wrong version fails on one of your tests. That counterexample is stronger evidence of understanding than a memorised template.
+
+</Reveal>
+
+Passing this once is a useful checkpoint. Rebuild one of them on another day, with a changed input and without a chapter title choosing the pattern for you.
+
+<h2 id="mixed-recall">Quick recall · Keep the rule warm</h2>
+
+Close the code. Name what the heap holds and what its top means. This short round folds in the old checkpoint questions and is a warm-up for the independent practice below.
+
+<Trace title="Which tool fits?" steps={mixedReview} takeaway="Now try the independent session: no pattern title, a new input, and your explanation before the rubric." />
+
+<h2 id="independent-practice">Night watch · The problem won't name its pattern</h2>
+
+The review queue starts with due concepts, then new ones. Hints or corrected attempts bring a concept back tomorrow. Successful recall at a scheduled review stretches the interval to 3, 7, then 14 days. Your reasoning is **self-checked**; nothing here automatically marks a roadmap problem solved.
+
+<Practice pattern="heaps" />
+
+<h2 id="cheat-sheet">The Keeper's notebook</h2>
+
+| When you see… | Start with… | The promise to keep |
+|---|---|---|
+| Build or explain a heap | Array; parent `(i − 1) / 2`, children `2i + 1`, `2i + 2`; sift up and down | Every parent ≤ its children |
+| Kth largest | Size-k **min**-heap | Heap = the k largest so far; root = kth largest |
+| Top k frequent | Count map + size-k min-heap **by count** | Heap = the k most frequent so far |
+| K closest / k smallest by a key | Size-k **max**-heap by the key | Root = the worst of the chosen k |
+| Running median | Two heaps + the through-low dance | low ≤ high; low has the same size or one more |
+| Window median | Two heaps of indexes + lazy deletion + live counts | Live counts balanced; both tops live |
+| Merge k sorted | Min-heap of heads | One front per non-empty list; at most k entries |
+| Cooldowns between repeats | Max-heap of counts + FIFO bench | The heap holds only tasks allowed to run now |
+| Kth largest after every add | Size-k min-heap kept between calls | The root answers in O(1) |
+| Repeatedly combine the two biggest | Max-heap simulation | Leftovers go back to compete |
+| No equal neighbours | Max-heap + bench of one | The letter just placed sits out a turn |
+| Unlock by budget, take the best | Min-heap by cost + max-heap by profit | Everything affordable is in the profit heap |
+| Narrowest range over k lists | Heap of fronts + running max | `[heap min, max]` covers every list |
+| Kth smallest in a sorted grid | Heap of row fronts | Pops come out in sorted order |
+| Kth of a fixed array | Quickselect (or sort and index) | The target index stays inside `[lo, hi]` |
+
+A heap does **not** make everything O(log n). Count what it holds: size k gives log k; lazy deletion can let it grow to n; and `remove(Object)` is a linear scan.
+
+## Five bugs the Keeper keeps in her pocket
+
+1. **The wrong heap kind for top-k.** A max-heap trimmed to k keeps the k smallest. An untrimmed one is correct but O(n) space, and dies on “it’s a stream”. Ask who among the chosen is in danger.
+2. **The subtraction comparator.** `a - b` overflows near ±2³¹ and silently flips the order. Reach for `Integer.compare` (or `Long.compare`) by reflex.
+3. **Believing the printout.** Iterating or printing a `PriorityQueue` shows the array layout, `[1, 3, 2]`, not sorted order. Only `poll()` drains in order.
+4. **Two-heap bookkeeping.** Placing directly on the “right” side (case-analysis bugs), rebalancing with `>=` instead of `>`, adding two `int`s before averaging, and, with lazy deletion, balancing by `size()` instead of live counts.
+5. **Feeding the heap bad entries.** Offering `null` successors in k-way merge, or changing a value while it sits inside the heap. The heap never re-sifts on its own; take the entry out, change it, put it back.
+
+## Coming back to the gate
+
+<Scene title="The Keeper's last word" mood="dusk">
+
+On the last night of the season you hand the guard’s staff back to the Keeper. She doesn’t take it.
+
+*"Keep it,"* she says. *"You’ll forget which chapter was which. That’s fine. Remember who stands at the door: the one among the chosen who is in danger. Remember that only the top can leave cheaply, and that anyone else can simply stop counting. And before every move, ask what is settled, why the move is safe, and when you stop."*
+
+</Scene>
+
+For each chapter, aim to do three things on a fresh input: **recognise the variation, explain who sits on top and why, and code it without the solution open**. If one feels shaky, that’s your next short session.
+
+Your drill plan from before still stands, now with a lesson behind every step. One session: **Kth Largest + Top K Frequent**, narrating the door guard twice, then flipping it for **K Closest**. Next: **Merge K Sorted Lists**, which bridges back to linked lists. Then **Find Median from Data Stream**: the dance, closed-book. Then **Task Scheduler** and **Sliding Window Median** when the first four feel calm. With this lesson, patterns 1 to 8 (all of Act I’s DSA surface) have lessons behind them.
+
+All **7 problems from your Heaps / Priority Queue roadmap** are covered above: Kth Largest Element in an Array, Top K Frequent Elements, K Closest Points to Origin, Find Median from Data Stream, Sliding Window Median, Merge K Sorted Lists and Task Scheduler. Use the <a href={`${BASE}dsa/`}>full DSA roadmap</a> to continue across patterns.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study** — next reps once the seven above feel calm:
+
+- [Top K Frequent Words](https://leetcode.com/problems/top-k-frequent-words/) — the exam’s first problem: a tie-break that flips inside the heap.
+- [Find K Pairs with Smallest Sums](https://leetcode.com/problems/find-k-pairs-with-smallest-sums/) — k-way merge where the “lists” are implicit.
+- [Ugly Number II](https://leetcode.com/problems/ugly-number-ii/) — a min-heap that generates a sequence, with duplicates to skip.
+- [Single-Threaded CPU](https://leetcode.com/problems/single-threaded-cpu/) — Chapter 8’s simulation with arrival times: unlock, then choose.
+- [Last Stone Weight II](https://leetcode.com/problems/last-stone-weight-ii/) — Side quest 2’s transfer test: not a heap at all.
+- [The Skyline Problem](https://leetcode.com/problems/the-skyline-problem/) — a max-heap with lazy deletion over a sweep line.
+- [Binary heap](https://en.wikipedia.org/wiki/Binary_heap) on Wikipedia — array layout, heapify, and the O(n) build proof.
+- [Priority Queues, Algorithms 4th edition (Sedgewick & Wayne)](https://algs4.cs.princeton.edu/24pq/) — sink, swim and heapsort, with Java code.
+- [`java.util.PriorityQueue` (Java 17 docs)](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/util/PriorityQueue.html) — the complexity guarantees and the iteration-order warning, in the original words.
+
+**Look these up yourself** — real ideas this book didn’t have room for:
+
+- **Heapsort** — build a max-heap in place, then repeatedly swap the root to the end: O(n log n), O(1) space, not stable.
+- **Indexed priority queue (decrease-key)** — the alternative to lazy deletion when entries must change priority, as in textbook Dijkstra.
+- **d-ary heaps** — more children per node: shallower trees, cheaper pushes, slightly costlier pops.
+- **Median of medians** — a deterministic O(n) selection algorithm that removes quickselect’s O(n²) worst case.
+- **External merge sort** — sorting data bigger than memory: sort chunks, then a k-way merge from disk.
+- **Huffman coding** — the stick-gluing greedy, used to build optimal prefix codes.
+- **Order-statistic trees** — balanced trees that answer “kth smallest” and delete in O(log n); the heavy-duty version of the TreeSet trick.
+- **Pairing and Fibonacci heaps** — heaps with cheaper merge and decrease-key, behind some theoretical graph-algorithm bounds.

@@ -1,116 +1,945 @@
 ---
 title: 'Intervals'
-description: 'Sort, then sweep — merging, inserting, and scheduling overlapping ranges, plus the one overlap formula that answers everything.'
+description: 'A novel in five chapters and six side quests. Take the front desk of the Grand Hotel, sort the day, and learn why one walk from morning to night answers merging, inserting, room-counting and cancelling — and the variations nobody showed you.'
 order: 4
-minutes: 25
+minutes: 75
+sessionMinutes: 8
 ---
-import Quiz from '../components/Quiz.astro';
-import Mermaid from '../components/Mermaid.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Playground from '../components/Playground.astro';
+import Practice from '../components/Practice.astro';
+import Trace from '../components/Trace.astro';
+import HintLadder from '../components/HintLadder.astro';
+import Reveal from '../components/Reveal.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import { hints } from '../data/intervals/hints';
+import { figures, mergeSweep, insertPhases, attendAll, roomsSweep, keepByEnd, mixedReview } from '../data/intervals/traces';
+import { BASE } from '../paths';
 
-## When this pattern fires
+export const TONES = { gold: '#e3b341', blue: '#58a6ff', green: '#3fb950', purple: '#bc8cff', red: '#f85149', dim: '#8b949e' };
+export const Timeline = ({ from, to, step = 1, unit = 24, lanes = [], marks = [], bands = [] }) => {
+  const gutter = 104, pad = 12, laneH = 32, top = 26;
+  const x = t => gutter + pad + (t - from) * unit;
+  const axisY = top + lanes.length * laneH + 4;
+  const width = gutter + pad + (to - from) * unit + 52;
+  const height = axisY + (marks.length ? 44 : 24);
+  const ticks = Array.from({ length: Math.floor((to - from) / step) + 1 }, (_, k) => from + k * step);
+  const say = b => b.label ?? (b.from === b.to ? `${b.from}` : `${b.from}–${b.to}`);
+  return <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img" aria-label={lanes.map(l => `${l.name}: ${l.bars.map(say).join(', ')}`).join('; ')} style="display:block;margin:0 auto;overflow:visible;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace">
+    {bands.map(b => <g>
+      <rect x={x(b.from)} y={top - 4} width={Math.max(2, (b.to - b.from) * unit)} height={lanes.length * laneH} rx="4" fill={TONES[b.tone ?? 'gold']} fill-opacity="0.12" stroke={TONES[b.tone ?? 'gold']} stroke-opacity="0.6" stroke-dasharray="4 3" />
+      {b.label && <text x={x(b.from) + (b.to - b.from) * unit / 2} y={top - 9} text-anchor="middle" font-size="11" font-weight="700" fill={TONES[b.tone ?? 'gold']}>{b.label}</text>}
+    </g>)}
+    {lanes.map((lane, i) => <g>
+      <text x={pad} y={top + i * laneH + 15} font-size="11" fill="#9198a1">{lane.name}</text>
+      <line x1={x(from)} x2={x(to)} y1={top + i * laneH + 11} y2={top + i * laneH + 11} stroke="#2d333b" stroke-dasharray="2 4" />
+      {lane.bars.map(b => { const c = TONES[b.tone ?? 'blue'], w = Math.max(4, (b.to - b.from) * unit), t = say(b), inside = w >= t.length * 7 + 10, left = x(b.from) - (b.from === b.to ? 2 : 0); return <g>
+        <rect x={left} y={top + i * laneH + 2} width={w} height="18" rx="5" fill={c} fill-opacity={b.ghost ? '0.06' : '0.25'} stroke={c} stroke-width="1.3" stroke-dasharray={b.ghost ? '4 3' : undefined} />
+        <text x={inside ? left + w / 2 : left + w + 4} y={top + i * laneH + 15} text-anchor={inside ? 'middle' : 'start'} font-size="11" font-weight="600" fill={b.ghost ? c : '#e6edf3'}>{t}</text>
+      </g>; })}
+    </g>)}
+    <line x1={x(from)} x2={x(to)} y1={axisY} y2={axisY} stroke="#56606e" stroke-width="1.2" />
+    {ticks.map(t => <g><line x1={x(t)} x2={x(t)} y1={axisY} y2={axisY + 4} stroke="#56606e" /><text x={x(t)} y={axisY + 16} text-anchor="middle" font-size="10" fill="#6b7380">{t}</text></g>)}
+    {marks.map(m => <g><line x1={x(m.at)} x2={x(m.at)} y1={top - 6} y2={axisY} stroke={TONES[m.tone ?? 'gold']} stroke-width="2" stroke-dasharray="5 3" /><text x={x(m.at)} y={axisY + 34} text-anchor="middle" font-size="11" font-weight="700" fill={TONES[m.tone ?? 'gold']}>{m.label}</text></g>)}
+  </svg>;
+};
 
-Input is **ranges** — meetings, bookings, time periods `[start, end]` — and the question is about **overlap**: merge them, count rooms, remove conflicts, insert a new one. 
+<PatternHub
+  pattern="intervals"
+  start="prologue"
+  logline="The Grand Hotel at Clockhaven sells time, not rooms. Every booking is a stretch of the clock — and a concierge who puts the day in order first can answer almost any question about it in one walk from morning to night."
+  cast={[
+    { name: 'You', role: 'The newest apprentice at the front desk. Like any loop, you can only hold one booking card at a time.' },
+    { name: 'The Keeper', role: 'Head concierge. Never gives the answer; asks three questions instead.' },
+    { name: 'Cur', role: 'The open card: the booking still being grown. It closes only when a gap proves it finished.' },
+    { name: 'Tally', role: 'The night porter with a brass clicker: +1 at every check-in, −1 at every checkout.' },
+    { name: 'The Bell Captain', role: 'Keeps one key per ballroom, ordered by when each room frees up. He always knows which room frees first.' },
+    { name: 'Lastend', role: 'The bookings clerk who remembers exactly one number: when the last booking she kept will end.' },
+  ]}
+  parts={[
+    { name: 'Part One · The open card', description: 'Sort by start. Grow one card; close it only at a gap.', links: [['merge-intervals', 'The ballroom ledger'], ['insert-interval', 'The late booking']] },
+    { name: 'Part Two · Who needs a room?', description: 'Same sort, new question: how many run at once, and what to cancel.', links: [['meeting-rooms', 'One guest, one diary'], ['meeting-rooms-ii', 'How many ballrooms?'], ['non-overlapping', 'The overbooked hall']] },
+  ]}
+  extensions={[['burst-balloons', 'Balloons in the atrium'], ['interval-intersections', 'Two guest lists'], ['free-time', 'When is nobody on duty?'], ['my-calendar', 'Bookings at the door'], ['car-pooling', 'The hotel shuttle'], ['covered-intervals', 'Rooms inside rooms']]}
+  extras={[['choose-the-tool', 'The banquet auction'], ['wider-family', 'The neighbouring guilds'], ['exit-ticket', 'The front-desk exam'], ['cheat-sheet', "The Keeper's notebook"]]}
+  note="All 5 roadmap problems, plus side quests that test whether the idea transfers. Read one chapter per sitting; the story keeps your place."
+/>
 
-**Move #1, always: sort by start time.** Unsorted intervals are chaos; sorted, every question becomes a single left-to-right sweep comparing each interval with a running "current" one. If you remember one thing: *sort, then sweep*.
+<h2 id="prologue">Prologue · The ledger of hours</h2>
 
-**The overlap test (memorize as a formula):** two intervals `a`, `b` overlap ⟺ `a.start <= b.end && b.start <= a.end`. After sorting by start, the practical check simplifies: `next.start <= current.end`.
+<Scene chapter="Prologue" title="The ledger of hours" mood="dawn">
 
-## Form 1 — Merge & Insert
+The Grand Hotel at Clockhaven does not really rent rooms. It rents *time*. Every line in the front-desk ledger is a stretch of the clock — the Rose Ballroom from 2 until 7, the Blue Salon from 5 until 10 — written in whatever order the requests happened to arrive.
 
-```java
-// Merge Intervals
+On your first morning, the Keeper drops the ledger in front of you. Forty bookings. No order at all. "Does anything clash?"
+
+You compare the first booking with every other one. Then the second with every other one. By the ninth your pencil is blunt and you have checked more than 300 pairs.
+
+*"Stop,"* says the Keeper. She turns the ledger on its side, so the hours run left to right like a corridor. *"Put the day in order first. Then you only ever need to look at the card in your hand — and the next one."*
+
+</Scene>
+
+An **interval** is a pair `[start, end]`: a meeting, a booking, a shift, a balloon on a wall. The questions are always about how intervals relate — do they **overlap**, how many overlap at once, what is their union, which to drop.
+
+Two closed intervals `a` and `b` overlap exactly when **each one starts no later than the other ends**:
+
+```text
+a and b overlap  ⟺  a.start <= b.end  &&  b.start <= a.end
+                 ⟺  max(a.start, b.start) <= min(a.end, b.end)
+```
+
+<Figure caption="Two bookings share time exactly when the later start (5) comes no later than the earlier end (7). The shared stretch runs from max(2, 5) = 5 to min(7, 10) = 7.">
+  <Timeline {...figures.overlap} />
+</Figure>
+
+Now the move that makes everything easy: **sort by start**. If `cur` comes before `next` in start order, then `cur.start <= next.start <= next.end`, so the first half of the formula is already true. Only one comparison is left:
+
+```text
+after sorting by start:   next overlaps cur  ⟺  next.start <= cur.end
+```
+
+That is the whole pattern: **sort, then sweep**. Unsorted, any booking could clash with any other, and you are back to comparing all n² pairs. Sorted, a single left-to-right walk compares each booking with one running "current" thing. The cost drops from O(n²) to **O(n log n)** for the sort plus O(n) for the walk.
+
+Before every move, ask the Keeper's three questions, adapted to the hotel:
+
+1. **What is settled?** Everything behind the sweep: ranges already emitted, bookings already kept or cancelled, events already counted.
+2. **Why is this move safe?** Usually because of the sort: nothing later can start earlier.
+3. **When do I stop?** When the last booking is read — and anything still open has been emitted.
+
+**When this pattern fires.** The input is ranges — times, bookings, segments, `[start, end]` pairs — and the question is about overlap: merge them, insert one, count how many run at once, remove the fewest to de-conflict, find common free time. Calendar and booking questions in system-design rounds hide the same tools.
+
+### The one rule you must read from every problem: does touching count?
+
+Does `[1, 2]` clash with `[2, 3]`? There is no universal answer. **Read the problem's definition of overlap, and say your assumption out loud.** In this book:
+
+| Problem | Do `[1,2]` and `[2,3]` overlap? | So the test is… |
+|---|---|---|
+| Merge Intervals, Insert Interval | Yes — they merge into `[1,3]` | `next.start <= cur.end` |
+| Meeting Rooms I and II | No — back-to-back is fine | clash when `start < previous end`; reuse a room when `freeAt <= start` |
+| Non-overlapping Intervals | No — LeetCode says so explicitly | keep when `start >= lastEnd` |
+| Burst Balloons (side quest) | Yes — one arrow at 2 pops both | new arrow only when `start > arrowAt` |
+| Interval List Intersections | Yes — the answer includes `[2,2]` | keep when `lo <= hi` |
+| My Calendar, Car Pooling | No — `[start, end)` | dropoffs before pickups |
+
+<h2 id="playground">The model ballroom · You make every move</h2>
+
+<Scene title="The model ballroom">
+
+Behind the front desk sits a scale model of the hotel's day: a long brass rail marked with the hours, and wooden tokens for every booking. Apprentices practise here before they are trusted with the real ledger. Nobody moves a token for you. When you make a wrong move, the Keeper doesn't scold — she tells you, quietly, which guest would have ended up in the wrong room.
+
+</Scene>
+
+Three sweeps live here: **merge** a ledger, **count ballrooms** with Tally's clicker, and **keep or cancel** bookings like Lastend. Each has an empty case and an awkward one: touching bookings, a tie at the same moment, or duplicates. Say the reason **before** pressing the button.
+
+<Playground lab="intervals" />
+
+<Part n="Part One" title="The open card">
+
+Sort by start. Hold one card open. Close it only when a gap proves nothing else can join.
+
+</Part>
+
+<h2 id="merge-intervals">Chapter 1 · The ballroom ledger</h2>
+
+<Scene chapter="Chapter 1" title="The ballroom ledger" mood="dawn">
+
+The head of housekeeping needs one thing before noon: the stretches when the Rose Ballroom is in use, so her crew can clean in the gaps. The ballroom's bookings say **1–3, 2–6, 8–10, 15–18**. Some overlap; she doesn't care which guest is which. She wants the busy stretches, merged.
+
+You pick up a blank card and write the first booking on it: 1–3. *"That's Cur,"* says the Keeper. *"The open card. It keeps growing while bookings join it."*
+
+The next booking starts at 2. Then one starts at 8. Somewhere in there, Cur has to be finished and filed. *"When,"* the Keeper asks, *"is it safe to close the card?"*
+
+</Scene>
+
+**Problem: Merge Intervals · Sort by start, then extend or close**
+
+Sort the bookings by start. Open a card with the first one. For each next booking there are only two possibilities:
+
+- **It starts at or before the card's end** (`next.start <= cur.end`): it shares time with the card. **Extend** the card's end to `max(cur.end, next.end)`.
+- **It starts after the card's end**: there is a gap. Nothing later can reach back across it — every later booking starts even later. The card is finished: **emit** it and open a new card with `next`.
+
+When the bookings run out, the last card is still open. **Emit it.**
+
+<Figure caption="The four Rose Ballroom bookings, sorted by start. 2–6 starts before 1–3 ends, so the card grows to 1–6. 8–10 starts after 6: a gap, so 1–6 is final. Merged: 1–6, 8–10, 15–18.">
+  <Timeline {...figures.merge} />
+</Figure>
+
+<Trace title="Extend, close, or finish?" steps={mergeSweep} takeaway="Remember: overlap is decided by next.start against cur.end; the new end is a max; and the last card is emitted after the loop." />
+
+**Why it works:** sorted by start, the card's start is the smallest start of everything it holds, and every booking still unread starts at or after `next.start`. When `next.start > cur.end`, no unread booking can touch the card — so closing it can never be premature.
+
+**What stays true:** every range in `out` is final, sorted, and separated from the next by a real gap. The card covers exactly the union of the bookings read since it was opened.
+
+<Reveal q="Why do you never need Math.min for the card's start?">
+
+Because you sorted by start. The card was opened by the earliest booking of its group; everything that joins it starts at the same time or later. Taking a min would always return `cur.start` — harmless, but it is a sign you have not trusted the sort.
+
+Ties in start order don't matter either: if two bookings start together, whichever comes first opens the card and the other extends it with a max.
+
+</Reveal>
+
+<HintLadder hints={hints.merge}>
+
+```java id=merge
 public int[][] merge(int[][] intervals) {
+    if (intervals.length == 0) return new int[0][];
     Arrays.sort(intervals, (a, b) -> Integer.compare(a[0], b[0]));
     List<int[]> out = new ArrayList<>();
-    int[] cur = intervals[0];
+    int[] cur = intervals[0].clone();
     for (int i = 1; i < intervals.length; i++) {
-        if (intervals[i][0] <= cur[1])                 // overlaps current →
-            cur[1] = Math.max(cur[1], intervals[i][1]); // extend (MAX, not replace!)
-        else {
-            out.add(cur);                               // gap → emit, start fresh
-            cur = intervals[i];
+        int[] next = intervals[i];
+        if (next[0] <= cur[1]) {
+            cur[1] = Math.max(cur[1], next[1]);   // extend: MAX, never replace
+        } else {
+            out.add(cur);                         // a gap: cur is finished
+            cur = next.clone();
         }
     }
-    out.add(cur);                                       // don't forget the last one
+    out.add(cur);                                 // the last open card
     return out.toArray(new int[0][]);
 }
 ```
 
-Two bestiary-grade details: **`Math.max` when extending** — `[1,10], [2,3]`: the second interval is swallowed entirely; naively taking its end would *shrink* the merge. And **emit the final `cur`** after the loop — the classic forgotten line.
+**O(n log n) time** for the sort, then one O(n) sweep. The output takes O(n) space; Java's object sort may use up to O(n) more workspace. The `clone()` calls keep the caller's inner arrays untouched; the outer array is reordered by the sort.
 
-**Insert Interval** (already-sorted input, no re-sort needed — say it): three phases — copy intervals ending before the new one; merge everything overlapping into the new one (`newStart = min`, `newEnd = max`); copy the rest.
+</HintLadder>
 
-## Form 2 — Scheduling & Overlaps
+**Catch the bug:** two lines in this solution are where nearly everyone slips.
 
-**Meeting Rooms I** — "can one person attend all?": sort, scan adjacent pairs, any `next.start < cur.end` → no. That's the whole problem.
+```java fragment
+cur[1] = next[1];        // BUG 1: replaces instead of extending
+...
+return out.toArray(...); // BUG 2: forgot out.add(cur) after the loop
+```
 
-**Meeting Rooms II** — "minimum rooms": the real question is **maximum simultaneous overlap**. Two standard answers; know both, lead with events:
+Bug 1 breaks on `[[1,10],[2,3],[4,5]]`: the swallowed `[2,3]` shrinks the card to `[1,3]`, and `[4,5]` is wrongly split off — the answer comes out `[[1,3],[4,5]]` instead of `[[1,10]]`. Bug 2 drops the final range on every non-empty input. Both sit in the Keeper's pocket list at the end of this book; say them out loud each time you write the loop. [Solve Merge Intervals](https://leetcode.com/problems/merge-intervals/).
 
-<Mermaid code={`flowchart TD
-    A["meetings: [0,30] [5,10] [15,20]"] --> B["events: +1@0, +1@5, −1@10, +1@15, −1@20, −1@30"]
-    B --> C["sweep sorted events,\nrunning count: 1,2,1,2,1,0"]
-    C --> D["answer = max count = 2 rooms"]`} />
+<h2 id="insert-interval">Chapter 2 · The late booking</h2>
 
-1. **Event sweep**: split each meeting into `(start, +1)` and `(end, −1)`, sort all events, running sum, track the max. **Tie rule: ends before starts** at the same time (a room freed at 10 is usable by a meeting starting at 10).
-2. **Min-heap of end times**: sort meetings by start; for each, if the earliest-ending room (`heap.peek()`) is free (`<= start`) reuse it (pop), always push your end. Heap size at the end... no — **max heap size ever** is the answer; conveniently the heap only grows when needed, so final size works. This version previews the Heaps pattern.
+<Scene chapter="Chapter 2" title="The late booking" mood="dusk">
 
-**Non-overlapping Intervals** — "min removals so none overlap": greedy — equivalent to *keeping* the maximum number of non-overlapping intervals. **Sort by END time**, greedily keep every interval that starts at-or-after the last kept end. Classic activity selection; the "sort by end, not start" switch is the whole insight — earliest-ending interval leaves the most room for the rest.
+The Blue Salon's ledger is the tidiest book in the hotel: already sorted, and not a single clash. **1–2, 3–5, 6–7, 8–10, 12–16.**
 
-## Recognition table
+At six in the evening a breathless courier arrives with a late request: **4–8**. Your hand moves to the stack of blank cards to rebuild the whole ledger.
 
-| You see | Move |
-|---------|------|
-| "merge/combine overlapping ranges" | sort by start, sweep, extend with max |
-| "can attend all / any conflict?" | sort, check adjacent pairs |
-| "min rooms / max concurrent" | event sweep (+1/−1) or end-time min-heap |
-| "min removals to de-conflict" / "max non-overlapping" | sort by END, greedy keep |
-| "insert a range into sorted ranges" | 3-phase: before / merge / after |
-| calendar/booking flavored SD-ish wording | same tools — intervals hide inside Airbnb/Calendar questions |
+*"It is already sorted,"* says the Keeper. *"Why would you sort it again?"*
 
-## Bug bestiary (pre-loaded)
+You look again. 1–2 is over long before 4. 12–16 starts long after 8. Only the bookings in the middle could possibly be touched by the newcomer. *"Which ones,"* she asks, *"does the late booking even reach?"*
 
-- **Extend with `next.end` instead of `Math.max(cur.end, next.end)`** — swallowed intervals shrink the merge (`[1,10],[2,3]`).
-- **Forgetting to emit the last `cur`** after the sweep.
-- **Tie-break wrong in event sweep** — starts processed before ends at equal time → phantom extra room.
-- **Sorting by start for the removal problem** — it's the END sort that makes the greedy correct.
-- **`<` vs `<=` on touching intervals** (`[1,2],[2,3]`) — read the problem's definition of overlap; say your assumption out loud.
+</Scene>
 
-<Quiz questions={[
-  {
-    q: 'Merging sorted [[1,10],[2,3],[4,5]] — after processing [2,3], cur must be [1,10]. Which line guarantees it?',
-    options: [
-      'cur[1] = intervals[i][1]',
-      'cur[1] = Math.max(cur[1], intervals[i][1]) — [2,3] is fully swallowed; taking its end would shrink [1,10] to [1,3] and wrongly split off [4,5]',
-      'cur[0] = Math.min(cur[0], intervals[i][0])',
-      'Sorting by end time first'
-    ],
-    answer: 1,
-    why: 'The swallowed-interval case is THE merge bug. (Start never needs min — sorting by start guarantees cur[0] is already smallest.)'
-  },
-  {
-    q: 'Meeting Rooms II via event sweep: meeting ends at 10, another starts at 10. Processing order and why?',
-    options: [
-      'Start first — arrivals take priority',
-      'End (−1) first — the freed room is available to the 10:00 start; processing the start first counts a phantom simultaneous meeting and overstates rooms by 1',
-      'Order does not matter at equal times',
-      'Merge them into one event'
-    ],
-    answer: 1,
-    why: 'Tie-breaking is where event sweeps go wrong. Back-to-back meetings share a room; your sort comparator must encode that (end events before start events at equal time).'
-  },
-  {
-    q: '"Minimum intervals to remove so none overlap" — why sort by END time for the greedy?',
-    options: [
-      'End sort is faster to compute',
-      'Keeping the interval that ends earliest leaves maximum room for everything after it — each greedy keep is provably safe; sorting by start can trap you with a long interval that blocks many others',
-      'Start sort fails on negative times',
-      'Either sort works with the right bookkeeping'
-    ],
-    answer: 1,
-    why: 'Activity selection\'s exchange argument: earliest end dominates any alternative choice. The [1,100],[2,3],[4,5] counterexample kills start-sort greedy in one line — have it ready.'
-  }
-]} />
+**Problem: Insert Interval · Three phases over an already-sorted ledger**
 
-## Drill hand-off
+The ledger is sorted and clash-free, so it splits into **three runs**, in order:
 
-With the buddy: **Merge Intervals** (code it, narrate the two bestiary traps) → **Meeting Rooms II** (both solutions, say the tie rule) → unseen transfer test from the scheduling family when warm. Note: Meeting Rooms I & II are 💎 premium — LintCode links on the Arsenal page.
+1. **Entirely before** the newcomer: `entry.end < new.start`. Copy them unchanged.
+2. **Overlapping** the newcomer: once phase 1 is done, that is every entry with `entry.start <= new.end`. Absorb each one: `start = min(start, entry.start)`, `end = max(end, entry.end)`.
+3. **Entirely after**: everything left. Add the (grown) newcomer, then copy the rest.
+
+Touching counts as overlap here, exactly as in Merge Intervals: LeetCode's own example merges `[4,8]` with `[8,10]`.
+
+<Figure caption="Phase 1 (grey): 1–2 ends before 4. Phase 2 (gold): 3–5, 6–7 and 8–10 all reach the newcomer, which grows to 3–10. Phase 3 (blue): 12–16 starts after 10 and is copied as it is.">
+  <Timeline {...figures.insert} />
+</Figure>
+
+<Trace title="Which phase is this entry in?" steps={insertPhases} takeaway="Remember: copy what ends before, absorb what overlaps (min start, max end), add the newcomer once, copy the rest." />
+
+**Why it works:** because the ledger is sorted and clash-free, its ends are sorted too. Once an entry fails "ends before the newcomer", every later entry fails it as well; once an entry starts after the (grown) newcomer ends, every later entry does too. So the three phases really are three contiguous runs, and one pass finds them.
+
+**What stays true:** the output so far is sorted and clash-free; the newcomer covers itself plus every entry it has absorbed.
+
+<Reveal q="Why not just append the newcomer and run Merge Intervals?">
+
+It gives the right answer, and it is a fine fallback under pressure. But it re-sorts a sorted ledger: O(n log n) instead of O(n). The interviewer handed you sorted input on purpose — say so, then use it.
+
+You could also binary search for where phase 2 begins. It doesn't change the bound: building the output is O(n) anyway.
+
+</Reveal>
+
+<HintLadder hints={hints.insert}>
+
+```java id=insert
+public int[][] insert(int[][] intervals, int[] newInterval) {
+    List<int[]> out = new ArrayList<>();
+    int i = 0, n = intervals.length;
+    int start = newInterval[0], end = newInterval[1];
+    while (i < n && intervals[i][1] < start) {       // phase 1: ends before the newcomer
+        out.add(intervals[i++]);
+    }
+    while (i < n && intervals[i][0] <= end) {        // phase 2: overlaps (touching counts)
+        start = Math.min(start, intervals[i][0]);
+        end = Math.max(end, intervals[i][1]);
+        i++;
+    }
+    out.add(new int[]{start, end});                  // the newcomer, exactly once
+    while (i < n) {                                  // phase 3: starts after it
+        out.add(intervals[i++]);
+    }
+    return out.toArray(new int[0][]);
+}
+```
+
+**O(n) time, O(n) space** for the output. An empty ledger returns just the newcomer; a newcomer that lands in a gap absorbs nothing and is still added once.
+
+</HintLadder>
+
+**Catch the bug:** writing phase 1 as `intervals[i][1] <= start` copies `[1,4]` straight past a newcomer `[4,6]`, leaving `[[1,4],[4,6]]` — two touching ranges this problem says must be one, `[[1,6]]`. Only the **first** absorbed entry can lower the start; only the **last** can raise the end — but `min` and `max` on every step keeps the code simple and correct. [Solve Insert Interval](https://leetcode.com/problems/insert-interval/).
+
+<Part n="Part Two" title="Who needs a room?">
+
+Same sort, new questions: can one guest attend everything, how many rooms must open, and what should be cancelled.
+
+</Part>
+
+<h2 id="meeting-rooms">Chapter 3 · One guest, one diary</h2>
+
+<Scene chapter="Chapter 3" title="One guest, one diary">
+
+Lady Ottoline Brack has booked herself into three meetings in three different salons: **0–30, 5–10, 15–20**. She has no intention of being late to anything. "Can I attend them all?" she asks, tapping her diary with a gloved finger.
+
+You start to line up every meeting against every other. The Keeper slides the diary out of your hands and rewrites it in start order.
+
+*"Now,"* she says, *"if two of these clash, which two do you need to look at?"*
+
+</Scene>
+
+**Problem: Meeting Rooms · Sort, then compare neighbours** (LeetCode premium)
+
+**Input:** an array `intervals` of meetings `[start, end]`, with `start < end`. **Output:** `true` if one person can attend every meeting — no two overlap — else `false`. A meeting ending at 10 and another starting at 10 do **not** clash; meetings are effectively `[start, end)`. Examples: `[[0,30],[5,10],[15,20]]` → `false`; `[[7,10],[2,4]]` → `true`.
+
+Sort by start. Then compare each meeting **only with the one before it**: if `start < previous.end`, return `false`.
+
+<Figure caption="Lady Ottoline's diary in start order. 5–10 starts before 0–30 ends, so the answer is false the moment you compare the first neighbours.">
+  <Timeline {...figures.attend} />
+</Figure>
+
+<Trace title="Can she attend them all?" steps={attendAll} takeaway="Remember: sort first, compare each meeting with its predecessor, and use start < previous end — back-to-back is not a clash." />
+
+<Reveal q="Why is comparing neighbours enough? Couldn't meeting 4 clash with meeting 1 while 2 and 3 look fine?">
+
+Suppose some pair clashes, and pick the clashing pair `(j, i)` that is closest together in start order. If they are not neighbours, look at meeting `j + 1`, which sits between them. It starts no earlier than `j` and no later than `i`, so it starts before `j` ends (since `i` does). It also ends after it starts. So `j` and `j + 1` clash — a closer pair, contradicting our choice. The closest clashing pair is always a pair of neighbours.
+
+</Reveal>
+
+<HintLadder hints={hints.attend}>
+
+```java id=canAttendMeetings
+public boolean canAttendMeetings(int[][] intervals) {
+    Arrays.sort(intervals, (a, b) -> Integer.compare(a[0], b[0]));
+    for (int i = 1; i < intervals.length; i++) {
+        if (intervals[i][0] < intervals[i - 1][1]) return false;   // starts before the previous ends
+    }
+    return true;
+}
+```
+
+**O(n log n) time** for the sort, O(1) extra space beyond it. Zero or one meeting is trivially `true`.
+
+</HintLadder>
+
+**Catch the bug:** `<=` instead of `<` rejects back-to-back meetings like `[[1,5],[5,8]]`. Skipping the sort makes `[[7,10],[2,4]]` look like a clash. LintCode's version passes a `List<Interval>` with `start` and `end` fields; the logic is identical. [Solve Meeting Rooms (LeetCode, premium)](https://leetcode.com/problems/meeting-rooms/) · [LintCode 920](https://www.lintcode.com/problem/920/).
+
+<h2 id="meeting-rooms-ii">Chapter 4 · How many ballrooms?</h2>
+
+<Scene chapter="Chapter 4" title="How many ballrooms?" mood="night">
+
+Conference season. Tomorrow's meetings are **0–30, 5–10, 10–20**, and the manager wants to know how many ballrooms to unlock, heat and staff. Every unnecessary room costs a fortune in coal.
+
+Tally, the night porter, lifts his brass clicker. "I'll stand at the door," he says. "Click up when a party comes in, click down when one leaves. The highest number I ever see is your answer."
+
+At exactly ten o'clock, two things happen at once: the 5–10 party leaves, and the 10–20 party arrives. Tally's thumb hovers over the clicker.
+
+*"Which click first?"* asks the Keeper.
+
+</Scene>
+
+**Problem: Meeting Rooms II · The peak overlap, by event sweep or by heap** (LeetCode premium)
+
+**Input:** an array `intervals` of meetings `[start, end]`, with `start < end`. **Output:** the minimum number of conference rooms so that every meeting has a room for its whole duration. A room freed at time `t` can host a meeting that starts at `t`. Examples: `[[0,30],[5,10],[15,20]]` → `2`; `[[7,10],[2,4]]` → `1`.
+
+The real question is **the largest number of meetings running at the same moment**. Fewer rooms than that peak is impossible: at the busiest moment, each of those meetings needs its own room. The peak is also always enough — the Bell Captain's method below proves it by actually handing out that many rooms.
+
+### Method 1 · Tally's clicker (event sweep)
+
+Split each meeting into two **events**: `(start, +1)` and `(end, −1)`. Sort the events by time. Walk them, keeping a running total `inUse`; the answer is its **maximum**.
+
+**The tie rule: at the same time, process checkouts before check-ins.** A room freed at 10 is free for the meeting that starts at 10. If the check-in went first, `inUse` would briefly count both — a phantom room. In code, sort `(time, delta)` pairs by time, then by delta: `−1` sorts before `+1`.
+
+<Figure caption="Tally's count. At 10 the checkout is processed before the check-in, so the count goes 2 → 1 → 2 and never reads 3. The peak is 2 rooms.">
+  <Timeline {...figures.roomsSweep} />
+</Figure>
+
+<Trace title="Click up, click down" steps={roomsSweep} takeaway="Remember: the answer is the peak of the running count; checkouts before check-ins at equal times; and the heap's size counts rooms ever opened, not rooms busy right now." />
+
+**Why the tie rule is exactly right:** with checkouts first, the count right after all events at time `t` equals the number of meetings running from `t` until the next event, and the counts in between are never higher than that. So the largest count seen is exactly the busiest moment. With check-ins first, the in-between counts can overshoot.
+
+<HintLadder hints={hints.roomsSweep}>
+
+```java id=minMeetingRooms
+public int minMeetingRooms(int[][] intervals) {
+    int[][] events = new int[intervals.length * 2][];
+    int k = 0;
+    for (int[] m : intervals) {
+        events[k++] = new int[]{m[0], +1};   // check-in
+        events[k++] = new int[]{m[1], -1};   // checkout
+    }
+    // Earlier time first; at the same time, -1 (checkout) before +1 (check-in).
+    Arrays.sort(events, (a, b) -> a[0] != b[0] ? Integer.compare(a[0], b[0]) : Integer.compare(a[1], b[1]));
+    int inUse = 0, rooms = 0;
+    for (int[] e : events) {
+        inUse += e[1];
+        rooms = Math.max(rooms, inUse);
+    }
+    return rooms;
+}
+```
+
+**O(n log n) time** for sorting 2n events, **O(n) space** for the events.
+
+</HintLadder>
+
+<Reveal q="Could you add up all the changes at each time instead of ordering them?">
+
+Yes. Put every `+1` and `−1` into a `TreeMap<Integer, Integer>` keyed by time, summing the changes that share a time, then walk the map in key order. At 10 the net change is `−1 + 1 = 0`, so no phantom ever appears. This "difference map" is a valid alternative — the same idea as the difference array in the car-pooling side quest, and the usual solution to My Calendar III.
+
+The other classic variant keeps two sorted arrays, `starts` and `ends`, and walks them like two pointers: whenever the next end is `<=` the next start, free a room first. The playground's room-counting mode works this way.
+
+</Reveal>
+
+### Method 2 · The Bell Captain's keys (min-heap of end times)
+
+The Bell Captain hands out real rooms. He takes meetings **in start order** and keeps a **min-heap** with one entry per room he has opened: the time that room's latest meeting ends. For each new meeting:
+
+- If the room that frees earliest (`heap.peek()`) is free by the meeting's start (`<= start`), **reuse it**: `poll()` its old end time.
+- Either way, `offer()` the meeting's end: that room is now busy until then.
+
+The answer is the heap's size at the end. Here is exactly why — the old version of this page muddled it:
+
+- **The heap is not the set of rooms in use right now.** A room that has emptied stays in the heap until some later meeting reuses it. Each meeting pops **at most one** entry and always pushes one, so the size goes up by one (a new room) or stays the same (a reused room). **It never shrinks.** So the final size is the number of rooms ever opened.
+- **He opens a new room only when he must.** A new room is opened only when even the earliest-freeing room ends after this meeting's start. Then every room in the heap has a meeting that started at or before this one (start order) and is still running at this start — so all of them, plus the newcomer, run at the same moment. The number of rooms opened never exceeds the peak overlap, and it can't be less.
+
+<Figure caption="The Bell Captain on 0–5, 1–2, 6–7. 1–2 arrives while room A is busy until 5, so room B opens. At 6, room B (free since 2) is reused. The heap ends holding 5 and 7: size 2 = rooms opened = the answer — even though at 6 only one meeting is running.">
+  <Timeline {...figures.roomsHeap} />
+</Figure>
+
+<HintLadder hints={hints.roomsHeap}>
+
+```java id=minMeetingRoomsHeap
+public int minMeetingRoomsHeap(int[][] intervals) {
+    Arrays.sort(intervals, (a, b) -> Integer.compare(a[0], b[0]));
+    PriorityQueue<Integer> roomFreeAt = new PriorityQueue<>();   // one entry per room ever opened
+    for (int[] m : intervals) {
+        if (!roomFreeAt.isEmpty() && roomFreeAt.peek() <= m[0]) {
+            roomFreeAt.poll();          // reuse the room that frees earliest
+        }
+        roomFreeAt.offer(m[1]);         // that room is busy until m[1]
+    }
+    return roomFreeAt.size();           // never shrank, so this is the number of rooms opened
+}
+```
+
+**O(n log n) time**: the sort, plus at most one poll and one offer per meeting. **O(n) space** for the heap in the worst case (every meeting overlapping). This version previews the <a href={`${BASE}dsa/lessons/heaps/`}>Heaps</a> pattern.
+
+</HintLadder>
+
+<Reveal q="What if you popped every free room with while instead of if?">
+
+Then the heap would hold exactly the rooms busy right now — and its **final** size would no longer be the answer. On `[[0,5],[1,2],[6,7]]`, at 6 the loop pops both 2 and 5, pushes 7, and ends with size 1. The answer is 2. With `while`, you must record the largest size seen after each push. Either way is correct if you are consistent; mixing `while` with `return size()` is the bug.
+
+</Reveal>
+
+**Catch the bug:** sorting events by time alone, with check-ins and checkouts in input order, can report a phantom room: on `[[10,20],[0,10]]` it answers 2 when one room is enough. Encode the tie in the comparator. [Solve Meeting Rooms II (LeetCode, premium)](https://leetcode.com/problems/meeting-rooms-ii/) · [LintCode 919](https://www.lintcode.com/problem/919/).
+
+<h2 id="non-overlapping">Chapter 5 · The overbooked hall</h2>
+
+<Scene chapter="Chapter 5" title="The overbooked hall" mood="storm">
+
+A careless clerk has triple-booked the Great Hall. The manager is furious and wants as **few** bookings cancelled as possible, so that none of the rest overlap.
+
+Lastend, the senior bookings clerk, sharpens her pencil. "I keep a booking," she says, "or I cancel it. And I only ever remember one number: when the last booking I kept will end."
+
+The first booking in the ledger is a monster: **1 until 100**. "Keep it," you say. "It's first."
+
+*"First by what?"* asks the Keeper. *"And what does keeping it cost everyone after it?"*
+
+</Scene>
+
+**Problem: Non-overlapping Intervals · Sort by END, keep greedily**
+
+Fewest cancellations is the same as **most bookings kept** with no two overlapping. Every kept booking is worth 1, however long it is — so what matters is how much room it leaves for the rest.
+
+**Sort by end time. Keep a booking whenever it starts at or after `lastEnd`; otherwise cancel it.** Touching is allowed here — LeetCode states that `[1,2]` and `[2,3]` do not overlap — so the test is `start >= lastEnd`.
+
+<Figure caption="End order: 2–4, 5–7, 8–11 are kept (green); 1–12 starts before 11 and is cancelled. One cancellation. Start order would have kept 1–12 first and cancelled the other three.">
+  <Timeline {...figures.keepByEnd} />
+</Figure>
+
+<Trace title="Keep or cancel?" steps={keepByEnd} takeaway="Remember: sort by END; keep when start >= lastEnd; count cancellations as n − kept. The longest booking is not the most valuable." />
+
+**Why it works — the exchange argument.** Let `g` be the booking that ends earliest. Take any best plan, and let `f` be its earliest-ending booking. Swap `f` for `g`. Every other booking in the plan starts at or after `f.end`, and `g.end <= f.end`, so they all still fit: the plan is still valid and just as large. So **some best plan always starts with `g`**. Keep `g`, discard everything that starts before `g.end`, and repeat the same argument on what is left. Each greedy keep is provably safe.
+
+**What stays true:** the kept bookings never overlap, and some best plan contains all of them.
+
+**The counterexample to have ready:** `[[1,100],[2,3],[4,5]]`. Start order keeps `[1,100]` first, which blocks both others: 2 cancellations. End order keeps `[2,3]` and `[4,5]`: 1 cancellation.
+
+<Reveal q="Can start order ever work?">
+
+Yes — with a different rule. Sort by start, and on a clash cancel **whichever of the two ends later** (keep `lastEnd = min(lastEnd, end)`). That is the earliest-end idea in disguise, and it gives the same answer. What fails is start order with the same keep-if-it-fits rule.
+
+</Reveal>
+
+<HintLadder hints={hints.eraseOverlap}>
+
+```java id=eraseOverlapIntervals
+public int eraseOverlapIntervals(int[][] intervals) {
+    Arrays.sort(intervals, (a, b) -> Integer.compare(a[1], b[1]));
+    int kept = 0;
+    long lastEnd = Long.MIN_VALUE;           // nothing kept yet
+    for (int[] iv : intervals) {
+        if (iv[0] >= lastEnd) {              // touching is not a clash here
+            kept++;
+            lastEnd = iv[1];
+        }
+    }
+    return intervals.length - kept;
+}
+```
+
+**O(n log n) time** for the sort, O(1) extra space beyond it. The `long` sentinel handles an empty input and the first booking without a special case.
+
+</HintLadder>
+
+**Catch the bug:** `iv[0] > lastEnd` cancels touching bookings: `[[1,2],[2,3]]` would report 1 instead of 0. And sorting by start with the same rule fails the `[[1,100],[2,3],[4,5]]` counterexample above. This is activity selection; the same greedy shows up again in the <a href={`${BASE}dsa/`}>Greedy</a> part of the roadmap. [Solve Non-overlapping Intervals](https://leetcode.com/problems/non-overlapping-intervals/).
+
+<Part n="Part Three" title="The Keeper changes one rule">
+
+Side quests. Same corridor of hours, same tools — one rule different. This is where memorised templates break and understanding doesn't.
+
+</Part>
+
+<Scene title="Side quests" mood="night">
+
+The evening you finish Chapter 5, there is a stack of booking cards on your desk in the Keeper's narrow handwriting. Each one is a problem you have already solved — with one rule crossed out and a new one written above it.
+
+*"Anyone can repeat a route,"* says the note on top. *"Show me you know why the route works."*
+
+</Scene>
+
+<h2 id="burst-balloons">Side quest 1 · Balloons in the atrium</h2>
+
+**The card says:** the atrium is strung with balloons for a gala, each spanning `[start, end]` along the wall. An arrow shot at position `x` pops every balloon with `start <= x <= end`. Pop them all with the **fewest arrows**.
+
+This is Chapter 5 with one rule changed: **touching now counts.** `[1,2]` and `[2,3]` share the point 2, so one arrow pops both.
+
+**The reasoning:** look at the balloon that ends first. Some arrow must hit it at or before its end. Slide that arrow right, all the way to the end, and it never pops fewer: no balloon ends earlier, so everything it popped is still under it. So **fire at the earliest end**, sweep away every balloon that has started by then, and repeat. Sort by end; fire a new arrow only when a balloon **starts after** the last arrow (`start > arrowAt`).
+
+<Figure caption="LeetCode's example, sorted by end. The arrow at 6 pops 1–6 and 2–8; 7–12 starts after 6, so a second arrow goes at 12 and also pops 10–16. Two arrows.">
+  <Timeline {...figures.arrows} />
+</Figure>
+
+<HintLadder hints={hints.arrows}>
+
+```java id=findMinArrowShots
+public int findMinArrowShots(int[][] points) {
+    if (points.length == 0) return 0;
+    Arrays.sort(points, (a, b) -> Integer.compare(a[1], b[1]));   // never a[1] - b[1]: it can overflow
+    int arrows = 1;
+    int arrowAt = points[0][1];
+    for (int i = 1; i < points.length; i++) {
+        if (points[i][0] > arrowAt) {        // strictly after: touching balloons share the arrow
+            arrows++;
+            arrowAt = points[i][1];
+        }
+    }
+    return arrows;
+}
+```
+
+**O(n log n) time, O(1) extra space** beyond the sort.
+
+</HintLadder>
+
+**Catch the bug:** this problem's coordinates span the whole `int` range, and the comparator `(a, b) -> a[1] - b[1]` overflows. On `[[-2147483646,-2147483645],[2147483646,2147483647]]` the subtraction wraps around, the sort puts the balloons in the wrong order, and the answer becomes 1 instead of 2. Always use `Integer.compare`. [Solve Minimum Number of Arrows to Burst Balloons](https://leetcode.com/problems/minimum-number-of-arrows-to-burst-balloons/).
+
+**Transfer test:** the answer here equals the most balloons you can choose with no two touching. Why are "fewest stabbing points" and "most disjoint intervals" the same number?
+
+<h2 id="interval-intersections">Side quest 2 · Two guest lists</h2>
+
+**The card says:** two guests each hand you a list of free slots, already sorted, each list free of internal overlaps. Ends are included. Return every slot when **both** are free.
+
+Nothing needs sorting — each list already is. Give each list a reader, `i` and `j`, like two captains walking two roads. The current slots overlap from `lo = max(starts)` to `hi = min(ends)`; record it if `lo <= hi`.
+
+Then **advance whichever slot ends first.** Its business is finished: the other list's later slots all start after that list's current slot ends, which is no earlier than this one's end.
+
+<Figure caption="LeetCode's example. Each A∩B piece runs from the later start to the earlier end; single-point overlaps such as 5–5 and 24–24 count, because ends are included.">
+  <Timeline {...figures.intersections} />
+</Figure>
+
+<Reveal q="Why advance the slot that ends first, and not the one that starts first?">
+
+The slot that ends first, say `A[i]`, is done: every later slot in B starts after `B[j]` ends, and `B[j]` ends no earlier than `A[i]`. So nothing left in B can reach `A[i]`. The slot that *starts* first might be long and still overlap `B[j + 1]` — advancing it would lose that overlap. On ties, advancing either one is safe.
+
+</Reveal>
+
+<HintLadder hints={hints.intersections}>
+
+```java id=intervalIntersection
+public int[][] intervalIntersection(int[][] firstList, int[][] secondList) {
+    List<int[]> out = new ArrayList<>();
+    int i = 0, j = 0;
+    while (i < firstList.length && j < secondList.length) {
+        int lo = Math.max(firstList[i][0], secondList[j][0]);
+        int hi = Math.min(firstList[i][1], secondList[j][1]);
+        if (lo <= hi) out.add(new int[]{lo, hi});
+        if (firstList[i][1] < secondList[j][1]) i++;   // the one that ends first is finished
+        else j++;
+    }
+    return out.toArray(new int[0][]);
+}
+```
+
+**O(m + n) time**: every step advances one reader. Output is at most m + n slots. This is the merge step from <a href={`${BASE}dsa/lessons/two-pointers/`}>Two Pointers</a>, applied to ranges.
+
+</HintLadder>
+
+**Transfer test:** change the output to the **union** of both lists. Which chapter's code do you reach for, and do you still need to sort? [Solve Interval List Intersections](https://leetcode.com/problems/interval-list-intersections/).
+
+<h2 id="free-time">Side quest 3 · When is nobody on duty?</h2>
+
+**The card says:** each porter has a sorted list of shifts. Return every stretch of **positive length** when **nobody** is working, between the first shift's start and the last shift's end.
+
+On LeetCode this is **Employee Free Time** (premium, hard). **Input:** `schedule`, a list of employees, each a sorted list of non-overlapping intervals with `start < end` (LeetCode uses an `Interval` class; here `int[][][]`). **Output:** the common free intervals, sorted, each of positive length. Example: `[[[1,2],[5,6]],[[1,3]],[[4,10]]]` → `[[3,4]]`.
+
+It looks hard and is not. **Free for everyone means outside the union of everyone's busy time.** Pool every shift, sort by start, and run Chapter 1's sweep — but instead of emitting the merged blocks, emit the **gaps between them**.
+
+<Figure caption="Pooled and merged, the busy time is 1–3 and 4–10. The only gap is 3–4: the one stretch when all three porters are off.">
+  <Timeline {...figures.freeTime} />
+</Figure>
+
+<HintLadder hints={hints.freeTime}>
+
+```java id=employeeFreeTime
+public int[][] employeeFreeTime(int[][][] schedule) {
+    List<int[]> all = new ArrayList<>();
+    for (int[][] person : schedule) for (int[] shift : person) all.add(shift);
+    if (all.isEmpty()) return new int[0][];
+    all.sort((a, b) -> Integer.compare(a[0], b[0]));
+    List<int[]> free = new ArrayList<>();
+    int busyUntil = all.get(0)[1];
+    for (int[] shift : all) {
+        if (shift[0] > busyUntil) free.add(new int[]{busyUntil, shift[0]});   // a real gap
+        busyUntil = Math.max(busyUntil, shift[1]);
+    }
+    return free.toArray(new int[0][]);
+}
+```
+
+**O(N log N) time** for N shifts in total, O(N) space for the pooled list.
+
+</HintLadder>
+
+**Catch the bug:** `shift[0] >= busyUntil` reports zero-length "gaps" like `[3,3]` when one shift ends as another starts. The problem wants positive length only. [Employee Free Time (LeetCode, premium)](https://leetcode.com/problems/employee-free-time/).
+
+**Transfer test:** each porter's list is already sorted. How could a heap that holds one shift per porter avoid sorting everything, and what would the time become for k porters?
+
+<h2 id="my-calendar">Side quest 4 · Bookings at the door</h2>
+
+**The card says:** requests now arrive **one at a time**, and each must be accepted or refused on the spot. A request `[start, end)` is accepted only if it does not clash with anything already accepted. You cannot sort requests you haven't seen.
+
+**The reasoning:** the accepted bookings never overlap each other, so in start order their ends are in order too. A new request can only clash with **its two neighbours**: the accepted booking that starts at or just before `start`, and the one that starts at or just after. Anything further away is blocked by those two. A `TreeMap` from start to end finds both in O(log n): `floorEntry(start)` and `ceilingEntry(start)`.
+
+<Figure caption="LeetCode's example: book(10, 20) is accepted; book(15, 25) is refused because 10–20 runs past 15; book(20, 30) is accepted — touching is fine for [start, end) bookings.">
+  <Timeline {...figures.calendar} />
+</Figure>
+
+<HintLadder hints={hints.calendar}>
+
+```java id=myCalendar
+class MyCalendar {
+    private final TreeMap<Integer, Integer> booked = new TreeMap<>();   // start -> end, never overlapping
+
+    public boolean book(int start, int end) {                            // [start, end)
+        Map.Entry<Integer, Integer> before = booked.floorEntry(start);   // starts at or before start
+        Map.Entry<Integer, Integer> after = booked.ceilingEntry(start);  // starts at or after start
+        if (before != null && before.getValue() > start) return false;   // runs past our start
+        if (after != null && after.getKey() < end) return false;         // begins before our end
+        booked.put(start, end);
+        return true;
+    }
+}
+```
+
+**O(log n) per request, O(n) space.** A plain list checked against every booking is O(n) per request — O(n²) over n requests.
+
+</HintLadder>
+
+**Transfer test:** My Calendar II allows double bookings but refuses triple ones. The neighbour argument no longer holds (accepted bookings may overlap). Which earlier chapter's tool counts "how many at once"? [Solve My Calendar I](https://leetcode.com/problems/my-calendar-i/).
+
+<h2 id="car-pooling">Side quest 5 · The hotel shuttle</h2>
+
+**The card says:** the hotel shuttle drives one way along the coast road with `capacity` seats. Each trip is `[riders, pickup, dropoff]`. Riders leave at their dropoff **before** anyone boards there. Can the shuttle serve every trip?
+
+This is Meeting Rooms II with weights. Each trip is an event `(pickup, +riders)` and `(dropoff, −riders)`. Sort by location — **dropoffs before pickups** at the same place, Chapter 4's tie rule again — and watch the running load. If it ever exceeds `capacity`, the answer is `false`.
+
+<Figure caption="LeetCode's example. Between 3 and 5 both trips are aboard: 2 + 3 = 5 riders. With 4 seats the answer is false; with 5 it is true.">
+  <Timeline {...figures.carPool} />
+</Figure>
+
+<HintLadder hints={hints.carPool}>
+
+```java id=carPooling
+public boolean carPooling(int[][] trips, int capacity) {
+    int[][] events = new int[trips.length * 2][];
+    int k = 0;
+    for (int[] t : trips) {
+        events[k++] = new int[]{t[1], t[0]};     // board t[0] riders at t[1]
+        events[k++] = new int[]{t[2], -t[0]};    // they leave at t[2]
+    }
+    // By place; at the same place, negative (dropoff) before positive (pickup).
+    Arrays.sort(events, (a, b) -> a[0] != b[0] ? Integer.compare(a[0], b[0]) : Integer.compare(a[1], b[1]));
+    int load = 0;
+    for (int[] e : events) {
+        load += e[1];
+        if (load > capacity) return false;
+    }
+    return true;
+}
+```
+
+**O(n log n) time, O(n) space.**
+
+</HintLadder>
+
+<Reveal q="LeetCode bounds the locations by 1000. Can you skip the sort?">
+
+Yes: a **difference array**. Make `int[] change = new int[1001]`, add `riders` at `pickup` and subtract at `dropoff`, then take running sums from left to right. The load at location `x` is the running sum at `x`, and the dropoff-first rule happens automatically because both changes land in the same cell. That is O(n + L) for L locations — the <a href={`${BASE}dsa/lessons/prefix-sum/`}>Prefix Sum</a> lesson's trick, run on a timeline.
+
+</Reveal>
+
+**Transfer test:** `[[2,1,5],[3,5,7]]` with 3 seats should be `true`. Which line of your code makes that so? [Solve Car Pooling](https://leetcode.com/problems/car-pooling/).
+
+<h2 id="covered-intervals">Side quest 6 · Rooms inside rooms</h2>
+
+**The card says:** some reservations are redundant: they lie entirely inside another reservation (`c <= a` and `b <= d` means `[a,b)` is covered by `[c,d)`). Remove every covered one. How many remain? LeetCode promises the intervals are all different.
+
+**The reasoning:** sort by start. Then everything before a range starts no later, so the range is covered **exactly when something before it reaches at least as far**. Track `furthestEnd`; a range survives only if its end goes beyond it.
+
+The trap is the **tie**. When two ranges start together, the longer one must come first, or the shorter one is counted before its cover arrives. Sort by start ascending, then **end descending**.
+
+<Reveal q="With ends sorted ascending on ties, what goes wrong on [[1,2],[1,4]]?">
+
+`[1,2]` comes first: its end 2 beats the starting `furthestEnd`, so it survives. Then `[1,4]` reaches 4, so it survives too. Answer 2 — but `[1,2]` lies inside `[1,4]`, and the right answer is 1. With the longer one first, `[1,4]` sets `furthestEnd = 4` and `[1,2]` is correctly found covered.
+
+</Reveal>
+
+<HintLadder hints={hints.covered}>
+
+```java id=removeCoveredIntervals
+public int removeCoveredIntervals(int[][] intervals) {
+    // Start ascending; on equal starts the LONGER interval first, so it can cover the shorter one.
+    Arrays.sort(intervals, (a, b) -> a[0] != b[0] ? Integer.compare(a[0], b[0]) : Integer.compare(b[1], a[1]));
+    int remaining = 0;
+    long furthestEnd = Long.MIN_VALUE;
+    for (int[] iv : intervals) {
+        if (iv[1] > furthestEnd) {     // reaches past everything before it: not covered
+            remaining++;
+            furthestEnd = iv[1];
+        }
+    }
+    return remaining;
+}
+```
+
+**O(n log n) time, O(1) extra space** beyond the sort.
+
+</HintLadder>
+
+**Transfer test:** the comparator is now a two-key sort. Name two other chapters in this book where the tie-break in the comparator changes the answer. [Solve Remove Covered Intervals](https://leetcode.com/problems/remove-covered-intervals/).
+
+<Part n="Epilogue" title="Beyond the corridor of hours">
+
+When sorting and sweeping is the wrong tool, who lives next door, and the exam that proves you can find your own way.
+
+</Part>
+
+<h2 id="choose-the-tool">The banquet auction · When the greedy fails</h2>
+
+<Scene title="The banquet auction" mood="storm">
+
+One winter the hotel tries something new: banquet jobs, each with a fee. **1–4 pays 10. 2–3 pays 1. 3–5 pays 1.** Choose jobs that don't clash; earn as much as you can.
+
+Lastend doesn't hesitate. End order: keep 2–3, cancel 1–4, keep 3–5. Two jobs, two coins.
+
+The Keeper takes the ledger, crosses both out, and writes **1–4: 10 coins**.
+
+*"Your rule didn't fail,"* she says. *"Its proof did. It counted bookings. Nobody told it they had prices."*
+
+</Scene>
+
+The exchange argument in Chapter 5 swapped one booking for another of **equal value**. With weights, swapping a 10-coin job for a 1-coin job that ends earlier is not "just as good". The greedy has no proof, and here it earns 2 instead of 10.
+
+**Weighted interval scheduling needs dynamic programming.** Sort jobs by end. For each job, either skip it (best so far stays) or take it plus the best plan that **finishes by its start** — found with a binary search over the sorted ends.
+
+<HintLadder hints={hints.jobs}>
+
+```java id=jobScheduling
+public int jobScheduling(int[] startTime, int[] endTime, int[] profit) {
+    int n = startTime.length;
+    Integer[] order = new Integer[n];
+    for (int i = 0; i < n; i++) order[i] = i;
+    Arrays.sort(order, (a, b) -> Integer.compare(endTime[a], endTime[b]));
+    int[] ends = new int[n];
+    for (int k = 0; k < n; k++) ends[k] = endTime[order[k]];
+    int[] best = new int[n + 1];               // best[k] = most pay using the first k jobs by end
+    for (int k = 0; k < n; k++) {
+        int job = order[k];
+        int lo = 0, hi = k;                    // how many earlier jobs end by this job's start?
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (ends[mid] <= startTime[job]) lo = mid + 1;
+            else hi = mid;
+        }
+        best[k + 1] = Math.max(best[k], best[lo] + profit[job]);
+    }
+    return best[n];
+}
+```
+
+**O(n log n) time, O(n) space.** Touching jobs are compatible (`<=`). LeetCode's limits keep the total within `int`; use `long` if pay can be larger. [Solve Maximum Profit in Job Scheduling](https://leetcode.com/problems/maximum-profit-in-job-scheduling/).
+
+</HintLadder>
+
+Two other places where a single sweep is the wrong tool:
+
+- **Many questions about one fixed set.** "How many bookings cover time `t`?" asked 100,000 times: sort the starts and the ends separately, and answer each query with two <a href={`${BASE}dsa/lessons/binary-search/`}>binary searches</a> — the number of starts `<= t` minus the number of ends `<= t` (for `[start, end)` bookings).
+- **Requests that arrive over time.** Sorting needs the whole input. Online accept/refuse belongs in an ordered map (Side quest 4).
+
+<Reveal q="Does every interval problem start by sorting by start?">
+
+No. Non-overlapping Intervals and Burst Balloons sort by **end**; Remove Covered Intervals needs a two-key sort; Insert Interval and Interval List Intersections get sorted input and must not re-sort; My Calendar can't sort at all. The real first question is: **what order makes the next decision safe?**
+
+</Reveal>
+
+<h2 id="wider-family">The neighbouring guilds · How the other roadmap patterns connect</h2>
+
+The Grand Hotel isn't the only place in the realm that keeps time. Several roadmap patterns meet intervals at the edges:
+
+| Where intervals meet… | The shared idea | Where it lives |
+|---|---|---|
+| A min-heap of end times | Always know which room frees first; k-way merge for many sorted lists | <a href={`${BASE}dsa/lessons/heaps/`}>Heaps</a> |
+| Difference arrays | +change at a start, −change at an end, then running sums | <a href={`${BASE}dsa/lessons/prefix-sum/`}>Prefix Sum</a> |
+| Two readers over two sorted lists | Advance the one that can no longer matter | <a href={`${BASE}dsa/lessons/two-pointers/`}>Two Pointers</a> |
+| Point and boundary queries | Count starts and ends at or before `t`; find a phase boundary | <a href={`${BASE}dsa/lessons/binary-search/`}>Binary Search</a> |
+| Activity selection, exchange arguments | Earliest end is always a safe first choice | <a href={`${BASE}dsa/`}>Greedy · roadmap</a> |
+| Weighted scheduling | Skip or take, plus the best compatible prefix | <a href={`${BASE}dsa/`}>Dynamic Programming · roadmap</a> |
+
+**Intervals also hide in system design.** "Design a calendar", "design a room or rental booking service", "find a slot when everyone is free": once the boxes are drawn, the core check is still the overlap formula and the tie rule.
+
+<h2 id="exit-ticket">The front-desk exam · Build a solution with the labels removed</h2>
+
+<Scene title="No chapter titles" mood="dawn">
+
+On the morning of the exam the Keeper hands you a sheet with no chapter names and no hints — just three problems, a pen, and the three questions carved above the front desk.
+
+*"Pick one,"* she says. *"Before you write any code, tell me the order you'll sort in, what is settled behind your sweep, and when you'll stop."*
+
+</Scene>
+
+Choose one. Use your editor, keep the lesson's code closed, and write down your sort order, your invariant and your stopping rule before coding.
+
+1. **Total booked time.** Given unsorted bookings `[start, end]`, return the total length of time covered by at least one booking (a booking contributes `end − start`). Test an empty input, a booking nested inside another, and two touching bookings.
+2. **The busiest moment.** Given meetings `[start, end)`, return the **earliest** time at which the most meetings are running. Test back-to-back meetings, two equally busy moments, and a single meeting.
+3. **Cancel a window.** Given a sorted, clash-free list of `[start, end)` bookings, remove the window `[a, b)` from all of them and return what remains. Test a booking that straddles the whole window, one that straddles only its left edge, and a window that touches nothing.
+
+<Reveal q="I've written and tested it. What should my reasoning contain?">
+
+**Total booked time:** merge (Chapter 1), then add up `end − start` of the merged ranges. Summing the raw bookings double-counts overlaps; the nested test catches that.
+
+**The busiest moment:** event sweep with checkouts first (Chapter 4). Record the time whenever the count **strictly** exceeds the best so far — a `>=` would move the answer to a later, equally busy moment.
+
+**Cancel a window:** three phases again (Chapter 2). A booking that ends at or before `a`, or starts at or after `b`, is untouched. One that overlaps the window can leave up to two pieces: `[start, a)` if `start < a`, and `[b, end)` if `end > b`.
+
+Now explain why a slightly wrong version fails on one of your tests. That counterexample is stronger evidence of understanding than a memorised template.
+
+</Reveal>
+
+Passing this once is a useful checkpoint. Reconstruct one solution on another day, with a changed input, without the headings telling you which pattern to use.
+
+<h2 id="mixed-recall">Quick recall · Keep the rule warm</h2>
+
+Close the code. For each one, name the sort order and say what a move preserves. This round includes every checkpoint question from the old version of this page.
+
+<Trace title="Which tool fits?" steps={mixedReview} takeaway="Now try the independent session: no pattern title, a new input, and your explanation before the rubric." />
+
+<h2 id="independent-practice">Night shift · The problem won't name its pattern</h2>
+
+The review queue starts with due concepts, then new ones. Hints or corrected attempts bring a concept back tomorrow. Successful recall at a scheduled review stretches the interval to 3, 7, then 14 days. Your reasoning is **self-checked**; nothing here automatically marks a roadmap problem solved.
+
+<Practice pattern="intervals" />
+
+<h2 id="cheat-sheet">The Keeper's notebook</h2>
+
+| When you see… | Start with… | The promise to keep |
+|---|---|---|
+| Merge / combine overlapping ranges | Sort by start; extend with max or close at a gap | Emitted ranges are final; the card is the union of what it absorbed |
+| Insert into sorted, clash-free ranges | Three phases: before / absorb / after | O(n), no re-sort; the newcomer is added once |
+| Can one person attend everything? | Sort by start; compare neighbours with `<` | The closest clashing pair is always a pair of neighbours |
+| Fewest rooms / most at once | Events +1/−1, ends before starts on ties; or a min-heap of end times | Answer = peak count = rooms ever opened |
+| Fewest removals / most non-overlapping | Sort by END; keep if `start >= lastEnd` | Some best plan contains every kept booking |
+| Fewest points that stab every range | Sort by end; new point only if `start > point` | Each point sits at the earliest unstabbed end |
+| Overlaps of two sorted lists | Two readers; record `[max start, min end]`; advance the one ending first | A slot that ends first cannot meet anything later |
+| Common free time | Pool, sort, merge; report the gaps | Gaps are outside everyone's busy time |
+| Accept/refuse bookings online | `TreeMap`: check floor and ceiling only | Accepted bookings never overlap |
+| Capacity over a route or timeline | Weighted events, removals first; or a difference array | The peak load decides |
+| Remove ranges inside others | Sort by start, end descending; track the furthest end | Covered ⟺ something earlier reaches as far |
+| Weighted non-overlapping jobs | DP over end order + binary search — not greedy | best[k] covers the first k jobs |
+
+Sorting by start or end is O(n log n) before the sweep begins. Count the sort, the output, and any heap or event array before you state a complexity.
+
+## Five bugs the Keeper keeps in her pocket
+
+1. **Extending with `next.end` instead of `Math.max(cur.end, next.end)`.** A swallowed booking shrinks the merge: `[1,10],[2,3]`.
+2. **Forgetting to emit the last card** after the sweep.
+3. **The wrong tie-break in an event sweep.** Check-ins before checkouts at the same time count a phantom extra room.
+4. **Sorting by start for the removal greedy.** It is the END sort that makes the keep-if-it-fits rule correct: `[1,100],[2,3],[4,5]`.
+5. **`<` versus `<=` on touching ranges** (`[1,2],[2,3]`). Read the problem's definition of overlap; say your assumption out loud.
+
+## Coming back to the front desk
+
+<Scene title="The Keeper's last word" mood="dusk">
+
+At the end of the season the Keeper finds you at the front desk after midnight, turning the ledger sideways out of habit. *"You'll forget which problem was which,"* she says. *"That's fine. Remember to ask what order makes the next decision safe, what is settled behind you, and when you stop. Every ledger in the world is just a corridor of hours."*
+
+</Scene>
+
+For each chapter, aim to do three things on a fresh input: **recognise the variation, explain why the move is safe, and code it without the solution open**. If one feels shaky, that is your next short session.
+
+A good drill when you sit down with your interview buddy: **Merge Intervals** — code it and narrate the two classic traps (max on extend, emit the last card) — then **Meeting Rooms II** — both solutions, saying the tie rule and why the heap's final size is the answer — then one unseen variation from the side quests while you're warm.
+
+All **5 problems from your Intervals roadmap** are covered above: Merge Intervals, Insert Interval, Meeting Rooms, Meeting Rooms II and Non-overlapping Intervals. Meeting Rooms I and II are premium on LeetCode; their LintCode twins are linked in Chapters 3 and 4 and on the <a href={`${BASE}dsa/`}>DSA Arsenal</a> page, which continues across every pattern.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study** — next reps once the five above feel calm:
+
+- [Meeting Rooms III](https://leetcode.com/problems/meeting-rooms-iii/) — the Bell Captain with two heaps: free rooms and busy rooms.
+- [My Calendar II](https://leetcode.com/problems/my-calendar-ii/) and [My Calendar III](https://leetcode.com/problems/my-calendar-iii/) — Side quest 4 with overlap allowed; III is the difference map in disguise.
+- [Corporate Flight Bookings](https://leetcode.com/problems/corporate-flight-bookings/) — a difference array over seats, the car-pooling idea in batch.
+- [Minimum Interval to Include Each Query](https://leetcode.com/problems/minimum-interval-to-include-each-query/) — sort the queries too, and sweep both with a heap.
+- [Data Stream as Disjoint Intervals](https://leetcode.com/problems/data-stream-as-disjoint-intervals/) and [Range Module](https://leetcode.com/problems/range-module/) — merging, online, with an ordered map.
+- [Remove Interval](https://leetcode.com/problems/remove-interval/) (premium) — the exam's third problem.
+- [Interval scheduling](https://en.wikipedia.org/wiki/Interval_scheduling) and [Activity selection problem](https://en.wikipedia.org/wiki/Activity_selection_problem) on Wikipedia — the theory behind Chapter 5 and the banquet auction.
+- *Algorithm Design* by Kleinberg and Tardos — chapter 4 covers interval scheduling and interval partitioning (Chapters 4 and 5 here); chapter 6 opens with weighted interval scheduling.
+- *Introduction to Algorithms* (CLRS) — the activity-selection problem in the greedy-algorithms chapter, with the exchange argument written formally.
+
+**Look these up yourself** — real ideas this book didn't have room for:
+
+- **Interval trees and segment trees** — answer "which bookings overlap this one?" in O(log n + k) on a set that keeps changing.
+- **Interval partitioning and interval graph colouring** — why the minimum rooms always equals the maximum overlap (interval graphs are "perfect").
+- **"Greedy stays ahead"** — the other classic proof style for Chapter 5, alongside the exchange argument.
+- **Sweep-line algorithms in geometry** — the same events-in-order idea finds segment intersections and rectangle-union areas.
+- **Coordinate compression** — shrinking huge timestamps to ranks so a difference array still fits in memory.
+- **K-way merge with a heap** — Employee Free Time in O(N log k) by using each porter's sorted list.
+- **Guava's `RangeSet`** — a production Java library type that merges and queries ranges for you; read how it uses a sorted map.

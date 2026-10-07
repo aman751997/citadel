@@ -132,7 +132,7 @@ export const DSA: DsaPattern[] = [
     ],
   },
   {
-    id: 9, title: 'Trees (DFS)', fires: 'path/height/LCA, rebuild tree',
+    id: 9, title: 'Trees (DFS)', fires: 'path/height/LCA, rebuild tree', lesson: 'trees-dfs',
     problems: [
       { name: 'Invert Binary Tree', lc: 'invert-binary-tree', sub: 'DFS Basics', diff: 'E', trigger: 'Mirror left/right', b75: true },
       { name: 'Same Tree', lc: 'same-tree', sub: 'DFS Basics', diff: 'E', trigger: 'Structural equality', b75: true },
@@ -149,7 +149,7 @@ export const DSA: DsaPattern[] = [
     ],
   },
   {
-    id: 10, title: 'Trees (BFS)', fires: 'row-by-row, right-side-view',
+    id: 10, title: 'Trees (BFS)', fires: 'row-by-row, right-side-view', lesson: 'trees-bfs',
     problems: [
       { name: 'Binary Tree Level Order Traversal', lc: 'binary-tree-level-order-traversal', sub: 'Level Order', diff: 'M', trigger: 'Row by row (queue)', b75: true },
       { name: 'Zigzag Level Order Traversal', lc: 'binary-tree-zigzag-level-order-traversal', sub: 'Level Order', diff: 'M', trigger: 'Rows, alternating direction' },
@@ -157,7 +157,7 @@ export const DSA: DsaPattern[] = [
     ],
   },
   {
-    id: 11, title: 'Graphs (Traversal)', fires: 'components, unweighted shortest, clone',
+    id: 11, title: 'Graphs (Traversal)', fires: 'components, unweighted shortest, clone', lesson: 'graphs',
     problems: [
       { name: 'Number of Islands', lc: 'number-of-islands', sub: 'Grid / Islands', diff: 'M', trigger: 'Connected 1s / components', b75: true },
       { name: 'Max Area of Island', lc: 'max-area-of-island', sub: 'Grid / Islands', diff: 'M', trigger: 'Largest component in grid' },
@@ -170,7 +170,7 @@ export const DSA: DsaPattern[] = [
     ],
   },
   {
-    id: 12, title: 'Advanced Graphs', fires: 'ordering, connectivity, weighted paths',
+    id: 12, title: 'Advanced Graphs', fires: 'ordering, connectivity, weighted paths', lesson: 'advanced-graphs',
     problems: [
       { name: 'Course Schedule', lc: 'course-schedule', sub: 'Topological Sort', diff: 'M', trigger: 'Prerequisites / order constraints', b75: true },
       { name: 'Course Schedule II', lc: 'course-schedule-ii', sub: 'Topological Sort', diff: 'M', trigger: 'Return the valid order' },
@@ -184,7 +184,7 @@ export const DSA: DsaPattern[] = [
     ],
   },
   {
-    id: 13, title: 'Backtracking', fires: '"generate all", constraint satisfaction',
+    id: 13, title: 'Backtracking', fires: '"generate all", constraint satisfaction', lesson: 'backtracking',
     problems: [
       { name: 'Subsets', lc: 'subsets', sub: 'Subsets', diff: 'M', trigger: 'All include/exclude combos' },
       { name: 'Subsets II', lc: 'subsets-ii', sub: 'Subsets', diff: 'M', trigger: 'Unique subsets with duplicates' },
@@ -198,7 +198,7 @@ export const DSA: DsaPattern[] = [
     ],
   },
   {
-    id: 14, title: '1-D Dynamic Programming', fires: 'linear state, decode-ways, coin-change',
+    id: 14, title: '1-D Dynamic Programming', fires: 'linear state, decode-ways, coin-change', lesson: 'dp-1d',
     problems: [
       { name: 'Climbing Stairs', lc: 'climbing-stairs', sub: 'Fibonacci Style', diff: 'E', trigger: 'State from last 2 steps', b75: true },
       { name: 'House Robber (I & II)', lc: 'house-robber', sub: 'Fibonacci Style', diff: 'M', trigger: 'Max sum, no adjacent picks', b75: true },
@@ -212,7 +212,7 @@ export const DSA: DsaPattern[] = [
     ],
   },
   {
-    id: 15, title: '2-D Dynamic Programming', fires: 'two-string/grid, stock-state, intervals',
+    id: 15, title: '2-D Dynamic Programming', fires: 'two-string/grid, stock-state, intervals', lesson: 'dp-2d',
     problems: [
       { name: 'Unique Paths', lc: 'unique-paths', sub: 'Grid', diff: 'M', trigger: 'Ways to bottom-right', b75: true },
       { name: 'Longest Common Subsequence', lc: 'longest-common-subsequence', sub: 'String Matching', diff: 'M', trigger: 'Shared subsequence, two strings', b75: true },
@@ -225,7 +225,7 @@ export const DSA: DsaPattern[] = [
     ],
   },
   {
-    id: 16, title: 'Tries', fires: 'prefix/autocomplete, wildcard search',
+    id: 16, title: 'Tries', fires: 'prefix/autocomplete, wildcard search', lesson: 'tries',
     problems: [
       { name: 'Implement Trie (Prefix Tree)', lc: 'implement-trie-prefix-tree', sub: 'Construction', diff: 'M', trigger: 'Autocomplete / prefix tracking', b75: true },
       { name: 'Design Add and Search Words', lc: 'design-add-and-search-words-data-structure', sub: 'Trie + DFS', diff: 'M', trigger: 'Wildcard "." search', b75: true },
@@ -233,7 +233,7 @@ export const DSA: DsaPattern[] = [
     ],
   },
   {
-    id: 17, title: 'Math & Bit Manipulation', fires: 'O(1)-space tricks, counting bits',
+    id: 17, title: 'Math & Bit Manipulation', fires: 'O(1)-space tricks, counting bits', lesson: 'bit-manipulation',
     problems: [
       { name: 'Single Number', lc: 'single-number', sub: 'XOR', diff: 'E', trigger: 'O(1) space cancellation (XOR)' },
       { name: 'Number of 1 Bits', lc: 'number-of-1-bits', sub: 'XOR / Base 2', diff: 'E', trigger: 'popcount', b75: true },
@@ -243,7 +243,7 @@ export const DSA: DsaPattern[] = [
     ],
   },
   {
-    id: 18, title: 'Greedy', fires: 'local-optimal, jump game, gas station',
+    id: 18, title: 'Greedy', fires: 'local-optimal, jump game, gas station', lesson: 'greedy',
     problems: [
       { name: 'Maximum Subarray', lc: 'maximum-subarray', sub: "Kadane's", diff: 'M', trigger: 'Reset running sum when negative', b75: true },
       { name: 'Maximum Product Subarray', lc: 'maximum-product-subarray', sub: 'Kadane Variant', diff: 'M', trigger: 'Track min AND max (negatives swap)', b75: true },
@@ -255,7 +255,7 @@ export const DSA: DsaPattern[] = [
     ],
   },
   {
-    id: 19, title: 'Hashing & Sets', fires: 'anagrams, longest-consecutive, O(1) lookup',
+    id: 19, title: 'Hashing & Sets', fires: 'anagrams, longest-consecutive, O(1) lookup', lesson: 'hashing',
     problems: [
       { name: 'Contains Duplicate', lc: 'contains-duplicate', sub: 'Dedup', diff: 'E', trigger: 'Set size vs array size' },
       { name: 'Valid Anagram', lc: 'valid-anagram', sub: 'Frequency Map', diff: 'E', trigger: 'Same char multiset' },
@@ -265,7 +265,7 @@ export const DSA: DsaPattern[] = [
     ],
   },
   {
-    id: 20, title: 'Matrix & Geometry', fires: 'rotate/spiral/set-zeroes, pow(x,n)',
+    id: 20, title: 'Matrix & Geometry', fires: 'rotate/spiral/set-zeroes, pow(x,n)', lesson: 'matrix',
     problems: [
       { name: 'Rotate Image', lc: 'rotate-image', sub: 'In-Place Rotation', diff: 'M', trigger: 'Transpose + reverse rows' },
       { name: 'Spiral Matrix', lc: 'spiral-matrix', sub: 'Boundary Simulation', diff: 'M', trigger: 'Shrink 4 bounds' },

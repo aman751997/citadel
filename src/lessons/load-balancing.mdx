@@ -1,58 +1,875 @@
 ---
-title: 'Load Balancers & API Gateways'
-description: 'L4 vs L7, health checks, and the gateway box that starts every diagram — what it actually does and when it becomes interesting.'
+title: 'Load Balancers & API Gateways: L4/L7, Algorithms, Health, Global'
+description: 'The deploy that cost Kestrel a minute of 502s every single time, and the box everyone draws but nobody explains. L4 to L7, round robin to two random choices, health checks to anycast, and the gateway at the front door.'
 module: 2
 order: 4
-minutes: 20
+minutes: 85
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Bars from '../components/Bars.astro';
 import Mermaid from '../components/Mermaid.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { capacity, layers, connections, rotation, leastLoaded, twoChoices, affinity, sticky, health, outliers, deploys, lbHa, global, placement, gateway, drills } from '../data/sd/load-balancing';
+import { BASE } from '../paths';
 
-## The most-drawn, least-explained box
+<PatternHub
+  pattern="sd-load-balancing"
+  start="prologue"
+  logline="The load balancer is the box at the top of every diagram and the one nobody explains. It makes four promises: spread the work, notice the dead, let servers come and go without anyone noticing, and never be the thing that fails. Say how it keeps each one, and the box earns its place."
+  cast={[
+    { name: 'You', role: 'Six weeks into your job at Kestrel. You have put a load balancer in every design you ever drew. You have never been asked what it does.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Points at the most familiar box on the whiteboard and asks what is inside it.' },
+    { name: 'Dev Okafor', role: 'SRE. Owns the balancers, the deploy pipeline, and the pager. Explains outages with envelopes and kitchen timers.' },
+    { name: 'Iris Tan', role: 'Product lead. Is launching Kestrel Drops: limited-edition sales that open at noon, all at once, everywhere.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has watched a health check take down a database, and a database take down every health check.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · Why the box exists', description: 'Capacity and headroom, what L4 and L7 can see, and connections versus requests.', links: [['why-balance', 'Seventy-two doors'], ['l4-l7', 'What the balancer can read'], ['connections', 'Ten thousand letters, one envelope']] },
+    { name: 'Part Two · Choosing a server', description: 'Every algorithm worth naming, and when each one fits.', links: [['rotation', 'Taking turns'], ['least-loaded', 'Ask who is busy'], ['two-choices', 'Pick two, keep the better'], ['affinity', 'Same key, same door'], ['sticky', 'The sticky note']] },
+    { name: 'Part Three · Keeping the pool honest', description: 'Health checks, outlier ejection, draining and slow start.', links: [['health', 'Alive, or ready?'], ['outliers', 'The server that fails fast'], ['deploys', 'Leaving quietly, arriving slowly']] },
+    { name: 'Part Four · Beyond one box', description: 'The balancer’s own failover, other regions, where the deciding happens, and the front door.', links: [['lb-ha', 'Who balances the balancer?'], ['global', 'Choosing a continent'], ['placement', 'Where the decision lives'], ['gateway', 'The front door']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Make the calls interviewers probe, with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="Read one part per sitting. Part Two is the one interviewers poke hardest; come back to its traces before any mock."
+/>
 
-Every design starts `client → LB → servers`. Interviewers let it slide until they don't: "what does your load balancer actually do?" This lesson is that answer, plus the gateway distinction.
+<h2 id="prologue">Prologue · The 502 minute</h2>
 
-## L4 vs L7 — the core distinction
+<Scene chapter="Prologue" title="The 502 minute" mood="dawn">
+
+Every time the listings service deploys, the error graph grows a small, neat spike: one minute of 502s, then silence. It has happened forty times. Everyone has learned to ignore it.
+
+Then Iris announces Kestrel Drops. Limited-edition sales, opening at noon, everywhere at once. *"Fifty thousand requests a second for the first ten minutes,"* she says. *"Oh, and also — we can't freeze deploys. The sale pages change every day."*
+
+Dev pulls up the spike. *"At noon, that minute is a few million failed requests."*
+
+Mara walks to the whiteboard and draws the diagram everyone draws: clients, a box labelled LB, three servers. She taps the box.
+
+*"We have drawn this in every design review for three years,"* she says. *"So. What does it actually do? Every word."*
+
+</Scene>
+
+Every design starts `client → LB → servers`. Interviewers let that box slide until they don't: *"What does your load balancer actually do?"* This lesson is that answer — taken all the way down, so that no follow-up can reach the bottom of what you know.
+
+A load balancer makes **four promises**, and each part of this lesson is one of them:
+
+1. **Spread the work** so no server drowns while another sleeps (Parts One and Two).
+2. **Notice the dead and the sick**, and stop sending them traffic (Part Three).
+3. **Let servers come and go** — deploys, scaling, failures — without users noticing (Part Three).
+4. **Never be the single thing that fails**, in one data centre or across the world (Part Four).
+
+**Your stakes.** Two entries in your gap register live in this box. **Layer conflation**: saying "the load balancer" when you mean an anycast edge, an L4 balancer, an L7 proxy and an API gateway — four different boxes with four different jobs. **Silent skips**: drawing the box without saying what it decides, and on what information. The habit this lesson builds is the one from your drill notes: **every box earns its sentence.**
+
+<Figure caption="The map of this lesson. A request from a phone passes through several balancing decisions, each made by a different box with different information.">
+  <Mermaid code={`flowchart LR
+    P["Phone"] -->|"DNS / anycast\npicks a region"| E["Edge\nWAF, rate limits"]
+    E --> L4["L4 balancers\none virtual IP\nspread connections"]
+    L4 --> L7["L7 proxies / gateway\nTLS, routing,\nper-request choice"]
+    L7 -->|"health checks\ndraining"| S1["App server"]
+    L7 --> S2["App server"]
+    L7 --> S3["App server"]
+    S1 -->|"client-side\nor sidecar"| B["Internal\nservices"]`} />
+</Figure>
+
+<Part n="Part One" title="Why the box exists">
+
+Before choosing an algorithm, know what the balancer is buying you, what it can see, and what it is actually balancing.
+
+</Part>
+
+<h2 id="why-balance">Chapter 1 · Seventy-two doors</h2>
+
+<Scene chapter="Chapter 1" title="Seventy-two doors" mood="dawn">
+
+Mara writes three words on the board: *capacity, availability, deploys.* *"Those are the reasons the box exists. Start with the first. Dev load-tested one server this morning."*
+
+*"It falls over at a thousand requests a second,"* Dev says. *"Clean curve. Fine at 600, sluggish at 850, on fire at a thousand."*
+
+*"So for fifty thousand,"* Iris says, *"we need fifty servers."*
+
+Mara hands her the marker. *"Show me what happens at noon with fifty."*
+
+</Scene>
+
+A load balancer exists for three reasons, and you should be able to say all three:
+
+- **Capacity.** One machine has a ceiling. Many machines behind one address act as one bigger machine — horizontal scaling.
+- **Availability.** When one machine dies, the balancer stops sending it traffic, and users see nothing (or one retried request).
+- **Change.** Deploys, scaling up and down, and replacing hardware all mean servers leaving and joining. The balancer makes that invisible.
+
+Underneath all three is one assumption: **any server can serve any request.** That is the stateless rule from the <a href={`${BASE}sd/lessons/networking/`}>networking lesson</a>, and Chapter 8 is about what happens when you break it.
+
+**Worked numbers — how many servers for Kestrel Drops?**
+
+```text
+servers = peak RPS ÷ (per-server capacity × target utilisation)
+
+50,000 ÷ (1,000 × 0.70) = 71.4  →  72 servers, each at about 694 req/s
+```
+
+**Why not 100%? Why 70%?** Because latency is not flat as a server fills up. In the simplest queueing model (M/M/1), time in the system is the service time divided by `(1 − utilisation)`:
+
+| Utilisation | Time in system vs. an idle server |
+|---|---|
+| 50% | 2× |
+| 60% | 2.5× |
+| **70%** | **3.3×** |
+| 80% | 5× |
+| 90% | 10× |
+
+Real servers are less extreme than M/M/1 (they have several cores working in parallel), but the shape is the same: the curve bends sharply somewhere past 70–80%. And 70% leaves room for four things that will happen on the day: **bursts** inside the peak second, **imperfect balancing** (the hottest server is always above the average — Part Two), **deploys** taking a slice of servers out of rotation, and **failures**.
+
+**The zone loss is the one people forget.** Put the 72 servers in three availability zones, 24 each, and lose a zone at noon:
+
+```text
+50,000 ÷ 48 survivors = 1,042 req/s each  →  104% of capacity. Overload.
+```
+
+At 70% a server can absorb at most `1 ÷ 0.7 ≈ 1.43×` its load; losing one zone of three multiplies it by `3 ÷ 2 = 1.5×`. So size for the failure you must survive:
+
+```text
+two zones must carry 50,000 at ≤ 90%:   50,000 ÷ 900 = 55.6 → 56 servers → 28 per zone
+three zones × 28 = 84 servers; normal utilisation = 50,000 ÷ 84,000 ≈ 60%
+```
+
+**Failure planning, not taste, sets your everyday utilisation.** With three zones, normal utilisation must stay below two thirds of whatever you can tolerate during a zone loss. (The <a href={`${BASE}sd/lessons/estimation/`}>estimation lesson</a> reaches the same 60% for the same reason.)
+
+<Figure caption="Three zones of 28. Lose any one and the remaining 56 run at about 89% — hot, but serving. With 72 servers, the same loss pushes them past saturation.">
+  <Mermaid code={`flowchart TB
+    LB["Load balancer\n50,000 req/s"] --> ZA["Zone A\n28 servers\n~595 req/s each"]
+    LB --> ZB["Zone B\n28 servers\n~595 req/s each"]
+    LB --> ZC["Zone C (lost)\n0 servers"]
+    ZC -.->|"its share moves"| ZA
+    ZC -.->|"its share moves"| ZB`} />
+</Figure>
+
+A deploy is a smaller, planned version of the same loss. Rolling 10% of 84 servers at a time takes 8 out of rotation: `50,000 ÷ 76 ≈ 658` req/s each, about 66%. Fine. With 72 servers, the same rollout puts 65 servers at about 77%. Still fine — but now add a burst.
+
+<Trace title="Count the doors" steps={capacity} takeaway="Servers = peak ÷ (capacity × target utilisation), then check the failure you must survive. Three zones means survivors carry 1.5× — plan for it." />
+
+**Catch the trap:** "We'll autoscale." Autoscaling reacts in minutes; a zone dies in a second and a Drop opens at exactly noon. Say the number of servers at peak, how they are spread, and what each runs at after losing a zone.
+
+<h2 id="l4-l7">Chapter 2 · What the balancer can read</h2>
+
+<Scene chapter="Chapter 2" title="What the balancer can read">
+
+Dev draws two envelopes. *"You remember this one from the networking review,"* he says. *"L4 reads the envelope. L7 opens it."*
+
+Mara nods, then adds a third drawing: an envelope with a padlock. *"And when the letter is locked? Who holds the key, where does it get unlocked — and can it be locked again for the rest of the trip?"*
+
+</Scene>
+
+The <a href={`${BASE}sd/lessons/networking/`}>networking lesson’s</a> "Envelopes and letters" chapter gave you the distinction. Here is the depth interviewers dig for.
+
+**An L4 balancer** works on TCP and UDP. It sees the **5-tuple** — source IP, source port, destination IP, destination port, protocol — and nothing inside the payload. When a connection's first packet arrives, it picks a backend and records the choice in a **connection table** (or recomputes it from a consistent hash, Chapter 12), so every later packet of that connection goes to the same place. Because it never parses the bytes, it handles any protocol, millions of connections, and very high packet rates on modest hardware. Kernel-level and software balancers in this class include Linux IPVS, Google's Maglev and Meta's Katran (both public: a paper and an open-source project).
+
+How the packets travel matters, and there are three common modes:
+
+| L4 mode | How | Client IP at the backend | Cost |
+|---|---|---|---|
+| **NAT** | Rewrites the destination address to the backend's; replies come back through the balancer to be rewritten again | Usually preserved, but replies must route back via the balancer | The balancer carries both directions |
+| **Full proxy (TCP mode)** | Terminates the client's TCP connection and opens its own to the backend | Lost — needs the PROXY protocol | Two connections per client, still no HTTP parsing |
+| **Direct server return (DSR)** | Forwards only inbound packets; the backend replies straight to the client from the shared virtual IP | Preserved | Only the inbound direction — usually the small one — crosses the balancer |
+
+<Figure caption="Direct server return. Requests come in through the balancer; responses, which are usually much larger, go straight back. The backend must accept traffic for the virtual IP itself.">
+  <Mermaid code={`flowchart LR
+    C["Client"] -->|"1 · request to VIP"| LB["L4 balancer\n(DSR)"]
+    LB -->|"2 · forwarded, VIP unchanged"| S["Backend\nVIP on loopback"]
+    S -->|"3 · response from VIP\nbypasses the balancer"| C`} />
+</Figure>
+
+**An L7 balancer** is a full reverse proxy for HTTP (or gRPC). It terminates the client's connection, reads each request — method, path, host, headers, cookies — and **chooses a backend per request**, over its own pool of connections to the backends. That is what lets it route `/listings/*` and `/chat/*` to different services, retry a failed idempotent request on another server, add `X-Forwarded-For`, compress, cache, enforce rate limits, and balance gRPC calls. The price is CPU per request and memory per connection: it does real work for every request and holds two connections for every one.
+
+The original lesson's comparison, extended:
 
 | | **L4 (transport)** | **L7 (application)** |
-|--|-------------------|---------------------|
-| Sees | IPs and ports, TCP packets | full HTTP: path, headers, cookies |
-| Can do | spread connections | route `/video/*` vs `/api/*`, terminate TLS, retry, rate limit |
-| Speed | extremely fast, dumb | slower per request, smart |
-| Example | AWS NLB | AWS ALB, nginx, Envoy |
+|---|---|---|
+| Sees | IPs and ports, TCP/UDP packets | Full HTTP: method, path, host, headers, cookies |
+| Balances | Connections | Requests |
+| Can do | Spread connections, any protocol, very high throughput | Route `/video/*` vs `/api/*`, terminate TLS, retry, rate limit, rewrite headers |
+| TLS | Passthrough (some can terminate, but still balance per connection) | Terminate, optionally re-encrypt |
+| Speed | Extremely fast, simple | Slower per request, smart |
+| Examples | AWS NLB, IPVS, Maglev, Katran | AWS ALB, nginx, Envoy, HAProxy in HTTP mode |
 
-Interview default: **L7 at the edge** (you almost always want path routing + TLS termination), L4 only when you need raw throughput/protocol transparency (millions of persistent WebSocket connections, non-HTTP traffic, gaming/VoIP).
+**TLS: who holds the key?** Three modes, and you should be able to choose between them out loud:
 
-## Balancing algorithms — know three, defend one
+- **Termination.** The balancer holds the certificate, decrypts, routes, and talks plain HTTP to the backends. Simplest, and it is what makes L7 routing possible. Certificates live in one place.
+- **Passthrough.** The balancer forwards encrypted bytes; the backends hold the certificates. The balancer is blind to HTTP — but it can still read the **SNI** (the hostname the client puts, unencrypted, in its TLS ClientHello) and route by hostname. Use it when the backend must own the TLS session (end-to-end client certificates, strict key custody).
+- **Re-encryption** (sometimes "TLS bridging"). Terminate, inspect and route, then open a new TLS connection — often **mutual TLS** — to the backend. Every hop is encrypted and the balancer is still smart. The cost is a second handshake per backend connection, which connection pooling makes rare.
 
-- **Round robin** — rotate through servers. Fine when requests cost roughly the same.
-- **Least connections** — send to the least-busy server. Better when request costs vary wildly (some requests take 10ms, some 10s).
-- **Consistent hashing on a key** — same key → same server. You pick this *on purpose* when servers hold per-key state: WebSocket connection servers, local caches (pairs with the hot-key L1 story), game sessions.
+<Figure caption="Three ways to handle TLS. Only the balancers that decrypt can route by path.">
+  <Mermaid code={`flowchart LR
+    subgraph T["Termination"]
+      C1["Client"] -->|"TLS"| B1["L7 balancer\ndecrypts"] -->|"plain HTTP"| S1["Backend"]
+    end
+    subgraph P["Passthrough"]
+      C2["Client"] -->|"TLS"| B2["L4 balancer\nreads SNI only"] -->|"same TLS bytes"| S2["Backend\ndecrypts"]
+    end
+    subgraph R["Re-encryption"]
+      C3["Client"] -->|"TLS"| B3["L7 balancer\ndecrypts, routes"] -->|"new TLS / mTLS"| S3["Backend"]
+    end`} />
+</Figure>
 
-Defend by workload: "requests are uniform CRUD → round robin; long-lived uneven work → least connections; server-local state → consistent hash on user_id."
+**The interview default** from your original notes still holds: **L7 at the edge** — you almost always want path routing and TLS termination — and **L4 when you need raw throughput or protocol transparency**: millions of persistent connections, non-HTTP traffic, gaming and VoIP over UDP. Big systems often run both: an L4 tier holding a stable address in front of a fleet of L7 proxies.
 
-## Health checks — how the LB knows a server died
+<Trace title="Pick the layer" steps={layers} takeaway="L4 sees the envelope and balances connections; L7 opens the letter and balances requests. To route by path you must decrypt; to stay encrypted and route, re-encrypt." />
 
-The LB probes each server (`GET /health` every few seconds); fail N consecutive → stop routing to it; pass again → back in the pool. Two interview-worthy subtleties:
+<Reveal q="If the L7 balancer terminates TLS, how do backends know the client’s real IP address and that the original request was HTTPS?">
 
-- **Shallow vs deep checks.** Shallow ("process is up") can pass while the server's DB connection is dead — traffic routes into a black hole. Deep ("can I touch my dependencies?") is honest but can cascade: DB blips → ALL servers fail checks → LB has nobody to route to → total outage from a partial problem. Common answer: shallow checks for the LB, deep checks for alerting.
-- Health checks + stateless servers = **self-healing and rolling deploys**: drain a server (stop sending new requests, let in-flight finish), replace it, repeat. Zero downtime without any cleverness.
+The balancer adds headers: `X-Forwarded-For` (or the standard `Forwarded`) with the client's address, and `X-Forwarded-Proto: https`. Backends must trust these **only from your own balancer** — a client can send its own fake `X-Forwarded-For` — so the edge overwrites or strips any value the client supplied. An L4 full proxy can't add HTTP headers; it uses the PROXY protocol, a short preamble on the backend connection.
 
-## Where the LB itself fails
+</Reveal>
 
-"Isn't the LB a single point of failure?" — the standard follow-up. Answer: LB pairs with failover (a standby takes over the same IP/VIP), or DNS-level spreading across multiple LB IPs, and at planet scale, **anycast** (same IP announced from many locations; the network routes you to the nearest). One sentence of this is plenty — it shows you know the box isn't magic.
+**Catch the trap:** "The load balancer handles TLS" without saying where TLS ends and what travels after it. Say: *"TLS terminates at the L7 balancer; it re-encrypts to the services with mTLS"* — or *"plain HTTP inside the private network"*, and why that is acceptable here.
 
-## API Gateway — the LB's smarter sibling
+<h2 id="connections">Chapter 3 · Ten thousand letters, one envelope</h2>
 
-<Mermaid code={`flowchart LR
+<Scene chapter="Chapter 3" title="Ten thousand letters, one envelope" mood="night">
+
+The Drops pricing service is written in Go and called over gRPC. At the dress rehearsal, its dashboard looks broken: five pods at 95% CPU, fifteen at almost nothing. The autoscaler, seeing an average of 30%, does nothing at all.
+
+Dev scales it by hand from 20 pods to 40. The five hot pods stay hot. The twenty new ones sit at zero.
+
+*"We gave it twenty more doors,"* he says, *"and nobody walked through them."*
+
+Mara asks only one thing: *"What does the balancer count?"*
+
+</Scene>
+
+The question that decides everything: **does the balancer choose once per connection, or once per request?**
+
+- **L4 decides per connection.** Every request on that connection follows the first decision.
+- **L7 decides per request** (for HTTP/1.1, per request on its own backend connections; for HTTP/2 and gRPC, per stream).
+
+With many short connections, both look the same. They diverge when connections are **few, long-lived and busy**:
+
+- **HTTP/1.1 keep-alive** makes each client connection carry many requests. With thousands of clients, connection-level balancing still averages out.
+- **HTTP/2 and gRPC** multiplex *everything* from one client onto **one connection** that lives for hours. A connection-level balancer sees ten clients as ten units of work, no matter that one client sends a thousand calls a second.
+
+That is the trap from the networking lesson, now with its consequences:
+
+1. **Imbalance.** Ten clients, ten pods, random choice per connection: the chance that every pod gets exactly one client is `10! ÷ 10¹⁰ ≈ 0.04%`. In practice some pods carry two or three clients and some carry none.
+2. **Scaling does nothing.** New pods receive only *new* connections. Existing ones stay pinned. Autoscaling adds capacity no one can reach — Dev's twenty empty doors.
+3. **It never heals.** A Kubernetes Service (kube-proxy) is an L4 balancer: it picks a pod per connection, then steps aside.
+
+<Figure caption="Each client’s single HTTP/2 connection lands on one pod. The balancer never sees the calls inside, so the new pod gets nothing.">
+  <Mermaid code={`flowchart LR
+    C1["Client 1\n1,000 calls/s"] ==>|"one HTTP/2 connection"| P1["Pod 1\n2,000 calls/s"]
+    C2["Client 2\n1,000 calls/s"] ==>|"one HTTP/2 connection"| P1
+    C3["Client 3\n1,000 calls/s"] ==>|"one HTTP/2 connection"| P2["Pod 2\n1,000 calls/s"]
+    P3["Pod 3\n0 calls/s"]
+    P4["Pod 4 (new)\n0 calls/s"]`} />
+</Figure>
+
+**Four fixes, in the order you'd say them:**
+
+| Fix | How | Cost |
+|---|---|---|
+| **L7 balancing that speaks HTTP/2** | A proxy (Envoy, for example) holds connections to every pod and assigns each call to a pod | One extra proxy hop |
+| **Client-side balancing** | The gRPC client resolves all pod addresses, keeps a connection to each, and picks per call | A library per language; service discovery must feed it (Chapter 14) |
+| **Service mesh sidecar** | The same L7 balancing, done by a proxy beside each client | Sidecars to run (Chapter 14) |
+| **Maximum connection age** | The server closes connections after, say, a few minutes (gRPC servers send GOAWAY); clients reconnect and land somewhere new | Partial: rebalances every few minutes, never instantly |
+
+**Worked numbers — how many connections does a balancer hold?** Little's law says requests in flight = arrival rate × time in system. Kestrel Drops at peak, 50 ms average response time:
+
+```text
+in flight = 50,000 req/s × 0.05 s = 2,500 requests at any moment
+per server (84 servers) ≈ 30 requests in flight
+```
+
+So the L7 tier needs at least 2,500 busy backend connections over HTTP/1.1 (one request per connection at a time), plus a pool for bursts — or far fewer over HTTP/2. The **client side** is a different number: suppose 2 million phones keep a keep-alive connection open during the Drop. At an assumed 20 KB per TLS connection for buffers and state (measure your own proxy), that is `2,000,000 × 20 KB = 40 GB` of memory across the L7 tier — mostly idle connections. **Idle connections cost memory; active requests cost CPU.** Size both.
+
+**Ports, the quiet limit.** A proxy talking to one backend address can only have as many simultaneous connections as it has source ports: Linux's default ephemeral range is 32768–60999, **28,232 ports**. Worse, the side that closes a TCP connection keeps its port in **TIME_WAIT for 60 seconds** (on Linux). A proxy that opens and closes 1,000 connections per second to one backend needs `1,000 × 60 = 60,000` ports — it runs dry after about 28 seconds. The fix is the one you already know: **keep-alive connection pools**. (More source IPs or more backend addresses also raise the ceiling, because the limit is per source-IP / destination-IP / destination-port combination.)
+
+<Trace title="Count what the balancer counts" steps={connections} takeaway="L4 balances connections; L7 balances requests. Long-lived multiplexed connections need L7, client-side balancing, or a maximum connection age — and every proxy needs pooled connections." />
+
+<Reveal q="HTTP/1.1 behind an L4 balancer also pins each connection. Why is it usually fine there but not with gRPC?">
+
+Because of how many connections there are and how much each carries. A public HTTP/1.1 service sees thousands of client connections, each idle much of the time, and browsers open several per host — the law of large numbers evens it out. An internal gRPC client opens **one** connection and pushes all its traffic down it, and there may be only a handful of clients. Few connections × huge, unequal traffic per connection = a lottery.
+
+</Reveal>
+
+**Catch the trap:** "We'll put the gRPC service behind the load balancer." Which balancer, at which layer? If it is L4 — including a plain Kubernetes Service — you have just described the five-hot-pods incident.
+
+<Part n="Part Two" title="Choosing a server">
+
+The algorithm is the part everyone names and few defend. Know them all, know what information each needs, and choose by workload.
+
+</Part>
+
+<h2 id="rotation">Chapter 4 · Taking turns</h2>
+
+<Scene chapter="Chapter 4" title="Taking turns" mood="dusk">
+
+Kestrel's new servers arrive for the Drop, and they are twice the size of the old ones. Dev adds them to the pool. Round robin gives every server the same share. The old ones run hot; the new ones idle at half their capacity.
+
+*"Round robin is fair,"* Iris says.
+
+*"It's fair to the servers,"* Dev says. *"It isn't fair to the work."*
+
+</Scene>
+
+**Round robin** sends request 1 to server 1, request 2 to server 2, and around again. **Random** picks uniformly at random. Both need no information at all about the servers, which makes them cheap, stateless and impossible to fool. **They are the right choice when requests cost about the same and servers are identical** — and that describes a lot of stateless CRUD traffic.
+
+**Weighted round robin** gives each server a share proportional to its weight: the new 2×-size servers get weight 2. The naive version sends a server all its turns in a row (A A A A A B C), which bursts. **Smooth weighted round robin** — the method nginx uses — interleaves them. Each turn, every server adds its weight to a running score; the server with the highest score wins and subtracts the total of all weights.
+
+<Figure caption="Smooth weighted round robin with weights A = 5, B = 1, C = 1. A still gets five of every seven requests, but never more than two in a row.">
+  <ArrayStrip name="Request" values={['A', 'A', 'B', 'A', 'C', 'A', 'A']} tones={{ 2: 'done', 4: 'done' }} />
+</Figure>
+
+Weights are a static description of the servers. They do not react to what is happening: a server stuck behind a slow query keeps receiving its full share.
+
+<Trace title="Take turns well" steps={rotation} takeaway="Uniform work, identical servers: round robin or random. Different-sized servers: weights. Different-sized work: you need to look at current load." />
+
+**Catch the trap:** "Round robin" with no reason. It is the right answer only if you can say *requests are uniform and servers are identical*. Your original notes had the line to defend it: **know three, defend one** — and defend it by the workload.
+
+<h2 id="least-loaded">Chapter 5 · Ask who is busy</h2>
+
+<Scene chapter="Chapter 5" title="Ask who is busy" mood="storm">
+
+Drops has a new feature: sellers can export a sales report. Most requests take ten milliseconds. An export takes ten seconds. With round robin, every server eventually gets an export, and while it grinds, the quick requests queued behind it time out.
+
+Dev switches to least connections, and the timeouts stop. A week later, one server's disk fills up — and it starts receiving more traffic than any other.
+
+*"The sick one,"* Theo says, *"is the one it loves most."*
+
+</Scene>
+
+**Least connections** (in HTTP proxies, really **least outstanding requests**) sends each request to the server with the fewest requests in flight. A server stuck on a long export holds an open request, so new work flows elsewhere. **When request costs vary wildly, balance on current load, not on turns.**
+
+<Figure caption="Least connections: B has the fewest requests in flight, so it gets the next one.">
+  <Bars heights={[12, 3, 7]} pointers={[{ at: 0, label: 'A' }, { at: 1, label: 'B ← next', tone: 'green' }, { at: 2, label: 'C' }]} tones={{ 1: 'done' }} />
+</Figure>
+
+**Least response time** goes further: track each server's latency and favour the fast ones. Raw latency samples are noisy, so balancers keep an **EWMA** — an exponentially weighted moving average:
+
+```text
+estimate = α × new sample + (1 − α) × old estimate
+
+α = 0.2, old 20 ms, sample 100 ms  →  0.2 × 100 + 0.8 × 20 = 36 ms
+```
+
+A larger α reacts faster and jitters more. "**Peak EWMA**" variants (used in Twitter's Finagle and in Linkerd) jump straight to a high sample and decay slowly, so a server that suddenly slows is avoided at once, and combine the estimate with the number of requests in flight. A common form scores each server as *latency estimate × (requests in flight + 1)*.
+
+**Three ways least-loaded goes wrong:**
+
+1. **Errors are fast.** A server that answers every request with an instant `500` holds no requests and has a superb average latency. Least connections and least response time both pour traffic into it — a **black hole**. Count errors as a penalty and eject outliers (Chapter 10).
+2. **New servers get flooded.** A server joining the pool has zero connections, so least connections sends it everything until it catches up — while its caches and JIT are cold. That is why slow start exists (Chapter 11).
+3. **Stale information herds.** Twenty balancer instances each pick "the least-loaded server" from a load table refreshed once a second. They all see the same minimum, and for a whole second they all send everything to it. Next second, they stampede somewhere else. Deterministic choice plus stale data makes a herd.
+
+| Algorithm | Needs | Good for | Watch out |
+|---|---|---|---|
+| **Round robin / random** | Nothing | Uniform requests, identical servers | Blind to slow or sick servers |
+| **Weighted round robin** | Static weights | Mixed server sizes, canary percentages | Weights don't react to load |
+| **Least connections / requests** | Current in-flight counts | Mixed request costs, long-lived requests | Fast-failing servers; new-server floods; herding with stale counts |
+| **Least response time (EWMA)** | Latency history | Mixed costs, heterogeneous or noisy servers | Same black-hole risk; tuning α |
+
+<Trace title="Read the load" steps={leastLoaded} takeaway="Least-loaded beats turns when costs vary. But errors are fast, new servers look empty, and stale data herds — so penalise errors, warm up newcomers, and add randomness." />
+
+**Catch the trap:** "Least connections, because it's smarter." Smarter with what information, how fresh, and from how many balancers? A design with 30 balancer instances and global least connections has a herd built in.
+
+<h2 id="two-choices">Chapter 6 · Pick two, keep the better</h2>
+
+<Scene chapter="Chapter 6" title="Pick two, keep the better">
+
+Theo has a party trick. He hands you a bag of a thousand marbles and a tray of a thousand cups. *"Drop each marble into a random cup."* You do it in a simulation; the fullest cup ends up with five, sometimes more.
+
+*"Again,"* he says. *"But this time, pick two random cups, look into both, and drop the marble in the emptier one."*
+
+The fullest cup has three. Every time.
+
+*"One extra glance,"* he says. *"That's all it costs. Why is it worth so much?"*
+
+</Scene>
+
+**The power of two random choices**: for each request, pick **two** servers at random and send the request to the less loaded of the two (fewer requests in flight, or a lower EWMA score). It is the default in Envoy's least-request balancer, and nginx offers it as `random two least_conn`.
+
+**Why it works so well.** The classic result (balls into bins — Azar, Broder, Karlin and Upfal; Mitzenmacher's thesis) is about n requests placed on n servers:
+
+- **One random choice:** the busiest server ends with about `log n ÷ log log n` requests.
+- **Two choices:** about `log log n ÷ log 2`. That is an **exponential** improvement — from one extra probe.
+- **d choices:** about `log log n ÷ log d`. Going from two to three barely helps. The jump is from one to two.
+
+The intuition: with one choice, a server becomes overloaded whenever luck sends it many requests. With two, a request only lands on a busy server if *both* samples are busy — and the probability that both of two random servers are among the busiest is the square of the probability for one. Squaring a small number makes it tiny, and that squaring compounds at every level of load.
+
+**Worked numbers.** We simulated it (300 runs each):
+
+| Requests on servers | One random choice: busiest server | Two choices | Three choices |
+|---|---|---|---|
+| 1,000 on 1,000 | usually 5 (4 to 9) | **3 in every run** | 2 or 3 |
+| 10,000 on 10,000 | usually 7 (6 to 10) | 3 (sometimes 4) | usually 3 |
+
+**Why it beats "least loaded" in real systems** — and this is the part interviewers want: **it is robust to stale and partial information.** Go back to the twenty balancers with a stale load table. Server S7 looks emptiest to all of them. With "pick the global minimum", S7 gets 100% of new requests until the table refreshes. With two random choices, S7 wins only when it is one of the two sampled: about `2 ÷ 72 ≈ 2.8%` of requests in Kestrel's 72-server fleet, against a fair share of `1 ÷ 72 ≈ 1.4%`. **Stale data now costs a mild bias instead of a stampede.**
+
+It also needs very little: no global table, no coordination between balancers, just two lookups of local counters. That is why it fits client-side balancing and sidecars, where each balancer sees only its own traffic.
+
+<Figure caption="Two random choices: the request looks at two servers and takes the emptier. A busy server is chosen only if both samples are busy.">
+  <Mermaid code={`flowchart LR
+    R["New request"] --> PICK{"Pick 2 at random"}
+    PICK --> S2["S2\n9 in flight"]
+    PICK --> S5["S5\n4 in flight"]
+    S5 -->|"fewer in flight: wins"| GO["Send to S5"]`} />
+</Figure>
+
+<Trace title="Two glances" steps={twoChoices} takeaway="Two random choices cut the worst server's load exponentially, need no global state, and turn stale data from a stampede into a mild bias. Three choices barely beats two." />
+
+<Reveal q="If two choices are so good, why not always sample every server and pick the true minimum?">
+
+Because the true minimum is only as true as your information. With one balancer and perfectly fresh counts, it works. With many balancers, delayed counts, or each client seeing only its own requests, "everyone picks the same minimum" is exactly what herds. Randomness spreads the decisions; comparing two keeps them load-aware. Sampling everything also costs O(n) per request instead of O(1).
+
+</Reveal>
+
+**Catch the trap:** "Random is good enough." Pure random's busiest server grows with the fleet; two choices nearly flattens it. If you name random, name its upgrade in the same breath.
+
+<h2 id="affinity">Chapter 7 · Same key, same door</h2>
+
+<Scene chapter="Chapter 7" title="Same key, same door" mood="dusk">
+
+The listings service keeps a small in-memory cache on each server — the hottest listings, ready to serve. With round robin, every server caches every hot listing, and each cache holds only a fraction of what it could.
+
+*"If listing 42 always went to the same server,"* Theo says, *"that server would always have it warm."*
+
+Dev tries `hash(listing_id) mod 72`. It works beautifully — until the autoscaler adds a seventy-third server and every cache in the fleet goes cold at once.
+
+</Scene>
+
+Sometimes you *want* the same key to reach the same server: a local cache, a WebSocket connection fleet, a game session, a per-user rate-limit counter. That is **affinity**, and it is a hashing problem.
+
+**IP hash** — `hash(client IP) mod N` — is the oldest form. Two problems: changing N remaps almost everyone, and **NAT concentrates users**. A mobile carrier's NAT can put tens of thousands of phones behind one public address, all hashing to one server. Hash on what identifies the user or the object (a user id, a listing id, a cookie), not on the network address.
+
+**Why mod N fails.** A key stays on its server after growing from N to N + 1 only if `hash mod N = hash mod (N + 1)`. From 10 to 11 servers, that holds for 10 of every 110 hash values, so **10/11 ≈ 91% of keys move** — a fleet-wide cold start.
+
+**Consistent hashing** places servers and keys on the same ring of hash values; each key belongs to the **next server clockwise**. Adding a server takes over only the arc between it and its predecessor — about **1/N** of the keys. Removing one hands its arc to its neighbour. With few servers the arcs are uneven, so each server is placed at many points on the ring (**virtual nodes**), which evens the arcs out and lets bigger servers take more of them. The <a href={`${BASE}sd/lessons/pattern-partitioning/`}>partitioning lesson</a> builds the ring in full.
+
+<Figure caption="A ring of positions 0–99, read left to right and wrapping around. Each key goes to the next server clockwise. Add S4 at position 60, and only the keys between 40 and 60 move — L58 goes from S3 to S4; everything else stays.">
+  <ArrayStrip name="Before" values={['S1 · 12', 'L31', 'S2 · 40', 'L58', 'S3 · 71', 'L93']} indices={false} pointers={[{ at: 1, label: '→ S2', tone: 'gold' }, { at: 3, label: '→ S3', tone: 'gold' }, { at: 5, label: '→ S1 (wraps)', tone: 'gold' }]} />
+  <ArrayStrip name="After" values={['S1 · 12', 'L31', 'S2 · 40', 'L58', 'S4 · 60', 'S3 · 71', 'L93']} indices={false} pointers={[{ at: 1, label: '→ S2', tone: 'gold' }, { at: 3, label: '→ S4 (moved)', tone: 'red' }, { at: 6, label: '→ S1', tone: 'gold' }]} />
+</Figure>
+
+Balancers offer this directly: Envoy's ring-hash and Maglev policies, HAProxy's consistent hashing, nginx's `hash … consistent`.
+
+**The hot key problem.** Consistent hashing balances *keys*, not *load*. If one listing gets 30% of all traffic during a Drop, its server takes 30% of all traffic. **Consistent hashing with bounded loads** (Mirrokni, Thorup and Zadimoghaddam) fixes it: give every server a capacity of `⌈c × average load⌉` for some `c > 1`; if a key's server is full, walk clockwise to the next server with room.
+
+```text
+10 servers, 1,000 requests in flight → average 100
+c = 1.25 → capacity ⌈1.25 × 100⌉ = 125 per server
+the hot listing fills S3 to 125; the overflow goes to the next server clockwise with room
+```
+
+No server exceeds 125% of the average, most keys still go home, and the overflow goes to a *predictable* neighbour, so that neighbour's cache warms up for the hot key too. HAProxy exposes this as a balance factor on consistent hashing; Vimeo wrote publicly about adopting it for video caching.
+
+<Trace title="Hash for affinity" steps={affinity} takeaway="Hash on the key that owns the state, not the client's IP. Mod N moves almost everything; consistent hashing moves 1/N. Bounded loads stop one hot key from melting one server." />
+
+**Catch the trap:** "Consistent hashing on user id" for a stateless service. Affinity is a cost — hot spots, uneven load, reshuffles on scaling — that you pay *only* when servers hold per-key state worth keeping warm. Your original rule: **requests are uniform CRUD → round robin; long-lived uneven work → least connections; server-local state → consistent hash on the key.**
+
+<h2 id="sticky">Chapter 8 · The sticky note</h2>
+
+<Scene chapter="Chapter 8" title="The sticky note" mood="night">
+
+The Drops checkout was built in a hurry. Carts live in the memory of whichever server a user first reached, and the balancer pins each user there with a cookie. It worked perfectly in testing.
+
+At 12:04 on launch day, Dev rolls a hot-fix across the fleet. Every server restarts once. Forty thousand carts vanish, one server at a time.
+
+*"The balancer did exactly what we asked,"* Dev says. *"It sent everyone back to their server. Their server just didn't remember them anymore."*
+
+</Scene>
+
+**Sticky sessions** (session affinity) make the balancer send a user's requests to the same server every time. Two common ways:
+
+- **A cookie** the balancer sets (or reads from the app) naming the server. Survives the user changing networks.
+- **Source IP** affinity. Breaks when a phone switches from Wi-Fi to cellular, and piles whole NATs onto one server.
+
+<Figure caption="Sticky sessions tie a user's state to one server's lifetime. When that server restarts, the balancer faithfully sends the user back to an empty room.">
+  <Mermaid code={`sequenceDiagram
+    participant U as User
+    participant LB as Load balancer
+    participant S3 as Server 3
+    U->>LB: POST /cart (cookie: srv=3)
+    LB->>S3: add item (cart in memory)
+    Note over S3: deploy restarts server 3
+    U->>LB: GET /checkout (cookie: srv=3)
+    LB->>S3: GET /checkout
+    S3-->>U: cart is empty`} />
+</Figure>
+
+**What stickiness costs:**
+
+- **State dies with the server.** Deploys, crashes and scale-in all lose sessions.
+- **Load gets uneven.** Heavy users stay wherever they landed, however hot that server gets. The balancer's algorithm is overridden.
+- **Draining takes forever.** A server can't leave until its sticky users do (Chapter 11).
+- **Scaling out helps slowly.** New servers only get new users.
+
+**Why stateless services avoid it.** Put session state somewhere every server can reach: a **signed token** (a JWT carrying identity and expiry), a **shared session store** (Redis, with the session id in a cookie), or the database. Then any server can serve any request, and every promise the balancer makes — even spreading, instant failover, invisible deploys — comes back.
+
+**When affinity is fine:** when the per-server state is a **performance optimisation that can be rebuilt** — a warm local cache, a reused connection, a WebSocket that will reconnect — so losing it costs speed, not correctness. That is the consistent-hashing case from Chapter 7, and the connection-fleet case in the <a href={`${BASE}sd/lessons/pattern-realtime/`}>realtime lesson</a>.
+
+<Trace title="Stick or stay stateless?" steps={sticky} takeaway="Stickiness is fine as an optimisation for rebuildable state. As the only copy of user data, it fails at every deploy. Move state out, and any server can serve anyone." />
+
+**Catch the trap:** "We'll use sticky sessions" to fix a login bug. The interviewer hears "user data lives in server memory". Say where session state lives instead, and the stickiness disappears.
+
+<Part n="Part Three" title="Keeping the pool honest">
+
+Spreading load only helps if the servers you spread it to are alive, ready, and staying. This part is how the balancer knows.
+
+</Part>
+
+<h2 id="health">Chapter 9 · Alive, or ready?</h2>
+
+<Scene chapter="Chapter 9" title="Alive, or ready?" mood="storm">
+
+Theo tells this one without any fondness at all. Two years ago, someone made Kestrel's health checks "smarter": each server's `/health` endpoint would also check its database connection. Honest, thorough, sensible.
+
+Then the database paused for five seconds during a failover. Every server's health check failed in the same five seconds. The balancer, doing its job perfectly, removed every server from the pool.
+
+*"The database was back in five seconds,"* he says. *"The site took four minutes. The balancer had nobody left to send traffic to."*
+
+</Scene>
+
+The balancer learns about servers in two ways:
+
+- **Active health checks.** The balancer probes each server on a schedule — a TCP connect, or `GET /healthz` every few seconds — and counts results. A server is marked **down after N consecutive failures** (the unhealthy threshold) and **up after M consecutive passes** (the healthy threshold).
+- **Passive health checks.** The balancer watches **real traffic**: connection failures, timeouts, `5xx` responses. No extra requests, and it notices problems on the paths users actually use. Chapter 10 builds on this.
+
+**What should a health check check?** This is where the subtleties from your original notes live.
+
+- **Shallow** ("the process is up and can answer HTTP") can pass while the server's database connection is dead — traffic routes into a black hole.
+- **Deep** ("I can reach my dependencies") is honest but **correlated**: when a shared dependency blips, *every* server fails together, and a partial problem becomes total unavailability. That is Theo's four minutes.
+
+**The standard answer: shallow checks decide routing; deep checks feed alerting.** A server should leave the pool for *its own* problems — out of memory, wedged, overloaded, disk full — not because a dependency everyone shares is having a bad moment. Let dependency failures surface as errors the app can handle (timeouts, fallbacks, circuit breakers) and as pages to a human.
+
+**Readiness versus liveness** — Kubernetes makes the distinction explicit, and it is worth knowing even outside Kubernetes:
+
+| Probe | Question | On failure | Should it check dependencies? |
+|---|---|---|---|
+| **Liveness** | "Is this process wedged beyond recovery?" | The container is **restarted** | No — never. A slow database would restart every pod at once |
+| **Readiness** | "Should I receive traffic right now?" | Removed from the endpoints (no traffic); **not** restarted | Only things specific to this instance: still warming up, draining, overloaded |
+| **Startup** | "Have I finished starting?" | Liveness and readiness wait until it passes | — |
+
+A liveness probe that calls the database turns a 30-second database slowdown into a **restart storm**: every pod restarts, comes back cold, and hits the struggling database with warm-up traffic.
+
+**Worked numbers — how long does detection take?** Checks every 5 seconds, unhealthy after 3 failures: up to about **15 seconds** before a dead server is ejected (plus the probe timeout). At Drops peak, one of 72 servers carries `50,000 ÷ 72 ≈ 694` req/s, so roughly `694 × 15 ≈ 10,400` requests hit it before active checks notice. Two things shrink that: **passive checks**, which notice within a handful of failed requests, and **retries on another server** for requests that are safe to retry (idempotent, or never sent).
+
+Active checks also cost something at scale. In a mesh where 1,000 sidecars each check 72 backends every 5 seconds, that is `1,000 × 72 ÷ 5 = 14,400` health checks per second — which is one reason meshes lean on passive detection.
+
+**Flapping.** A server under garbage-collection pressure passes, fails, passes, fails. If the thresholds are 1 and 1, it is added and removed every few seconds, and each re-entry floods it again. **Hysteresis** fixes it: require several failures to eject and *more* passes to return (say 3 down, 5 up), so only a steadily sick server leaves and only a steadily well one comes back — then ease it in with slow start.
+
+**Fail open.** If every server looks unhealthy, the likeliest explanation is that the *check* is wrong, not that every server died at once. Many balancers then **ignore health and route to everyone**. Envoy calls this the **panic threshold** (by default, when fewer than half the hosts are healthy, it balances across all of them). Serving something beats serving nothing.
+
+<Figure caption="A health-checked server's life. Different thresholds in each direction (hysteresis) stop flapping; slow start eases a returning server back in.">
+  <Mermaid code={`stateDiagram-v2
+    [*] --> Starting
+    Starting --> Warming: passes healthy threshold
+    Warming --> Healthy: slow-start window ends
+    Healthy --> Unhealthy: 3 consecutive failures
+    Unhealthy --> Warming: 5 consecutive passes
+    Healthy --> Draining: deploy or scale-in
+    Draining --> [*]: in-flight work done`} />
+</Figure>
+
+<Trace title="Check the right thing" steps={health} takeaway="Shallow checks route, deep checks alert. Liveness never checks dependencies. Thresholds with hysteresis stop flapping, and a panic threshold fails open." />
+
+<Reveal q="Health checks plus stateless servers give you two things almost for free. What are they?">
+
+**Self-healing** — a crashed server is ejected and replaced, and no user state is lost because none lived there — and **zero-downtime rolling deploys**: drain a server (stop new requests, let in-flight ones finish), replace it, let it pass its checks, repeat. No cleverness required. Both disappear the moment servers hold state users can't afford to lose.
+
+</Reveal>
+
+**Catch the trap:** "The load balancer health-checks the servers" — full stop. Say what the check checks (shallow), what it doesn't (shared dependencies), the thresholds, and what happens if every check fails at once.
+
+<h2 id="outliers">Chapter 10 · The server that fails fast</h2>
+
+<Scene chapter="Chapter 10" title="The server that fails fast">
+
+The full-disk server from Chapter 5 never failed a single health check. `/healthz` didn't touch the disk. It answered every probe with a cheerful 200 while answering five percent of real users with a 500.
+
+Dev finds it only because a seller complains that one image upload in twenty fails. *"The health check is a doctor who only checks your pulse,"* he says. *"This one had a pulse."*
+
+</Scene>
+
+**Gray failures** — a server that is partly broken, slow on one path, failing one request in twenty — slip past active checks, because the check is a single cheap request and the failure lives somewhere else. The balancer, though, sees *every real response*.
+
+**Outlier detection** (passive health checking, outlier ejection) uses that:
+
+- **Consecutive errors.** Eject a server after, say, five `5xx` responses or connection failures in a row.
+- **Error-rate or latency outliers.** Eject a server whose success rate or latency is far worse than the rest of the fleet's.
+- **Ejection time grows.** The first ejection lasts, say, 30 seconds; a server ejected again stays out longer. A briefly sick server comes back quickly; a chronically sick one stays out.
+- **Ejection is capped.** Never eject more than a set fraction of the pool (Envoy defaults to 10%). If *everything* is failing, the problem isn't one server, and ejecting all of them turns "every request errors" into "no request is answered".
+
+Outlier ejection is a **circuit breaker per backend**: stop sending to the one that's failing, probe it later. The gateway's circuit breaker (Chapter 15) is the same idea per *dependency*.
+
+| Signal | Catches | Misses |
+|---|---|---|
+| Active check (shallow) | Crashed, wedged, unreachable servers | Partial failures on paths the check doesn't use |
+| Active check (deep) | Broken dependencies | Nothing useful for routing — fails all servers together |
+| Passive / outlier ejection | Gray failures on real traffic, fast-failing black holes | Idle servers with no traffic to judge |
+
+<Trace title="Catch the quiet failure" steps={outliers} takeaway="Real responses are the best health check. Eject outliers with growing timeouts — and cap ejection so a fleet-wide problem fails open instead of empty." />
+
+**Catch the trap:** relying on active checks alone. Name passive outlier ejection as the second layer, and the cap that stops it ejecting the whole pool.
+
+<h2 id="deploys">Chapter 11 · Leaving quietly, arriving slowly</h2>
+
+<Scene chapter="Chapter 11" title="Leaving quietly, arriving slowly" mood="dawn">
+
+Back to the prologue's spike. Dev replays a deploy in slow motion. At 10:02:00, the pipeline tells the balancer to remove server 3 *and* kills the process in the same second. Two hundred requests are halfway through. They become 502s.
+
+Then the new server 3 joins the pool. The balancer is set to least connections, and server 3 has zero. In the next second it receives a thousand requests, while its JIT compiler is still cold. Its latency climbs, its health check times out, and it is ejected — and rejoins, and is flooded again.
+
+*"We kick them out of a moving car,"* Dev says, *"and then throw the new ones in the deep end."*
+
+</Scene>
+
+**Connection draining** (AWS calls it deregistration delay) is how a server leaves:
+
+1. **Stop sending new requests** to it. It is removed from the pool, or its readiness check starts failing.
+2. **Let in-flight requests finish**, up to a deadline — say 30 seconds. Close idle keep-alive connections; for HTTP/1.1, respond with `Connection: close`; for HTTP/2, send GOAWAY so clients move new streams elsewhere.
+3. **Then stop the process.**
+
+**The Kubernetes race.** When a pod is deleted, Kubernetes removes it from the Service endpoints *and* sends SIGTERM at about the same time — but every proxy and node in the cluster learns about the endpoint change a moment later. A process that exits immediately on SIGTERM still receives requests from proxies that haven't heard. The usual fix: a short **preStop hook** (sleep a few seconds) so the removal propagates, then stop accepting, finish in-flight work, and exit — all inside the pod's termination grace period (**30 seconds** by default).
+
+<Figure caption="Draining done right. The pause lets every proxy forget the pod before it stops accepting work; in-flight requests finish before exit.">
+  <Mermaid code={`sequenceDiagram
+    participant K as Kubernetes
+    participant LB as Proxies / balancer
+    participant P as Pod
+    K->>LB: remove pod from endpoints
+    K->>P: preStop hook (sleep 5 s)
+    Note over LB: proxies stop sending new requests
+    K->>P: SIGTERM
+    P->>P: stop accepting, finish in-flight
+    P-->>K: exit (within 30 s grace period)`} />
+</Figure>
+
+**Long-lived connections don't drain on their own.** A WebSocket server with 40,000 connections might wait forever. Set a drain deadline, close connections deliberately (a WebSocket close frame), and make clients **reconnect with jitter** so 40,000 reconnects don't arrive in the same second.
+
+**Slow start** is how a server arrives. A new or returning server starts with a small fraction of its normal weight and ramps up over a window (say 60 seconds) — Envoy, HAProxy and AWS's application balancers all offer it. Without it, least connections and least response time *especially* will flood a newcomer: it has zero connections and no latency history. Cold JIT, empty caches and unopened connection pools make the first seconds the slowest of a server's life — precisely when it gets the most traffic.
+
+**How deploys use the balancer:**
+
+- **Rolling** — replace a few servers at a time (Chapter 1 checked the capacity: 10% of 84 out leaves about 66% utilisation).
+- **Blue-green** — run the new version as a complete second pool and flip the balancer from blue to green; flip back to roll back.
+- **Canary** — weighted routing: send 1%, then 5%, then 25% of traffic to the new version, watching its error rate and latency before going further.
+
+<Trace title="Come and go quietly" steps={deploys} takeaway="Drain on the way out: stop new requests, finish in-flight ones, then exit. Slow start on the way in. In Kubernetes, pause before shutdown so every proxy hears first." />
+
+**Catch the trap:** "Zero-downtime deploys, because we have a load balancer." The balancer only helps if the server stops receiving *new* work *before* it stops doing *old* work. Say "draining with a deadline" and "slow start", and the prologue's 502 minute is gone.
+
+<Part n="Part Four" title="Beyond one box">
+
+The balancer is itself a machine, in one building, on one continent. This part is about what happens when that isn't enough — and the box at the very front.
+
+</Part>
+
+<h2 id="lb-ha">Chapter 12 · Who balances the balancer?</h2>
+
+<Scene chapter="Chapter 12" title="Who balances the balancer?" mood="night">
+
+The Interviewer has listened patiently to your algorithms, your health checks, your draining. Then she leans back. *"So all your traffic goes through this one box. Isn't the load balancer a single point of failure?"*
+
+Back at Kestrel, Dev has a box in the rack labelled LB-2 that does nothing at all, all day, every day. *"It's the most important server we own,"* he says. *"It's waiting."*
+
+</Scene>
+
+The short answer from your original notes is still the right opening: **balancers run as redundant pairs or fleets behind a floating virtual IP, several balancer addresses can be published in DNS, and at planet scale anycast announces one address from many places.** Here is what sits behind that sentence.
+
+**Active-passive with VRRP (keepalived).** Two balancers share a **virtual IP (VIP)**. The **master** holds it and sends VRRP advertisements on the local network about once a second. The **backup** listens. If it misses roughly three advertisements in a row (plus a small priority-based skew), it declares itself master, takes the VIP, and sends **gratuitous ARP** so switches learn the address now lives on a different machine. Clients never change the address they use.
+
+- **Failover takes a few seconds**, and **connections open on the dead master are lost** unless connection state was synced to the backup (conntrackd does this for Linux; most designs simply let clients reconnect).
+- **Split brain.** If the link carrying advertisements fails but both boxes are healthy, both claim the VIP. Use redundant advertisement paths, and health-check scripts so a box that can't see the network steps down.
+- **Half your capacity is idle.** That is the price of simplicity.
+
+**Active-active with ECMP.** The router announces the VIP to several balancer instances and spreads flows across them by hashing each packet's 5-tuple (**equal-cost multi-path** routing). All instances serve at once. If one dies, the router rehashes, and some flows arrive at a different instance. For those connections to survive, **every instance must pick the same backend for the same flow** — consistent hashing plus connection tracking, the design Google described for Maglev. This is how L4 tiers scale out instead of up.
+
+**Cloud balancers are fleets.** A managed balancer's name resolves to several addresses across zones, and the provider runs, replaces and scales the machines behind them. "The ALB" is not one box. It still has limits (connection rates, how fast it scales up for a sudden surge — check current docs and ask about pre-warming before a known spike like a Drop).
+
+<Figure caption="Two shapes of balancer redundancy. Active-passive moves one virtual IP between a pair; active-active spreads flows across a fleet, and consistent hashing keeps each flow on the same backend.">
+  <Mermaid code={`flowchart TB
+    subgraph AP["Active-passive (VRRP)"]
+      V["VIP 10.0.0.10"] --> M["LB-1 master\nholds VIP"]
+      M -.->|"advertises every 1 s"| B["LB-2 backup\ntakes VIP after ~3 s silence"]
+    end
+    subgraph AA["Active-active (ECMP)"]
+      R["Router\nhashes 5-tuple"] --> L1["L4 instance 1"]
+      R --> L2["L4 instance 2"]
+      R --> L3["L4 instance 3"]
+      L1 & L2 & L3 -->|"same consistent hash"| BE["Backends"]
+    end`} />
+</Figure>
+
+<Trace title="Keep the balancer up" steps={lbHa} takeaway="Active-passive: a VIP moves between a pair in seconds; beware split brain. Active-active: ECMP across a fleet, with consistent hashing so a moved flow finds the same backend." />
+
+<Reveal q="Even with a perfect balancer pair, what else on the path is a single point of failure?">
+
+The things the balancer depends on: its configuration pipeline (one bad config pushed to both members takes both down — stage and canary config like code), the certificate (an expired cert fails every connection at once), DNS for the name, the zone or data centre both members sit in, and the network link above them. Redundancy means asking "what do both copies share?" and removing that too.
+
+</Reveal>
+
+**Catch the trap:** "We'll have two load balancers." How does traffic find the second one? Say *floating VIP with VRRP*, *ECMP across a fleet*, or *multiple addresses in DNS* — and what happens to connections open on the one that died.
+
+<h2 id="global">Chapter 13 · Choosing a continent</h2>
+
+<Scene chapter="Chapter 13" title="Choosing a continent" mood="dusk">
+
+Kestrel Drops launches in three regions — Virginia, Frankfurt, Singapore. At noon local time, everywhere. Iris loves it.
+
+Mara draws three circles on a map and one phone in Delhi. *"Before any of our balancers can pick a server, something has to pick a region,"* she says. *"What is it, what does it know about this phone — and what does it do when Frankfurt goes dark at noon?"*
+
+</Scene>
+
+**Global load balancing** chooses a region (or edge site) before any local balancer sees the request. The <a href={`${BASE}sd/lessons/networking/`}>networking lesson</a> explained DNS and anycast as mechanisms; here they are as balancing tools.
+
+- **GeoDNS.** The authoritative DNS server answers with a different region's address depending on where the query came from. Cheap and universal. Its knowledge is the **resolver's** location, not the user's — fixed in part by EDNS Client Subnet, when resolvers send it.
+- **Latency-based routing.** The same mechanism, but the DNS service answers with the region that has the **lowest measured latency** from the resolver's network, rather than the nearest on a map.
+- **Weighted DNS.** Send 5% of answers to a new region, or shift traffic off a region gradually.
+- **Health-checked failover.** Stop returning a dead region's address. Only as fast as cached TTLs let the change spread.
+- **Anycast.** One IP address announced from every site with BGP; the internet's routing delivers each packet to the nearest site in routing terms. Failover happens as fast as routes withdraw — no client caches involved — and it spreads attack traffic across every site. Many global edge networks put anycast at the front and then forward to regions over their own backbone.
+
+| | DNS (Geo / latency / weighted) | Anycast |
+|---|---|---|
+| Steers by | The resolver's location or network | The network path of each packet |
+| Failover speed | Bounded by TTLs, and by clients that cache longer | Seconds to minutes, as routes update |
+| Fine control | Easy: weights, per-region answers | Coarse: routing decides; you can withdraw or prepend routes |
+| Usual role | Choosing among regions | The edge's front door; stateless or short-lived traffic |
+
+**Worked numbers — the failover you must pay for.** Kestrel serves 60,000 req/s from three regions, 20,000 each. One region fails:
+
+```text
+60,000 ÷ 2 surviving regions = 30,000 req/s each = 1.5× normal
+```
+
+With N regions, each must be able to carry `N ÷ (N − 1)` of its normal share: 1.5× for three regions, **2× for two**. That is Chapter 1's zone arithmetic at continental scale — and it is not just app servers: databases, caches and queues in the survivors must absorb it too, and the survivors' caches are cold for the failed region's users.
+
+**What failing over a region really requires** — say at least the first two:
+
+1. **Capacity** in the survivors (above).
+2. **Data** that is already there: replicated, and recent enough. Failing over stateless traffic is easy; failing over a database is a consistency decision (the <a href={`${BASE}sd/lessons/databases/`}>databases lesson</a> covers replication and failover).
+3. **A trigger you trust**: health checks of the whole region, not one server, plus a human or automated decision that avoids flapping between regions.
+
+<Figure caption="Choosing a continent, then a server. Global steering picks the region; each region's balancers pick the server. A failed region's share flows to the survivors.">
+  <Mermaid code={`flowchart LR
+    U["Phone in Delhi"] -->|"GeoDNS or\nanycast"| SG["Singapore\nL4 → L7 → app"]
+    U -.->|"if Singapore fails"| FR["Frankfurt\nL4 → L7 → app"]
+    U -.-> VA["Virginia\nL4 → L7 → app"]
+    SG <-->|"replication"| FR
+    FR <-->|"replication"| VA`} />
+</Figure>
+
+<Trace title="Steer between regions" steps={global} takeaway="DNS steers by the resolver and fails over at TTL speed; anycast steers by path and fails over at routing speed. Every surviving region must carry N ÷ (N − 1) of its load." />
+
+**Catch the trap:** "If a region fails, we fail over with DNS." Name the TTL, the clients that cache longer, the capacity the survivors need, and where the data lives. Without those, the failover exists only on the diagram.
+
+<h2 id="placement">Chapter 14 · Where the decision lives</h2>
+
+<Scene chapter="Chapter 14" title="Where the decision lives">
+
+Kestrel now has 400 internal services in Java, Go and Python. Each team has wired up its own retries, its own timeouts, its own idea of balancing. Some call each other through a central proxy fleet that Dev describes as "the box that, if it sneezes, Kestrel gets the flu".
+
+Mara draws three versions of the same call — service A calling service B — and asks which one you'd want to debug at 3 a.m.
+
+</Scene>
+
+Inside the system, the balancing decision can live in three places:
+
+<Figure caption="Three places to make the same decision. Server-side adds a shared hop; client-side adds a library; a sidecar adds a local proxy on each side.">
+  <Mermaid code={`flowchart LR
+    subgraph SS["Server-side"]
+      A1["Service A"] --> P["Central L7\nbalancer"] --> B1["B pods"]
+    end
+    subgraph CS["Client-side"]
+      A2["Service A\n+ LB library"] -->|"picks a pod\nper call"| B2["B pods"]
+      REG[("Service\ndiscovery")] -.-> A2
+    end
+    subgraph SC["Sidecar (mesh)"]
+      A3["Service A"] --> E1["Sidecar\nproxy"] --> E2["Sidecar\nproxy"] --> B3["B pod"]
+      CP["Control plane"] -.-> E1
+    end`} />
+</Figure>
+
+| | **Server-side (central proxy)** | **Client-side (library)** | **Sidecar (service mesh)** |
+|---|---|---|---|
+| Extra hops | One shared hop | None | Two local hops (one each side) |
+| Language support | Any | One library per language | Any |
+| Sees | All traffic to the service | Only this client's requests | Only this instance's requests |
+| Failure blast radius | Shared fleet: large | Per client | Per instance; control plane is shared |
+| Gives you | Simplicity, one place to configure | Lowest latency, per-request gRPC balancing | Per-request balancing, retries, outlier ejection, mTLS — without code changes |
+| Costs | Capacity planning for the proxy fleet; another hop | Library upgrades across teams; service discovery to feed it | A proxy per instance (CPU, memory, latency), a control plane to run |
+
+- **Client-side** balancing needs a list of backends from **service discovery** (DNS, a registry, or a control-plane protocol like Envoy's xDS, which gRPC can also speak directly). Each client sees only its own requests, which is exactly where two random choices with a latency estimate (Chapter 6) shine.
+- **A service mesh** (Istio with Envoy sidecars, Linkerd with its own proxy) moves balancing, retries, timeouts, outlier ejection and mutual TLS into a proxy beside every instance, configured from a central control plane. It is client-side balancing without the library.
+- **Server-side** is still right at the **edge**, where the clients are phones and browsers you don't control.
+
+<Trace title="Place the decision" steps={placement} takeaway="Edge: server-side. Many languages and cross-cutting needs: a mesh. One hot path where every hop counts: client-side. Each local balancer sees only part of the load." />
+
+**Catch the trap:** "We'll add a service mesh" as decoration. A mesh doubles the proxies on every call and adds a control plane to operate. Name what it buys *this* design — usually mTLS everywhere and consistent retries and balancing across many languages — or leave it out.
+
+<h2 id="gateway">Chapter 15 · The front door</h2>
+
+<Scene chapter="Chapter 15" title="The front door" mood="storm">
+
+At 11:58 on Drop day, two minutes before noon, traffic triples. Not users — bots, hammering the checkout endpoint to grab the limited stock. Behind them, the order service starts to slow. Every caller of the order service starts to slow. The listings pages, which never touch checkout, start to slow too.
+
+Dev watches it from the incident channel. *"Every request was let in,"* he says. *"Every request was allowed to wait. And every waiting request held a thread."*
+
+</Scene>
+
+The box at the very front often does more than balance. An **API gateway** is an L7 reverse proxy that owns the **cross-cutting API concerns** — so every service doesn't reimplement them:
+
+- **Authentication** — validate the token (JWT, API key) once at the edge; services trust the gateway's verdict.
+- **Rate limiting and quotas** — per API key, per user, per IP as a coarse backstop. The <a href={`${BASE}sd/lessons/rate-limiter/`}>rate-limiter walkthrough</a> designs this component end to end.
+- **Routing** to the right microservice, versioning (`/v1`, `/v2`), and request or response transformation.
+- **Circuit breaking** — stop hammering a failing downstream: fail fast, recover by probing later.
+- **Observability** — request logs, metrics, and a trace id stamped on every request.
+- Sometimes **aggregation** — one client call fanned out to several services (a backend-for-frontend).
+
+<Figure caption="The API gateway from your original notes: one front door that authenticates, limits, routes, and protects the services behind it.">
+  <Mermaid code={`flowchart LR
     C["clients"] --> GW["API Gateway\n· authN (validate JWT)\n· rate limiting\n· routing to services\n· circuit breaking\n· request logging"]
     GW --> S1["user svc"]
     GW --> S2["order svc"]
     GW --> S3["media svc"]`} />
+</Figure>
 
-A gateway is an L7 proxy that also owns **cross-cutting API concerns**: authenticate the token once at the edge (services trust the gateway's verdict), enforce rate limits (your rate limiter walkthrough lives here), route to microservices, **circuit-break** (stop hammering a failing downstream — fail fast, recover probe later), log/trace everything.
+**The edge, layer by layer.** In a large system, the front door is several layers, each rejecting what it can as early and cheaply as possible:
 
-When to draw which: monolith or single service → "LB" is enough. Microservices + public API → draw a gateway and say two of its jobs out loud. Don't draw both a gateway AND a separate LB per service unless asked about scale — box inflation without justification is a known interview smell (every box earns its sentence).
+1. **Anycast edge and DDoS absorption** — volumetric floods are spread across every site and filtered; SYN floods are handled with SYN cookies at L4.
+2. **WAF (web application firewall)** — L7 rules that block known attack shapes (SQL injection, malicious payloads, bad bots). The OWASP Core Rule Set is the common open baseline.
+3. **Rate limiting** — per key or user at the gateway, with `429` and `Retry-After`.
+4. **Gateway** — authentication, routing, circuit breaking.
+5. **Internal balancing** — to healthy, warm, stateless servers.
+
+**Circuit breakers in one paragraph** (the <a href={`${BASE}sd/lessons/core-concepts/`}>core concepts lesson</a> has the full state machine). Without one, when the order service slows, every caller waits its full timeout on every call; threads pile up and the failure cascades upstream — Dev's slow listings pages. With one, after enough failures the breaker **opens**: calls fail immediately (or get a fallback) without touching the order service; after a cool-down it goes **half-open** and lets a few probe calls through; success closes it. It protects the **caller** (threads, latency budget) and the **struggling service** (no retry storm). *Fail fast, probe later.*
+
+**Trust at the gateway.** If services trust a user id the gateway adds, two things must hold: services must be **reachable only through the gateway** (network policy, or mTLS identities checked by each service), and the gateway must **strip any such header a client sent**. Otherwise anyone who reaches a service directly, or forges the header, is whoever they claim to be.
+
+**When to draw which** — the rule from your original notes, unchanged: a monolith or a single service → "LB" is enough. Microservices with a public API → draw a gateway and **say two of its jobs out loud**. Don't draw both a gateway *and* a separate balancer per service unless asked about scale — box inflation without justification is a known interview smell. **Every box earns its sentence.**
+
+<Trace title="Guard the front door" steps={gateway} takeaway="The gateway authenticates, limits and routes once, at the edge. Circuit breakers fail fast and probe later. Trust the gateway only if nothing can go around it." />
+
+<Reveal q="The gateway is now in front of everything. Doesn't that make it the biggest single point of failure of all?">
+
+It's the same answer as Chapter 12, applied to a fleet: the gateway runs as many stateless instances behind an L4 tier or a managed balancer, across zones, with health checks and draining like any service. Its *state* — rate-limit counters, keys — lives in shared stores built to be redundant. The real risk is configuration: one bad route or auth rule pushed to every instance at once. Stage gateway config, canary it, and keep rollback one click away.
+
+</Reveal>
+
+**Catch the trap:** "The gateway handles security." Which parts? Say *authentication at the edge, per-key rate limits, a WAF in front, and services unreachable except through it* — four clauses, one breath.
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The load balancer review" steps={drills} takeaway="Say what the box sees, what it balances, how it picks, how it knows who is healthy, how servers leave and join, and why the box itself never fails alone." />
 
 <Quiz questions={[
   {
@@ -75,7 +892,7 @@ When to draw which: monolith or single service → "LB" is enough. Microservices
       'The LB should have used round robin'
     ],
     answer: 1,
-    why: 'The correlated-failure trap: dependency-aware checks make every server\'s health track the dependency. Standard fix: shallow checks for routing, deep checks for alerts only.'
+    why: 'The correlated-failure trap: dependency-aware checks make every server\'s health track the dependency. Standard fix: shallow checks for routing, deep checks for alerts only — plus a panic threshold so a mass failure fails open.'
   },
   {
     q: 'Order service is timing out under load. Without a circuit breaker, what happens to callers? With one?',
@@ -87,9 +904,133 @@ When to draw which: monolith or single service → "LB" is enough. Microservices
     ],
     answer: 1,
     why: 'Circuit breaking is about protecting the CALLER (thread pools, latency budgets) and the struggling service (no retry storm). "Fail fast, probe later" is the whole pattern in four words.'
+  },
+  {
+    q: 'Twenty balancer instances share a load table refreshed once a second. Which algorithm avoids herding?',
+    options: [
+      'Global least connections',
+      'Power of two random choices',
+      'IP hash',
+      'Weighted round robin with weights from the table'
+    ],
+    answer: 1,
+    why: 'Every instance picking the same stale minimum is a herd. Sampling two at random means the emptiest-looking server gets about 2/n of requests instead of all of them — load-aware, yet robust to stale data.'
   }
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: your next mock's high-level phase must include one sentence justifying the LB/gateway box ("L7 gateway: TLS termination, JWT check, per-key rate limits") — practicing the every-box-earns-its-place habit on the box everyone forgets.
+<Scene title="The interview room" mood="night">
+
+The Interviewer has your design on the whiteboard: phones, a box labelled LB, a row of servers. She taps the box, exactly the way Mara did. *"What does this actually do?"*
+
+Six weeks ago you would have said "it distributes traffic". Today you take a breath and keep four promises out loud.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "At the front I'd have an **L7 load balancer** — really a fleet of them behind an L4 tier with one virtual IP. It **terminates TLS**, routes by path to the listings and checkout services, and re-encrypts to the services with mTLS. Services are **stateless** — sessions live in a signed token and carts in Redis — so any server can take any request. For the algorithm, request costs vary, so I'd use **least outstanding requests with two random choices**: load-aware, and it doesn't herd when several balancer instances work from slightly stale data. **Health**: shallow active checks decide routing — dependencies feed alerts, not routing — plus passive outlier ejection for servers that fail fast, capped so we fail open if everything looks sick. **Deploys**: drain with a 30-second deadline and slow-start new servers. **Capacity**: 50,000 RPS peak at 1,000 per server, across three zones, sized so losing a zone leaves the rest at about 90% — that's 84 servers, about 60% normally. **The balancer itself** runs as a redundant fleet across zones, and between regions I'd steer with latency-based DNS and fail over with health checks, each region sized for 1.5× its load. Internal gRPC calls get per-request balancing from a sidecar or the client, never a plain L4 hop. And the edge gateway does JWT validation and per-key rate limits, behind a WAF."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · L4 or L7 — and where does TLS end?">
+
+L7 at the edge, because I need path routing, retries and per-request balancing, and those need to read HTTP — so TLS terminates there. If the rules require encryption on every hop, it re-encrypts (mTLS) to the services. L4 in front of the L7 fleet, or alone for non-HTTP or huge numbers of long-lived connections, where per-connection decisions are enough and throughput is what matters. L4 can still route by hostname using SNI without decrypting.
+
+</Reveal>
+
+<Reveal q="2 · Which algorithm, and why not round robin?">
+
+Round robin is right when requests cost the same and servers are identical. Ours vary — a 10 ms read next to a 10 s export — so I want load-aware: least outstanding requests. With several balancer instances, global least-loaded herds on stale data, so I sample two servers at random and pick the less loaded. That cuts the busiest server's load exponentially compared with random and needs no coordination. If servers held per-key state, I'd use consistent hashing with bounded loads instead.
+
+</Reveal>
+
+<Reveal q="3 · A server dies. How quickly do you stop sending it traffic?">
+
+Active checks every 5 seconds with a threshold of 3 means up to about 15 seconds — at our peak, roughly 10,000 requests to a dead server. So passive detection does most of the work: connection failures and consecutive 5xx eject it within a handful of requests, and idempotent requests are retried on another server. Ejection is capped and there's a panic threshold, so a fleet-wide problem fails open rather than emptying the pool.
+
+</Reveal>
+
+<Reveal q="4 · Isn’t the load balancer a single point of failure?">
+
+No single box: within a site, balancers run as an active-passive pair sharing a virtual IP with VRRP — the backup takes over in a few seconds — or as an active-active fleet behind ECMP, using the same consistent hash so flows that move between instances keep their backend. Managed cloud balancers are fleets across zones. Globally, DNS returns several addresses or anycast announces one address from many sites. And I'd watch what all copies share — config pushes and certificates.
+
+</Reveal>
+
+<Reveal q="5 · Your gRPC service has 20 pods, but 5 are hot and 15 idle. What's wrong?">
+
+The balancer is counting connections. gRPC multiplexes every call from a client onto one long-lived HTTP/2 connection, so an L4 balancer — including a plain Kubernetes Service — pins each client to one pod, and new pods only get new connections. Fix it with per-request balancing: an HTTP/2-aware L7 proxy or mesh sidecar, or client-side balancing with service discovery. A server-side maximum connection age is a cheap partial fix that rebalances every few minutes.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "What does the LB do?" | Spread work, notice the dead, let servers come and go, never fail alone |
+| How many servers? | Peak ÷ (capacity × target utilisation); check a zone loss: survivors carry 1.5× with three zones |
+| Path routing, auth, retries | L7: terminates TLS (re-encrypt if every hop must be encrypted) |
+| Non-HTTP, huge connection counts, raw throughput | L4; DSR if responses dwarf requests |
+| gRPC / HTTP/2 imbalance, new pods idle | Connection-level balancing; use L7 per request, client-side, mesh, or max connection age |
+| Uniform requests, identical servers | Round robin or random |
+| Different server sizes, canaries | Weighted (smooth) round robin |
+| Request costs vary wildly | Least outstanding requests / EWMA latency |
+| Many balancers, stale data | Power of two random choices |
+| Server-local state (cache, sockets) | Consistent hashing on the key; bounded loads for hot keys |
+| "Sticky sessions" | Only for rebuildable state; move sessions to tokens or a shared store |
+| Health checks | Shallow for routing, deep for alerts; liveness never checks dependencies; hysteresis; panic threshold |
+| A server that fails fast | Errors are fast: outlier ejection, capped |
+| Deploy 502s | Drain (stop new, finish in-flight, then exit); preStop pause; slow start |
+| "LB is a SPOF?" | VRRP pair with a floating VIP, or ECMP fleet with consistent hashing; DNS / anycast globally |
+| Multi-region | GeoDNS / latency DNS (TTL-bound) or anycast; each region sized for N ÷ (N − 1) |
+| Many services, many languages | Mesh sidecars; client-side for the hottest path; server-side at the edge |
+| Public API, microservices | Gateway: auth, rate limits, routing, circuit breaking — say two jobs out loud |
+
+## Five mistakes to leave behind
+
+1. **"It distributes traffic."** Say what it sees (L4 or L7), what it balances (connections or requests), and how it chooses.
+2. **gRPC behind an L4 balancer.** One connection per client means one pod per client. Balance per request.
+3. **Deep health checks for routing.** A shared dependency's blip removes every server at once. Shallow for routing, deep for alerts.
+4. **Deploys without draining or slow start.** The balancer can't save requests on a process you kill mid-flight.
+5. **A 70% target with no failure check.** Losing a zone of three multiplies survivor load by 1.5×. Size for the failure, not the average.
+
+<Scene title="Mara’s last word" mood="dusk">
+
+Noon, Drop day. Fifty-one thousand requests a second at peak. At 12:20, Dev deploys a fix to the checkout page in the middle of it, mostly to prove he can. The error graph doesn't move.
+
+Mara walks past the whiteboard where it all started. The box still says LB. Underneath, in small letters, someone has added four words: *spread, notice, drain, survive.*
+
+She leaves it there.
+
+</Scene>
+
+**Keep it warm:** with the buddy, your next mock's high-level phase must include **one sentence justifying the load balancer or gateway box** — for example, *"L7 gateway: TLS termination, JWT check, per-key rate limits"* — practising the every-box-earns-its-place habit on the box everyone forgets. Then let the buddy pick one follow-up from this lesson's five and answer it in under a minute.
+
+Related: <a href={`${BASE}sd/lessons/networking/`}>Networking</a> (L4/L7 basics, proxies, DNS, anycast) · <a href={`${BASE}sd/lessons/core-concepts/`}>Core concepts</a> (circuit breakers, bulkheads, load shedding) · <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a> (servers and Little's law) · <a href={`${BASE}sd/lessons/pattern-partitioning/`}>Partitioning & consistent hashing</a> · <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime pattern</a> (stateful connection fleets) · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> (lives in the gateway) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> · <a href={`${BASE}sd/lessons/llm-gateway/`}>LLM gateway</a> (a gateway with model routing) · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a> (circuit breakers in real code).
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- *Site Reliability Engineering* (Google, free online): [Load Balancing at the Frontend](https://sre.google/sre-book/load-balancing-frontend/) and [Load Balancing in the Datacenter](https://sre.google/sre-book/load-balancing-datacenter/) — DNS and VIP balancing, subsetting, and weighted least-loaded policies from people who run it at enormous scale.
+- [Maglev: A Fast and Reliable Software Network Load Balancer](https://www.usenix.org/conference/nsdi16/technical-sessions/presentation/eisenbud) (NSDI 2016) — ECMP, consistent hashing and connection tracking in an L4 fleet: Chapter 12's active-active design.
+- *The Power of Two Choices in Randomized Load Balancing* (Michael Mitzenmacher, IEEE TPDS 2001) and his survey with Richa and Sitaraman, *The Power of Two Random Choices: A Survey of Techniques and Results* — the theory behind Chapter 6, including stale information.
+- [Consistent Hashing with Bounded Loads](https://arxiv.org/abs/1608.01350) (Mirrokni, Thorup, Zadimoghaddam) — Chapter 7's hot-key fix.
+- [Envoy: load balancers](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/load_balancers) and [outlier detection](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/outlier) — least request with two choices, ring hash, Maglev, panic thresholds and ejection, documented precisely.
+- [gRPC load balancing](https://grpc.io/blog/grpc-load-balancing/) (gRPC blog) — why connection-level balancing fails for gRPC, and the proxy versus client-side options.
+- [Kubernetes: liveness, readiness and startup probes](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/) and [pod termination](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination) — Chapters 9 and 11 from the source.
+- [nginx upstream module](https://nginx.org/en/docs/http/ngx_http_upstream_module.html) — weighted round robin, `least_conn`, `hash … consistent`, `random two`.
+- [RFC 5798: VRRP version 3](https://www.rfc-editor.org/rfc/rfc5798) — advertisements, priorities and master election.
+- [Katran](https://github.com/facebookincubator/katran) — Meta's open-source L4 balancer built on XDP; a readable modern take on the same ideas as Maglev.
+
+**Look these up yourself**
+
+- **Deterministic subsetting** — why each client should talk to a subset of backends, not all of them, once fleets reach thousands of instances.
+- **Join-the-shortest-queue and its cousins** — the queueing theory under least-loaded policies, and why JSQ is optimal only with fresh information.
+- **Load reporting from backends (ORCA in gRPC and Envoy)** — servers telling balancers their real utilisation instead of balancers guessing from latency.
+- **Proxyless gRPC with xDS** — client-side balancing configured by a mesh control plane, with no sidecar.
+- **Sidecar-less meshes** (Istio's ambient mode, per-node proxies) — what changes when the proxy moves out of the pod.
+- **QUIC load balancing** — routing on QUIC connection IDs so a connection survives a client's address change.
+- **Hedged and tied requests** ("The Tail at Scale", Dean and Barroso) — sending a second copy after a delay to cut tail latency, and the load it adds.
+- **Global server load balancing with capacity awareness** — spilling traffic to the next-nearest region when the nearest is full, not only when it is down.

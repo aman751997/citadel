@@ -1,0 +1,1421 @@
+---
+title: 'Graphs (Traversal)'
+description: 'A novel in eight chapters and six side quests. Join the Surveyors’ Guild of the Skerries, plant a flag on every island the moment a boat is promised to it, and learn to count, measure and cross an archipelago you have never seen before.'
+order: 11
+minutes: 100
+sessionMinutes: 8
+---
+import PatternHub from '../components/PatternHub.astro';
+import Playground from '../components/Playground.astro';
+import Practice from '../components/Practice.astro';
+import Trace from '../components/Trace.astro';
+import HintLadder from '../components/HintLadder.astro';
+import Reveal from '../components/Reveal.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Mermaid from '../components/Mermaid.astro';
+import { hints } from '../data/graphs/hints';
+import { islands, maxArea, shortestPath, rotting, surrounded, pacific, ladder, clone, mixedReview } from '../data/graphs/traces';
+import { BASE } from '../paths';
+
+<PatternHub
+  pattern="graphs"
+  start="prologue"
+  logline="The Skerries are four hundred islands and nobody has ever counted them twice. Plant a flag on each one the moment a boat is promised to it, send boats in the order they were booked, and you can count, measure and cross any archipelago — even one that is made of words."
+  cast={[
+    { name: 'You', role: 'The newest surveyor at the Chart House. Like any loop, you stand on one square of the chart at a time.' },
+    { name: 'The Keeper', role: 'Runs the Surveyors’ Guild. Never draws the route for you; asks three questions instead.' },
+    { name: 'Visited', role: 'The flag-bearer. Plants a flag on a square the moment someone is sent to it. No square ever gets two flags.' },
+    { name: 'Queue', role: 'The ferry-mistress. Boats leave in the order they were booked, and she rings a bell between rings of the tide.' },
+    { name: 'Stack', role: 'The wader. Follows one channel as far as it goes, then backs up to the last fork he hasn’t tried.' },
+    { name: 'Dist', role: 'The tide-clerk. Chalks on each square how many crossings it took to reach it.' },
+    { name: 'Copies', role: 'The copyist. Keeps a ledger of every original island and the copy she has already made of it.' },
+  ]}
+  parts={[
+    { name: 'Part One · Wading out', description: 'Flood everything you can reach. Count the floods.', links: [['number-of-islands', 'Counting the Skerries'], ['max-area', 'The largest island']] },
+    { name: 'Part Two · Ring by ring', description: 'The queue keeps rings in order, so the first arrival is the shortest.', links: [['shortest-path', 'The fog route'], ['rotting-oranges', 'The blight']] },
+    { name: 'Part Three · Start from the sea', description: 'Ask the boundary who it can reach, not every square whether it reaches the boundary.', links: [['surrounded-regions', 'The rising tide'], ['pacific-atlantic', 'Two oceans']] },
+    { name: 'Part Four · Charts without squares', description: 'The graph is hidden in the rules, or handed to you one node at a time.', links: [['word-ladder', 'The word ferry'], ['clone-graph', 'The copyist’s chart']] },
+  ]}
+  extensions={[['flood-fill', 'Repaint one island'], ['provinces', 'The provinces (a matrix)'], ['nearest-zero', 'Distance to the nearest harbour'], ['shortest-bridge', 'The shortest bridge'], ['open-the-lock', 'The harbour lock'], ['bipartite', 'Two flags (bipartite)']]}
+  extras={[['choose-the-tool', 'When the tide lies'], ['wider-family', 'The neighbouring guilds'], ['exit-ticket', 'The surveyor’s exam'], ['cheat-sheet', 'The Keeper’s chart notes']]}
+  note="All 8 roadmap problems, plus six side quests that make the family complete for interviews. Read one chapter per sitting; the story keeps your place."
+/>
+
+<h2 id="prologue">Prologue · Nobody counts an island twice</h2>
+
+<Scene chapter="Prologue" title="The chart on the wall" mood="dawn">
+
+The Chart House stands on the highest rock of the Skerries, and its whole east wall is one enormous chart: a grid of squares, each painted land or sea. Fishermen come in every morning with the same complaints. *How many islands are there, really? How far is it to the outer reef? If the tide rises, which villages drown?*
+
+Every answer anyone has ever given has been different. One surveyor walked the coastlines and counted the same island three times. Another started at the harbour and never came back.
+
+The Keeper hands you a box of small red flags.
+
+*"Every square you are sent to gets one flag,"* she says, *"and no square ever gets two. Hold to that, and you can answer any question on this wall. Tell me why."*
+
+</Scene>
+
+A **graph** is a set of **nodes** and the **edges** between them. That is all. An island chart is a graph: each land square is a node, and two land squares are joined when they share a side. A road map is a graph. So is a dictionary, if you join two words that differ in one letter, and so is a combination lock, if you join two settings that are one click apart.
+
+You will meet graphs in three costumes. Learn to see the same thing under each one:
+
+| Representation | What you store | Neighbours of `u` | Space | Best when |
+|---|---|---|---|---|
+| **Adjacency list** | For each node, a list of its neighbours | Read `adj.get(u)`: O(degree) | O(V + E) | Most problems: sparse graphs, edge lists, “node `a` connects to `b`” |
+| **Adjacency matrix** | An n × n table, `m[u][v] == 1` if joined | Scan row `u`: O(V) | O(V²) | Dense graphs, “is `u` joined to `v`?” in O(1), inputs that arrive as a matrix |
+| **Implicit graph** | Nothing extra: a rule generates neighbours | Apply the rule: a directions array on a grid, “change one letter”, “turn one wheel” | O(1) beyond the input | Grids, puzzles, state machines |
+
+<Figure caption="One graph, three costumes. Six nodes and five edges; nodes 4 and 5 are a separate component. As an adjacency list: 0 → [1, 2], 1 → [0, 3], 2 → [0, 3], 3 → [1, 2], 4 → [5], 5 → [4]. As a matrix it is 6 × 6 with ten 1s (each undirected edge appears twice). A grid is the third costume: there the edges are never stored; a directions array generates them.">
+  <Mermaid code={`flowchart LR
+  n0((0)) --- n1((1))
+  n0 --- n2((2))
+  n1 --- n3((3))
+  n2 --- n3
+  n4((4)) --- n5((5))`} />
+</Figure>
+
+On a grid, the neighbours of `(r, c)` come from a **directions array**: `{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}` is down, up, right, left. Add each pair to `(r, c)`, throw away anything off the chart, and what is left are the neighbours. Eight pairs instead of four lets you move diagonally too.
+
+There are two ways to walk a graph, and the Chart House employs one of each:
+
+- **Stack the wader** goes **depth-first** (DFS): he follows one channel as far as it goes, then backs up to the last fork he hasn’t tried. Recursion is a stack for free; an explicit `Deque` used with `push`/`pop` is the same walk on the heap.
+- **Queue the ferry-mistress** goes **breadth-first** (BFS): every square one crossing away, then every square two crossings away, and so on, in rings. A `Deque` used with `offer`/`poll` is her quay.
+
+Either one reaches everything reachable. Only BFS also tells you **how far** each thing is, because she sends boats in rings.
+
+### The flag rule
+
+Here is the single rule that makes graph traversal correct and fast:
+
+> **Plant the flag when the boat is sent, not when it lands.** Mark a node visited at the moment you push or enqueue it — never later.
+
+Two islands can both border a third. If the flag waits until a boat lands, both of them send a boat, the third island is queued twice, and each copy sends its own boats onward. On a 10 × 10 open grid, flagging on send enqueues exactly **100** squares. Flagging on landing, but skipping a square that already has a flag when its boat lands, enqueues **181**. Flagging on landing with no skip enqueues **184,755** — one queue entry for every shortest route from the corner to every square, and that number nearly quadruples with each extra row and column. (This lesson’s checker counts all three.)
+
+The Keeper asks her three questions here, as everywhere in the realm:
+
+1. **What is settled?** Every flagged node has been promised exactly one visit. Every node that has left the queue or stack has had all its neighbours considered.
+2. **Why is this move safe?** Flagging a node the first time you discover it loses nothing: whichever route found it, everything beyond it will still be explored, once, from that one visit. For BFS there is a bonus: the first discovery is also the shortest, because rings leave the quay in order.
+3. **When do I stop?** When the queue or stack is empty — everything reachable is flagged — or, for a shortest path, as soon as the target is reached.
+
+Here is the whole idea as one function: count the separate groups in a graph given as an edge list. Every chapter in this book is this loop in a different costume.
+
+```java id=countComponents
+public int countComponents(int n, int[][] edges) {
+    List<List<Integer>> adj = new ArrayList<>();          // adjacency list: O(V + E) space
+    for (int i = 0; i < n; i++) adj.add(new ArrayList<>());
+    for (int[] e : edges) {                               // undirected: store both directions
+        adj.get(e[0]).add(e[1]);
+        adj.get(e[1]).add(e[0]);
+    }
+    boolean[] visited = new boolean[n];
+    int components = 0;
+    for (int start = 0; start < n; start++) {
+        if (visited[start]) continue;                     // already part of an earlier group
+        components++;                                     // an unflagged node starts a new group
+        Deque<Integer> queue = new ArrayDeque<>();
+        queue.offer(start);
+        visited[start] = true;                            // flag when sent...
+        while (!queue.isEmpty()) {
+            int u = queue.poll();
+            for (int v : adj.get(u))
+                if (!visited[v]) {
+                    visited[v] = true;                    // ...never when it lands
+                    queue.offer(v);
+                }
+        }
+    }
+    return components;
+}
+```
+
+**O(V + E) time and space.** Every node is enqueued once (the flag guarantees it), and every edge is looked at twice, once from each end. On a grid, V = R·C and E ≤ 2·R·C, so a traversal is **O(R·C)**. At loop exit, `components` is the number of groups and every node is flagged. On the figure’s graph it returns 2.
+
+### When this pattern fires
+
+The words in the problem tell you a graph is hiding:
+
+- **“Connected”, “region”, “island”, “group”, “province”** — count or measure components. Brute force would compare every pair of cells; a flood touches each cell once.
+- **“Minimum number of steps / moves / transformations”, every step costing the same** — BFS. Trying every route is exponential; rings make it O(V + E).
+- **“Spreads every minute from all of these at once”** — multi-source BFS (Chapter 4).
+- **“Which cells can reach the edge?”** — start from the edge instead (Part Three).
+- **“Deep copy” of something with cycles** — a map from original to copy (Chapter 8).
+- **A state that changes one small piece at a time** (a word, a lock, a board) — the states are nodes, the changes are edges, even though nobody drew the graph.
+
+<h2 id="playground">The chart table · You make every move</h2>
+
+<Scene title="The chart table">
+
+In the middle of the Chart House is a table painted with a small practice chart, and a tin of flags beside it. Nobody moves a flag for you. When you reach for the wrong move, the Keeper doesn’t stop your hand; she tells you, using the squares on the table, exactly which island you would have counted twice, or which boat would have arrived too late.
+
+</Scene>
+
+Three drills. **Count the islands:** scan the chart square by square; sink each new island whole, skip water and anything already flagged. **Ring by ring:** run the queue yourself — poll a square, then for each neighbour decide whether to flag-and-enqueue it or skip it. One button flags late; the table will show you the duplicate it causes. **The blight:** seed the rot, then advance it one minute at a time, and stop at the right minute. Say the reason **before** pressing the button.
+
+<Playground lab="graphs" />
+
+<Part n="Part One" title="Wading out">
+
+Flood everything you can reach from one square. The number of floods is the number of islands.
+
+</Part>
+
+<h2 id="number-of-islands">Chapter 1 · Counting the Skerries</h2>
+
+<Scene chapter="Chapter 1" title="Counting the Skerries" mood="dawn">
+
+The fishermen want one number: how many islands. You start in the top-left corner of the wall chart and work along each row, the way you would read a page.
+
+The first square is land. *One island,* you write. The next square is land too. *Two?* No — it touches the first one. But how do you know, ten rows later, whether the land square under your finger belongs to an island you have already counted?
+
+The Keeper sets the tin of red flags beside you.
+
+*"When you find new land,"* she says, *"don’t count it and move on. Count it, and then claim the whole island before you take another step."*
+
+</Scene>
+
+**Problem: Number of Islands · flood fill, count the floods**
+
+The grid is a graph in costume: land squares are nodes, and two land squares sharing a side are joined. An island is a **connected component**. So:
+
+1. Scan every square in reading order.
+2. When the scan lands on land that **no flood has reached**, that is a new island: count it, then **flood** it — visit every land square reachable from here and mark each one.
+3. Keep scanning. Every other square of that island is now marked, so the scan skips it.
+
+The count is exactly the number of floods, because each flood marks one whole component, and each component is flooded once: by the scan, the first time it touches that component.
+
+LeetCode lets you mark by overwriting the grid: **sink** each land square to `'0'` as you flood it. The sunk square is the flag.
+
+<Figure caption="LeetCode’s second example: three islands. The scan reaches (0,0) first and sinks the gold island, four squares. The next unmarked land is (2,2), an island of one. Then (3,3), whose flood also takes (3,4). (2,2) and (3,3) touch only at a corner, so they are different islands.">
+  <ArrayStrip name="row 0" values={[1, 1, 0, 0, 0]} indices={false} tones={{ 0: 'hot', 1: 'hot', 2: 'ghost', 3: 'ghost', 4: 'ghost' }} />
+  <ArrayStrip name="row 1" values={[1, 1, 0, 0, 0]} indices={false} tones={{ 0: 'hot', 1: 'hot', 2: 'ghost', 3: 'ghost', 4: 'ghost' }} />
+  <ArrayStrip name="row 2" values={[0, 0, 1, 0, 0]} indices={false} tones={{ 0: 'ghost', 1: 'ghost', 2: 'blue', 3: 'ghost', 4: 'ghost' }} />
+  <ArrayStrip name="row 3" values={[0, 0, 0, 1, 1]} indices={false} tones={{ 0: 'ghost', 1: 'ghost', 2: 'ghost', 3: 'purple', 4: 'purple' }} />
+</Figure>
+
+<Trace title="Count it, then claim it" steps={islands} takeaway="Remember: a new island is unmarked land met by the scan. Count it once, then flood and mark every square of it before the scan moves on." />
+
+**Why it works:** two land squares are in the same island exactly when one is reachable from the other. A flood from `s` marks precisely the squares reachable from `s`, so after it, no square of that island is unmarked and the scan can never count it again. Any island the scan has not reached has no marked squares, so the scan counts it the first time it touches it.
+
+**What stays true:** before the scan looks at square `(r, c)`, every island with a square earlier in reading order has been counted once and fully sunk, and no other square has been sunk.
+
+**At the exit:** `islands` holds the number of components and the grid is all water. If the caller needs the grid afterwards, flood a separate `boolean[][] visited` instead.
+
+<Reveal q="Why must the square be sunk BEFORE the recursive calls, not after?">
+
+Because the neighbours call back. `(0,0)` calls `sink(0,1)`, and `(0,1)` calls `sink(0,0)`. If `(0,0)` is still `'1'` at that moment, it is flooded again, which floods `(0,1)` again, forever: on the two-square grid `[['1','1']]` that is a `StackOverflowError` (the checker confirms it). The flag goes down first; then the neighbours are asked.
+
+</Reveal>
+
+<Reveal q="What if diagonal squares counted as touching?">
+
+Then the graph has more edges, nothing else changes: use the eight-direction array (Chapter 3 does). On the figure, (2,2) and (3,3) would join, and the answer would drop from 3 to 2. Always check which neighbours the problem joins.
+
+</Reveal>
+
+**Before you code, say:** O(R·C) time, O(R·C) worst-case recursion depth; the invariant is “every island before the scan is counted once and fully sunk”.
+
+<HintLadder hints={hints.islands}>
+
+```java id=numIslands
+public int numIslands(char[][] grid) {
+    int islands = 0;
+    for (int r = 0; r < grid.length; r++)
+        for (int c = 0; c < grid[0].length; c++)
+            if (grid[r][c] == '1') {                // land no flood has reached: a new island
+                islands++;
+                sink(grid, r, c);                   // claim all of it before moving on
+            }
+    return islands;
+}
+
+private void sink(char[][] grid, int r, int c) {
+    if (r < 0 || r >= grid.length || c < 0 || c >= grid[0].length || grid[r][c] != '1') return;
+    grid[r][c] = '0';                               // flag first...
+    sink(grid, r + 1, c);                           // ...then ask the neighbours
+    sink(grid, r - 1, c);
+    sink(grid, r, c + 1);
+    sink(grid, r, c - 1);
+}
+```
+
+**O(R·C) time:** the scan visits each square once, and each square is sunk at most once (a sunk square returns immediately, and at most five calls — four neighbours and the scan — ever arrive at it). **O(R·C) space** in the worst case, for the recursion: one long winding island makes the call chain as long as the island. This is the version interviewers expect, and LeetCode’s tests accept it — but know its limit. When this lesson was checked, a 200 × 200 grid of solid land survived Java’s default stack and a 300 × 300 one (inside the problem’s limits) overflowed; the exact threshold depends on the JVM. If the interviewer mentions huge grids, switch to Chapter 2’s explicit stack.
+
+</HintLadder>
+
+**Catch the bug:** sinking after the recursive calls instead of before.
+
+```java fragment
+if (r < 0 || r >= grid.length || c < 0 || c >= grid[0].length || grid[r][c] != '1') return;
+sink(grid, r + 1, c); sink(grid, r - 1, c); sink(grid, r, c + 1); sink(grid, r, c - 1);
+grid[r][c] = '0';     // BUG: too late — any two touching land squares call each other forever
+```
+
+On `[['1','1']]` it never returns. [Solve Number of Islands](https://leetcode.com/problems/number-of-islands/).
+
+<h2 id="max-area">Chapter 2 · The largest island</h2>
+
+<Scene chapter="Chapter 2" title="The largest island" mood="dusk">
+
+A merchant wants to buy the largest island in the Skerries, and he wants its size in squares by nightfall. That part is easy: the flood already touches every square of an island, so it can count them as it goes.
+
+Then a courier arrives from the mainland with a bigger chart — a thousand squares by a thousand — and nearly all of it land.
+
+Stack the wader goes pale. *"I can follow one channel for a long way,"* he says, *"but I remember every fork I passed. A million forks is more than I can carry in my head."*
+
+The Keeper hands him a notebook. *"Then don’t carry them in your head."*
+
+</Scene>
+
+**Problem: Max Area of Island · flood that returns a size, explicit stack**
+
+Same flood as Chapter 1; this time it **returns the number of squares it claimed**, and you keep the largest.
+
+The new lesson is *where the flood keeps its unfinished work*. A recursive flood keeps it on the **call stack**: one frame per square on the current path. The worst case is one long winding island, and then the path is as long as the island. LeetCode caps this problem at 50 × 50, so 2,500 frames is harmless. But on a 1000 × 1000 grid of land, the recursive `sink` from Chapter 1 throws `StackOverflowError` with default JVM settings — this lesson’s checker runs it and catches the error. The fix is Stack’s notebook: an explicit `ArrayDeque` on the heap, which can hold a million entries without blinking. The checker runs the version below on the same grid and gets 1,000,000.
+
+The flag rule decides how big the notebook gets. **Mark a square when you push it.** Then each square is pushed once, popped once and counted once.
+
+<Figure caption="Three islands, of 3, 4 and 3 squares. The gold one, from (0,4) down to (2,3), is the largest: area 4. The flood counts each square when it is popped; marking on push guarantees it is popped exactly once.">
+  <ArrayStrip name="row 0" values={[1, 1, 0, 0, 1]} indices={false} tones={{ 0: 'blue', 1: 'blue', 2: 'ghost', 3: 'ghost', 4: 'hot' }} />
+  <ArrayStrip name="row 1" values={[1, 0, 0, 1, 1]} indices={false} tones={{ 0: 'blue', 1: 'ghost', 2: 'ghost', 3: 'hot', 4: 'hot' }} />
+  <ArrayStrip name="row 2" values={[0, 0, 0, 1, 0]} indices={false} tones={{ 0: 'ghost', 1: 'ghost', 2: 'ghost', 3: 'hot', 4: 'ghost' }} />
+  <ArrayStrip name="row 3" values={[1, 1, 1, 0, 0]} indices={false} tones={{ 0: 'purple', 1: 'purple', 2: 'purple', 3: 'ghost', 4: 'ghost' }} />
+</Figure>
+
+<Trace title="Push it once" steps={maxArea} takeaway="Remember: mark on push, count on pop. Each square enters the stack once, so the area is exact — and the stack lives on the heap, not in call frames." />
+
+**Why it works:** a square enters the stack only if it is unmarked land, and it is marked in the same breath. So no square enters twice, and every square of the island enters once (it borders some square that was popped, and that pop pushed it). Counting on pop therefore counts each square exactly once.
+
+**What stays true:** every square in the stack is marked, every marked square of the current island is either in the stack or already counted, and `area` equals the number popped.
+
+**At the exit:** the stack is empty, `area` is the whole island, and `best` is the largest area seen so far. An all-water grid leaves `best` at 0, which is what the problem asks for.
+
+<Reveal q="Is an explicit stack a real depth-first search? It doesn’t visit squares in the same order as the recursion.">
+
+Not exactly the same order — marking on push means a square is claimed by whichever neighbour pushed it first, not by the deepest path. For counting area (and for every reachability question in this book) the order doesn’t matter; only *which* squares get claimed does. When the order itself matters (cycle detection in directed graphs, topological sort by finishing time) you need true recursion order, which an explicit stack can imitate by pushing an iterator per node. Swap the `ArrayDeque` for a queue with `offer`/`poll` and the same code is a BFS, with the same answer.
+
+</Reveal>
+
+**Before you code, say:** O(R·C) time and O(R·C) extra space for the stack in the worst case; the invariant is “a square is marked exactly when it is pushed”.
+
+<HintLadder hints={hints.maxArea}>
+
+```java id=maxAreaOfIsland
+private static final int[][] DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
+public int maxAreaOfIsland(int[][] grid) {
+    int rows = grid.length, cols = grid[0].length, best = 0;
+    for (int r = 0; r < rows; r++)
+        for (int c = 0; c < cols; c++) {
+            if (grid[r][c] != 1) continue;
+            Deque<int[]> stack = new ArrayDeque<>();     // the notebook: lives on the heap
+            stack.push(new int[]{r, c});
+            grid[r][c] = 0;                              // mark when pushed
+            int area = 0;
+            while (!stack.isEmpty()) {
+                int[] cell = stack.pop();
+                area++;                                  // pushed once, so counted once
+                for (int[] d : DIRS) {
+                    int nr = cell[0] + d[0], nc = cell[1] + d[1];
+                    if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && grid[nr][nc] == 1) {
+                        grid[nr][nc] = 0;                // mark now, or a second neighbour pushes it again
+                        stack.push(new int[]{nr, nc});
+                    }
+                }
+            }
+            best = Math.max(best, area);
+        }
+    return best;
+}
+```
+
+**O(R·C) time, O(R·C) extra space** in the worst case for the stack. No recursion, so no call-stack limit.
+
+</HintLadder>
+
+**Catch the bug:** marking on pop instead of on push.
+
+```java fragment
+int[] cell = stack.pop();
+grid[cell[0]][cell[1]] = 0;    // BUG: marked late — a square pushed by two neighbours is popped twice
+area++;
+// ...and below: if (... && grid[nr][nc] == 1) stack.push(new int[]{nr, nc});
+```
+
+On the 2 × 2 all-land grid `[[1, 1], [1, 1]]` it returns **5** for a four-square island: `(1,0)` is pushed by `(0,0)` and again by `(1,1)` before either copy is popped. [Solve Max Area of Island](https://leetcode.com/problems/max-area-of-island/).
+
+<Part n="Part Two" title="Ring by ring">
+
+Send boats in the order they were booked. The first boat to reach a square took the fewest crossings.
+
+</Part>
+
+<h2 id="shortest-path">Chapter 3 · The fog route</h2>
+
+<Scene chapter="Chapter 3" title="The fog route" mood="storm">
+
+Fog has rolled over the Skerries, and the mail boat must get from the north-west corner of the chart to the south-east corner, square by square, through open water. In fog a boat may move to any of the eight squares around it, but never onto rock.
+
+Stack volunteers. He follows one channel south-east, doubles back, tries another — and returns at dusk with *a* route. It is forty squares long. The direct one was eleven.
+
+Queue says nothing. She sends one boat to every open square around the corner, rings her bell, and only then sends boats onward from those.
+
+*"When her first boat touches the far corner,"* the Keeper asks you, *"how do you know no shorter route exists?"*
+
+</Scene>
+
+**Problem: Shortest Path in Binary Matrix · BFS in rings, eight directions**
+
+`0` is open water, `1` is rock. Find the number of squares on the shortest clear path from `(0, 0)` to `(n − 1, n − 1)`, moving in any of 8 directions, or `−1` if there is none. The path length counts **squares**, so a 1 × 1 open grid has answer 1.
+
+BFS sends boats in **rings**. Ring 1 is the start. Ring 2 is every open square next to it. Ring 3 is every open square next to ring 2 that isn’t already flagged, and so on. Process the queue one ring at a time — read its size, poll exactly that many — and the ring number *is* the path length.
+
+<Figure caption="LeetCode’s second example, [[0, 0, 0], [1, 1, 0], [1, 1, 0]], with each open square labelled by its ring. Rock is struck out. The start is ring 1; (0,1) is ring 2; (0,2) and (1,2) are both ring 3 — (1,2) is diagonal to (0,1); the goal (2,2) is ring 4. Answer: 4.">
+  <ArrayStrip name="row 0" values={['1', '2', '3']} indices={false} tones={{ 0: 'done', 1: 'done', 2: 'done' }} />
+  <ArrayStrip name="row 1" values={['█', '█', '3']} indices={false} tones={{ 0: 'out', 1: 'out', 2: 'done' }} />
+  <ArrayStrip name="row 2" values={['█', '█', '4']} indices={false} tones={{ 0: 'out', 1: 'out', 2: 'hot' }} />
+</Figure>
+
+<Mermaid code={`flowchart LR
+  P["poll a square"] --> N{"neighbour open\nand unflagged?"}
+  N -->|yes| F["flag it, then enqueue it"]
+  N -->|no| S["skip it"]
+  F --> P
+  S --> P`} />
+
+<Trace title="The first boat is the shortest" steps={shortestPath} takeaway="Remember: flag on enqueue, process one ring at a time, and the ring number when the goal appears is the answer." />
+
+**Why it works — the rings argument.** Claim: the queue always holds some squares of ring d followed by some squares of ring d + 1, never anything else. It starts true (just the start, ring 1). Polling a ring-d square can only enqueue unflagged neighbours; they can’t be in ring d − 1 or earlier (those are all flagged already), and they aren’t in ring d (all of ring d was flagged when ring d − 1 was expanded), so they are ring d + 1. Hence squares leave the queue in non-decreasing distance, and a square is first discovered from the earliest ring that touches it. Since any path to a square at distance d + 1 passes through a square at distance d, the first discovery happens at exactly d + 1. **In an unweighted graph, first discovered means shortest.**
+
+**What stays true:** every flagged square’s ring number is its true shortest path length, and the queue holds at most two consecutive rings.
+
+**At the exit:** if the goal was reached, you returned its ring number the moment you polled it. If the queue empties first, every square reachable from the start is flagged and the goal is not among them: return −1.
+
+<Reveal q="Why not DFS, keeping the shortest path it ever finds?">
+
+A DFS with flags reaches every square once, but by whatever route its direction order happened to try first, and once a square is flagged no better route can use it. To find the shortest path with DFS you would have to un-flag squares when backing out and try every route — and the number of routes grows exponentially (the 10 × 10 grid already has 48,620 shortest corner-to-corner routes using only right and down moves). BFS settles each square once, at its true distance.
+
+</Reveal>
+
+<Reveal q="Flag on enqueue, or flag on poll? Does it change the answer?">
+
+If you flag on poll but skip a square that is already flagged when it is polled, the answer stays right, but duplicates pile up in the queue: on a 10 × 10 open grid (4 directions), 181 enqueues instead of 100. Drop the skip, and every duplicate expands its neighbours again: 184,755 enqueues — and growing roughly fourfold per extra row and column. Flag on enqueue: each square enters the queue once, and its first ring is its final distance. Try the late-flag button in the [chart table](#playground) to see it caught.
+
+</Reveal>
+
+**Before you code, say:** O(n²) time and space for an n × n grid (each square enqueued once, 8 neighbours checked each); the invariant is “the queue holds ring d then ring d + 1”.
+
+<HintLadder hints={hints.shortestPath}>
+
+```java id=shortestPathBinaryMatrix
+public int shortestPathBinaryMatrix(int[][] grid) {
+    int n = grid.length;
+    if (grid[0][0] == 1 || grid[n - 1][n - 1] == 1) return -1;   // rock at either end: no path
+    Deque<int[]> queue = new ArrayDeque<>();
+    queue.offer(new int[]{0, 0});
+    grid[0][0] = 1;                                   // flag on enqueue (rock = flagged)
+    int length = 1;                                   // ring 1: the start square alone
+    while (!queue.isEmpty()) {
+        for (int size = queue.size(); size > 0; size--) {   // exactly one ring
+            int[] cell = queue.poll();
+            if (cell[0] == n - 1 && cell[1] == n - 1) return length;
+            for (int dr = -1; dr <= 1; dr++)
+                for (int dc = -1; dc <= 1; dc++) {    // 8 directions (0,0 is itself, already flagged)
+                    int nr = cell[0] + dr, nc = cell[1] + dc;
+                    if (nr >= 0 && nr < n && nc >= 0 && nc < n && grid[nr][nc] == 0) {
+                        grid[nr][nc] = 1;
+                        queue.offer(new int[]{nr, nc});
+                    }
+                }
+        }
+        length++;                                     // the bell: the next ring begins
+    }
+    return -1;                                        // queue empty, goal never reached
+}
+```
+
+**O(n²) time and O(n²) extra space** for the queue. The grid itself is the visited set; copy it first if the caller needs it back.
+
+</HintLadder>
+
+**Catch the bug:** dropping the guard on the start square. The start is enqueued even though it is rock, and on `[[1]]` it is also the goal, so the function returns **1** instead of −1. (The guard on the goal square is only an early exit: a rock goal is never enqueued anyway.) [Solve Shortest Path in Binary Matrix](https://leetcode.com/problems/shortest-path-in-binary-matrix/).
+
+<h2 id="rotting-oranges">Chapter 4 · The blight</h2>
+
+<Scene chapter="Chapter 4" title="The blight" mood="night">
+
+The orchard island grows oranges in crates laid out on a grid, and a blight has reached it. Every minute, every rotten orange spoils the fresh oranges directly beside it. The orchard-keeper wants to know how many minutes until the last orange turns — or whether some will never turn at all.
+
+There are two rotten crates, at opposite corners. You start to run Queue’s rings from the first one, then from the second, then compare.
+
+Queue stops you. *"The blight doesn’t take turns,"* she says. *"Both corners spoil their neighbours in the same minute."*
+
+She puts both rotten crates on the quay before she rings the first bell.
+
+</Scene>
+
+**Problem: Rotting Oranges · multi-source BFS**
+
+`2` is rotten, `1` is fresh, `0` is empty. The minute an orange rots is its **distance to the nearest rotten orange**. One BFS per rotten orange would work but costs O(k · R·C) for k rotten oranges. Instead, put **every rotten orange in the queue at minute 0**: ring 0 is all the sources at once. Then the rings are minutes, and each fresh orange is reached first from its nearest source.
+
+Picture an invisible extra node joined to every rotten orange: one BFS from it, minus the first step, is exactly this. That is why multi-source BFS is still a correct shortest-distance search.
+
+Count the fresh oranges up front. Each time one rots, decrement the count. When the rings stop, a non-zero count means some orange is walled off: return −1.
+
+<Figure caption="LeetCode’s first example, [[2, 1, 1], [1, 1, 0], [0, 1, 1]], with the minute each square rots (· is empty). The last orange, at (2,2), rots at minute 4. Below: two sources at opposite corners of an all-orange 3 × 3 grid. Both start in ring 0, so the far corners meet in the middle and the last orange rots at minute 2, not 4.">
+  <ArrayStrip name="row 0" values={['0', '1', '2']} indices={false} tones={{ 0: 'hot', 1: 'done', 2: 'done' }} />
+  <ArrayStrip name="row 1" values={['1', '2', '·']} indices={false} tones={{ 0: 'done', 1: 'done', 2: 'ghost' }} />
+  <ArrayStrip name="row 2" values={['·', '3', '4']} indices={false} tones={{ 0: 'ghost', 1: 'done', 2: 'purple' }} />
+  <ArrayStrip name="two: row 0" values={['0', '1', '2']} indices={false} tones={{ 0: 'hot', 1: 'done', 2: 'purple' }} />
+  <ArrayStrip name="two: row 1" values={['1', '2', '1']} indices={false} tones={{ 0: 'done', 1: 'purple', 2: 'done' }} />
+  <ArrayStrip name="two: row 2" values={['2', '1', '0']} indices={false} tones={{ 0: 'purple', 1: 'done', 2: 'hot' }} />
+</Figure>
+
+<Trace title="Every source in ring 0" steps={rotting} takeaway="Remember: every rotten orange starts in ring 0. Stop when no fresh orange is left; −1 if the rings run out first." />
+
+**Why it works:** with all sources in ring 0, the rings argument from Chapter 3 holds unchanged, and “distance from the set of sources” is the minimum over sources. The answer is the largest such distance over all oranges, which is the number of the last ring that rotted something.
+
+**What stays true:** after m rounds, exactly the oranges within distance m of some source are rotten, and `fresh` counts the rest.
+
+**At the exit:** the loop runs while `fresh > 0` and the queue isn’t empty. If `fresh` reached 0, `minutes` is the last minute anything rotted. If the queue ran dry first, the remaining fresh oranges are unreachable: −1. A grid with no fresh oranges never enters the loop and returns 0.
+
+<Reveal q="What if there are fresh oranges but no rotten ones at all?">
+
+The queue starts empty, the loop never runs, `fresh > 0`, and the answer is −1 — nothing can ever start the blight. And if there are no fresh oranges, the answer is 0 whether or not any rotten ones exist. Both fall out of the same two lines; no special case needed.
+
+</Reveal>
+
+**Before you code, say:** O(R·C) time and space; the invariant is “after m rounds, everything within distance m of a source is rotten”.
+
+<HintLadder hints={hints.rotting}>
+
+```java id=orangesRotting
+public int orangesRotting(int[][] grid) {
+    int rows = grid.length, cols = grid[0].length, fresh = 0;
+    Deque<int[]> queue = new ArrayDeque<>();
+    for (int r = 0; r < rows; r++)
+        for (int c = 0; c < cols; c++) {
+            if (grid[r][c] == 2) queue.offer(new int[]{r, c});   // every source in ring 0
+            else if (grid[r][c] == 1) fresh++;
+        }
+    int[][] dirs = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    int minutes = 0;
+    while (fresh > 0 && !queue.isEmpty()) {           // stop the moment nothing fresh is left
+        for (int size = queue.size(); size > 0; size--) {
+            int[] cell = queue.poll();
+            for (int[] d : dirs) {
+                int nr = cell[0] + d[0], nc = cell[1] + d[1];
+                if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && grid[nr][nc] == 1) {
+                    grid[nr][nc] = 2;                 // rotting IS the flag, set on enqueue
+                    fresh--;
+                    queue.offer(new int[]{nr, nc});
+                }
+            }
+        }
+        minutes++;
+    }
+    return fresh == 0 ? minutes : -1;
+}
+```
+
+**O(R·C) time and space.** Each orange is enqueued at most once.
+
+</HintLadder>
+
+**Catch the bug:** looping `while (!queue.isEmpty())` and counting every round. The last round polls the oranges that rotted in the final minute and rots nothing, but still adds a minute: LeetCode’s first example returns **5** instead of 4, and `[[0, 2]]` returns 1 instead of 0. [Solve Rotting Oranges](https://leetcode.com/problems/rotting-oranges/).
+
+<Part n="Part Three" title="Start from the sea">
+
+Don’t ask every square whether it can reach the edge. Ask the edge which squares it can reach.
+
+</Part>
+
+<h2 id="surrounded-regions">Chapter 5 · The rising tide</h2>
+
+<Scene chapter="Chapter 5" title="The rising tide" mood="storm">
+
+A spring tide is coming. On the low island of Marrow, the villagers have dug pools — `O` on your chart — and walled them with dykes, `X`. Any pool sealed off on every side by dykes will be swamped and filled in. Any pool connected, through other pools, to the open sea at the island’s edge will drain safely.
+
+You start at the first interior pool and wade outward, looking for the sea. Halfway across the island you realise you’ll do this again for the next pool, and the next.
+
+The Keeper takes you to the shore instead. *"The sea already knows which pools it can reach,"* she says. *"Walk in from here."*
+
+</Scene>
+
+**Problem: Surrounded Regions · flood from the boundary, then flip the rest**
+
+An `O` survives exactly when it is connected, through `O`s, to an `O` on the border. That is a question about the border, so **start there**:
+
+1. Put every border `O` in the queue and mark it safe (`'S'`). This is multi-source again: the whole border is ring 0.
+2. Flood: any `O` next to a safe square is safe.
+3. One final pass: `'S'` becomes `'O'` again, and any `O` left — never reached from the border — becomes `'X'`.
+
+No distances are needed, so DFS would do just as well; the queue is used here because seeding many sources at once is natural for it.
+
+<Figure caption="LeetCode’s example. Before (top): the O at (3,1) sits on the bottom border, so it is safe (green). The three Os at (1,1), (1,2) and (2,2) never touch the border or a safe O, so they are captured (gold). After (bottom): only (3,1) is still an O.">
+  <ArrayStrip name="row 0" values={['X', 'X', 'X', 'X']} indices={false} />
+  <ArrayStrip name="row 1" values={['X', 'O', 'O', 'X']} indices={false} tones={{ 1: 'hot', 2: 'hot' }} />
+  <ArrayStrip name="row 2" values={['X', 'X', 'O', 'X']} indices={false} tones={{ 2: 'hot' }} />
+  <ArrayStrip name="row 3" values={['X', 'O', 'X', 'X']} indices={false} tones={{ 1: 'done' }} />
+  <ArrayStrip name="after r1" values={['X', 'X', 'X', 'X']} indices={false} tones={{ 1: 'ghost', 2: 'ghost' }} />
+  <ArrayStrip name="after r2" values={['X', 'X', 'X', 'X']} indices={false} tones={{ 2: 'ghost' }} />
+  <ArrayStrip name="after r3" values={['X', 'O', 'X', 'X']} indices={false} tones={{ 1: 'done' }} />
+</Figure>
+
+<Trace title="Walk in from the shore" steps={surrounded} takeaway="Remember: seed every border O (all four sides), flood the safe set, then one pass flips the rest. Reverse the question, and each square is touched a constant number of times." />
+
+**Why it works:** “connected to the border” is symmetric — if a pool can reach the border, the border can reach the pool. So one flood from all border `O`s marks exactly the survivors, and everything else is captured.
+
+**What stays true:** every `'S'` is connected to the border through `O`s; every `O` adjacent to an `'S'` is either already `'S'` or waiting in the queue.
+
+**At the exit:** the queue is empty and the safe set is complete, so the final pass can decide each square by looking at it alone.
+
+<Reveal q="Why not flood from each interior O and flip its region if it never touched the border?">
+
+You can — but you only learn whether a region escapes after exploring all of it, so you need a second pass over that region to flip it (or a list of its squares). Flipping as you explore is the trap: you capture half a region before discovering that its far end touches the shore. Starting from the border asks one question once, with one flood.
+
+</Reveal>
+
+**Before you code, say:** O(R·C) time, O(R·C) space for the queue; the invariant is “every `'S'` is connected to the border”.
+
+<HintLadder hints={hints.surrounded}>
+
+```java id=solve
+public void solve(char[][] board) {
+    int rows = board.length, cols = board[0].length;
+    Deque<int[]> queue = new ArrayDeque<>();
+    for (int r = 0; r < rows; r++)
+        for (int c = 0; c < cols; c++)
+            if ((r == 0 || r == rows - 1 || c == 0 || c == cols - 1) && board[r][c] == 'O') {
+                board[r][c] = 'S';                    // on the shore: safe, and flagged
+                queue.offer(new int[]{r, c});
+            }
+    int[][] dirs = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    while (!queue.isEmpty()) {
+        int[] cell = queue.poll();
+        for (int[] d : dirs) {
+            int nr = cell[0] + d[0], nc = cell[1] + d[1];
+            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && board[nr][nc] == 'O') {
+                board[nr][nc] = 'S';                  // reached from the shore: safe
+                queue.offer(new int[]{nr, nc});
+            }
+        }
+    }
+    for (int r = 0; r < rows; r++)
+        for (int c = 0; c < cols; c++)
+            board[r][c] = board[r][c] == 'S' ? 'O' : 'X';   // unreached O is captured; X stays X
+}
+```
+
+**O(R·C) time and O(R·C) extra space** for the queue.
+
+</HintLadder>
+
+**Catch the bug:** seeding only the top and bottom rows — `if ((r == 0 || r == rows - 1) && …)` — forgets the left and right columns. On `[['X','X','X'], ['O','O','X'], ['X','X','X']]`, the `O` at (1,0) sits on the left border and should survive, and so should its neighbour (1,1); the buggy version captures both. [Solve Surrounded Regions](https://leetcode.com/problems/surrounded-regions/).
+
+<h2 id="pacific-atlantic">Chapter 6 · Two oceans</h2>
+
+<Scene chapter="Chapter 6" title="Two oceans" mood="dawn">
+
+The largest island of the Skerries is a high plateau, and it has the sea on two sides: the Pacific washes its north and west shores, the Atlantic its south and east. Rain falls on every square. Water runs from a square to any neighbour that is no higher.
+
+The Guild has been asked which squares send their rain to **both** oceans. A junior surveyor starts on the first square and follows every downhill trickle to see where it ends. Then the next square. Then the next. The rain will stop before he does.
+
+*"You walked down from the ocean in Marrow,"* the Keeper says. *"Here the ocean is at the bottom of the hill. Which way must you walk now?"*
+
+</Scene>
+
+**Problem: Pacific Atlantic Water Flow · two reverse floods, uphill, then intersect**
+
+Forward, from every square, is a search per square: up to (R·C)² work — 1.6 × 10⁹ steps on a 200 × 200 grid. Reverse it:
+
+1. **Flood from the Pacific edge** (top row and left column), walking **uphill**: step from a square to a neighbour whose height is **≥** the current one. Water from that neighbour could run down to here, and from here to the ocean.
+2. **Flood from the Atlantic edge** (bottom row and right column) the same way.
+3. The answer is every square both floods reached.
+
+Two floods, each O(R·C). The comparison flips because you are walking the water’s path backwards: water goes from high to low-or-equal, so the walker from the sea goes from low to high-or-equal.
+
+<Figure caption="Heights [[1, 2, 3], [8, 9, 4], [7, 6, 5]]. The Pacific flood (top and left edges) climbs to all nine squares. The Atlantic flood (bottom and right edges) reaches seven: never (0,0) or (0,1), because rain on (0,1) can only run down to (0,0), height 1, and from there only into the Pacific. Green squares reach both oceans: 7. Blue squares reach only the Pacific.">
+  <ArrayStrip name="row 0" values={[1, 2, 3]} indices={false} tones={{ 0: 'blue', 1: 'blue', 2: 'done' }} />
+  <ArrayStrip name="row 1" values={[8, 9, 4]} indices={false} tones={{ 0: 'done', 1: 'done', 2: 'done' }} />
+  <ArrayStrip name="row 2" values={[7, 6, 5]} indices={false} tones={{ 0: 'done', 1: 'done', 2: 'done' }} />
+</Figure>
+
+<Trace title="Climb from the sea" steps={pacific} takeaway="Remember: from the ocean, step to neighbours that are at least as high. Two floods, then intersect." />
+
+**Why it works:** a square drains to an ocean exactly when there is a non-increasing path from it to that ocean’s edge. Read backwards, that is a non-decreasing path from the edge to the square — which is precisely what the uphill flood explores. Each flood marks the squares that drain to its ocean; the intersection drains to both.
+
+**What stays true:** every square marked in `pacific` has a downhill-or-level path to the Pacific edge, and likewise for `atlantic`.
+
+**At the exit:** both boolean grids are complete; the final scan lists the squares where both are true, in row-major order (LeetCode accepts any order).
+
+<Reveal q="A square on the top-right corner touches both oceans. Is it always in the answer?">
+
+Yes. The top row is Pacific shore and the right column is Atlantic shore, so `(0, cols − 1)` is seeded by both floods — and so is `(rows − 1, 0)`. Both corners are in the answer whatever their heights. (In the figure, (0,2) and (2,0) are both green.)
+
+</Reveal>
+
+**Before you code, say:** O(R·C) time and space (two floods and two boolean grids); the invariant is “marked means drains to that ocean”.
+
+<HintLadder hints={hints.pacific}>
+
+```java id=pacificAtlantic
+private static final int[][] DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
+public List<List<Integer>> pacificAtlantic(int[][] heights) {
+    int rows = heights.length, cols = heights[0].length;
+    boolean[][] pacific = new boolean[rows][cols], atlantic = new boolean[rows][cols];
+    for (int r = 0; r < rows; r++) {
+        climb(heights, pacific, r, 0);                // left edge: Pacific shore
+        climb(heights, atlantic, r, cols - 1);        // right edge: Atlantic shore
+    }
+    for (int c = 0; c < cols; c++) {
+        climb(heights, pacific, 0, c);                // top edge: Pacific shore
+        climb(heights, atlantic, rows - 1, c);        // bottom edge: Atlantic shore
+    }
+    List<List<Integer>> both = new ArrayList<>();
+    for (int r = 0; r < rows; r++)
+        for (int c = 0; c < cols; c++)
+            if (pacific[r][c] && atlantic[r][c]) both.add(List.of(r, c));
+    return both;
+}
+
+// Walk UPHILL from the sea: water could run from a higher-or-level neighbour down to here.
+private void climb(int[][] h, boolean[][] reached, int r, int c) {
+    if (reached[r][c]) return;                        // already claimed from another shore square
+    Deque<int[]> stack = new ArrayDeque<>();          // Chapter 2's notebook, not the call stack
+    reached[r][c] = true;                             // flag on push
+    stack.push(new int[]{r, c});
+    while (!stack.isEmpty()) {
+        int[] cell = stack.pop();
+        for (int[] d : DIRS) {
+            int nr = cell[0] + d[0], nc = cell[1] + d[1];
+            if (nr >= 0 && nr < h.length && nc >= 0 && nc < h[0].length
+                    && !reached[nr][nc] && h[nr][nc] >= h[cell[0]][cell[1]]) {
+                reached[nr][nc] = true;
+                stack.push(new int[]{nr, nc});
+            }
+        }
+    }
+}
+```
+
+**O(R·C) time and space.** Each flood marks each square at most once, however many shore squares start it. The explicit stack is not decoration: when this lesson was checked, a *recursive* climb on a 150 × 150 plateau of equal heights — inside LeetCode’s 200 × 200 limit — overflowed Java’s default call stack.
+
+</HintLadder>
+
+**Catch the bug:** a strict `>` instead of `>=` forgets that water flows across level ground. On a 3 × 3 plateau of equal heights, every square reaches both oceans (9), but the strict version climbs nowhere past the shore and returns only the two corners (0,2) and (2,0). [Solve Pacific Atlantic Water Flow](https://leetcode.com/problems/pacific-atlantic-water-flow/).
+
+<Part n="Part Four" title="Charts without squares">
+
+The graph isn’t painted on a wall. It is hidden in a rule, or handed to you one node at a time.
+
+</Part>
+
+<h2 id="word-ladder">Chapter 7 · The word ferry</h2>
+
+<Scene chapter="Chapter 7" title="The word ferry" mood="dusk">
+
+The islanders of the far Skerries name their islands with three-letter words, and the ferries obey an old law: a ferry may only sail between two islands whose names differ in exactly one letter. A traveller lands on **hit** and needs to reach **cog**.
+
+There is no chart. There are only the names, written in the harbour-master’s register: hot, dot, dog, lot, log, cog.
+
+*"Where are the edges?"* you ask.
+
+*"Everywhere you can change one letter and still land on a name in the register,"* says the Keeper. *"The chart is in the rule. Queue doesn’t need it drawn. She only needs to know, at each island, where the next boats can go."*
+
+</Scene>
+
+**Problem: Word Ladder · BFS on an implicit graph**
+
+Each word is a node; two words are joined if they differ in exactly one letter. The answer is the number of **words** on the shortest ladder from `beginWord` to `endWord` (both counted), or 0 if there is none. `endWord` must be in the list; `beginWord` need not be.
+
+The only new question is **how to find the neighbours** of a word:
+
+- **Compare against every word:** for N words of length L, O(N·L) per word, O(N²·L) in total. With N = 5,000 that is 5,000 comparisons for every word you dequeue.
+- **Per-position letter substitution:** for each of the L positions, try the 25 other letters, and keep the candidates that are in the dictionary. That is 25·L candidates per word, each costing O(L) to build and hash: **O(N·L²·26)** in total — 125 candidates per word at L = 5, regardless of N.
+- **Wildcard buckets:** before the search, file every word under its L patterns — `hot` under `*ot`, `h*t`, `ho*`. Words sharing a bucket are neighbours. Building costs **O(N·L²)** time and memory (N·L keys of length L). During the search, scan each bucket once and then delete it: everything in it is now flagged. Total **O(N·L²)**, and you never generate a candidate that isn’t a real word.
+
+Substitution needs no preprocessing and little memory; buckets drop the factor of 26 and only touch real words, at the price of O(N·L²) memory. At LeetCode’s limits (N ≤ 5,000, L ≤ 10) both are fast. Either way, it is Chapter 3’s BFS, with words for squares.
+
+<Figure caption="The ladder graph for hit → cog, each word labelled with its ring. Ring 1: hit. Ring 2: hot. Ring 3: dot and lot. Ring 4: dog and log. cog first appears in ring 5, so the answer is 5 words (4 ferry crossings).">
+  <Mermaid code={`flowchart LR
+  hit["hit · 1"] --- hot["hot · 2"]
+  hot --- dot["dot · 3"]
+  hot --- lot["lot · 3"]
+  dot --- lot
+  dot --- dog["dog · 4"]
+  lot --- log["log · 4"]
+  dog --- log
+  dog --- cog["cog · 5"]
+  log --- cog`} />
+</Figure>
+
+<Trace title="Where are the ferries?" steps={ladder} takeaway="Remember: words are nodes, one-letter changes are edges. Remove a word from the dictionary when you enqueue it — that is the flag — and count words, not crossings." />
+
+**Why it works:** it is BFS, so the rings argument holds: the first time `endWord` is generated, its ring is the shortest ladder. Removing a word from the `unvisited` set at enqueue time is the flag rule; it also means a word can never be generated twice.
+
+**What stays true:** `words` is the ring number of the words currently being polled; every word in the queue or already polled has been removed from `unvisited`.
+
+**At the exit:** if `endWord` was generated you returned `words + 1`, the ring it was found in. If the queue empties first, `endWord` is not reachable: 0.
+
+<Reveal q="Can you go faster? Both ends are known.">
+
+Yes: **bidirectional BFS**. Grow rings from `beginWord` and from `endWord`, always expanding the smaller frontier, and stop when they touch. If each word has about b neighbours and the answer is d, one-sided BFS explores on the order of b^d words, two half-searches on the order of 2·b^(d/2). It is the standard follow-up; the correctness argument is the same rings, met in the middle.
+
+</Reveal>
+
+**Before you code, say:** O(N·L²·26) time for substitution (O(N·L²) for buckets), O(N·L) space for the set and queue; the invariant is “removed from the dictionary means flagged”.
+
+<HintLadder hints={hints.ladder}>
+
+```java id=ladderLength
+public int ladderLength(String beginWord, String endWord, List<String> wordList) {
+    Set<String> unvisited = new HashSet<>(wordList);   // removing a word = flagging it
+    if (!unvisited.contains(endWord)) return 0;
+    Deque<String> queue = new ArrayDeque<>();
+    queue.offer(beginWord);
+    unvisited.remove(beginWord);
+    int words = 1;                                     // ring 1: beginWord alone
+    while (!queue.isEmpty()) {
+        for (int size = queue.size(); size > 0; size--) {
+            char[] w = queue.poll().toCharArray();
+            for (int i = 0; i < w.length; i++) {
+                char original = w[i];
+                for (char ch = 'a'; ch <= 'z'; ch++) {
+                    if (ch == original) continue;
+                    w[i] = ch;
+                    String next = new String(w);
+                    if (unvisited.remove(next)) {      // a real word, not yet reached
+                        if (next.equals(endWord)) return words + 1;
+                        queue.offer(next);
+                    }
+                }
+                w[i] = original;                       // restore before the next position
+            }
+        }
+        words++;
+    }
+    return 0;
+}
+```
+
+The wildcard-bucket version, same BFS:
+
+```java id=ladderBuckets
+public int ladderLength(String beginWord, String endWord, List<String> wordList) {
+    if (!wordList.contains(endWord)) return 0;
+    Map<String, List<String>> buckets = new HashMap<>();          // "h*t" -> [hot, hit, ...]
+    for (String word : wordList)
+        for (int i = 0; i < word.length(); i++)
+            buckets.computeIfAbsent(word.substring(0, i) + '*' + word.substring(i + 1), k -> new ArrayList<>()).add(word);
+    Set<String> seen = new HashSet<>();
+    Deque<String> queue = new ArrayDeque<>();
+    queue.offer(beginWord);
+    seen.add(beginWord);
+    int words = 1;
+    while (!queue.isEmpty()) {
+        for (int size = queue.size(); size > 0; size--) {
+            String word = queue.poll();
+            if (word.equals(endWord)) return words;
+            for (int i = 0; i < word.length(); i++) {
+                String key = word.substring(0, i) + '*' + word.substring(i + 1);
+                for (String next : buckets.getOrDefault(key, List.of()))
+                    if (seen.add(next)) queue.offer(next);       // flag on enqueue
+                buckets.remove(key);                              // all of it is flagged: never scan it again
+            }
+        }
+        words++;
+    }
+    return 0;
+}
+```
+
+**Substitution: O(N·L²·26) time, O(N·L) space. Buckets: O(N·L²) time and space.** Without the `buckets.remove(key)` line, a bucket holding k words is rescanned by each of them: O(k²) for that bucket alone.
+
+</HintLadder>
+
+**Catch the bug:** checking for `endWord` *before* checking the dictionary.
+
+```java fragment
+if (next.equals(endWord)) return words + 1;   // BUG: cog is accepted even if it isn't in the register
+if (unvisited.remove(next)) queue.offer(next);
+```
+
+On LeetCode’s second example (the same register without `cog`) the answer is 0, but this returns **5**. [Solve Word Ladder](https://leetcode.com/problems/word-ladder/).
+
+<h2 id="clone-graph">Chapter 8 · The copyist’s chart</h2>
+
+<Scene chapter="Chapter 8" title="The copyist’s chart" mood="night">
+
+The mainland wants a copy of the ferry chart: new paper, new islands, new routes, identical in every line — and not one thread tying it to the original, because the original is going back on the wall.
+
+Copies sits down with a fresh sheet and her ledger. She starts at island 1 and draws its copy. Island 1 has a ferry to island 2, so she draws island 2. Island 2 has a ferry back to island 1.
+
+Her pen hovers. *"If I draw island 1 again,"* she says, *"I’ll draw island 2 again after it, and I’ll never stop."*
+
+*"Then before you draw anything,"* says the Keeper, *"look in your ledger."*
+
+</Scene>
+
+**Problem: Clone Graph · DFS with an old → new map**
+
+You are given one node of a connected undirected graph; each node has a `val` and a list of `neighbors`. Return a **deep copy**: new nodes only, the same values, the same neighbour lists in the same order.
+
+The ledger is a `HashMap<Node, Node>` from each original to its copy, and it does two jobs at once:
+
+1. **It is the visited set.** An original in the map has already been copied (or is being copied right now, further up the recursion).
+2. **It is the wiring.** When a copy needs a neighbour, the map hands over that neighbour’s copy — never the original.
+
+The rule that makes it terminate: **put the copy in the map before visiting its neighbours.** That is the flag rule again — flag when you start, not when you finish.
+
+<Figure caption="LeetCode’s first example: four nodes in a square, 1–2–3–4–1. Dashed arrows are Copies’ ledger. When the copy of 3 asks for neighbour 4, and 4 asks for neighbour 1, the ledger already holds 1′, so the cycle closes onto the copy instead of starting a new one. Exactly four new nodes are made.">
+  <Mermaid code={`flowchart LR
+  subgraph original
+    o1((1)) --- o2((2))
+    o2 --- o3((3))
+    o3 --- o4((4))
+    o4 --- o1
+  end
+  subgraph copy
+    c1(("1′")) --- c2(("2′"))
+    c2 --- c3(("3′"))
+    c3 --- c4(("4′"))
+    c4 --- c1
+  end
+  o1 -.-> c1
+  o2 -.-> c2
+  o3 -.-> c3
+  o4 -.-> c4`} />
+</Figure>
+
+<Trace title="Look in the ledger first" steps={clone} takeaway="Remember: map original → copy, register the copy before recursing, and wire copies to copies, never to originals." />
+
+**Why it works:** each original is copied once, the first time it is reached (the map prevents a second copy). Each copy’s neighbour list is filled from the originals’ neighbours, translated through the map, in the same order. Because the graph is connected, every node is reached from the given one.
+
+**What stays true:** every original in the map has exactly one copy; a copy whose recursion has returned has its complete neighbour list, pointing only at copies.
+
+**At the exit:** the map holds V entries, the copy has the same E edges, and no copy points at an original.
+
+<Reveal q="Does it have to be DFS?">
+
+No. BFS works the same way: when you enqueue an original, create its copy and put it in the map (flag on enqueue); when you poll an original, append each neighbour’s copy to its copy’s list, creating and enqueueing any neighbour not yet in the map. Same O(V + E). Copy List with Random Pointer, in the <a href={`${BASE}dsa/lessons/linked-lists/`}>Linked Lists</a> book, is the same old → new ledger on a list.
+
+</Reveal>
+
+LeetCode presents the `Node` class as given; it is written out here so the code compiles on its own.
+
+**Before you code, say:** O(V + E) time, O(V) space for the map plus O(V) recursion depth; the invariant is “in the map means copied (or being copied)”.
+
+<HintLadder hints={hints.clone}>
+
+```java id=cloneGraph
+static class Node {
+    public int val;
+    public List<Node> neighbors;
+    public Node() { this(0); }
+    public Node(int val) { this(val, new ArrayList<>()); }
+    public Node(int val, ArrayList<Node> neighbors) { this.val = val; this.neighbors = neighbors; }
+}
+
+private final Map<Node, Node> copies = new HashMap<>();     // original -> its copy
+
+public Node cloneGraph(Node node) {
+    if (node == null) return null;
+    Node existing = copies.get(node);
+    if (existing != null) return existing;            // already copied: reuse it, don't recurse
+    Node copy = new Node(node.val);
+    copies.put(node, copy);                           // register BEFORE visiting neighbours
+    for (Node next : node.neighbors)
+        copy.neighbors.add(cloneGraph(next));         // copies point only at copies
+    return copy;
+}
+```
+
+**O(V + E) time, O(V) extra space** for the map and the recursion. LeetCode allows at most 100 nodes, so recursion depth is no concern.
+
+</HintLadder>
+
+**Catch the bug:** registering the copy *after* the loop over neighbours. Node 1 recurses into 2, 2 finds 1 not yet in the map and recurses into 1 again — on any single edge `1 — 2` that is infinite recursion and a `StackOverflowError`. [Solve Clone Graph](https://leetcode.com/problems/clone-graph/).
+
+<Part n="Part Five" title="The Keeper changes one rule">
+
+Side quests. Same flags, same rings — one rule different. This is where memorised templates break and understanding doesn’t.
+
+</Part>
+
+<Scene title="Charts with one line crossed out" mood="night">
+
+The evening you finish Chapter 8, there is a stack of old charts on your desk. Each one is a problem you’ve already solved, with one rule struck through in red and a new rule written above it in the Keeper’s small, tidy hand.
+
+*"Anyone can trace a coastline,"* says the note on top. *"Show me you know why the flags go down when they do."*
+
+</Scene>
+
+<h2 id="flood-fill">Side quest 1 · Repaint one island</h2>
+
+**The chart says:** no counting. One start square `(sr, sc)`; repaint it and every square of the same colour connected to it with a new colour.
+
+**The reasoning:** one flood from one source, Chapter 1 without the scan. The new colour itself is the flag: a repainted square no longer matches the old colour, so the flood never returns to it. **Unless the new colour is the old colour.** Then repainting changes nothing, the flag is invisible, and two neighbouring squares call each other forever. Check `old == color` first and return the image untouched.
+
+<Figure caption="LeetCode’s example: image [[1, 1, 1], [1, 1, 0], [1, 0, 1]], start (1,1), new colour 2. Six squares are connected to the start through colour 1 and become 2. The 1 at (2,2) touches the region only at a corner, so it stays 1.">
+  <ArrayStrip name="row 0" values={[2, 2, 2]} indices={false} tones={{ 0: 'hot', 1: 'hot', 2: 'hot' }} />
+  <ArrayStrip name="row 1" values={[2, 2, 0]} indices={false} tones={{ 0: 'hot', 1: 'hot' }} />
+  <ArrayStrip name="row 2" values={[2, 0, 1]} indices={false} tones={{ 0: 'hot' }} />
+</Figure>
+
+<Reveal q="Why is the old == color check not just an optimisation?">
+
+Because without it the code never terminates. With `color == old`, painting `(r, c)` leaves it equal to `old`, so `paint(r + 1, c)` calls back `paint(r, c)`, which passes the `img[r][c] != old` test again. On any image with two touching squares of that colour, that is a `StackOverflowError` (the checker demonstrates it). Whenever the mark is “change the value”, ask what happens if the change is a no-op.
+
+</Reveal>
+
+<HintLadder hints={hints.floodFill}>
+
+```java id=floodFill
+public int[][] floodFill(int[][] image, int sr, int sc, int color) {
+    int old = image[sr][sc];
+    if (old != color) paint(image, sr, sc, old, color);   // same colour: the flag would be invisible
+    return image;
+}
+
+private void paint(int[][] img, int r, int c, int old, int color) {
+    if (r < 0 || r >= img.length || c < 0 || c >= img[0].length || img[r][c] != old) return;
+    img[r][c] = color;                                     // the new colour IS the flag
+    paint(img, r + 1, c, old, color);
+    paint(img, r - 1, c, old, color);
+    paint(img, r, c + 1, old, color);
+    paint(img, r, c - 1, old, color);
+}
+```
+
+**O(R·C) time and recursion depth** in the worst case. LeetCode’s 50 × 50 limit keeps the depth small.
+
+</HintLadder>
+
+**Transfer test:** return how many squares changed colour instead of the image. Where does the counter go, and what should it be when `old == color`? (Increment it next to the paint line; 0.) [Solve Flood Fill](https://leetcode.com/problems/flood-fill/).
+
+<h2 id="provinces">Side quest 2 · The provinces (a matrix)</h2>
+
+**The chart says:** no grid of squares. You get an n × n matrix `isConnected`, where `isConnected[i][j] == 1` means towns i and j are directly connected. Count the provinces: groups of towns connected directly or indirectly.
+
+**The reasoning:** it is Chapter 1’s count of floods, with the second costume. A town’s neighbours are the 1s in its **row** of the matrix, so finding them costs O(n) per town and the whole count costs **O(n²)** — which is also the size of the input, so you can’t do better. The diagonal is always 1 (a town is connected to itself); the visited check makes it harmless.
+
+<Figure caption="isConnected = [[1, 1, 0], [1, 1, 0], [0, 0, 1]]. Towns 0 and 1 are joined (gold), town 2 stands alone (blue): 2 provinces. Each row is one town’s neighbour list in disguise.">
+  <ArrayStrip name="town 0" values={[1, 1, 0]} indices={false} tones={{ 0: 'hot', 1: 'hot' }} />
+  <ArrayStrip name="town 1" values={[1, 1, 0]} indices={false} tones={{ 0: 'hot', 1: 'hot' }} />
+  <ArrayStrip name="town 2" values={[0, 0, 1]} indices={false} tones={{ 2: 'blue' }} />
+</Figure>
+
+<Reveal q="Should you convert the matrix to an adjacency list first?">
+
+Only if you will traverse it many times. Building the list costs O(n²) (you must read the whole matrix to find the 1s), the same as one traversal straight off the matrix. The matrix earns its keep when the question is “are i and j joined?” — O(1) — or when the graph is dense, so a list would be just as big.
+
+</Reveal>
+
+<HintLadder hints={hints.provinces}>
+
+```java id=findCircleNum
+public int findCircleNum(int[][] isConnected) {
+    int n = isConnected.length, provinces = 0;
+    boolean[] visited = new boolean[n];
+    for (int town = 0; town < n; town++)
+        if (!visited[town]) {
+            provinces++;                                   // an unflagged town: a new province
+            visit(isConnected, visited, town);
+        }
+    return provinces;
+}
+
+private void visit(int[][] m, boolean[] visited, int town) {
+    visited[town] = true;
+    for (int other = 0; other < m.length; other++)         // neighbours = the 1s in this row
+        if (m[town][other] == 1 && !visited[other]) visit(m, visited, other);
+}
+```
+
+**O(n²) time, O(n) extra space** for the flags and the recursion (n ≤ 200).
+
+</HintLadder>
+
+**Transfer test:** the same towns arrive as an edge list `[[0, 1], [3, 4]]` with n = 5 instead of a matrix. What do you build first, and what does the traversal cost now? (An adjacency list; O(V + E) — the prologue’s `countComponents`, which returns 3 here.) [Solve Number of Provinces](https://leetcode.com/problems/number-of-provinces/).
+
+<h2 id="nearest-zero">Side quest 3 · Distance to the nearest harbour</h2>
+
+**The chart says:** for **every** square, the distance to the nearest `0` (a harbour), moving up, down, left or right.
+
+**The reasoning:** a BFS from each `1` would be O((R·C)²). Turn it around, as the blight did: **every `0` is a source**, all in ring 0. Each `1` is first reached from its nearest harbour, and its ring is its answer. Mark unreached squares with −1; setting the distance *is* the flag, and it happens on enqueue.
+
+<Figure caption="LeetCode’s second example, mat = [[0, 0, 0], [0, 1, 0], [1, 1, 1]], and the answer [[0, 0, 0], [0, 1, 0], [1, 2, 1]]. The 1 at (2,1) is two steps from every harbour, so it lands in ring 2.">
+  <ArrayStrip name="row 0" values={[0, 0, 0]} indices={false} tones={{ 0: 'ghost', 1: 'ghost', 2: 'ghost' }} />
+  <ArrayStrip name="row 1" values={[0, 1, 0]} indices={false} tones={{ 0: 'ghost', 1: 'done', 2: 'ghost' }} />
+  <ArrayStrip name="row 2" values={[1, 2, 1]} indices={false} tones={{ 0: 'done', 1: 'hot', 2: 'done' }} />
+</Figure>
+
+<Reveal q="Walls and Gates (LeetCode Premium) adds walls and asks for the distance to the nearest gate. What changes?">
+
+Only the neighbour test: walls are never enqueued. Gates are the sources, empty rooms get their ring, and rooms no gate can reach keep their “infinity” value. Same multi-source BFS, O(R·C).
+
+</Reveal>
+
+<HintLadder hints={hints.nearestZero}>
+
+```java id=updateMatrix
+public int[][] updateMatrix(int[][] mat) {
+    int rows = mat.length, cols = mat[0].length;
+    int[][] dist = new int[rows][cols];
+    Deque<int[]> queue = new ArrayDeque<>();
+    for (int r = 0; r < rows; r++)
+        for (int c = 0; c < cols; c++)
+            if (mat[r][c] == 0) queue.offer(new int[]{r, c});   // every harbour in ring 0
+            else dist[r][c] = -1;                                // -1 = not reached yet
+    int[][] dirs = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    while (!queue.isEmpty()) {
+        int[] cell = queue.poll();
+        for (int[] d : dirs) {
+            int nr = cell[0] + d[0], nc = cell[1] + d[1];
+            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && dist[nr][nc] == -1) {
+                dist[nr][nc] = dist[cell[0]][cell[1]] + 1;      // distance set on enqueue = the flag
+                queue.offer(new int[]{nr, nc});
+            }
+        }
+    }
+    return dist;
+}
+```
+
+**O(R·C) time and space.** This version carries the distance in `dist` instead of counting rings; both are the same BFS.
+
+</HintLadder>
+
+**Transfer test:** As Far from Land as Possible asks for the water square whose nearest land is **farthest away**. Which squares are the sources, and what do you return? (All land squares; the largest distance assigned, or −1 if there is no land or no water.) [Solve 01 Matrix](https://leetcode.com/problems/01-matrix/).
+
+<h2 id="shortest-bridge">Side quest 4 · The shortest bridge</h2>
+
+**The chart says:** exactly two islands. Return the fewest water squares you must fill to join them.
+
+**The reasoning:** two traversals, each doing what it is good at. First a **DFS claims the whole first island** — mark every square of it and put every square in the queue. Then a **BFS rings outward from that whole island** (multi-source again: the entire island is ring 0) through water, until a ring touches the second island. The number of water rings crossed is the answer.
+
+<Figure caption="LeetCode’s second example, [[0, 1, 0], [0, 0, 0], [0, 0, 1]], with each water square labelled by its ring. Island A is (0,1) (gold, ring 0). Ring 1 is the water around it; ring 2 includes (1,2) and (2,1), which touch island B at (2,2). Two squares of water must be filled — say (0,2) and (1,2): answer 2. The search stops before (2,0) is ever reached.">
+  <ArrayStrip name="row 0" values={['1', 'A', '1']} indices={false} tones={{ 1: 'hot' }} />
+  <ArrayStrip name="row 1" values={['2', '1', '2']} indices={false} />
+  <ArrayStrip name="row 2" values={['·', '2', 'B']} indices={false} tones={{ 0: 'ghost', 2: 'purple' }} />
+</Figure>
+
+<Reveal q="Why claim the whole first island before the BFS, instead of starting from one of its squares?">
+
+Because the bridge can leave from any square of it. Starting from a single square, the rings would also count steps *across* the first island, and the far shore of a long island would look farther from the second island than it is. Seeding every square of island A in ring 0 measures the distance from the island, not from one point.
+
+</Reveal>
+
+<HintLadder hints={hints.bridge}>
+
+```java id=shortestBridge
+public int shortestBridge(int[][] grid) {
+    int n = grid.length;
+    Deque<int[]> queue = new ArrayDeque<>();
+    outer:
+    for (int r = 0; r < n; r++)
+        for (int c = 0; c < n; c++)
+            if (grid[r][c] == 1) { claim(grid, r, c, queue); break outer; }   // island A only
+    int[][] dirs = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    for (int flips = 0; !queue.isEmpty(); flips++) {
+        for (int size = queue.size(); size > 0; size--) {
+            int[] cell = queue.poll();
+            for (int[] d : dirs) {
+                int nr = cell[0] + d[0], nc = cell[1] + d[1];
+                if (nr < 0 || nr >= n || nc < 0 || nc >= n || grid[nr][nc] == 2) continue;
+                if (grid[nr][nc] == 1) return flips;          // touched island B
+                grid[nr][nc] = 2;                             // water claimed in this ring
+                queue.offer(new int[]{nr, nc});
+            }
+        }
+    }
+    return -1;                                                // unreachable: two islands are promised
+}
+
+// Mark every square of island A as 2 and enqueue it: the whole island is ring 0.
+private void claim(int[][] grid, int r, int c, Deque<int[]> queue) {
+    if (r < 0 || r >= grid.length || c < 0 || c >= grid.length || grid[r][c] != 1) return;
+    grid[r][c] = 2;
+    queue.offer(new int[]{r, c});
+    claim(grid, r + 1, c, queue);
+    claim(grid, r - 1, c, queue);
+    claim(grid, r, c + 1, queue);
+    claim(grid, r, c - 1, queue);
+}
+```
+
+**O(n²) time and space.** While ring k is polled, `flips` is k: island A is ring 0, and a ring-k water square needed k fills to reach.
+
+</HintLadder>
+
+**Transfer test:** now there are k islands, and you want the shortest bridge between *any* two of them. Why does seeding every island at once in ring 0 break, and what extra label does each queued square need? (Seeds from different islands meet; tag each square with its island and stop when two different tags meet.) [Solve Shortest Bridge](https://leetcode.com/problems/shortest-bridge/).
+
+<h2 id="open-the-lock">Side quest 5 · The harbour lock</h2>
+
+**The chart says:** no chart at all. The harbour gate has a lock with four wheels, each showing 0–9, starting at `"0000"`. One move turns one wheel one click up or down (9 wraps to 0 and back). Some settings are **dead ends** that jam the lock. What is the fewest moves to reach `target`, or −1?
+
+**The reasoning:** the states are the nodes — 10⁴ of them — and each has 8 neighbours (4 wheels × 2 directions). The dead ends are rocks. It is Chapter 3 on an implicit graph, like Word Ladder. One neat move: put the dead ends straight into the visited set, so “dead” and “already seen” are the same test. If `"0000"` itself is dead, the answer is −1 before you start.
+
+<Reveal q="LeetCode’s first example has 5 dead ends and target 0202; the answer is 6. Why not 2 — two clicks on the second wheel and two on the fourth?">
+
+Two clicks on each wheel is 4 moves, not 2 — and every 4-move route is jammed. It must click the second wheel up twice and the fourth wheel up twice, and all six orders of those clicks pass through 0101, 0102 or 0201, which are dead. Five moves is impossible: every click changes the sum of the digits by 1 or 9, an odd number, so after an odd number of moves the sum is odd — and 0202’s sum, 4, is even. So the answer is at least 6, and 0000 → 1000 → 1100 → 1200 → 1201 → 1202 → 0202 avoids every dead end. You don’t need that argument in the interview; the rings find it for you.
+
+</Reveal>
+
+<HintLadder hints={hints.openLock}>
+
+```java id=openLock
+public int openLock(String[] deadends, String target) {
+    Set<String> blocked = new HashSet<>(Arrays.asList(deadends));   // dead ends AND visited states
+    if (!blocked.add("0000")) return -1;            // the start itself is jammed
+    Deque<String> queue = new ArrayDeque<>();
+    queue.offer("0000");
+    for (int moves = 0; !queue.isEmpty(); moves++) {
+        for (int size = queue.size(); size > 0; size--) {
+            String state = queue.poll();
+            if (state.equals(target)) return moves;
+            char[] w = state.toCharArray();
+            for (int i = 0; i < 4; i++) {
+                char original = w[i];
+                for (int click : new int[]{1, 9}) {               // +1, or −1 (which is +9 mod 10)
+                    w[i] = (char) ('0' + (original - '0' + click) % 10);
+                    String next = new String(w);
+                    if (blocked.add(next)) queue.offer(next);     // false if dead or already seen
+                }
+                w[i] = original;
+            }
+        }
+    }
+    return -1;
+}
+```
+
+**O(10⁴ · 8 · 4) time** — every state once, 8 neighbours, 4 characters to build each — and O(10⁴) space. In general, for w wheels of d digits: O(dʷ · w²) time.
+
+</HintLadder>
+
+**Transfer test:** the lock grows to 6 wheels, so there are 10⁶ states. Both the start and the target are known. Which follow-up from Chapter 7 roughly square-roots the work? (Bidirectional BFS.) [Solve Open the Lock](https://leetcode.com/problems/open-the-lock/).
+
+<h2 id="bipartite">Side quest 6 · Two flags (bipartite)</h2>
+
+**The chart says:** the flags now come in two colours. Can every node get red or blue so that **every edge joins a red node to a blue one**? The graph is an adjacency list, and it may be in several pieces.
+
+**The reasoning:** BFS already sorts nodes into rings. Colour ring by ring, alternating: each node gets the opposite colour of the node that discovered it. The colour is the flag, set on enqueue. If you ever find an edge between two nodes of the **same** colour, the answer is no — that edge closes a cycle of odd length, and an odd cycle can’t alternate. Because the graph may be disconnected, restart from every node that is still uncoloured.
+
+<Figure caption="LeetCode’s two examples. Left: graph [[1, 2, 3], [0, 2], [0, 1, 3], [0, 2]] contains the triangle 0–1–2, an odd cycle, so it is not bipartite. Right: [[1, 3], [0, 2], [1, 3], [0, 2]] is the square 0–1–2–3–0, an even cycle: colour 0 and 2 red, 1 and 3 blue.">
+  <Mermaid code={`flowchart LR
+  subgraph no["not bipartite"]
+    a0((0)) --- a1((1))
+    a0 --- a2((2))
+    a0 --- a3((3))
+    a1 --- a2
+    a2 --- a3
+  end
+  subgraph yes["bipartite"]
+    b0((0)) --- b1((1))
+    b1 --- b2((2))
+    b2 --- b3((3))
+    b3 --- b0
+  end`} />
+</Figure>
+
+<Reveal q="Why must the loop restart from every uncoloured node? Isn’t one BFS enough?">
+
+One BFS only reaches one component. A graph like `[[1], [0], [3, 4], [2, 4], [2, 3]]` has a harmless edge 0–1 and, separately, the triangle 2–3–4. A single BFS from node 0 colours 0 and 1 and reports “bipartite” — wrongly. The outer loop is the same scan as Chapter 1’s: every component gets its own flood.
+
+</Reveal>
+
+<HintLadder hints={hints.bipartite}>
+
+```java id=isBipartite
+public boolean isBipartite(int[][] graph) {
+    int n = graph.length;
+    int[] color = new int[n];                       // 0 = uncoloured; 1 and -1 are the two flags
+    for (int start = 0; start < n; start++) {
+        if (color[start] != 0) continue;            // coloured by an earlier component's BFS
+        color[start] = 1;
+        Deque<Integer> queue = new ArrayDeque<>();
+        queue.offer(start);
+        while (!queue.isEmpty()) {
+            int u = queue.poll();
+            for (int v : graph[u]) {
+                if (color[v] == 0) { color[v] = -color[u]; queue.offer(v); }   // colour on enqueue
+                else if (color[v] == color[u]) return false;                   // an edge inside one side
+            }
+        }
+    }
+    return true;
+}
+```
+
+**O(V + E) time, O(V) space.** DFS colours just as well; the alternation is what matters, not the order.
+
+</HintLadder>
+
+**Transfer test:** Possible Bipartition gives n people and a list of pairs who dislike each other, and asks whether they can be split into two groups with no dislikes inside a group. What graph do you build, and which code above do you run on it? (Nodes are people, dislikes are undirected edges; build an adjacency list and run this BFS colouring.) [Solve Is Graph Bipartite?](https://leetcode.com/problems/is-graph-bipartite/).
+
+<Part n="Epilogue" title="Beyond the Skerries">
+
+When rings are the wrong tool, who lives next door, and the exam that proves you can find your own way.
+
+</Part>
+
+<h2 id="choose-the-tool">When the tide lies</h2>
+
+<Scene title="The toll ferries" mood="storm">
+
+The mainland ferry company buys out the Skerries routes and changes the prices. Now some crossings cost one coin and some cost ten. A traveller asks for the cheapest way from Holm to the outer reef.
+
+Queue does what she always does. Her first boat reaches the reef in two crossings: ten coins and ten coins. Three rings later, a route of four one-coin crossings arrives — four coins.
+
+The traveller is not pleased. The Keeper isn’t surprised. *"Her promise was the fewest crossings,"* she says. *"Not the fewest coins. The rings were only ever a shortest path when every crossing cost the same."*
+
+</Scene>
+
+BFS and DFS are the right tools when you need **reachability, components, or the fewest steps where every step costs the same**. They are the wrong tool when:
+
+- **Edges have different weights.** Fewest edges isn’t cheapest. Use **Dijkstra** (a heap ordered by distance, non-negative weights) — O((V + E) log V). Example: a direct road of 10 minutes versus two roads of 2 and 3; BFS picks the direct one, the fastest route is 5.
+- **Weights are only 0 or 1.** Use **0-1 BFS**: a deque, pushing 0-cost neighbours to the front and 1-cost neighbours to the back. Still O(V + E).
+- **Edges arrive over time and you only ask “are these connected?”** Re-flooding after every new edge is O(V + E) per edge. **Union-find** merges in near-constant time.
+- **Order matters: prerequisites, build steps, “X must come before Y”.** That is a **topological sort** of a directed graph (Kahn’s algorithm is BFS on in-degrees).
+- **You must enumerate every path**, as in Word Search, where a square may be reused by *another* path. Permanent flags are wrong there: you un-flag when you back out. That is **backtracking**.
+
+<Reveal q="All ferries cost the same, but you must find the route with the fewest crossings that also passes through the lighthouse. Still BFS?">
+
+Yes — on a bigger graph. Make each node a pair (island, visited lighthouse yet?), so every island appears twice. Edges keep the flag or turn it on when they land on the lighthouse. BFS from (start, no) to (goal, yes) gives the answer in O(2·(V + E)). Adding state to the node is the standard way to keep BFS when the rules grow a memory.
+
+</Reveal>
+
+<h2 id="wider-family">The neighbouring guilds · How the other roadmap patterns connect</h2>
+
+The Chart House isn’t the only guild that plants flags. The shared idea: **visit each thing once, from a frontier, and decide carefully when it counts as visited.**
+
+| Shared idea | Where it shows up | Where it belongs |
+|---|---|---|
+| BFS in rings on a tree | Level-order traversal: a tree is a graph with no cycles, so no flags are needed | <a href={`${BASE}dsa/`}>Trees (BFS) · roadmap</a> |
+| DFS that returns a value upward | Max Area’s flood returning a size is a tree DFS returning a height | <a href={`${BASE}dsa/`}>Trees (DFS) · roadmap</a> |
+| Order, connectivity, weights | Course Schedule (topological sort), Redundant Connection (union-find), Network Delay Time (Dijkstra) | <a href={`${BASE}dsa/`}>Advanced Graphs · roadmap</a> |
+| A heap ordered by distance | Dijkstra is BFS with Queue replaced by a priority queue | <a href={`${BASE}dsa/lessons/heaps/`}>Heaps</a> |
+| An old → new map | Copy List with Random Pointer is Clone Graph on a list | <a href={`${BASE}dsa/lessons/linked-lists/`}>Linked Lists</a> |
+| Flags that come back down | Word Search and N-Queens un-mark on the way back out | <a href={`${BASE}dsa/`}>Backtracking · roadmap</a> |
+
+**A tree is a graph that can’t surprise you.** It has no cycles, so a tree traversal never meets a node twice and needs no visited set. The moment the structure can loop back on itself, the flag rule is what keeps you from walking in circles.
+
+**Dijkstra is the same loop with a different quay.** Replace the FIFO queue with a min-heap keyed by distance, and “first polled means shortest” keeps holding when weights differ — as long as none is negative.
+
+<h2 id="exit-ticket">The surveyor’s exam · Build a solution with the labels removed</h2>
+
+<Scene title="No chapter titles" mood="dawn">
+
+On the morning of the exam the Keeper pins a fresh chart to the wall — no chapter names, no hints — and hands you a tin of flags.
+
+*"Pick one,"* she says. *"Before you write a line of code, tell me what your nodes are, what your edges are, when a flag goes down, and when you stop."*
+
+</Scene>
+
+Choose one. Keep the tutorial code closed. Write down the nodes, the edges, the sources, the flag moment and the stopping rule before coding — and say the time and space complexity out loud.
+
+1. **The landlocked lakes.** A grid of land `1` and water `0`. Count the lakes: groups of water squares that do **not** touch the border of the grid. Test an all-water grid, a lake touching the border at one square, and two lakes joined diagonally.
+2. **The knight’s errand.** An n × n board with some blocked squares. A knight starts at one square; return the fewest knight moves to reach another, or −1. Test start = target, a blocked target, and a corner of a 3 × 3 board.
+3. **The farthest cottage.** A grid of cottages `1` and wells `0`. Return the largest distance (up/down/left/right steps) from any cottage to its nearest well. Test a grid with no wells, a grid with no cottages, and a single row.
+
+<Reveal q="I’ve written and tested it. What should my reasoning contain?">
+
+**Landlocked lakes:** reverse first — flood from every border water square and mark it; then scan and count the floods of the remaining unmarked water, as in Chapter 1. Chapter 5’s border seeding plus Chapter 1’s count. O(R·C).
+
+**Knight’s errand:** the squares are nodes; the edges come from an 8-entry directions array of L-shaped jumps. BFS from the start, flag on enqueue, blocked squares never enqueued; the ring when the target is polled is the answer. Start = target gives 0. A 3 × 3 corner can never reach the centre. O(n²).
+
+**Farthest cottage:** multi-source BFS with every well in ring 0 (side quest 3), then return the largest distance assigned to a cottage. Decide up front what “no wells” returns (−1 is sensible) and say it. O(R·C).
+
+Now explain why a slightly wrong version fails one of your tests — a late flag, a forgotten border column, an extra ring counted. That counterexample is stronger evidence of understanding than a memorised template.
+
+</Reveal>
+
+Passing this once is a useful checkpoint. Rebuild one of these on another day, with a changed input and without the headings choosing the pattern for you.
+
+<h2 id="mixed-recall">Quick recall · Keep the rule warm</h2>
+
+Close the code. Name the nodes, the edges, the sources and the flag moment, and say what each move preserves. This short round is a warm-up for the independent practice below.
+
+<Trace title="Which tool fits?" steps={mixedReview} takeaway="Now try the independent session: no pattern title, a new chart, and your explanation before the rubric." />
+
+<h2 id="independent-practice">Night watch · The chart won’t name its pattern</h2>
+
+The review queue starts with due concepts, then new ones. Hints or corrected attempts bring a concept back tomorrow. Successful recall at a scheduled review stretches the interval to 3, 7, then 14 days. Your reasoning is **self-checked**; nothing here automatically marks a roadmap problem solved.
+
+<Practice pattern="graphs" />
+
+<h2 id="cheat-sheet">The Keeper’s chart notes</h2>
+
+| When you see… | Start with… | The promise to keep |
+|---|---|---|
+| Count groups of connected cells | Scan; on unmarked land, count and flood | Every island before the scan is counted once and fully marked |
+| Size of the largest group | Flood that returns a count; explicit stack on huge grids | Marked on push, counted on pop: once each |
+| Fewest steps, every step equal | BFS one ring at a time; flag on enqueue | The queue holds ring d, then ring d + 1 |
+| Spreads from many places at once | Multi-source BFS: every source in ring 0 | After m rounds, everything within distance m is reached |
+| Regions enclosed by / reaching the boundary | Seed every border cell, flood, then decide the rest | Marked means connected to the border |
+| Cells that reach two boundaries | Two reverse floods (uphill, `>=`), intersect | Marked means drains to that side |
+| Shortest transformation sequence | BFS on an implicit graph; substitution or wildcard buckets | Removed from the dictionary means flagged |
+| Deep copy of a graph | Map original → copy, register before recursing | In the map means copied |
+| Recolour one region | One flood; return early if the colour doesn’t change | The new colour is the flag |
+| Groups from an adjacency matrix | Neighbours are the 1s in a row; O(n²) | Same scan-and-flood |
+| Distance from every cell to the nearest X | Multi-source BFS from every X | Distance set on enqueue is final |
+| Shortest bridge between two islands | DFS claims island A into the queue; BFS through water | Island A is ring 0 |
+| Fewest moves through puzzle states | BFS on states; dead ends pre-loaded as visited | Each state enters once |
+| Two-colour the nodes | BFS colouring, opposite of the discoverer; restart per component | Every edge seen so far joins two colours |
+
+Graph traversal does **not** automatically mean O(V + E) memory is small: the visited set, the queue and the recursion each can reach V. On a 10⁶-cell grid, count all three, and keep recursion off the call stack.
+
+## Five bugs the Keeper keeps in her pocket
+
+1. **The late flag.** Marking on poll instead of on enqueue (or on pop instead of push) queues duplicates — 181 instead of 100 on a 10 × 10 grid, or 184,755 if duplicates expand again. Flag when the boat is sent.
+2. **Flagging after the recursion.** Sinking a square, or registering a clone, after visiting the neighbours lets two neighbours call each other forever.
+3. **The extra ring.** Counting a round that changed nothing — the last minute of the blight, transformations instead of words. Say what the counter means at loop exit before you return it.
+4. **The call stack on a giant grid.** Recursion depth can equal the island size, and Java’s default stack runs out somewhere in the tens of thousands of nested calls — a 300 × 300 grid of solid land is already too much. When the grid can be large, use an explicit stack or a queue.
+5. **The invisible flag.** When the mark is “change the value” (sink, recolour), ask what happens when the change is a no-op — Flood Fill with the same colour never stops.
+
+## Coming back to the Chart House
+
+<Scene title="The Keeper’s last word" mood="dusk">
+
+At the end of the season the Keeper walks you along the east wall one last time. The chart is covered in your flags — one per square, never two. Queue is ringing the evening bell on the quay; Stack is asleep on a coil of rope.
+
+*"You’ll forget which problem was which,"* the Keeper says. *"That’s fine. Remember what a node is, what an edge is, and when the flag goes down. The rest is just deciding which way to walk."*
+
+</Scene>
+
+For each chapter, aim to do three things on a fresh input: **recognise the graph in its costume, explain why the first discovery is safe to keep, and code it without the solution open**. If one feels shaky, that’s your next short session.
+
+A drill plan that fits your gaps: **Number of Islands** as a five-minute warm-up — say the complexity and the invariant before typing — then **Rotting Oranges** as the boss, narrating what `fresh`, `minutes` and the queue hold at loop exit, then an unseen transfer test such as the landlocked lakes. Revisit a new idea tomorrow and again a few days later, and mix families so the chapter title doesn’t choose the method for you.
+
+All **8 problems from your Graphs (Traversal) roadmap** are covered above, with six side quests around them. The neighbouring patterns live in their own books: <a href={`${BASE}dsa/lessons/heaps/`}>Heaps</a> for the priority queue behind Dijkstra, <a href={`${BASE}dsa/lessons/linked-lists/`}>Linked Lists</a> for the old → new copy on a list, and the <a href={`${BASE}dsa/`}>full DSA roadmap</a> for trees, advanced graphs and backtracking.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study** — next reps once the eight above feel calm:
+
+- [Number of Closed Islands](https://leetcode.com/problems/number-of-closed-islands/) — exit ticket 1, as a real problem.
+- [As Far from Land as Possible](https://leetcode.com/problems/as-far-from-land-as-possible/) — side quest 3’s transfer test.
+- [Keys and Rooms](https://leetcode.com/problems/keys-and-rooms/) — reachability on a directed graph whose edges are keys.
+- [Possible Bipartition](https://leetcode.com/problems/possible-bipartition/) — side quest 6 with an edge list.
+- [Word Ladder II](https://leetcode.com/problems/word-ladder-ii/) — return every shortest ladder: BFS for distances, then backtrack along them.
+- [Shortest Path in a Grid with Obstacles Elimination](https://leetcode.com/problems/shortest-path-in-a-grid-with-obstacles-elimination/) — BFS on (square, eliminations left) states.
+- [Making A Large Island](https://leetcode.com/problems/making-a-large-island/) — label each island with its area, then try every water square.
+- [Breadth-first search (Wikipedia)](https://en.wikipedia.org/wiki/Breadth-first_search) and [Depth-first search (Wikipedia)](https://en.wikipedia.org/wiki/Depth-first_search) — history, proofs and variants.
+- [Breadth-first search (cp-algorithms)](https://cp-algorithms.com/graph/breadth-first-search.html) — implementation notes and applications, including path reconstruction.
+- [0-1 BFS (cp-algorithms)](https://cp-algorithms.com/graph/01_bfs.html) — the deque trick from “When the tide lies”.
+
+**Look these up yourself** — real ideas this book didn’t have room for:
+
+- **Bidirectional BFS** — two frontiers meeting in the middle; the standard Word Ladder and Open the Lock speed-up.
+- **Union-find (disjoint set union)** — Number of Islands II adds land one square at a time; re-flooding is too slow, merging isn’t.
+- **Cycle detection in an undirected graph** — a DFS that meets a visited node which isn’t its parent has found a cycle.
+- **Topological sort (Kahn’s algorithm)** — BFS on in-degrees; the first chapter of the advanced-graphs book.
+- **Dijkstra’s algorithm** — BFS with a min-heap for non-negative weights.
+- **A\* search** — Dijkstra steered by a heuristic; how game maps find paths quickly.
+- **Tarjan’s bridges and articulation points** — which single ferry route, if cancelled, splits the archipelago.
+- **Iterative deepening DFS** — DFS memory with BFS’s shortest-path guarantee, by re-running DFS with growing depth limits.

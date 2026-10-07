@@ -1,103 +1,834 @@
 ---
 title: 'Back-of-Envelope Estimation'
-description: 'The 4-axis method — QPS, storage, bandwidth, memory — and the two unit-math killers that produce 1000× errors.'
+description: 'The meeting a single multiplication ended. Units, seconds, latencies and nines; QPS, storage, bandwidth, memory, servers and shards; five full sweeps with every step shown, and the two slips that cause 1000× errors.'
 module: 1
 order: 2
-minutes: 25
+minutes: 80
 ---
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import Mermaid from '../components/Mermaid.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Bars from '../components/Bars.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
 import Quiz from '../components/Quiz.astro';
+import { units, traffic, latency, storage, bandwidth, memory, servers, availability, sharding, chat, shortener, metrics, video, sanity, skip, drills } from '../data/sd/estimation';
+import { BASE } from '../paths';
 
-## The point of estimation (it is not math)
+<PatternHub
+  pattern="sd-estimation"
+  start="prologue"
+  logline="An estimate is not a number. It is a sentence that ends in a decision: so one database is enough, so we need a CDN, so we shard by user. Carry a few numbers in your head, climb the units one rung at a time, and let the arithmetic argue for your design."
+  cast={[
+    { name: 'You', role: 'New at Kestrel. Quick with a whiteboard marker, and twice caught out by a 1000× slip in a mock.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Never accepts a number without a unit, or a unit without a conclusion.' },
+    { name: 'Dev Okafor', role: 'SRE. Knows how many nines the pager actually delivers, and says it calmly.' },
+    { name: 'Iris Tan', role: 'Product lead. Every "oh, and also…" adds a multiplier.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has watched an integer key run out of integers.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same arithmetic is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · The numbers you carry', description: 'Units, seconds, and how far away the answer is.', links: [['powers', 'Climb one rung at a time'], ['time', 'A day is a hundred thousand seconds'], ['latency', 'How far away is the answer?']] },
+    { name: 'Part Two · From users to machines', description: 'The four axes, then servers, nines and shards.', links: [['storage', 'Bytes that never leave'], ['bandwidth', 'Decide what to ignore'], ['memory', 'The hot slice'], ['servers', 'Boxes, threads and Little’s law'], ['availability', 'Counting nines'], ['sharding', 'When one box is not enough']] },
+    { name: 'Part Three · Five full sweeps', description: 'Every step shown, every number rounded on purpose.', links: [['moments', 'Kestrel Moments, end to end'], ['chat', 'A billion messages a day'], ['shortener', 'One prompt, two scales'], ['metrics', 'A million samples a second'], ['video', 'The upload firehose']] },
+    { name: 'Part Four · Judgment', description: 'Checking a number, and knowing when not to compute one.', links: [['sanity', 'Is that number even possible?'], ['skip', 'When to put the pen down']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Meeting → idea → arithmetic → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Numeric choices where every wrong answer names the slip' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second estimate and five follow-ups' },
+  ]}
+  note="Part One is the toolkit; read it once and keep the tables. Part Three is where it becomes reflex: do each sweep on paper before reading the answer."
+/>
+
+<h2 id="prologue">Prologue · The number that ended the meeting</h2>
+
+<Scene chapter="Prologue" title="Forty shards" mood="dawn">
+
+The design review for Kestrel Moments, the new photo feed, is twenty minutes old and has already chosen a database. Someone has drawn a Cassandra ring with forty nodes. Someone else wants a second one "for safety".
+
+Mara has said nothing. Then she uncaps a marker and writes one line under the ring: *bytes per day?*
+
+Silence. Iris offers "fifty million users". Mara writes it down and waits. You do the multiplication in your notebook: posts per day, kilobytes per post. The answer is smaller than anyone expected — small enough to change the room.
+
+*"Good,"* Mara says, when you read it out. *"Now say what it means."*
+
+</Scene>
 
 Interviewers don't care whether you land on 11,600 QPS or 12,000 QPS. They care whether your numbers **end in design decisions**. Every estimate must terminate in a sentence like:
 
-> "~12K read QPS → a single Postgres won't enjoy that → cache tier in front."
+> "About 12K read QPS → a single Postgres won't enjoy that → a cache tier in front."
 
-No conclusion, no credit. That's the whole game.
+**No conclusion, no credit. That is the whole game.** The arithmetic exists to make one of a handful of decisions: one box or many, cache or no cache, CDN or origin, shard now or later, synchronous or queued.
 
-## The 4 axes — compute in this order
+Your own reps logged the two ways this goes wrong, and both are 1000× errors, not 10% ones:
+
+- **The unit slip.** You've tripped on this one before: GB↔TB confusion, a rung of the unit ladder skipped in your head, and every conclusion downstream is poisoned. Chapter 1 is the cure.
+- **Carrying stale numbers.** Reusing the previous problem's numbers, or the previous axis's, because they are still on the whiteboard. Chapter 15 is the cure.
+
+Your gap list adds two more that live here: **silent skips** (skipping estimation without saying why — Chapter 16) and **pacing** (requirements that ran 18 minutes leave no time for a slow sweep — so the sweep has to be fast and only compute what decides something).
+
+**The four axes — compute them in this order:**
 
 | Axis | Question it answers | Design decision it feeds |
 |------|--------------------|--------------------------|
-| **QPS** | How many requests hit us per second? | # of app servers, cache or not, LB needed |
-| **Storage** | How big does the dataset get? | One DB vs shards, retention policy |
-| **Bandwidth** | Bytes/sec in and out? | CDN or not — usually: *decide what to ignore* |
-| **Memory** | Does the working set fit in RAM? | 1 cache node vs cluster |
+| **QPS** | How many requests hit us per second, at peak, reads versus writes? | Number of app servers, cache or not, read replicas, load balancer |
+| **Storage** | How big does the dataset get over the years we plan for? | One database or shards, retention policy, object storage |
+| **Bandwidth** | Bytes per second in and out? | CDN or not, direct-to-storage uploads — usually: *decide what to ignore* |
+| **Memory** | Does the hot working set fit in RAM? | One cache node or a cluster — and *why* a cluster |
 
-## Axis 1 — QPS: the ÷10⁵ rule
+Three more questions turn those into machines, and the lesson covers each: **how many servers** (per-server throughput and Little's law), **how available** (nines, composed in series and in parallel), and **how many shards** (storage or throughput, whichever forces the split first).
 
-A day is 86,400 seconds. **Round it to 10⁵.** The error (13%) is smaller than the error in your DAU guess anyway.
+<Figure caption="Assumptions go in on the left, decisions come out on the right. A number that doesn't reach the right-hand column was wasted breath.">
+  <Mermaid code={`flowchart LR
+    A["Assumptions\nDAU, actions per user,\nbytes per record, peak factor"] --> Q["QPS\navg and peak,\nreads vs writes"]
+    A --> S["Storage\nper day, per year,\nreplicas"]
+    A --> B["Bandwidth\nin and out"]
+    A --> M["Memory\nhot working set"]
+    Q --> D["Decisions\nservers, cache, replicas,\nshards, CDN, queue"]
+    S --> D
+    B --> D
+    M --> D`} />
+</Figure>
 
-```
-requests/day ÷ 100,000 = average QPS
-```
+<Part n="Part One" title="The numbers you carry">
 
-- 1M requests/day → **10 QPS** (tiny — one server, done)
-- 100M requests/day → **1,000 QPS** (real service — LB + several app servers)
-- 10B requests/day → **100,000 QPS** (big tech — cache tier mandatory, regional deployment conversation)
+Three small tables you should be able to write from memory. Everything else is multiplication.
 
-Then **peak**: multiply average by 2–3× and *say the assumption out loud* — "assuming peak is ~3× average, that's 3K QPS peak." Interviewers reward stated assumptions and punish silent ones.
+</Part>
 
-Read/write split next: "100:1 read-heavy" instantly justifies caching and read replicas. Always name the ratio.
+<h2 id="powers">Chapter 1 · Climb one rung at a time</h2>
 
-## Axis 2 — Storage: carry units up the ladder
+<Scene chapter="Chapter 1" title="Climb one rung at a time" mood="dawn">
 
-The method: `records/day × bytes/record`, then **climb the unit ladder one rung at a time**, saying each rung.
+Theo keeps an old printout pinned above his desk: a graph of row inserts that climbs steadily for fourteen months and then stops dead. *"Thirty-two-bit primary key,"* he says. *"Two point one billion rows. Everyone in the room was sure it was 'basically infinite'."*
 
-Byte-size anchors worth memorizing:
+He hands you a marker. *"How many bytes is a petabyte? Don't think. Climb."*
+
+</Scene>
+
+Estimation is mostly multiplying big round numbers. The trick is to stop thinking in digits and think in **powers of ten**: write every number as *mantissa × 10ⁿ*, multiply the mantissas, add the exponents, then name the result.
+
+**The ladder.** Every rung is ×1000:
+
+<Figure caption="Each rung is 10³. Say every rung out loud as you climb; never jump two in your head.">
+  <ArrayStrip values={['B', 'KB', 'MB', 'GB', 'TB', 'PB']} join="→" indices={false} pointers={[{ at: 0, label: '10⁰' }, { at: 2, label: '10⁶', tone: 'blue' }, { at: 3, label: '10⁹' }, { at: 5, label: '10¹⁵', tone: 'blue' }]} tones={{ 3: 'hot' }} />
+</Figure>
+
+| Power of two | Exact | ≈ Power of ten | Name | Binary/decimal gap |
+|---|---|---|---|---|
+| 2¹⁰ | 1,024 | 10³ | thousand · KB | 2.4% |
+| 2²⁰ | 1,048,576 | 10⁶ | million · MB | 4.9% |
+| 2³⁰ | 1,073,741,824 | 10⁹ | billion · GB | 7.4% |
+| 2⁴⁰ | ≈ 1.10 × 10¹² | 10¹² | trillion · TB | 10% |
+| 2⁵⁰ | ≈ 1.13 × 10¹⁵ | 10¹⁵ | quadrillion · PB | 12.6% |
+
+**2¹⁰ ≈ 10³ is the bridge between the two worlds.** Strictly, a kibibyte (KiB) is 1,024 bytes and a kilobyte (KB) is 1,000; the gap grows with each rung but is still only about 13% at a petabyte — far smaller than the error in any user-count guess. Use powers of ten and move on.
+
+A few powers of two worth knowing because they cause real outages:
+
+- **2³¹ − 1 ≈ 2.1 × 10⁹** — the largest signed 32-bit integer (Java `int`, a Postgres `integer` column). Theo's printout.
+- **2³² ≈ 4.3 × 10⁹** — the unsigned 32-bit range, and the number of IPv4 addresses.
+- **2⁶³ ≈ 9.2 × 10¹⁸** — the largest signed 64-bit integer. Use 64-bit ids and you will not run out.
+- **62⁶ ≈ 5.7 × 10¹⁰** and **62⁷ ≈ 3.5 × 10¹²** — how many short codes six or seven base-62 characters can spell (Chapter 12).
+
+**Bits versus bytes.** Storage is quoted in bytes (B); network links in bits per second (b). **One byte is 8 bits**, so a 1 Gbps link moves 125 MB/s and a 10 Gbps link 1.25 GB/s. Writing "Mb" when you mean "MB" is an 8× slip — smaller than the rung slip, still big enough to buy the wrong hardware.
+
+**Byte-size anchors worth memorising:**
 
 | Thing | Size |
 |-------|------|
-| UUID / long ID | 16 B / 8 B |
-| Short text row (URL mapping, like) | ~100 B–500 B |
+| `int` / `long` / timestamp | 4 B / 8 B / 8 B |
+| UUID | 16 B |
+| Short text row (URL mapping, a like, a counter) | ~100–500 B |
 | Tweet-ish record with metadata | ~1 KB |
-| Photo (compressed) | ~200 KB–1 MB |
-| Minute of video (1080p) | ~50 MB |
+| Chat message stored with ids and index overhead | ~200 B |
+| Photo, compressed | ~200 KB (feed-sized) to a few MB (original) |
+| One minute of 1080p video | ~40–60 MB (about 5–8 Mbps) |
 
-Worked example — URL shortener, 1M new URLs/day, ~500 B/row:
+**Worked example.** The URL shortener from the old version of this lesson: 1M new URLs a day at about 500 B each.
 
-```
-1M × 500 B = 500 MB/day
-× 365      ≈ 180 GB/year
-× 5 years  ≈ 1 TB
-```
-
-Conclusion sentence: "1 TB over five years — a single Postgres instance holds this comfortably; sharding is not a day-one problem." **That sentence is the deliverable, not the 1 TB.**
-
-## Axis 3 — Bandwidth: decide what to ignore
-
-Bandwidth = QPS × payload size. For most text-payload systems the answer is "kilobytes per request at thousands of QPS → tens of MB/s → a non-issue, moving on." Saying *"bandwidth is a non-issue here, I'll skip it"* is a **correct and strong answer** — it shows judgment.
-
-It matters when payloads are media: video streaming, photo feeds, file upload. Then: CDN, presigned upload URLs, and the estimate decides CDN egress vs origin.
-
-## Axis 4 — Memory: working set → 1 node or cluster?
-
-The question is never "how big is the data" — it's **"how big is the HOT data?"** The 80/20 heuristic: ~20% of data serves ~80% of traffic; often even steeper.
-
-Rate limiter example — 50K API keys, one counter each:
-
-```
-50K keys × ~100 B (key + counter + timestamp) = 5 MB
+```text
+1M × 500 B  = 10⁶ × 5 × 10²  = 5 × 10⁸ B
+            = 500 × 10⁶ B     = 500 MB per day       ← name the rung: 10⁶ is mega
 ```
 
-Conclusion: "5 MB — fits in one Redis node's RAM a thousand times over; a cluster would be for availability, not capacity." Distinguishing **capacity-driven** from **availability-driven** clustering is a senior-level sentence — use it.
+<Trace title="Climb the ladder" steps={units} takeaway="Write each number as a × 10ⁿ, add exponents, then name the rung. Links are in bits; disks are in bytes." />
 
-## The two killers (caught live in your own reps)
+**Catch the trap:** the unit slip. GB↔TB confusion produces silent 1000× errors that poison every conclusion after it. **The antidote is mechanical: climb the ladder one rung at a time, out loud — KB → MB → GB → TB. Never jump two rungs in your head.**
 
-**Killer 1 — the unit slip.** GB↔TB confusion produces silent 1000× errors that poison every downstream conclusion. Antidote: climb the ladder **one rung at a time, out loud** — KB → MB → GB → TB. Never jump two rungs in your head.
+<h2 id="time">Chapter 2 · A day is a hundred thousand seconds</h2>
 
-**Killer 2 — carrying stale numbers.** Reusing the previous problem's (or previous axis's) numbers because they're still on the whiteboard. Antidote: each axis starts by **re-stating its inputs from scratch**: "1M new URLs a day at 500 bytes each…"
+<Scene chapter="Chapter 2" title="A day is a hundred thousand seconds" mood="dawn">
 
-## The full sweep, end to end
+Iris has the launch forecast: fifty million daily users for Moments by the end of the year, and they'll open the feed about ten times a day. *"Is that a lot?"* she asks.
 
-For any problem, this is the 5-minute script:
+Mara turns to you. *"Per second,"* she says. *"Then at the worst second of the day. Then tell me how many of those are writes."*
+
+</Scene>
+
+A day has 86,400 seconds. **Round it to 10⁵.** Dividing by 10⁵ instead of 86,400 makes your QPS about 14% low; your DAU guess is far less precise than that, and the peak factor you apply next swamps it.
+
+```text
+requests per day ÷ 100,000 = average requests per second
+```
+
+| Per day | ÷ 10⁵ (fast) | ÷ 86,400 (exact) | What it usually means |
+|---|---|---|---|
+| 1M | 10/s | ~12/s | Tiny — one server, done |
+| 100M | 1,000/s | ~1,160/s | A real service — load balancer and several app servers |
+| 1B | 10,000/s | ~11,600/s | Big — caching and replicas are no longer optional |
+| 10B | 100,000/s | ~116,000/s | Big tech — cache tier mandatory, regional deployment conversation |
+
+Two forms of the same rule: **"divide by 10⁵"** for speed, and **"1M a day ≈ 12 a second"** when you want to be within a few percent. Pick one and use it consistently in an interview. This lesson uses ÷ 10⁵ and notes the exact figure where it matters.
+
+Two more conversions: a 30-day month is about **2.6 × 10⁶ seconds**, and a year about **3.15 × 10⁷** (a pleasant coincidence: roughly π × 10⁷).
+
+**From users to QPS:**
+
+1. **Requests per day** = DAU × actions per user per day. Do each action separately — feed opens, posts, likes — because they have very different rates and costs.
+2. **Average QPS** = requests per day ÷ 10⁵.
+3. **Peak QPS** = average × a peak factor. Traffic follows the sun and the evening; **2–3× is a common planning assumption** for consumer apps, much more for event-driven spikes (ticket drops, live sports). *Say the assumption out loud:* "assuming peak is about 3× average." Interviewers reward stated assumptions and punish silent ones.
+4. **Read:write ratio.** Name it. "100:1 read-heavy" instantly justifies caching and read replicas; "write-heavy" points at partitioning, log-structured stores and queues.
+
+**Worked numbers — Kestrel Moments.** Assumptions: 50M DAU; each opens the feed 10 times a day; 10% of users post one photo a day; peak is 3× average.
+
+```text
+Feed reads   50M × 10        = 500M per day  → ÷ 10⁵ = 5,000/s avg (exact 5,787)
+             × 3 peak                         = 15,000/s peak
+Uploads      50M × 10%        = 5M per day    → ÷ 10⁵ = 50/s avg → 150/s peak
+Ratio        500M ÷ 5M        = 100 : 1 read-heavy
+```
+
+**Conclusion sentences:** "15K feed requests a second at peak is a fleet of stateless app servers behind a load balancer. At 100:1 reads, a cache and read replicas carry the feed; 150 uploads a second is nothing for the write path."
+
+<Figure caption="From people to requests per second. The peak factor and the read:write ratio are assumptions — say them.">
+  <Mermaid code={`flowchart LR
+    U["50M DAU"] --> R["× 10 feed opens\n= 500M reads per day"]
+    U --> W["× 10% posting\n= 5M writes per day"]
+    R --> RA["÷ 10⁵\n5,000/s avg"] --> RP["× 3\n15,000/s peak"]
+    W --> WA["÷ 10⁵\n50/s avg"] --> WP["× 3\n150/s peak"]`} />
+</Figure>
+
+<Trace title="Per day to per second" steps={traffic} takeaway="÷10⁵ for the average, ×peak factor for capacity, and count reads and writes separately." />
+
+**Catch the trap:** sizing anything for the average. Averages are right for storage and monthly cost; **capacity is sized for peak**. The opposite mistake is applying a peak factor to storage — bytes accumulate at the average rate.
+
+<h2 id="latency">Chapter 3 · How far away is the answer?</h2>
+
+<Scene chapter="Chapter 3" title="How far away is the answer?" mood="dusk">
+
+Dev forwards you a trace from the feed service. Ninety-four milliseconds, almost all of it a sawtooth of tiny identical bars. *"A hundred calls to the author service,"* he says. *"One at a time. Each one is fast. That's the problem."*
+
+Mara draws a number line on the whiteboard: nanoseconds at one end, a transatlantic cable at the other. *"Put each bar on the line,"* she says. *"Then tell me which ones you can't buy your way out of."*
+
+</Scene>
+
+You don't need precise latencies; you need the **orders of magnitude** and the ratios between them. Exact figures vary with hardware generation, so treat these as rough planning numbers (they descend from Jeff Dean's well-known list; see Beyond this page):
+
+| Operation | Rough time | Order (ns) |
+|---|---|---|
+| CPU L1 cache reference | ~1 ns | 10⁰ |
+| Main-memory reference | ~100 ns | 10² |
+| Send 1 KB over a 1 Gbps link | ~10 µs | 10⁴ |
+| Random 4 KB read from an SSD | ~100 µs (tens of µs on modern NVMe) | 10⁵ |
+| Round trip inside one data centre | ~0.5 ms (often less) | ~10⁵·⁷ |
+| Read 1 MB sequentially from an SSD | ~1 ms (less on NVMe) | 10⁶ |
+| Hard-disk seek | ~10 ms | 10⁷ |
+| Round trip across a continent or an ocean | ~100–150 ms | 10⁸ |
+
+<Figure caption="The same table on a log scale: each bar is the power of ten, in nanoseconds. Memory to data-centre round trip is about 5,000×; a cross-continent round trip is about 300 same-DC round trips.">
+  <Bars heights={[0, 2, 5, 5.7, 7, 8.2]} pointers={[{ at: 0, label: 'L1' }, { at: 1, label: 'RAM' }, { at: 2, label: 'SSD', tone: 'blue' }, { at: 3, label: 'DC', tone: 'blue' }, { at: 4, label: 'HDD', tone: 'purple' }, { at: 5, label: 'WAN', tone: 'red' }]} tones={{ 5: 'hot' }} />
+</Figure>
+
+What to take from it:
+
+- **Memory is about 5,000× faster than a same-DC network hop** (100 ns versus 0.5 ms). That is why a cache in the app's own memory beats even a fast network cache for very hot keys.
+- **Round trips add up when they are sequential.** 100 serial calls at 1 ms each is 100 ms. One batched call is about one round trip. N+1 queries are a latency bug before they are a load bug.
+- **Distance is physics.** Light in fibre travels about 200,000 km/s, so a round trip costs at least **1 ms per 100 km**. New York to London is about 5,600 km: a floor of about 56 ms, typically 70–80 ms in practice. No hardware upgrade fixes that; only moving data closer (CDNs, regional replicas) does.
+- **Sequential beats random**, on disks and SSDs alike. That is why logs, LSM trees and Kafka are built around appends.
+
+**Throughput anchors** (planning numbers — say "assume" and offer to benchmark):
+
+| Thing | Rough throughput |
+|---|---|
+| Hard disk, sequential | ~100–200 MB/s |
+| SATA SSD / NVMe SSD, sequential | ~500 MB/s / several GB/s |
+| 1 / 10 / 25 Gbps network card | 125 MB/s / 1.25 GB/s / ~3.1 GB/s |
+| Redis node, simple GETs | ~100,000 ops/s (benchmark it) |
+| Relational primary, simple indexed queries | thousands to low tens of thousands per second; a few thousand writes per second is a safe planning number |
+| Stateless app server, 8 cores, ~8 ms of CPU per request | ~1,000 req/s at full CPU (8 cores ÷ 0.008 s) |
+| WebSocket gateway | ~100,000 mostly idle connections as a conservative cap |
+
+<Trace title="Place it on the line" steps={latency} takeaway="Know the orders of magnitude, multiply round trips when they are sequential, and remember that distance is physics." />
+
+**Catch the trap:** fake precision. "A Redis GET takes 0.21 ms" invites "on what hardware?" Say "well under a millisecond in the same data centre" — the order of magnitude is what the design needs, and it is what you can defend.
+
+<Part n="Part Two" title="From users to machines">
+
+The four axes, one chapter each, then the three questions that turn them into hardware.
+
+</Part>
+
+<h2 id="storage">Chapter 4 · Bytes that never leave</h2>
+
+<Scene chapter="Chapter 4" title="Bytes that never leave" mood="dusk">
+
+Theo's rule, delivered over coffee: *"Traffic goes home at night. Bytes don't."* QPS rises and falls every day; storage only ever climbs, and it keeps every mistake you make in the estimate for years.
+
+*"So,"* he says, *"how many years are you planning for, and how many copies?"*
+
+</Scene>
+
+**The method: records per day × bytes per record, then climb the unit ladder one rung at a time, saying each rung.** Then apply the multipliers, each said out loud:
+
+```text
+raw storage = records/day × bytes/record × 365 × years × replication × overhead
+```
+
+- **Years.** Pick a horizon (one year for "do we shard now?", five for "what's the end state?").
+- **Replication.** A primary with two replicas, or a quorum store with three copies, is ×3 raw disk. A managed object store handles redundancy itself and bills logical bytes.
+- **Overhead.** Indexes, row headers and fragmentation. Either fold it into "bytes per record" (as this lesson's examples do — "500 B including index overhead") or apply it as a multiplier, say ×1.5. Say which.
+
+**Worked example — URL shortener**, 1M new URLs/day, ~500 B/row (including index):
+
+```text
+1M × 500 B  = 500 MB/day
+× 365       ≈ 180 GB/year
+× 5 years   ≈ 0.9 TB ≈ 1 TB logical   (× 3 replicas ≈ 2.7 TB raw)
+```
+
+Conclusion sentence: *"1 TB over five years — a single Postgres instance holds this comfortably; sharding is not a day-one problem."* **That sentence is the deliverable, not the 1 TB.**
+
+**Worked example — Kestrel Moments**, two very different kinds of bytes:
+
+```text
+Photos     5M/day × 3 MB (2 MB original + ~1 MB of resized renditions)
+           = 15 TB/day → × 365 = 5,475 TB ≈ 5.5 PB/year logical
+           self-run, 3 replicas: ≈ 16.4 PB raw     erasure-coded at 1.4×: ≈ 7.7 PB raw
+Metadata   5M/day × 1 KB (ids, caption, timestamps, indexes)
+           = 5 GB/day → × 365 ≈ 1.8 TB/year logical → × 3 replicas ≈ 5.5 TB raw
+           5 years ≈ 9.1 TB logical
+```
+
+Two conclusions: **photos are object storage, never database rows** (petabytes, written once, read via CDN); **metadata fits one Postgres primary for year one** and needs a partitioning plan by about year two.
+
+<Figure caption="The storage chain. Every arrow is a multiplier you say out loud; skipping one is how estimates go wrong by 3× or 365×.">
+  <Mermaid code={`flowchart LR
+    A["5M posts per day\n× 1 KB"] --> B["5 GB per day"] --> C["× 365\n≈ 1.8 TB per year"] --> D["× 3 replicas\n≈ 5.5 TB raw per year"] --> E["Decision\none primary for year one,\npartition plan by year two"]`} />
+</Figure>
+
+<Trace title="Carry the multipliers" steps={storage} takeaway="Per day → per year → years → replicas, one multiplier at a time, and know whether your store charges you for copies." />
+
+<Reveal q="Why does a managed object store not need your ×3, and what does it use instead?">
+
+It replicates or erasure-codes internally and bills you for the bytes you stored. Large object stores commonly use **erasure coding**: a Reed–Solomon (10, 4) code, for example, splits data into 10 blocks plus 4 parity blocks and survives the loss of any 4 — the same durability goal as several full copies at 1.4× the space. If you run the store yourself with triple replication, the ×3 is yours to pay.
+
+</Reveal>
+
+**Catch the trap:** forgetting the 365. "5 GB a day" sounds small; "1.8 TB a year" is the number that decides sharding. Always climb to the planning horizon.
+
+<h2 id="bandwidth">Chapter 5 · Decide what to ignore</h2>
+
+<Scene chapter="Chapter 5" title="Decide what to ignore" mood="dusk">
+
+The Interviewer, on a different day, in a different room: *"And bandwidth?"*
+
+You start multiplying response sizes for a URL shortener, and she waits politely while you arrive at "fifteen megabytes a second". *"So,"* she says, *"does that change anything?"* It doesn't. You could have said so in five seconds.
+
+</Scene>
+
+**Bandwidth = QPS × payload size.** Do it separately for **ingress** (uploads) and **egress** (downloads), and convert to bits when comparing with network links or egress pricing.
+
+For most text-payload systems the answer is "kilobytes per request at thousands of QPS → tens or hundreds of MB/s → a non-issue across a fleet, moving on." Saying **"bandwidth is a non-issue here, I'll skip it"** is a correct and strong answer — it shows judgment.
+
+It matters when payloads are **media**: photo feeds, video, file sync. Then the estimate decides **CDN versus origin**, and **direct-to-storage uploads** (presigned URLs) versus streaming bytes through your app servers.
+
+**Worked numbers — Kestrel Moments:**
+
+```text
+Feed API (JSON)  15,000/s peak × 20 KB (20 posts × 1 KB) = 300 MB/s = 2.4 Gbps
+                 → across 25 app servers: ~100 Mbps each. Non-issue.
+Feed images      500M opens/day × 10 images × 200 KB = 2 MB per open
+                 500M × 2 MB = 1 PB/day → ÷ 10⁵ = 10 GB/s avg (exact 11.6) → × 3 = 30 GB/s peak
+                 30 GB/s × 8 = 240 Gbps at peak → CDN, no question
+                 CDN hit ratio 95% → origin serves 5%: 0.5 GB/s avg, 1.5 GB/s peak
+Uploads (in)     5M/day × 2 MB = 10 TB/day → 100 MB/s avg → 300 MB/s peak = 2.4 Gbps
+                 → presigned URLs straight to object storage
+```
+
+<Figure caption="The CDN turns 30 GB/s of peak image egress into 1.5 GB/s at the origin. The origin only sees misses — the same (1 − h) rule as any cache.">
+  <Mermaid code={`flowchart LR
+    U["Phones\n30 GB/s peak"] --> E["CDN edges\nserve 95 percent"]
+    E -->|"misses: 1.5 GB/s"| O[("Object storage\norigin")]
+    P["Phones uploading\n300 MB/s peak"] -->|"presigned PUT"| O`} />
+</Figure>
+
+<Trace title="Bits, bytes and misses" steps={bandwidth} takeaway="Bandwidth = QPS × payload; × 8 for links; the origin behind a CDN sees only (1 − hit ratio) of the egress." />
+
+**Catch the trap:** treating bandwidth as always important or always ignorable. Compute it once, in one line, and then either **drop it out loud** or **let it put a CDN in the diagram**.
+
+<h2 id="memory">Chapter 6 · The hot slice</h2>
+
+<Scene chapter="Chapter 6" title="The hot slice" mood="night">
+
+Iris wants Moments to feel instant, so someone proposes caching "all the posts". Theo asks how big all the posts are. Then he asks how many of them anyone looked at today.
+
+The second number is more than a hundred times smaller than the first. *"That one,"* he says. *"Size the cache for that one."*
+
+</Scene>
+
+The question is never "how big is the data?" — it is **"how big is the hot data?"** The 80/20 heuristic: about 20% of items serve about 80% of reads, and real access patterns are often steeper (popularity tends to follow a long-tailed, Zipf-like curve). It is an assumption — state it.
+
+**The sizing chain:** dataset → working set → × overhead → ÷ usable memory per node = nodes for **capacity**. Then peak operations ÷ operations per node = nodes for **throughput**. Take the larger, then add replicas for **availability**.
+
+**Worked numbers:**
+
+```text
+Rate limiter    50K API keys × ~100 B (key + counter + timestamp) = 5 MB
+                → fits one Redis node's RAM a thousand times over
+
+Profiles        50M profiles × 2 KB = 100 GB dataset; ~10% read daily = 10 GB working set
+                → fits one node (about 25 GB usable)
+
+Moments posts   posts from the last 48 hours: 5M/day × 2 days × 1 KB = 10 GB
+                × 1.5 for per-key and structure overhead = 15 GB → capacity: 1 node
+                peak lookups: 15,000 feeds/s × 20 posts = 300,000/s
+                ÷ ~100,000 ops/s per node = 3 nodes → throughput: 3 primaries, + replicas
+```
+
+The rate limiter conclusion: *"5 MB — a cluster would be for availability, not capacity."* Distinguishing **capacity-driven** from **availability-driven** (and **throughput-driven**) clustering is a senior-level sentence — use it.
+
+<Figure caption="Three different reasons to add cache nodes. Name which one you're using.">
+  <Mermaid code={`flowchart TD
+    D["Dataset\n5M posts/day, all time"] --> W["Working set\nlast 48h = 10 GB"]
+    W --> C["Capacity\n15 GB with overhead\n= 1 node"]
+    W --> T["Throughput\n300K lookups/s\n= 3 nodes"]
+    C --> X["Take the larger: 3 primaries"]
+    T --> X
+    X --> A["Availability\n+ 1 replica each"]`} />
+</Figure>
+
+<Trace title="Size the cache" steps={memory} takeaway="Working set, not dataset. Then say which constraint sets the node count: capacity, throughput, or availability." />
+
+**Catch the trap:** per-key overhead. With tiny values — a counter, a short id list — the cache's own bookkeeping per key can rival the value itself. Budget a multiplier and say you'd measure with real data.
+
+<h2 id="servers">Chapter 7 · Boxes, threads and Little’s law</h2>
+
+<Scene chapter="Chapter 7" title="Boxes, threads and Little’s law" mood="storm">
+
+Dev's favourite incident is the one where nothing was busy. CPU at 30%, memory fine, database idle — and every request timing out. A payment provider had slowed from a tenth of a second to two seconds, and every worker thread in the fleet was sitting there, waiting on it.
+
+*"The servers weren't overloaded,"* he says. *"They were full."*
+
+</Scene>
+
+**How many servers?**
+
+```text
+servers = peak QPS ÷ (per-server QPS × target utilisation)   then add redundancy
+```
+
+- **Per-server QPS** comes from a benchmark, or from first principles: cores ÷ CPU time per request. 8 cores at 8 ms of CPU each = 1,000 req/s at 100% CPU.
+- **Target utilisation** below 100% because queues explode near saturation. In the simplest queueing model (M/M/1), average time in the system is service time ÷ (1 − utilisation): **2× at 50%, 5× at 80%, 10× at 90%**. Planning for about 60% leaves room for bursts and for failures.
+- **Redundancy**: survive one server, or one zone, without breaching your latency target.
+
+**Worked numbers — Moments app tier:**
+
+```text
+15,000/s peak ÷ (1,000/s × 0.6) = 25 servers
+spread over 3 zones → 9 per zone = 27 servers
+lose a zone → 18 servers left: 15,000 ÷ 18 ≈ 833/s each ≈ 83% of capacity — survivable
+```
+
+**Little's law** is the most useful equation in capacity planning, and it fits on a sticky note:
+
+```text
+L = λ × W       concurrency = throughput × time each item spends in the system
+```
+
+It holds for any stable system, whatever the arrival pattern, using long-run averages. It answers "how many at once?" questions:
+
+- **Requests in flight.** Each Moments server handles 15,000 ÷ 25 = 600 req/s at peak. At 100 ms average latency, L = 600 × 0.1 = **60 requests in flight**. A thread-per-request server needs at least 60 threads, plus headroom.
+- **Database connections.** If each request holds a connection for 4 ms in total, one server keeps 600 × 0.004 = **2.4 connections busy** on average; the whole fleet, 15,000 × 0.004 = **60**. A pool of 5–10 per server is plenty: 25 servers × 10 = 250 connections. Pools of 100 per server would be 2,500 connections against one Postgres, where every connection is a separate backend process with its own memory. That's how you take a database down with idle connections.
+- **When a dependency slows down.** Latency from 100 ms to 2 s at the same 600 req/s → L = 600 × 2 = **1,200 in flight** per server. With 200 worker threads, the pool saturates and everything queues — Dev's incident. A 300 ms timeout caps it: L ≤ 600 × 0.3 = **180**. Timeouts and bulkheads (a separate small pool per dependency) are Little's law turned into code.
+
+<Figure caption="Little’s law: what's inside the box equals the rate in times the time each item stays. Raise W at the same λ and the box fills.">
+  <Mermaid code={`flowchart LR
+    A["Arrivals\nλ = 600 req/s"] --> S["Inside the server\nL = λ × W = 60"] --> D["Departures\nafter W = 100 ms"]
+    S -.->|"W rises to 2 s"| F["L = 1,200\npool of 200 is full"]`} />
+</Figure>
+
+<Trace title="Count the boxes and the threads" steps={servers} takeaway="Servers = peak ÷ (per-server × utilisation), then redundancy. Concurrency = throughput × latency — and timeouts bound the latency." />
+
+<Reveal q="Little's law uses averages. Is that a problem when your SLO is a p99?">
+
+It gives you average concurrency, which is the right number for sizing a pool's steady state. Bursts and tail latency push the instantaneous count above the average, so add headroom (1.5–2× is a reasonable start) and enforce the bound with timeouts. For latency targets themselves, reason about percentiles, not averages; Little's law tells you how many are inside, not how long the slowest one waits.
+
+</Reveal>
+
+**Catch the trap:** "we'll autoscale." Autoscaling reacts in minutes; peaks arrive in seconds. Say the number of servers you start with at peak, how many zones they span, and what happens when one zone disappears.
+
+<h2 id="availability">Chapter 8 · Counting nines</h2>
+
+<Scene chapter="Chapter 8" title="Counting nines" mood="night">
+
+Iris wants "five nines" on the launch slide. Dev, gently, asks her which five.
+
+He writes the feed's request path on the whiteboard: load balancer, app, cache, database. Under each box he writes its availability. Then he multiplies, and the room watches the nines disappear one by one.
+
+</Scene>
+
+**Availability → downtime.** Learn the table; derive any row with "unavailability × time period".
+
+| Availability | Downtime per year | Per 30-day month | Per day |
+|---|---|---|---|
+| 99% ("two nines") | 3.65 days | 7.2 hours | 14.4 min |
+| 99.9% ("three nines") | 8.76 hours | 43.2 min | 86.4 s |
+| 99.95% | 4.38 hours | 21.6 min | 43.2 s |
+| 99.99% ("four nines") | 52.6 min | 4.32 min | 8.6 s |
+| 99.999% ("five nines") | 5.26 min | 25.9 s | 0.86 s |
+
+Per-request view: 99.9% success on 1B requests a day still means **1M failed requests a day**. Nines describe a budget, not perfection. An **error budget** is the same idea used to make decisions: a 99.9% monthly target allows 43.2 minutes of downtime, so one 30-minute bad deploy spends about 70% of the month's budget.
+
+**Composition:**
+
+- **In series** (the request needs every component): multiply availabilities. A = A₁ × A₂ × … . Quick approximation: add the unavailabilities. Three components at 99.9% → 0.999³ ≈ **99.7%**; ten → 0.999¹⁰ ≈ **99.0%**.
+- **In parallel** (any one of N redundant, independent copies is enough): multiply the *unavailabilities*. A = 1 − (1 − A₁)(1 − A₂)… . Two replicas at 99% → 1 − 0.01² = **99.99%**.
+
+**Worked numbers — the Moments feed path** (each figure an assumption):
+
+```text
+load balancer 99.99% × app tier 99.99% × cache 99.9% × database 99.95%
+= 0.9999 × 0.9999 × 0.999 × 0.9995 ≈ 0.9983 → 99.83% ≈ 15 hours/year down
+
+if the database could carry full read load without the cache, a cache outage
+degrades latency instead of failing requests — the cache leaves the chain:
+0.9999 × 0.9999 × 0.9995 ≈ 0.9993 → 99.93% ≈ 6 hours/year down
+```
+
+That is the design lever: **shorten the serial chain** (make dependencies optional, degrade gracefully) and **add redundancy** to the weakest link.
+
+<Figure caption="Series multiplies availabilities; parallel multiplies unavailabilities. Parallel only helps when failures are independent.">
+  <Mermaid code={`flowchart LR
+    subgraph S["Series: 0.999 × 0.999 × 0.999 ≈ 99.7 pct"]
+      direction LR
+      s1["A\n99.9"] --> s2["B\n99.9"] --> s3["C\n99.9"]
+    end
+    subgraph P["Parallel: 1 − 0.01 × 0.01 = 99.99 pct"]
+      direction LR
+      lb["Load balancer"] --> r1["Replica\n99"]
+      lb --> r2["Replica\n99"]
+    end`} />
+</Figure>
+
+<Trace title="Count the nines" steps={availability} takeaway="Downtime = (1 − A) × period. Series: multiply A. Parallel: multiply (1 − A) — if failures are independent." />
+
+**Catch the trap:** the parallel formula assumes **independent** failures and **perfect failover**. Two replicas in the same rack, running the same bad deploy, or behind the same failing load balancer are not independent. Say "assuming independent failures" — and then say what you'd do to make it true (separate zones, staggered deploys).
+
+<h2 id="sharding">Chapter 9 · When one box is not enough</h2>
+
+<Scene chapter="Chapter 9" title="When one box is not enough" mood="storm">
+
+The forty-node Cassandra ring from the prologue is still faintly visible on the whiteboard. Theo circles it. *"Forty is a number,"* he says. *"Where did it come from?"*
+
+Nobody knows. He writes three divisions underneath — storage, writes, reads — and says the shard count is whichever one comes out biggest.
+
+</Scene>
+
+```text
+shards = max( total data at the planning horizon ÷ data per shard,
+              peak writes ÷ writes per shard,
+              peak reads ÷ reads per shard   ← only if replicas and cache can't absorb reads )
+```
+
+**Data per shard** is a planning choice, not a hard limit. Teams often pick something like 1–4 TB per node so that backups, restores and rebuilding a replica take hours, not days: copying 2 TB at 200 MB/s takes 10,000 s, about 2.8 hours. This lesson uses **2 TB per shard**.
+
+**Worked numbers:**
+
+```text
+Moments metadata   ≈ 1.8 TB/year; 5-year total ≈ 9.1 TB ÷ 2 TB ≈ 4.6 → 5 shards eventually
+                   writes: 150/s peak — trivial. Storage decides, and slowly:
+                   year one fits one primary; by end of year two (≈ 3.65 TB) it needs 2.
+
+Like counters      ≈ 90 GB/year (5M new posts/day × 50 B) — storage fits one node forever
+                   writes: 20,000/s peak ÷ ~5,000/s per primary = 4 shards
+                   throughput decides. Or batch increments in memory and flush each second.
+```
+
+Read replicas multiply **read** capacity, never **write** capacity — every replica applies every write. When writes force the split, only partitioning helps.
+
+**Plan the split before you need it.** Hash into many **logical partitions** (say 256) and map them onto a few physical nodes. Growing from 2 nodes to 5 means moving partitions, not rehashing every key. See <a href={`${BASE}sd/lessons/pattern-partitioning/`}>Partitioning</a> for keys, hot partitions and rebalancing.
+
+<Trace title="Count the shards" steps={sharding} takeaway="Shards = max(storage, writes, reads) per shard at the planning horizon. Replicas copy data; shards split it." />
+
+**Catch the trap:** "we'll shard it" with no number and no key. Say the count, the axis that forced it, and the partition key — and check that the key spreads load (one celebrity user must not own a whole shard).
+
+<Part n="Part Three" title="Five full sweeps">
+
+Each sweep: assumptions first, every step shown, every number rounded on purpose, and a decision at the end of each line. Do each one on paper before reading it.
+
+</Part>
+
+<h2 id="moments">Chapter 10 · Kestrel Moments, end to end</h2>
+
+<Scene chapter="Chapter 10" title="Kestrel Moments, end to end" mood="dawn">
+
+The second design review is twelve minutes long. You stand up with one sheet of paper. Mara times you without saying so.
+
+When you finish, nobody mentions Cassandra. Iris asks how many app servers to budget for. You tell her, and tell her why it's twenty-seven and not twenty-five.
+
+</Scene>
+
+**The 5-minute script** — the same for every problem:
 
 1. "Let me get the numbers before designing."
-2. QPS: daily volume ÷ 10⁵, ×3 peak, read/write ratio → *conclusion*
-3. Storage: rows/day × bytes, ladder to 5 years → *conclusion*
-4. Bandwidth: payload × QPS → usually *"non-issue, skipping"*
-5. Memory: hot set size → *1 node vs cluster, capacity vs availability*
-6. Bridge: "The numbers say [X], so here's the shape I'd start with."
+2. **QPS**: daily volume ÷ 10⁵, × peak factor, read:write ratio → *conclusion*
+3. **Storage**: records/day × bytes, ladder to the planning horizon, replicas → *conclusion*
+4. **Bandwidth**: payload × QPS → usually *"non-issue, skipping"*, sometimes *"CDN"*
+5. **Memory**: hot set size → *1 node vs cluster, and which reason*
+6. **Bridge**: "The numbers say [X], so here's the shape I'd start with."
+
+**The full sweep.** Assumptions: 50M DAU · 10 feed opens per user per day · 10% post one photo a day · 3 MB stored per photo (2 MB original + renditions) · 1 KB metadata per post · 20 posts per feed response · 10 images × 200 KB per open · peak 3×.
+
+```text
+QPS        reads   500M/day → 5,000/s avg → 15,000/s peak
+           writes  5M/day   → 50/s avg    → 150/s peak           100:1 → cache + read replicas
+Storage    photos  15 TB/day → ≈ 5.5 PB/year                        → object storage
+           meta    5 GB/day  → ≈ 1.8 TB/year (≈ 5.5 TB raw ×3)       → one primary, year one
+Bandwidth  images  1 PB/day → 10 GB/s avg → 30 GB/s (240 Gbps) peak → CDN; origin ≈ 5%
+           API     300 MB/s peak = 2.4 Gbps                         → non-issue
+           uploads 300 MB/s peak = 2.4 Gbps                         → presigned direct upload
+Memory     posts   48 h hot set 15 GB; 300K lookups/s               → 3 cache primaries + replicas
+Servers    15,000 ÷ (1,000 × 0.6) = 25 → 27 across 3 zones          → survives a zone loss at ~83%
+Little     600 req/s × 0.1 s = 60 in flight per server; DB pool 5–10 per server
+Nines      LB × app × cache × DB ≈ 99.83%                           → make the cache optional if the DB can carry it
+```
+
+**The bridge:** *"So: phones upload straight to object storage with presigned URLs; images go out through a CDN; a stateless app tier of about 27 servers across three zones; Redis in front of one Postgres primary with read replicas, partitioned by user id so we can split around year two."*
+
+<Figure caption="The Moments sweep, drawn as the design it justifies. Every box is there because a number put it there.">
+  <Mermaid code={`flowchart LR
+    Ph["50M DAU phones"] -->|"30 GB/s peak images"| CDN["CDN\n95 pct hit"]
+    CDN -->|"1.5 GB/s misses"| OS[("Object storage\n5.5 PB per year")]
+    Ph -->|"presigned upload, 300 MB/s peak"| OS
+    Ph -->|"15K feed req/s peak"| LB["Load balancer"] --> App["27 app servers\n3 zones"]
+    App --> R[("Redis\n3 primaries + replicas\n15 GB hot set")]
+    App --> DB[("Postgres primary\n+ read replicas\n1.8 TB per year")]`} />
+</Figure>
+
+<Reveal q="Iris says the forecast might be 10× off. Which of your conclusions survive?">
+
+All the arithmetic scales linearly, so re-run the conclusions, not the maths. At 5M DAU: 1,500 feed requests a second at peak (about 3 app servers) and 180 GB of metadata a year — but images still want a CDN (3 GB/s at peak). At 500M DAU: 18 TB of metadata a year means sharding from day one, 150K feed requests a second, about 250 app servers. The robust conclusions — object storage for photos, CDN for images, cache in front of the database — hold across the whole range. Saying which conclusions are robust to the uncertainty is the strongest thing you can say about an estimate.
+
+</Reveal>
+
+<h2 id="chat">Chapter 11 · A billion messages a day</h2>
+
+<Scene chapter="Chapter 11" title="A billion messages a day" mood="night">
+
+Iris, inevitably: *"Oh, and also — messaging."* Kestrel Chat launches next quarter with twenty million daily users. Dev wants to know how many connection servers. Theo wants to know how many shards. Both look at you.
+
+</Scene>
+
+**Assumptions:** 20M DAU · 50 messages sent per user per day · about 2 recipients per message on average (groups) · 200 B stored per message (text, ids, timestamps, index) · each user connected about 60 minutes a day in total · peak 3× · media (photos, voice) sent as links to object storage, not counted here.
+
+```text
+Writes       20M × 50 = 1B messages/day → ÷ 10⁵ = 10,000/s avg (exact 11,574) → 30,000/s peak
+Deliveries   1B × 2 recipients = 2B/day → 20,000/s avg → 60,000/s peak pushes
+
+Storage      1B × 200 B = 200 GB/day → × 365 = 73 TB/year logical → × 3 = 219 TB/year raw
+Shards       2 years: 146 TB ÷ 2 TB per shard = 73 shards (× 3 replicas = 219 nodes)
+             writes per shard: 30,000 ÷ 73 ≈ 410/s → storage forces the split, not writes
+Hot tier     last 90 days: 90 × 200 GB = 18 TB → 9 shards; older messages to cheaper storage
+
+Connections  Little's law: 20M × 60 min ÷ 1,440 min/day ≈ 830K connected at an average moment
+             × 3 peak ≈ 2.5M → ÷ 100K per gateway = 25 gateways (plus spares)
+             memory: 2.5M × ~10 KB ≈ 25 GB in total, ~1 GB per gateway
+
+Bandwidth    60,000 pushes/s × ~1 KB on the wire = 60 MB/s ≈ 480 Mbps → non-issue
+```
+
+**Conclusions:** a write-optimised, partitioned message store keyed by conversation (so one conversation's messages live together and read in order); storage — not throughput — sets the shard count, so **tiering old messages** is the biggest lever; about 25 connection gateways, chosen by connection count rather than by CPU. See <a href={`${BASE}sd/lessons/pattern-realtime/`}>Real-time</a> for the gateway design.
+
+<Figure caption="Two numbers size Kestrel Chat: bytes per year sets the shards, connections at peak set the gateways.">
+  <Mermaid code={`flowchart LR
+    U["20M DAU"] -->|"Little: 20M × 60 / 1440"| C["≈ 830K connected avg\n2.5M peak"] --> G["25 gateways\n100K each"]
+    U -->|"× 50 messages"| M["1B per day\n30K writes/s peak"] --> S["200 GB per day\n73 TB per year"]
+    S --> H["Hot 90 days: 18 TB\n9 shards"]
+    S --> CO["Older: cold tier"]`} />
+</Figure>
+
+<Trace title="Size Kestrel Chat" steps={chat} takeaway="Messages × bytes × days × replicas for storage; DAU × time connected ÷ minutes per day for concurrency." />
+
+<h2 id="shortener">Chapter 12 · One prompt, two scales</h2>
+
+<Scene chapter="Chapter 12" title="One prompt, two scales">
+
+The Interviewer slides a card across the table: *Design a URL shortener.* You know this one. Halfway through your estimate she leans back. *"Fine. Now multiply the traffic by a hundred."*
+
+Most candidates redraw the whole design. You change one column of numbers and three decisions.
+
+</Scene>
+
+**Assumptions:** reads (redirects) outnumber new links 100:1 · 500 B per row including index · 5-year horizon · peak 3× · hot set = links created in the last 30 days.
+
+| | Scale A: launch | Scale B: "100× the traffic" |
+|---|---|---|
+| New links | 1M/day → 10/s avg, 30/s peak | 100M/day → 1,000/s avg, 3,000/s peak |
+| Redirects | 100M/day → 1,000/s avg, 3,000/s peak | 10B/day → 100,000/s avg, 300,000/s peak |
+| Storage | 500 MB/day → ~180 GB/yr → **~1 TB in 5 years** | 50 GB/day → ~18 TB/yr → **~91 TB in 5 years** |
+| Links in 5 years | 1.825B | 182.5B |
+| Code length | 6 chars: 62⁶ ≈ 57B, ~31× headroom | 7 chars: 62⁷ ≈ 3.5T, ~19× headroom (62⁶ is too few) |
+| Hot set (30 days) | 30M × 500 B = 15 GB → one cache node | ~1.5 TB → a cache cluster |
+| DB reads at 90% cache hits | 300/s peak | 30,000/s peak |
+| Bandwidth | 3,000 × 500 B = 1.5 MB/s → skip | 300K × 500 B = 150 MB/s → still skip |
+| **Decision** | One Postgres primary + replica, one cache node | Shard by short-code hash (~46 shards at 2 TB); a cache cluster; 7-char codes |
+
+The design didn't change shape; **the numbers moved three decisions** — sharding, code length, and one cache node becoming a cluster. That is what "the estimate drives the design" means.
+
+<Trace title="Same prompt, new scale" steps={shortener} takeaway="Key space: base^length versus links over the horizon. Multiply the traffic and re-check each conclusion — most survive, a few flip." />
+
+<Reveal q="The old drill prompt said: 100M DAU, 10:1 read:write on redirects, 1M new URLs a day. What's odd about it?">
+
+Its numbers don't agree. 1M new URLs a day at 10:1 is only 10M redirects a day — one redirect for every ten daily users. Either most "DAU" never click a link, or one of the numbers is wrong. Sanity-checking the prompt itself (Chapter 15) and asking which number to trust is exactly the habit interviewers like to see.
+
+</Reveal>
+
+<h2 id="metrics">Chapter 13 · A million samples a second</h2>
+
+<Scene chapter="Chapter 13" title="A million samples a second" mood="storm">
+
+Dev wants Kestrel's own observability pipeline: every host, every service, every ten seconds. The vendor quote came back with a number of zeros that made the finance team laugh nervously.
+
+*"Before we build it,"* Mara says, *"tell me the samples per second. Then tell me what we keep, and for how long."*
+
+</Scene>
+
+**Assumptions:** 10,000 hosts · 1,000 time series per host · one sample every 10 s · ~100 B per sample on the wire (name, labels, value, timestamp, before compression) · 16 B per sample uncompressed in storage (8 B timestamp + 8 B value), ~2 B compressed · keep raw data 15 days and hourly rollups 1 year · per-day conversion × 10⁵ (it rounds up about 16% — the safe direction for storage).
+
+```text
+Series        10,000 hosts × 1,000 = 10M active series
+Ingest        10M ÷ 10 s = 1M samples/s;   wire: 1M × 100 B = 100 MB/s ≈ 0.8 Gbps
+Per day       1M × 10⁵ s ≈ 100B samples/day (exact 86.4B)
+Raw bytes     uncompressed 100B × 16 B = 1.6 TB/day;   compressed 100B × 2 B = 200 GB/day
+Raw, 15 days  15 × 200 GB = 3 TB
+Rollups       1 hour = 360 raw samples → 4 numbers (min, max, sum, count): ~90× fewer bytes
+              200 GB ÷ 90 ≈ 2.2 GB/day → 1 year ≈ 0.8 TB
+Total         ≈ 3.8 TB logical → × 3 ≈ 11.4 TB raw
+Without rollups, 1 year of raw: 200 GB × 365 = 73 TB (219 TB ×3) — about 20× more
+Ingesters     assume ~200K samples/s per node: 1M ÷ (200K × 0.6) ≈ 8.3 → 9 nodes
+```
+
+**Conclusions:** the **retention policy is the storage design** — rollups are a 20× lever; a partitioned log (e.g. Kafka) in front of ingesters keyed by series hash keeps ingest horizontal; and the risk to watch is **cardinality**, not volume. Compressed time-series formats really do get to about a byte or two per sample — Facebook's Gorilla paper reports about 1.37 bytes. See <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series</a> for rollups and downsampling.
+
+<Figure caption="The retention ladder. Each rung keeps less detail for longer; the total is dominated by the short raw window.">
+  <Mermaid code={`flowchart LR
+    I["1M samples/s"] --> R["Raw, 10 s resolution\nkept 15 days\n3 TB"]
+    R -->|"hourly rollup, 90× smaller"| H["Hourly min, max, sum, count\nkept 1 year\n0.8 TB"]`} />
+</Figure>
+
+<Trace title="Count the samples" steps={metrics} takeaway="Series ÷ interval = samples/s; retention × resolution = storage; labels multiply series." />
+
+<h2 id="video">Chapter 14 · The upload firehose</h2>
+
+<Scene chapter="Chapter 14" title="The upload firehose" mood="storm">
+
+Kestrel Clips: short videos, a million a day by launch. The first prototype streamed uploads through the API servers. In load testing, the API fleet spent all its time shovelling bytes and none of it answering requests.
+
+Dev's question is simple. *"How many gigabits are coming in at peak — and why are they touching our servers at all?"*
+
+</Scene>
+
+**Assumptions:** 1M uploads a day · 50 MB average (about a minute of 1080p at ~6.7 Mbps) · phone uplink ~10 Mbps · renditions (1080p/720p/480p/360p) add about as much again · transcoding costs about 4 core-minutes per video-minute (assumption — benchmark your encoder) · 20M views a day at ~30 MB watched each · peak 3×.
+
+```text
+Ingress     1M × 50 MB = 50 TB/day → ÷ 10⁵ = 500 MB/s avg (exact 579) → × 3 = 1.5 GB/s peak
+            × 8 = 12 Gbps at peak                       → presigned, resumable uploads to object storage
+Per upload  50 MB × 8 = 400 Mb ÷ 10 Mbps = 40 s         → resumable / multipart, mobile links drop
+Little      peak arrivals 1M ÷ 10⁵ × 3 = 30/s; × 40 s = 1,200 uploads in flight
+Cross-check 1,200 × 10 Mbps = 12 Gbps                    ✓ same answer by a second route
+Storage     original 50 MB + renditions ~50 MB = 100 MB/video → 100 TB/day → 36.5 PB/year
+Transcode   1M videos × 1 min × 4 core-min = 4M core-min/day ÷ 1,440 min ≈ 2,800 cores busy on average
+            peak × 3 ≈ 8,300 cores; at 32 cores/machine: ~87 machines for average vs ~261 for peak
+            → a queue lets you provision near the average; videos wait a little at peak
+Egress      20M views × 30 MB = 600 TB/day → 6 GB/s avg → 18 GB/s (144 Gbps) peak → CDN
+```
+
+**Conclusions:** the bytes never touch the API tier (presigned, resumable uploads); transcoding is **asynchronous** behind a queue, sized near the average with headroom, with the latency cost stated; storage growth makes **lifecycle tiering** (cold storage for old renditions) a first-class design topic. See <a href={`${BASE}sd/lessons/blob-cdn/`}>Blob storage & CDN</a> and <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs</a>.
+
+<Figure caption="Upload path for Kestrel Clips. The API issues permission; the bytes go straight to storage; the work goes to a queue.">
+  <Mermaid code={`sequenceDiagram
+    participant Phone
+    participant API
+    participant Store as Object storage
+    participant Q as Transcode queue
+    Phone->>API: request upload (size, type)
+    API-->>Phone: presigned multipart URLs
+    Phone->>Store: PUT parts (about 40 s at 10 Mbps)
+    Store-->>API: upload complete event
+    API->>Q: enqueue transcode job
+    Note over Q: workers sized near the average, the queue absorbs the 3× peak`} />
+</Figure>
+
+<Trace title="Follow the bytes" steps={video} takeaway="Ingress × 8 for Gbps; Little's law for uploads in flight; queues let asynchronous work be sized for the average." />
+
+<Part n="Part Four" title="Judgment">
+
+Two habits that separate a confident estimate from a lucky one: checking it, and knowing when not to make it.
+
+</Part>
+
+<h2 id="sanity">Chapter 15 · Is that number even possible?</h2>
+
+<Scene chapter="Chapter 15" title="Is that number even possible?" mood="dusk">
+
+A mock interview recording, played back. The candidate — you, three weeks ago — computes the storage for a chat app, arrives at seventy-three petabytes a year, and confidently proposes a tape archive.
+
+Mara pauses the video. *"Divide it by the number of users,"* she says. *"Then by the days in a year. Then tell me if anyone types that much."*
+
+</Scene>
+
+**The sanity-check habit — thirty seconds, every time:**
+
+1. **Normalise per user.** Divide the total by DAU (and by days). 73 PB a year ÷ 20M users ÷ 365 ≈ 10 MB of text per user per day — impossible for text. 1 PB a day of images ÷ 50M users = 20 MB per user per day — ten feed opens of ten 200 KB images: plausible.
+2. **Compare with a physical limit.** One 10 Gbps card moves 1.25 GB/s. A hard disk writes ~100–200 MB/s. If one box must do more than its hardware can, the design needs more boxes or a different shape.
+3. **Check by a second route.** The video chapter got 12 Gbps from bytes per day *and* from uploads in flight × uplink speed. When two independent routes agree, you can trust the number.
+4. **Check the units through the formula.** req/s × B/req = B/s. If the units don't cancel to what you wanted, the formula is wrong.
+5. **Round in the safe direction.** For capacity and storage, round up; then say so.
+
+**The stale-numbers killer.** Reusing the previous problem's (or the previous axis's) numbers because they are still on the whiteboard. In Moments it would look like this: the feed's 15K QPS quietly reused for the upload path, which actually runs at 150/s — a 100× overestimate that buys a fleet nobody needs. **Antidote: each axis starts by re-stating its inputs from scratch** — "5M uploads a day at 2 MB each…".
+
+<Trace title="Catch the impossible number" steps={sanity} takeaway="Per user, per box, by a second route. A 1000× error is almost always a unit; re-state inputs at the start of every axis." />
+
+<h2 id="skip">Chapter 16 · When to put the pen down</h2>
+
+<Scene chapter="Chapter 16" title="When to put the pen down" mood="dusk">
+
+Your first real onsite, years from now, will have a whiteboard and a clock. Mara's last piece of advice about estimation is the shortest: *"Never skip it silently. Sometimes skip it."*
+
+</Scene>
+
+Estimation earns its five minutes only when the numbers could change the design. **Skip or shrink it — out loud, with the reason — when:**
+
+- **The prompt gives you the number.** "1M requests per second" is a given; don't derive it. Spend one minute on what it *implies* (an in-memory check, the memory footprint).
+- **Every plausible value leads to the same design.** An internal tool for 200 employees runs on one small instance whatever the exact numbers.
+- **The interviewer steers away.** Some interviewers say "assume it's big" or "skip the numbers". Agree, and state the one assumption you're carrying.
+- **Time is short.** Requirements ran long (your logged pacing gap). Give the one or two numbers that drive the design in under a minute, and **estimate lazily**: size storage when you pick the database, size the cache when you draw it.
+
+**The sentence:** *"I'll skip detailed estimation — at this scale it's one instance and one database. The only number I'm carrying is about 100:1 reads, which says cache. Happy to size anything specific later."* A silent skip reads as "forgot"; a stated skip reads as judgment.
+
+<Trace title="Sweep, shrink or skip?" steps={skip} takeaway="Compute only numbers that change a decision. Skip out loud, with the reason, and carry the one assumption that matters." />
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice names the exact slip it represents.
+
+<Trace title="The estimation review" steps={drills} takeaway="Every number: a unit, a rung at a time, peak for capacity, × replicas for disk, Little's law for concurrency — and a decision at the end." />
 
 <Quiz questions={[
   {
@@ -138,9 +869,131 @@ For any problem, this is the 5-minute script:
     ],
     answer: 1,
     why: '1M × 500 B = 500,000,000 B = 500 MB. Writing TB is the GB↔TB class of slip — exactly the 1000× error caught in your live reps. Climb one rung at a time, out loud.'
-  }
+  },
+  {
+    q: 'Two app instances, each 99.9% available, behind a load balancer that is itself 99.99%. Roughly what is the availability of the service?',
+    options: [
+      '99.9% — the instances limit it',
+      'About 99.99% — the redundant pair is ~99.9999%, then in series with the 99.99% load balancer',
+      '99.8% — two instances at 99.9% multiply',
+      '100% — redundancy removes downtime'
+    ],
+    answer: 1,
+    why: 'Parallel: 1 − 0.001² = 99.9999%. Series with the load balancer: 0.9999 × 0.999999 ≈ 99.99%. The non-redundant component now dominates — that is where the next nine has to come from.'
+  },
+  {
+    q: 'A worker handles 50 jobs/s; each job spends 200 ms waiting on an external API. How many jobs are in flight?',
+    options: ['4', '10', '250', '10,000'],
+    answer: 1,
+    why: 'Little’s law: L = λ × W = 50/s × 0.2 s = 10. Size the worker’s concurrency for at least that, plus headroom, and put a timeout on the API call so W cannot grow without bound.'
+  },
 ]} />
 
-## Drill for this week
+<h2 id="interview-script">Say it in the room</h2>
 
-The transfer test: run the full 4-axis sweep on **URL shortener** (100M DAU, 10:1 read:write on redirects, 1M new URLs/day) — 8 minutes, out loud, every axis ending in a conclusion sentence. Then once more on **Twitter timeline reads**. Numbers are allowed to be rough; missing conclusion sentences are not.
+<Scene title="The interview room" mood="night">
+
+The Interviewer has written *photo-sharing feed* on the whiteboard and is looking at you expectantly. You don't reach for a database name. You say, "Let me get the numbers that will shape this," and you talk for ninety seconds.
+
+</Scene>
+
+**The 90-second estimate** (adapt the nouns):
+
+> "Let me get the numbers that will shape the design. Assume 50 million daily users opening the feed ten times a day: 500 million reads, about 5,000 a second on average — call it 15,000 at a 3× peak. One in ten posts a photo a day: 5 million uploads, about 50 a second. So reads dominate a hundred to one, which says **cache and read replicas**. Storage: photos at about 3 MB with renditions are 15 TB a day, about 5.5 PB a year — that's **object storage**, never the database. Metadata at a kilobyte a post is 5 GB a day, under 2 TB a year, so **one Postgres primary** for year one, partitioned by user so we can split around year two. Bandwidth: each feed open pulls about 2 MB of images, so a petabyte a day, 30 GB/s at peak — **a CDN**, with the origin seeing about 5%. Uploads are 2.4 Gbps at peak, so **presigned uploads straight to storage**. Servers: 15,000 at peak over about 600 per box at 60% utilisation is **25, spread over three zones**. The hot set of recent posts is about 15 GB — one node's memory, but 300,000 lookups a second, so **three cache primaries with replicas**, for throughput rather than capacity. That's the shape I'll start from."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · Why divide by 10⁵ instead of 86,400?">
+
+A day is 86,400 seconds; 10⁵ is about 16% more, so my QPS comes out about 14% low. My DAU and actions-per-user are guesses with far more error than that, and the 3× peak factor dwarfs it. If precision mattered I'd use "1M a day ≈ 12 a second", but no design decision here flips on 14%.
+
+</Reveal>
+
+<Reveal q="2 · Where does the 3× peak come from?">
+
+It's an assumption: consumer traffic follows waking hours, so the busiest hour runs a few times the daily average. If there's real data, I'd use it. Event-driven products — ticket drops, live sports — can spike 10× or more in seconds; there I'd design for admission control and load shedding rather than provisioning for the spike, because autoscaling reacts in minutes.
+
+</Reveal>
+
+<Reveal q="3 · How many database connections does the app tier need?">
+
+Little's law: connections in use = queries per second × time each holds a connection. At 15,000 requests a second and about 4 ms of database time each, that's about 60 busy across the fleet, about 2–3 per server. A pool of 5–10 per server gives burst headroom — about 250 in total. Not 100 per server: 2,500 connections would hurt Postgres, where each connection is its own process.
+
+</Reveal>
+
+<Reveal q="4 · What availability can you promise?">
+
+It's the product of the serial path. Load balancer, app tier, cache and database at 99.99, 99.99, 99.9 and 99.95% multiply to about 99.83% — roughly 15 hours a year. To do better I'd shorten the chain — if the database can carry reads without the cache, the cache becomes optional and the path is about 99.93% — and put redundancy, in separate zones, on the weakest link.
+
+</Reveal>
+
+<Reveal q="5 · What if your numbers are 10× off?">
+
+The arithmetic scales linearly, so I re-check the conclusions. At 10× less, it's a handful of servers — but images still want a CDN. At 10× more, metadata grows 18 TB a year and I shard from day one; app servers go to about 250. Object storage for photos, CDN for images and a cache in front of the database hold across the whole range — those are the robust decisions.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say / compute… |
+|---|---|
+| Any number | Unit, one rung at a time: B → KB → MB → GB → TB → PB, ×1000 each |
+| Network link or egress | Bits: × 8. 1 Gbps = 125 MB/s, 10 Gbps = 1.25 GB/s |
+| Requests per day | ÷ 10⁵ = average QPS (exact: 1M/day ≈ 12/s) |
+| Capacity | × peak factor (2–3× stated; more for events) |
+| Read-heavy | Name the ratio → cache + read replicas |
+| Storage | records/day × bytes × 365 × years × replicas (× overhead) |
+| Object storage | Logical bytes; erasure coding inside (e.g. 1.4×), not your ×3 |
+| Bandwidth | QPS × payload; text → usually skip out loud; media → CDN, direct upload |
+| CDN or cache | Origin load = (1 − hit ratio) × total |
+| Cache size | Working set, not dataset; then capacity vs throughput vs availability |
+| Servers | peak ÷ (per-server × ~60%), then zones |
+| Threads, connections, uploads in flight | Little's law: L = λ × W |
+| Slow dependency | L grows with W → timeouts and bulkheads |
+| Nines | Downtime = (1 − A) × period; 99.9% ≈ 8.76 h/yr, 43 min/month |
+| Series / parallel | Multiply A / multiply (1 − A), if independent |
+| Shards | max(storage, writes, reads) per shard at the horizon |
+| An implausible total | Divide by users and days; compare with one box's limits |
+| Prompt gives the number | Use it; compute only its implications |
+
+## Five mistakes to leave behind
+
+1. **A number with no decision.** Every estimate ends in a sentence that changes the design — or says, out loud, that nothing changes.
+2. **Skipping a rung.** GB↔TB and bits↔bytes. Climb one rung at a time, out loud.
+3. **Sizing capacity for the average.** Peak for capacity; average for storage and cost.
+4. **Forgetting the multipliers** — × 365, × years, × replicas — or applying × 3 to a managed object store.
+5. **Stale numbers and silent skips.** Re-state the inputs for every axis; skip only out loud, with the reason.
+
+<Scene title="Mara’s last word" mood="dusk">
+
+The whiteboard from the first Moments review is finally being wiped. The forty-node ring goes first. Mara stops you before you erase the last corner, where your one line of arithmetic still sits: *5M × 1 KB = 5 GB/day → 1.8 TB/yr → one primary.*
+
+*"Leave that,"* she says. *"It's the only thing on this board that argued for anything."*
+
+</Scene>
+
+**Keep it warm:** with the buddy, run the transfer test — the full sweep on **URL shortener** (100M DAU, 10:1 read:write on redirects, 1M new URLs/day), 8 minutes, out loud, every axis ending in a conclusion sentence. Start by sanity-checking the prompt itself (Chapter 12 shows why). Then once more on **Twitter timeline reads**. Numbers are allowed to be rough; missing conclusion sentences, unit slips and stale numbers are not.
+
+Related: <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> (where estimation sits in the 45 minutes) · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> (what one box can hold) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (hit ratio and working set) · <a href={`${BASE}sd/lessons/blob-cdn/`}>Blob storage & CDN</a> (the bandwidth axis) · <a href={`${BASE}sd/lessons/load-balancing/`}>Load balancing</a> · <a href={`${BASE}sd/lessons/pattern-partitioning/`}>Partitioning</a> (shard counts in practice) · <a href={`${BASE}sd/lessons/pattern-realtime/`}>Real-time</a> (connection gateways) · <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series</a> · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> (memory estimate in a full walkthrough) · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 1 (describing load and performance, percentiles, the Twitter fan-out example) and chapter 6 (partitioning) give the theory behind Chapters 2, 7 and 9.
+- [Latency numbers every programmer should know](https://gist.github.com/jboner/2841832) — the widely shared version of Jeff Dean's table; [Colin Scott's interactive version](https://colin-scott.github.io/personal_website/research/interactive_latency.html) shows how the numbers drift by year. Treat both as orders of magnitude.
+- [Google SRE book: Embracing Risk](https://sre.google/sre-book/embracing-risk/) — error budgets and why 100% is the wrong target; and its [Availability Table](https://sre.google/sre-book/availability-table/) appendix.
+- [Little's law (Wikipedia)](https://en.wikipedia.org/wiki/Little%27s_law) — the statement, its assumptions, and examples.
+- [Gorilla: A Fast, Scalable, In-Memory Time Series Database](https://www.vldb.org/pvldb/vol8/p1816-teller.pdf) (VLDB 2015) — the compression behind "a byte or two per sample".
+- [Binary prefix (Wikipedia)](https://en.wikipedia.org/wiki/Binary_prefix) — KB versus KiB, and why disk vendors and operating systems disagree.
+- [Fermi problem (Wikipedia)](https://en.wikipedia.org/wiki/Fermi_problem) — the general skill of estimating from rough assumptions, and why errors partly cancel.
+
+**Look these up yourself**
+
+- **Queueing theory and the utilisation knee** — M/M/1 and Kingman's formula: why latency climbs steeply past ~70–80% utilisation, and why variance makes it worse.
+- **"The Tail at Scale"** (Dean and Barroso) — how fan-out turns rare slow responses into common slow requests, and hedged requests as a fix.
+- **Zipf's law** — the long-tailed popularity curve behind "20% of items serve 80% of reads", and how to size a cache for a target hit ratio from it.
+- **Erasure coding versus replication** — Reed–Solomon and locally repairable codes; storage overhead versus repair cost.
+- **Cloud pricing as an estimation axis** — storage per GB-month, egress per GB, requests per million; check current price sheets, they change.
+- **Amdahl's law and the Universal Scalability Law** — why throughput doesn't grow linearly with cores or nodes.
+- **Percentiles versus averages** — why SLOs use p99, and why averaging percentiles across servers is wrong.

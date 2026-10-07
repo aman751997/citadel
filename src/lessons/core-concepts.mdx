@@ -1,91 +1,849 @@
 ---
-title: 'Core Concepts: CAP, Consistency, Availability'
-description: 'The vocabulary every deep dive uses — CAP, consistency models, quorums, and availability math, in plain language.'
+title: 'Core Concepts: Scale, Consistency, Failure'
+description: 'The vocabulary every deep dive speaks — layers, scaling, tail latency, availability, CAP and PACELC, the consistency ladder, replication, partitioning, IDs, retries, timeouts and overload — learned from the twenty-one minutes Kestrel would rather forget.'
 module: 1
 order: 3
-minutes: 30
+minutes: 85
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import Bars from '../components/Bars.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { layers, scaling, throughput, tail, availability, liveness, replication, cap, consistency, partitioning, ids, retries, isolation, overload, drills } from '../data/sd/core-concepts';
+import { BASE } from '../paths';
 
-## Why this lesson exists
+<PatternHub
+  pattern="sd-core-concepts"
+  start="prologue"
+  logline="Every deep dive is a conversation in one vocabulary: layers, state, latency, the nines, replicas, partitions, consistency, retries, timeouts. Learn the words by learning the outage they explain, and the Interviewer's hardest questions become questions you have already answered."
+  cast={[
+    { name: 'You', role: 'Second month at Kestrel. You can draw a system. You are about to find out what happens when one breaks.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Writes questions on the whiteboard and waits.' },
+    { name: 'Dev Okafor', role: 'SRE. Paged at 19:02 on launch night. Narrates the timeline as if reading a weather report.' },
+    { name: 'Iris Tan', role: 'Product lead. Every complaint she forwards is a consistency model in disguise.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has seen two leaders at once, and still talks about it.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · The shape of a system', description: 'Layers, scaling, latency, and the tail.', links: [['layers', 'Which box are we talking about?'], ['scaling', 'One bigger box, or many?'], ['throughput', 'Fast, and how often'], ['tail-latency', 'The slowest of a hundred']] },
+    { name: 'Part Two · Staying up', description: 'The nines, single points of failure, and knowing who is alive.', links: [['availability', 'What the nines cost'], ['liveness', 'Dead, or just slow?']] },
+    { name: 'Part Three · Many copies, one truth', description: 'Replication, CAP, the consistency ladder, partitioning, IDs.', links: [['replication', 'Copies'], ['cap', 'The partition'], ['consistency', 'Four complaints, four rungs'], ['partitioning', 'Where to cut'], ['ids', 'Naming every row']] },
+    { name: 'Part Four · When things go wrong', description: 'Retries, timeouts, breakers, bulkheads, and overload.', links: [['retries', 'Try again, carefully'], ['isolation', 'Stop waiting'], ['overload', 'Too much at once']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Make the calls interviewers probe, with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="This is the longest lesson in Foundations because every later lesson leans on it. Read one part per sitting; the drills at the end mix all four."
+/>
 
-Deep dives are conversations in a specific vocabulary. When an interviewer asks "what happens during a network partition?" they're testing whether you can *reason* with these concepts, not recite them. This lesson gives you the five ideas that appear in literally every SD interview: CAP, consistency models, quorums, availability math, and latency numbers.
+<h2 id="prologue">Prologue · Twenty-one minutes</h2>
 
-## CAP — what it actually says
+<Scene chapter="Prologue" title="19:02" mood="night">
 
-Three properties. A distributed system with replicated data can only fully guarantee two when things go wrong:
+Kestrel launches "Memories" at seven in the evening. At 19:02 Dev types into the incident channel: *"Search p99 is 9 seconds. Feed is timing out. Checkout is timing out. Checkout doesn't even call search."*
 
-- **C**onsistency — every read sees the most recent write
-- **A**vailability — every request gets a (non-error) response
-- **P**artition tolerance — the system survives nodes being unable to talk to each other
+It takes twenty-one minutes to stop. One search shard out of a hundred had a slow disk, and every search asks all hundred. The feed waited on search with no timeout. Feed and checkout shared a thread pool. Phones, the gateway and the feed service each made up to three attempts. The database leader, buried, missed its heartbeats and was replaced by a replica that was a few hundred posts behind.
 
-Here's the part people get wrong: **P is not optional.** Networks partition — cables get cut, switches die, GC pauses make a node look dead. So the real choice is only ever **C vs A, during a partition**:
+The next morning Mara writes seven words on the whiteboard: *layer, state, tail, nines, lease, consistency, retry.* Then she turns around.
 
-<Mermaid code={`flowchart TD
-    P["🔌 Network partition happens\n(it always eventually does)"] --> Q{"A write arrives on one side.\nWhat do we do?"}
-    Q -->|"Refuse writes/reads until\nnodes agree again"| C["CP system\nConsistent, but some\nrequests fail"]
-    Q -->|"Keep serving, sides may\ndiverge, reconcile later"| A["AP system\nAvailable, but reads\nmay be stale"]`} />
+*"Every word up there is an interview question,"* she says. *"And every one of them was in last night's outage. Which one do you want to start with?"*
 
-**Interview usage:** make the CAP call in the requirements phase, with a product reason.
+</Scene>
 
-- Banking ledger, seat booking, inventory → **CP**: "a wrong answer is worse than no answer."
-- Social feed, likes count, product views → **AP**: "a stale answer is fine; an error page is not."
+Deep dives are conversations in a specific vocabulary. When the Interviewer asks *"what happens during a network partition?"* or *"what if that service is slow?"*, they are testing whether you can **reason** with these ideas, not recite them. This lesson gives you the whole vocabulary — the ideas that appear in essentially every system design interview — each one tied to a moment of the outage above, so you remember it as a story rather than a definition.
 
-Never say "we need full consistency AND five nines" — that sentence tells the interviewer you don't understand the tradeoff.
+Two of your own logged habits live here. **Layer conflation**: answering a different layer than the one asked (tenant isolation when the question was resource-level authorization). And **dodging instead of reasoning aloud** when a question gets uncomfortable, like "partitions are rare, so…". Chapter 1 and Chapter 8 are aimed straight at them.
 
-> **PACELC — the bonus point:** even with no partition (**E**lse), you trade **L**atency vs **C**onsistency. Synchronous replication to another region = consistent but slow. Async = fast but replica lag. Dropping "and even without partitions, it's latency vs consistency — PACELC" earns senior credit in one sentence.
+**The rule. For every box you draw, you can answer four questions out loud:**
 
-## Consistency models — the ladder
+1. **Which layer is it?** So you and the Interviewer mean the same box.
+2. **Where does its state live?** So you know what is lost when it dies, and whether it can scale out.
+3. **What happens when it is slow?** Timeouts, the tail, and what waits on it.
+4. **What happens when it is gone?** Redundancy, failover, retries, and what the user sees.
 
-"Consistency" isn't binary. It's a ladder from strict to loose. You need three rungs:
+<Figure caption="The four questions. Part One answers the first two; Parts Two to Four answer the last two.">
+  <Mermaid code={`flowchart LR
+    L["1 · Which layer?\nedge, gateway, service,\ncache, data, async"] --> S["2 · Where is the state?\ntoken, store, blob,\nqueue, nowhere"]
+    S --> W["3 · When it is slow?\ntimeouts, tail,\nbulkheads"]
+    W --> G["4 · When it is gone?\nreplicas, failover,\nretries, degrade"]`} />
+</Figure>
 
-| Model | Guarantee | Cost | Example use |
-|-------|-----------|------|-------------|
-| **Strong (linearizable)** | Every read sees the latest write, globally | Coordination on every operation — slow, availability suffers | Bank balance, seat inventory, distributed locks |
-| **Read-your-own-writes** | *You* see your writes; others may lag | Cheap — route user to same replica or session token | Profile edits, posting a comment |
-| **Eventual** | Replicas converge... eventually | Nearly free — async replication | Like counts, follower counts, analytics |
+<Part n="Part One" title="The shape of a system">
 
-The senior move: **different data in the same system gets different models.** In a payment system: ledger = strong, "your recent transactions" list = read-your-own-writes, spending analytics = eventual. Saying that sentence about *your* design is a deep-dive win.
+Before failure, shape: what the boxes are, where their state lives, and what "fast" actually means.
 
-## Quorums — how replicas agree without agreeing on everything
+</Part>
 
-N replicas. Write to W of them, read from R of them. If **W + R > N**, every read overlaps at least one node that has the latest write → you get strong-ish consistency without needing all nodes.
+<h2 id="layers">Chapter 1 · Which box are we talking about?</h2>
 
-Classic setup: N=3, W=2, R=2. Tune it:
+<Scene chapter="Chapter 1" title="Which box are we talking about?" mood="dawn">
 
-- Write-heavy, reads can lag → W=1, R=3 (fast writes, expensive reads)
-- Read-heavy, writes rare → W=3, R=1 (fast reads — most systems)
+Mara asks you to draw what happens when someone opens Kestrel. You draw three boxes: phone, server, database.
 
-Say the inequality out loud when you use it: "R+W > N so reads always intersect the latest write." That's the whole trick — Dynamo, Cassandra interviews live on it.
+She hands the marker to Theo, who adds DNS, a CDN, a load balancer, a gateway, six services, a cache, a queue, workers, a search index and blob storage. *"Last night,"* Theo says, *"two people spent five minutes arguing about 'the cache'. One meant the CDN. The other meant Redis."*
 
-## Availability math — what the nines cost
+Mara taps the board. *"When someone says 'the cache' — or 'rate limiting', or 'consistency' — which box do they mean?"*
 
-| Nines | Downtime/year | What it takes |
-|-------|--------------|---------------|
-| 99% | ~3.7 days | one server and hope |
-| 99.9% | ~8.8 hours | redundancy, health checks, failover |
-| 99.99% | ~53 min | multi-AZ, automated failover, on-call |
-| 99.999% | ~5 min | multi-region active-active, chaos engineering, $$$ |
+</Scene>
+
+Every web system you will design in an interview has roughly the same layers. Requests flow down; each layer exists to protect the ones below it from work they don't need to do.
+
+<Figure caption="The layers of a typical web system. The synchronous path runs top to bottom; the async tier takes work that doesn't need to finish before the user gets an answer.">
+  <Mermaid code={`flowchart TB
+    C["Client\napp or browser"] --> DNS["DNS\nname to address"]
+    DNS --> CDN["CDN / edge\nstatic and cacheable content, TLS"]
+    CDN --> LB["Load balancer\nL4 or L7, health checks"]
+    LB --> GW["API gateway\nauth, rate limits, routing"]
+    GW --> SVC["Services\nstateless business logic"]
+    SVC --> CACHE[("Cache\nhot reads")]
+    SVC --> DATA[("Data tier\ndatabase, blob store, search index")]
+    SVC --> Q[["Queue / stream"]]
+    Q --> WK["Workers\nasync jobs"]
+    WK --> DATA`} />
+</Figure>
+
+| Layer | Its job | The question it answers | Deep lesson |
+|---|---|---|---|
+| Client | Render, cache locally, retry politely | "What does the user see when we fail?" | — |
+| DNS | Turn a name into an address; route by geography | "How do users reach the nearest region? How fast can we fail over?" | <a href={`${BASE}sd/lessons/networking/`}>Networking</a> |
+| CDN / edge | Serve static and cacheable content close to users | "Why does this request ever reach us?" | <a href={`${BASE}sd/lessons/blob-cdn/`}>Blob & CDN</a> |
+| Load balancer | Spread connections or requests across healthy servers | "Which server gets it, and how do we know it's alive?" | <a href={`${BASE}sd/lessons/load-balancing/`}>Load balancing</a> |
+| API gateway | Authenticate, rate-limit, route, shape requests | "Who is calling, and are they allowed this much?" | <a href={`${BASE}sd/lessons/load-balancing/`}>Load balancing</a>, <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> |
+| Services | Business logic, ideally stateless | "What does the system *do*?" | Chapter 2 |
+| Cache | Remember hot answers | "How do we survive the read load?" | <a href={`${BASE}sd/lessons/caching/`}>Caching</a> |
+| Data tier | The source of truth: database, blobs, search index | "What must never be lost or wrong?" | <a href={`${BASE}sd/lessons/databases/`}>Databases</a> |
+| Async tier | Queues, streams, workers | "What can happen after we answer?" | <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> |
+
+**The same word lives at many layers.** This is where conflation starts. Before you answer a question containing one of these words, say which layer you mean:
+
+| The word | It could mean… |
+|---|---|
+| "Cache" | Browser, CDN, gateway response cache, in-process L1, Redis, the database's own buffer pool |
+| "Load balancing" | DNS across regions, L4 (connections), L7 (HTTP requests), client-side picking a replica |
+| "Rate limiting" | At the edge per IP, at the gateway per API key or tenant, inside a service as a concurrency limit protecting one dependency |
+| "Consistency" | Between database replicas, between cache and database, between two services — and ACID's "C", which is something else again (invariants) |
+| "Partition" | A **network** partition (nodes can't talk) or a **data** partition (a shard). Chapter 8 vs Chapter 10 |
+| "Authorization" | Identity (who), tenant (which company), role (what kind of user), resource (which object) |
+
+**You've tripped on this one before.** In a mock you were asked about *resource-level* authorization and answered *tenant isolation*: a correct answer to a different question. The fix costs five seconds: *"Just to be sure — you mean per-object access within a tenant, not tenant isolation?"* Interviewers read that clause as precision, never as stalling.
+
+<Trace title="Name the layer" steps={layers} takeaway="Same word, many boxes. Say which layer you mean before you answer, especially for cache, rate limit, consistency, partition and authorization." />
+
+<Reveal q="The Interviewer points at your load balancer: 'Isn't that a single point of failure?' What do you say?">
+
+It would be, if it were one machine. In practice it is a redundant pair (or a fleet) sharing a virtual IP that fails over, or a managed cloud load balancer that is already a distributed service, and DNS can spread users across several load balancers or regions. Say which of these you assume. Then add the useful part: health checks on the servers behind it, so it stops sending traffic to a dead one.
+
+</Reveal>
+
+**Catch the trap:** one box labelled "backend". It hides every decision this lesson is about. Draw the layers, and the questions in the rest of the interview have somewhere to land.
+
+<h2 id="scaling">Chapter 2 · One bigger box, or many?</h2>
+
+<Scene chapter="Chapter 2" title="One bigger box, or many?">
+
+Two years ago, Iris remembers, Kestrel ran on one server under someone's desk. When a blog post sent them ten times their usual traffic, they bought a bigger server. When the next post came, they bought a bigger one again.
+
+*"Why can't we just keep doing that?"* she asks. Mara draws a very large box, then a row of small ones, and writes one word under the large box: *ceiling.*
+
+</Scene>
+
+**Vertical scaling (scale up)** means a bigger machine: more cores, more memory, faster disks. **Horizontal scaling (scale out)** means more machines sharing the work.
+
+| | Vertical | Horizontal |
+|---|---|---|
+| Code changes | None | Services must be stateless, or state must be split |
+| Ceiling | The biggest machine you can buy | Very high, if the work divides |
+| Cost curve | Rises steeply at the top end | Roughly linear in machines |
+| Failure | One machine: a single point of failure | Lose one of many: lose a slice of capacity |
+| Distributed-systems problems | None | All of the rest of this lesson |
+
+The senior answer is not "always horizontal". It is **scale up while it is cheap, and design so you can scale out.** This matters most for databases: one well-provisioned database server goes a very long way, and splitting data across machines (Chapter 10) brings real costs. Stateless services are the opposite. They scale out so easily that there is rarely a reason not to.
+
+**Stateless** means any request can go to any instance, and an instance keeps nothing that must outlive the request. State still exists. It just lives somewhere designed to keep it:
+
+| State | Where it goes |
+|---|---|
+| Who is logged in | A signed token (e.g. a JWT) the client sends, or a shared session store |
+| User data | The database |
+| Uploaded files | Blob storage; jobs carry the object key, never a local path |
+| Hot reads | A distributed cache |
+| Work to do later | A queue |
+| Long-lived connections (WebSockets) | Inherently stateful: a registry maps user → connection server, and the realtime lesson owns that |
+| Configuration, feature flags | A config service that pushes changes |
+
+**Worked numbers.** One Kestrel API server sustains 2,000 requests/s at a 70% CPU target. Peak forecast: 15,000 requests/s.
+
+- 15,000 ÷ 2,000 = 7.5 → **8 servers** to carry peak.
+- Add one for a server failure and one for a rolling deploy → **10 servers**.
+- None of that works while sessions sit in one server's memory: user 42 logs in on server 3, the next request lands on server 7, and they're logged out.
+
+<Trace title="Where does the state go?" steps={scaling} takeaway="Stateless tier: move state into stores designed for it, then add machines. Data tier: scale up first, and split only when the numbers force you." />
+
+<Reveal q="Sticky sessions keep each user on one server. Why not just use them and keep sessions in memory?">
+
+They work as a performance optimization, never as the only copy of state. If the server dies, its users lose their sessions. Load can't be rebalanced evenly because users are pinned. Deploys have to drain long-lived users slowly. Put the session in a token or a shared store; stickiness can then be a cache-locality bonus, not a correctness requirement.
+
+</Reveal>
+
+**Catch the trap:** "We'll scale horizontally" said about the whole system at once. The stateless tier scales horizontally almost for free; the database is the hard part. Say what the database does as load grows: scale up, add read replicas (Chapter 7), then partition (Chapter 10).
+
+<h2 id="throughput">Chapter 3 · Fast, and how often</h2>
+
+<Scene chapter="Chapter 3" title="Fast, and how often" mood="dawn">
+
+Dev puts two graphs side by side. On the left, requests per second on launch night: higher than ever. On the right, latency: also higher than ever. *"Product asked me whether the system was fast or slow,"* he says. *"I said yes."*
+
+Mara writes two words: *latency* and *throughput.* *"Same system, two questions. How long does one request take? How many can we finish per second? Which one broke last night?"*
+
+</Scene>
+
+**Latency** is how long one request takes. **Throughput** is how many requests finish per second. Think of a road. Latency is how long one car takes to drive it; throughput is how many cars pass a point each hour. Adding lanes raises throughput, but a single car is no faster. A traffic jam raises every car's travel time without letting more cars through.
+
+**Little's Law** links them, and it holds for any stable system:
+
+> **In-flight requests = arrival rate × time in system.** L = λ × W.
+
+**Worked numbers.** Kestrel's feed service takes 2,000 requests/s at 50 ms each.
+
+- In flight: 2,000/s × 0.05 s = **100** requests at any moment.
+- On launch night search slowed and feed latency rose to 2 s. In flight needed: 2,000 × 2 = **4,000**.
+- The service had **200** worker threads. It could finish at most 200 ÷ 2 s = **100 requests/s**. The other 1,900 every second queued, timed out, and were retried.
+
+That is the outage in one line of arithmetic: **a slow dependency raises your concurrency until you run out of it.** Chapter 13 fixes it.
+
+**Utilization and queues.** As a server nears 100% busy, waiting time doesn't grow gently; it explodes. In the simplest queueing model (M/M/1: random arrivals, random service times, one server), average response time = service time ÷ (1 − utilization):
+
+<Figure caption="M/M/1 average response time, in multiples of the service time S, at 50%, 75%, 80%, 90% and 95% utilization: 2S, 4S, 5S, 10S, 20S. Real systems differ in detail, never in shape.">
+  <Bars heights={[2, 4, 5, 10, 20]} pointers={[{ at: 0, label: '50%' }, { at: 1, label: '75%' }, { at: 2, label: '80%' }, { at: 3, label: '90%', tone: 'red' }, { at: 4, label: '95%', tone: 'red' }]} tones={{ 3: 'hot', 4: 'hot' }} />
+</Figure>
+
+This is why capacity plans aim for 60–70% utilization at peak, not 95%. The last 25% of "headroom" is where latency lives.
+
+**Batching** is the classic trade: group many small operations into one (a database group commit, a producer batching messages to Kafka). Throughput rises, and each item waits a little longer for its batch. Say which one you are buying.
+
+**The latency numbers you can't argue with**, rounded for the whiteboard:
+
+| Operation | Time |
+|---|---|
+| Main memory read | ~100 ns |
+| SSD random read | ~100 µs (about 1,000× RAM) |
+| Round trip inside one data centre | ~0.5 ms |
+| HDD seek | ~10 ms |
+| Round trip across a continent or ocean | ~70–150 ms |
+
+Consequences you will use constantly. A **5 ms budget** forbids disk seeks and cross-region hops; the rate limiter lesson used exactly this. A "feels instant" UI budget of about **100 ms** allows a short chain of data-centre round trips, not a cross-ocean one per step. A chatty service making **20 sequential same-DC calls** has spent about 10 ms on the network alone, before doing any work.
+
+<Trace title="Little's Law, live" steps={throughput} takeaway="In flight = rate × latency. When latency rises, concurrency rises with it, and every fixed pool becomes a cliff. Run below ~70% utilization; the queue lives in the last 30%." />
+
+**Catch the trap:** "Add more servers to make it faster." More servers raise throughput. One request only gets faster if it was waiting in a queue. If it is slow because it makes 20 sequential calls, the fix is fewer calls or parallel calls, not more servers.
+
+<h2 id="tail-latency">Chapter 4 · The slowest of a hundred</h2>
+
+<Scene chapter="Chapter 4" title="The slowest of a hundred" mood="storm">
+
+The post-mortem has one slide everyone remembers. Search fans out to a hundred shards and waits for all of them. Shard 61's disk was dying, and every one of its answers took nine seconds.
+
+*"Ninety-nine shards were perfectly healthy,"* Dev says. *"It didn't matter. Every search asks all hundred, so every search waited for 61."*
+
+Then Mara asks the harder question: *"Fine — one broken shard ruins everything. But what if every shard is healthy and is slow just one time in a hundred?"*
+
+</Scene>
+
+**Percentiles.** p50 (the median) is the latency half of requests beat. **p99** is the latency 99% of requests beat: one request in a hundred is slower. p99.9 is one in a thousand. Averages hide the tail completely: a 40 ms average is compatible with 2% of requests taking two seconds.
+
+**Why the tail dominates fan-out.** If a user request calls *n* backends in parallel and must wait for all of them, it is slow whenever **any** call is slow. With each call slow with probability *p*, independently:
+
+> **P(user request is slow) = 1 − (1 − p)ⁿ**
+
+**Worked numbers**, each call slow 1% of the time:
+
+| Fan-out n | 1 − 0.99ⁿ | Slow user requests |
+|---|---|---|
+| 1 | 0.01 | 1% |
+| 10 | 1 − 0.904 | ≈ 9.6% |
+| 100 | 1 − 0.366 | **≈ 63%** |
+| 1,000 | 1 − 0.00004 | ≈ 99.996% |
+
+At fan-out 100, a 1-in-100 event for each leaf becomes the *normal* experience for users. Even at 1-in-1,000 per call, fan-out 100 gives 1 − 0.999¹⁰⁰ ≈ **9.5%** slow requests. To keep users at 1% slow with a fan-out of 100, each leaf must be slow only about **0.01%** of the time. This is the example Dean and Barroso made famous in *The Tail at Scale*: a 1-in-100 slow server, 100 servers per request, 63% of requests slow.
+
+<Figure caption="One user request, a hundred leaf calls. The user waits for the slowest one, so a leaf's p99 becomes the user's p37.">
+  <Mermaid code={`flowchart LR
+    U["User request"] --> R["Root / aggregator"]
+    R --> L1["Leaf 1 · 10 ms"]
+    R --> L2["Leaf 2 · 12 ms"]
+    R --> L3["…"]
+    R --> L61["Leaf 61 · 1,000 ms"]
+    R --> L100["Leaf 100 · 11 ms"]
+    L61 --> W["The response waits\nfor the slowest leaf"]`} />
+</Figure>
+
+**What reduces the tail:**
+
+- **Hedged requests.** If a leaf hasn't answered by its p95, send a duplicate to another replica and take whichever answers first. That adds about 5% more calls and cuts the tail sharply, because two replicas are rarely slow together. (Only for reads, or idempotent calls.)
+- **Smaller fan-out.** Partition so common queries touch fewer leaves (Chapter 10).
+- **Deadlines with partial results.** Answer with the leaves that responded in time. Fine for search ranking, unacceptable for an account balance. That is a product decision; say it as one.
+- **Find the cause.** Garbage-collection pauses, noisy neighbours, background compaction, a dying disk. Tails have causes, and per-leaf p99 dashboards find them.
+
+<Trace title="Feel the tail" steps={tail} takeaway="Fan-out turns rare into normal: 1 − (1 − p)ⁿ. Measure p99 and p99.9, not averages; hedge reads, shrink fan-out, and set deadlines." />
+
+<Reveal q="Why not set each leaf's timeout to its p99 and just drop the slow ones?">
+
+You can. That is "deadline with partial results", and search engines do it. But it changes the answer, not just the speed. Dropping 1% of shards drops 1% of documents from ranking, which is usually invisible. Dropping a shard from a balance, an inventory count or a permission check is a wrong answer. Say which kind of data you are serving before you choose.
+
+</Reveal>
+
+**Catch the trap:** an SLO written as an average ("average latency under 100 ms"). Write it as a percentile with a window: *"p99 under 200 ms over five minutes"*. The Interviewer hears that you know where users actually suffer.
+
+<Part n="Part Two" title="Staying up">
+
+How much downtime you can afford, where the single points hide, and how machines decide who is alive.
+
+</Part>
+
+<h2 id="availability">Chapter 5 · What the nines cost</h2>
+
+<Scene chapter="Chapter 5" title="What the nines cost" mood="dusk">
+
+Iris has a draft press release. It says "five nines". Dev reads it aloud and starts laughing, then stops, because she is serious.
+
+*"Five nines is five minutes a year,"* Mara says. *"Last night was twenty-one. So we have already spent four years of five nines. Should we decide what we actually need, and what it costs?"*
+
+</Scene>
+
+**Availability** is the fraction of time (or of requests) the system serves successfully. Each extra nine divides the allowed downtime by ten:
+
+| Availability | Downtime per year | Per 30 days | What it usually takes |
+|---|---|---|---|
+| 99% | ~3.65 days | ~7.2 hours | One server and hope |
+| 99.9% | ~8.8 hours | ~43 minutes | Redundancy, health checks, failover |
+| 99.99% | ~53 minutes | ~4.3 minutes | Multiple zones, automated failover, on-call |
+| 99.999% | ~5.3 minutes | ~26 seconds | Multi-region active-active, rehearsed failure, a lot of money |
 
 Two rules:
 
-1. **Never claim nines without a reason.** "Five nines" for a photo-sharing app is interview slop. "99.9% is fine — a feed being down 8 hours a year is annoying, not catastrophic" is judgment.
-2. **Serial components multiply failure.** Two 99.9% services in a request path ≈ 99.8% overall. Every box you add to the critical path costs availability — another reason boxes must earn their place.
+1. **Never claim nines without a reason.** "Five nines" for a photo-sharing app is interview slop. *"99.9% is fine for the feed — down 8.8 hours a year is annoying, not catastrophic"* is judgment.
+2. **Serial components multiply.** If a request needs A *and* B, availability = A × B. Two 99.9% services in a row give 0.999² ≈ **99.8%**; four give 0.999⁴ ≈ **99.6%**. Every box in the critical path costs availability — another reason boxes must earn their place, and a reason to make non-critical calls asynchronous.
 
-## Latency numbers — the physics you can't argue with
+**Redundancy is the cure.** If a request needs A *or* B (either can serve), it fails only when both are down: availability = 1 − (1 − A)(1 − B). Two 99% replicas give 1 − 0.01 × 0.01 = **99.99%**, **if their failures are independent.** They usually aren't fully: the same rack, the same bad deploy, the same bug, the same region. Spreading replicas across failure domains (zones, regions) and deploying gradually is how you earn the independence the formula assumes.
 
-Rounded to what you need at the whiteboard:
+<Figure caption="Series multiplies availability down; parallel multiplies unavailability down.">
+  <Mermaid code={`flowchart LR
+    subgraph Series["Series: needs A AND B · 0.999 × 0.999 ≈ 99.8%"]
+      direction LR
+      A1["A 99.9%"] --> B1["B 99.9%"]
+    end
+    subgraph Parallel["Parallel: needs A OR B · 1 − 0.01 × 0.01 = 99.99%"]
+      direction LR
+      A2["A 99%"]
+      B2["B 99%"]
+    end`} />
+</Figure>
 
-| Operation | Time |
-|-----------|------|
-| RAM read | ~100 ns |
-| SSD read | ~100 µs (1000× RAM) |
-| Same-datacenter round trip | ~0.5 ms |
-| HDD seek | ~10 ms |
-| Cross-continent round trip | ~70–150 ms |
+**Single points of failure (SPOFs)** are components whose failure alone takes the system down. Hunt them layer by layer (Chapter 1): one load balancer, one primary database with manual failover, one region, one DNS provider, one config service everything reads at startup. Redundancy comes in a few shapes:
 
-Consequences you'll use constantly: a 5 ms latency budget forbids disk and cross-region hops (rate limiter lesson used exactly this). A "feels instant" UI budget (~100 ms) allows one datacenter round trip chain, not ten. Chatty services that make 20 sequential same-DC calls just spent 10 ms on network alone.
+| Shape | How | Cost |
+|---|---|---|
+| **Active-active** | All copies serve traffic | Must handle shared state and conflicts; capacity for one loss must already be running |
+| **Active-passive** (hot standby) | A standby takes over on failure | Failover time; the standby must actually work (test it) |
+| **N+1 / N+2** | One or two more instances than load needs | Cheap for stateless tiers |
+
+**Durability is a different promise.** Availability is "can I use it now?"; durability is "is my data still there?". A photo service can be unavailable for an hour and lose nothing; it must never lose a photo it said it saved. Make both promises, separately.
+
+<Trace title="Count the nines" steps={availability} takeaway="Series multiplies availability down; redundancy multiplies unavailability down, but only for independent failures. Find the SPOF at every layer, and make failover automatic." />
+
+<Reveal q="Can your service be more available than a database it can't work without?">
+
+Not on the paths that need it. If every request reads that database, its downtime is your downtime, so your availability is at most its availability. The ways around it are design choices: serve from a cache or a replica when the primary is down (reads keep working, staleness grows), queue writes for later where the product allows it, or degrade the feature instead of the whole page. Each one turns a hard dependency into a soft one.
+
+</Reveal>
+
+**Catch the trap:** "We'll add retries for availability." Retries hide brief blips. They do nothing for a dependency that is down for ten minutes, and against an overloaded one they make things worse (Chapter 12).
+
+<h2 id="liveness">Chapter 6 · Dead, or just slow?</h2>
+
+<Scene chapter="Chapter 6" title="Dead, or just slow?" mood="night">
+
+Theo tells the second half of launch night like a ghost story. The database leader was so overloaded that it stopped sending heartbeats for a few seconds. The cluster decided it was dead and promoted a follower.
+
+*"Except it wasn't dead,"* he says. *"It was busy. When it caught its breath, it was still accepting writes, still sure it was the leader. For three seconds we had two."*
+
+Mara writes on the board: **From the outside, how do you tell a dead machine from a slow one?**
+
+</Scene>
+
+You can't — not with certainty. A message that doesn't arrive could mean the node crashed, the network dropped it, or the node is paused (garbage collection, a swapping disk, a hypervisor hiccup). Every distributed system lives with this.
+
+**Heartbeats.** Each node sends "I'm alive" every interval; if a peer misses several in a row, it is *suspected* dead. The timeout is a trade-off:
+
+- **Short** (e.g. 3 missed heartbeats at 1 s): fast detection, but GC pauses and network blips cause false alarms, and an unnecessary failover is itself an outage.
+- **Long**: fewer false alarms, slower recovery from real failures.
+
+No setting turns a suspicion into proof. So anything a "dead" node does after waking up must be **checked**, not trusted.
+
+**Leases.** A lease is a lock with an expiry: *"you are the leader (or own this job) for the next 10 seconds."* The holder renews well before expiry (say every 3 seconds); if it cannot renew, it must stop acting as the holder. Leases make crashes self-healing: a dead holder simply stops renewing. Two caveats matter:
+
+- **Clocks.** Measure lease time with a monotonic clock, and have the holder assume its lease ends a little *early* to allow for clock drift.
+- **Pauses.** A holder can check "my lease is valid", pause for 15 seconds, then write. The check was true when it ran. So the resource being protected must check too.
+
+**Fencing tokens** close that gap. Each new lease carries a number higher than every one before it. Storage remembers the highest number it has seen and rejects writes with a lower one.
+
+<Figure caption="A paused former leader wakes up and tries to write with an old token. Storage has already seen token 34 and refuses 33.">
+  <Mermaid code={`sequenceDiagram
+    participant A as Node A
+    participant L as Lock / lease service
+    participant B as Node B
+    participant S as Storage
+    A->>L: acquire lease
+    L-->>A: granted, token 33, 10 s
+    Note over A: GC pause 15 s
+    B->>L: acquire lease
+    L-->>B: granted, token 34
+    B->>S: write, token 34
+    S-->>B: ok (highest seen = 34)
+    A->>S: write, token 33
+    S-->>A: rejected, 33 is older than 34`} />
+</Figure>
+
+**Leader election.** Many systems choose one node to make decisions (order writes, assign work) because one decider is simpler than many agreeing on every step. Electing it safely is a **consensus** problem, solved by algorithms such as Raft and Paxos, usually through a coordination service like ZooKeeper or etcd rather than hand-written code. The core ideas fit in three lines:
+
+- **Majority vote.** A candidate needs votes from a majority of the cluster, and each node votes once per **term** (an increasing election number). Any two majorities of the same cluster overlap, so two leaders can't both win the same term. That overlap is what prevents **split brain**.
+- **Terms work as fencing.** Messages from an older term are rejected, so a deposed leader that wakes up finds its writes refused.
+- **Randomized timeouts.** Raft gives each follower a random election timeout (the paper suggests 150–300 ms), so usually one node times out first and wins before others start competing.
+
+**Worked numbers.** A cluster of **2f + 1** nodes survives **f** failures: 3 nodes survive 1, 5 survive 2. Four nodes need a majority of 3, so they survive only 1, the same as three nodes with one more machine to fail. That is why consensus clusters are odd-sized.
+
+<Trace title="Who is alive, who is leader" steps={liveness} takeaway="A timeout is a suspicion, not a proof. Leases expire; fencing tokens make storage reject the holder who woke too late; majorities overlap, so there is one leader per term." />
+
+<Reveal q="Launch night had two leaders for three seconds. What would have prevented the damage?">
+
+Two things. Leader terms enforced as fencing: once the new leader's term began, the replicas and storage should refuse anything stamped with the old term, so the old leader's writes fail instead of landing. And a less hair-trigger failure detector: an overloaded leader missing heartbeats for a couple of seconds is a reason to shed load (Chapter 14), not necessarily a reason to fail over, since failover under overload often makes things worse.
+
+</Reveal>
+
+**Catch the trap:** "A Redis lock with a TTL makes it safe." Without fencing, a paused holder can wake after the TTL and keep writing while the new holder works. The <a href={`${BASE}sd/lessons/pattern-contention/`}>contention lesson</a> builds locks and fencing out in full.
+
+<Part n="Part Three" title="Many copies, one truth">
+
+Copies keep you alive and splits make you big. Then you have to decide what "the truth" means.
+
+</Part>
+
+<h2 id="replication">Chapter 7 · Copies</h2>
+
+<Scene chapter="Chapter 7" title="Copies" mood="dawn">
+
+On the morning after launch, Iris forwards forty support tickets with the same sentence: *"My post disappeared."* Theo already knows why. The promoted follower had been replicating asynchronously, about two hundred milliseconds behind. Everything in those two hundred milliseconds — acknowledged, with a green tick on the user's screen — was gone.
+
+*"We told them it was saved,"* Iris says. Mara nods. *"We did. So when exactly is something saved?"*
+
+</Scene>
+
+**Replication** keeps copies of the same data on several machines: to survive failures, to spread read load, and to put data near users.
+
+**Leader-follower** (single-leader) is the default. All writes go to the leader; it streams its change log to followers, which apply it in order. Reads can go to the leader (fresh) or followers (possibly stale). The design lever is *when the leader says "done"*:
+
+<Figure caption="Synchronous: the client hears 'ok' after a follower has the write. Asynchronous: the client hears 'ok' first; the follower catches up later.">
+  <Mermaid code={`sequenceDiagram
+    participant C as Client
+    participant L as Leader
+    participant F as Follower
+    Note over C,F: Synchronous
+    C->>L: write x = 5
+    L->>F: replicate x = 5
+    F-->>L: ack
+    L-->>C: ok
+    Note over C,F: Asynchronous
+    C->>L: write x = 6
+    L-->>C: ok
+    L->>F: replicate x = 6 (later)`} />
+</Figure>
+
+| Mode | Write latency | If the leader dies | If a follower is down |
+|---|---|---|---|
+| **Synchronous** | + one round trip to the follower | No acknowledged writes lost | Writes stall (unless you drop to async) |
+| **Asynchronous** | Lowest | Up to the replication lag of acknowledged writes lost | Nothing; it catches up later |
+| **Semi-synchronous** (one follower sync, the rest async) | + one round trip | At least one up-to-date copy survives | Promote another follower to be the sync one |
+
+**Worked numbers.** Launch night: 1,000 writes/s, asynchronous replica about 200 ms behind. Failover lost up to 1,000 × 0.2 = **~200 acknowledged writes**. Most systems choose async and accept that risk; the senior move is to *say* you accept it, or to make one follower synchronous for data that must not be lost.
+
+**Failover** has three steps and two classic dangers. Detect the leader is gone (a timeout, Chapter 6), choose the most up-to-date follower, and point clients at it. The dangers are **lost writes** (async lag) and **split brain** (the old leader comes back still believing it leads; fencing by term fixes it).
+
+**Multi-leader** replication (several leaders, often one per region) lets each region take writes locally, at the price of **conflicts** when two leaders change the same thing. Resolving them by "last write wins" silently drops one write; CRDTs or application-level merges keep both. **Leaderless** replication (Dynamo-style: Cassandra, Riak) sends writes and reads to several replicas at once and uses quorums.
+
+**Quorums — how replicas agree without agreeing on everything.** N replicas. A write succeeds once **W** of them acknowledge; a read asks **R** of them and takes the newest version. If **W + R > N**, every read set overlaps every write set in at least one node, so a read that starts after a write completes reaches at least one node holding it.
+
+| N, W, R | W + R > N? | Shape |
+|---|---|---|
+| 3, 2, 2 | 4 > 3 ✓ | The classic balance; tolerates one slow or dead node on both reads and writes |
+| 3, 1, 3 | 4 > 3 ✓ | Fast writes, expensive reads (every replica must answer) |
+| 3, 3, 1 | 4 > 3 ✓ | Fast reads, writes need every replica (read-heavy systems) |
+| 3, 1, 1 | 2 ≤ 3 ✗ | Fastest, and reads may miss the latest write: eventual consistency |
+
+Say the inequality out loud when you use it: *"R + W > N, so reads always intersect the latest write."* Dynamo and Cassandra interviews live on it.
+
+<Trace title="Replicas under pressure" steps={replication} takeaway="Sync costs latency, async costs acknowledged writes on failover. Quorums overlap when W + R > N." />
+
+<Reveal q="Does W + R > N make a leaderless store linearizable?">
+
+Not by itself, and saying so is a senior signal. Several edge cases break it. **Sloppy quorums** (writing to stand-in nodes during a failure) can put W acknowledgements outside the usual N. **Concurrent writes** resolved by timestamps can lose one write to clock skew. A write that **failed** overall may still have landed on some replicas, so later reads disagree. And **read repair timing** can let one reader see the new value while a later reader still sees the old. Quorums give you a strong overlap guarantee; linearizability needs more (consensus, or careful read-repair rules). *Designing Data-Intensive Applications* walks through each case.
+
+</Reveal>
+
+**Catch the trap:** "We'll add read replicas" with nothing else. Replica reads can be stale. Say which reads may be stale (a feed) and which must go to the leader (a user reading what they just wrote). Chapter 9 names the guarantee.
+
+<h2 id="cap">Chapter 8 · The partition</h2>
+
+<Scene chapter="Chapter 8" title="The partition" mood="storm">
+
+Three weeks after launch, the link between Kestrel's two regions starts dropping packets for forty minutes. Inside each region, everything is healthy. Between them, silence.
+
+Iris collects the strange results. Likes kept working in both regions, and the counts were briefly different. Ticket sales for Kestrel Live events showed errors in the smaller region and worked in the larger one. *"Did we break it or design it?"* she asks.
+
+*"We designed it,"* Mara says. *"Now let's make sure we designed it on purpose."*
+
+</Scene>
+
+**CAP, stated correctly.** In a system that replicates data across nodes:
+
+- **C — Consistency** here means **linearizability**: the system behaves as if there were one copy, and every read sees the latest completed write. (Not ACID's "C", which is about invariants.)
+- **A — Availability** means every request to a node that hasn't crashed gets a non-error response. (Not "99.99% uptime".)
+- **P — Partition tolerance** means the system keeps working when the network drops or delays messages between nodes.
+
+The theorem (Brewer's conjecture, proved by Gilbert and Lynch in 2002): **when a network partition happens, a system must give up either C or A.** When there is no partition, it can have both.
+
+And here is the part people get wrong: **P is not optional.** Cables get cut, switches die, and a long GC pause looks exactly like a partition from outside. You don't get to choose "CA" for a system that runs on more than one machine. The only real choice is **C or A, during a partition**:
+
+<Figure caption="A partition always eventually happens. The design question is what each side does while it lasts.">
+  <Mermaid code={`flowchart TD
+    P["Network partition happens\n(it always eventually does)"] --> Q{"A request arrives on one side.\nWhat do we do?"}
+    Q -->|"Refuse until nodes\ncan agree again"| C["CP\nConsistent; some\nrequests fail"]
+    Q -->|"Keep serving; sides may\ndiverge, reconcile later"| A["AP\nAvailable; reads may\nbe stale or conflict"]`} />
+</Figure>
+
+What each choice looks like in practice:
+
+- **CP.** The side holding a majority of replicas keeps going; the minority side refuses (errors or timeouts) until the partition heals. Kestrel Live's smaller region refused ticket sales: correct.
+- **AP.** Both sides keep accepting, diverge, and reconcile afterwards: last-write-wins (which drops data), CRDTs (which merge, like per-region counters summed), or application logic. Likes kept working: also correct.
+
+**Interview usage:** make the CAP call in the requirements phase, per kind of data, with a product reason.
+
+- Banking ledger, seat booking, inventory, username claims → **CP**: *"a wrong answer is worse than no answer."*
+- Social feed, like counts, view counts, presence → **AP**: *"a stale answer is fine; an error page is not."*
+
+Never say *"we need full consistency AND five nines"*. That sentence tells the Interviewer you don't understand the tradeoff. And remember CAP's A is not the nines: a CP system can still run at 99.99%, because partitions are rare and the majority side keeps serving.
+
+**PACELC — the senior extension.** CAP is silent about the 99.9% of the time when there is no partition. Daniel Abadi's PACELC fills it in: **if Partition, choose A or C; Else, choose Latency or Consistency.** Even with a perfect network, keeping replicas consistent means waiting for them:
+
+| System style | During a partition | Else (normal operation) | Label |
+|---|---|---|---|
+| Dynamo-style stores (Cassandra, Riak) with default settings | Stay available | Answer from nearby replicas, fast | PA/EL |
+| Consensus-replicated databases (Spanner-style) | Stay consistent | Wait for a quorum on every write | PC/EC |
+| Tunable stores (Cassandra with QUORUM reads and writes) | Move toward C | Pay a quorum round trip | Configured per query |
+
+Synchronous replication to another region: consistent, and every write pays the round trip. Asynchronous: fast, with replica lag. Saying *"and even without partitions, it's latency versus consistency — PACELC"* earns senior credit in one sentence.
+
+<Scene title="Interlude · The interview room" mood="night">
+
+The Interviewer leans back. *"There's a network partition, and a booking request arrives. What does your Ticketmaster design do?"*
+
+Last month you would have said "partitions are rare". Now you say: *"That's a CP choice. Seats are CP, because a double-sold seat is worse than an error."*
+
+</Scene>
+
+<Trace title="Choose your side" steps={cap} takeaway="During a partition: C or A, per data, with a product reason. Otherwise: latency or consistency (PACELC)." />
+
+<Reveal q="If AP systems give up consistency, do they give you no guarantees at all?">
+
+No. "AP" means they can't be *linearizable* during a partition. Most still promise **eventual consistency** (replicas converge once writes stop and the network heals), and many add session guarantees such as read-your-writes on top. In fact causal consistency, a strong model (next chapter), is about the strongest guarantee that can stay available during a partition. AP is a ceiling on consistency, not the absence of it.
+
+</Reveal>
+
+**Catch the trap:** dodging. *"Partitions are rare enough to ignore"* and *"we'll use a database that handles it"* both refuse to answer the question asked. Your logs name this habit. Name the side, name the data, give the product reason.
+
+<h2 id="consistency">Chapter 9 · Four complaints, four rungs</h2>
+
+<Scene chapter="Chapter 9" title="Four complaints, four rungs" mood="dusk">
+
+Iris lays four support tickets on the table like playing cards.
+
+*"I changed my bio and it changed back when I refreshed."* *"The comment count went 41, 39, 42."* *"A reply showed up in my feed before the question it answered."* *"My friend and I both got told the username 'kestrel' was ours."*
+
+*"Four bugs,"* she says. Mara shakes her head. *"Four different promises we never made. Each one is a different rung."*
+
+</Scene>
+
+"Consistency" isn't a yes/no property. It is a **ladder**, from expensive guarantees at the top to cheap ones at the bottom. Each rung forbids a specific user-visible bug.
+
+<Figure caption="The consistency ladder. Higher rungs forbid more anomalies; climbing costs coordination, latency, and availability during partitions.">
+  <Mermaid code={`flowchart TB
+    LIN["Linearizable\nbehaves like one copy, in real time"] --> SEQ["Sequential\none order for everyone, may lag real time"]
+    SEQ --> CAU["Causal\ncauses before effects, for everyone"]
+    CAU --> SES["Session guarantees\nread-your-writes · monotonic reads"]
+    SES --> EV["Eventual\nreplicas converge once writes stop"]`} />
+</Figure>
+
+| Rung | The promise | The bug it forbids (user-visible) | Typical cost |
+|---|---|---|---|
+| **Linearizable** (strong) | Acts like a single copy: once a write is acknowledged, every later read, anywhere, sees it or something newer | Two people both win the username "kestrel"; a seat sold twice; a lock held by two | A leader or consensus on every operation; the minority side is unavailable during a partition |
+| **Sequential** | Everyone sees all writes in one agreed order, consistent with each client's own order, but that order may run behind real time | Two viewers seeing chat messages in different orders | One ordered log applied identically everywhere |
+| **Causal** | If B depends on A (a reply to a question, a post after changing who can see it), everyone sees A before B; unrelated writes may appear in any order | A reply appearing before its question; your old boss seeing a post you made after removing them from the audience | Track dependencies (version vectors); stays available in a partition |
+| **Read-your-writes** | *You* always see your own writes; others may lag | Your bio "reverting" after you edit it | Route your reads to the leader briefly, or carry your last-write position in the session |
+| **Monotonic reads** | You never see older data after newer data | The comment count going 41, 39, 42 | Pin a session to one replica, or track the last position seen |
+| **Eventual** | If writes stop, all replicas converge | Nothing in the meantime: any read may be stale | Nearly free: async replication |
+
+Two more session guarantees complete the set: **monotonic writes** (your writes apply in the order you made them) and **writes-follow-reads** (a write you make after reading something is ordered after the thing you read). Causal consistency includes all four.
+
+**The senior move: different data in the same system gets different models.** In a payment system, the ledger is linearizable, "your recent transactions" is read-your-writes, and spending analytics is eventual. Saying that sentence about *your* design is a deep-dive win.
+
+Two neighbours to keep separate. **Serializability** is about transactions (several operations behaving as if run one at a time); linearizability is about single objects in real time. **Strict serializability** is both at once. And the **cache** has its own consistency story — bounded staleness — which the <a href={`${BASE}sd/lessons/caching/`}>caching lesson</a> owns.
+
+<Trace title="Which rung is missing?" steps={consistency} takeaway="Name the rung, not 'strong'. Linearizable for uniqueness and money; causal for conversations; read-your-writes and monotonic reads for the person refreshing; eventual for counts." />
+
+<Reveal q="Read-your-writes is in place. The user edits their bio on their phone and opens their laptop. Will they see it?">
+
+Not necessarily. Read-your-writes is usually implemented per *session*: the phone's session remembers its last-write position, but the laptop is a new session that knows nothing about it and may read a lagging replica. If the promise is "a user always sees their own edits on every device", the last-write position must be tracked per *user* (server-side), not per device. It's a fine follow-up to raise yourself.
+
+</Reveal>
+
+**Catch the trap:** "We need strong consistency" with no rung and no data named. Strong for what? Name the object (seats, usernames, balances), name the rung, and give everything else something cheaper.
+
+<h2 id="partitioning">Chapter 10 · Where to cut</h2>
+
+<Scene chapter="Chapter 10" title="Where to cut">
+
+A year later, the photos metadata table is 40 terabytes, and the busiest write hour is more than one primary can take. Theo draws a long rectangle and holds the marker over it like a knife.
+
+*"Replication gave us copies,"* he says. *"Copies don't help when the problem is that one machine can't hold it all or write it all. We have to cut it into pieces. The only question is where to cut — and the wrong cut is very expensive to undo."*
+
+</Scene>
+
+**Partitioning** (sharding) puts *different* data on different machines; replication puts *the same* data on several. Real systems do both: each partition is replicated.
+
+<Figure caption="Three partitions, each with its own leader and followers. Partitioning gives scale; replication gives survival.">
+  <Mermaid code={`flowchart LR
+    R["Router\nkey → partition"] --> P1["Partition 1\nleader + 2 followers"]
+    R --> P2["Partition 2\nleader + 2 followers"]
+    R --> P3["Partition 3\nleader + 2 followers"]`} />
+</Figure>
+
+**Choose the partition key with two tests.** Does it spread load evenly? Do your common queries stay inside one partition? They often conflict, and that tension is the deep dive. The <a href={`${BASE}sd/lessons/databases/`}>databases lesson</a> works through examples.
+
+| | Hash partitioning | Range partitioning |
+|---|---|---|
+| How | hash(key) picks the partition | Contiguous key ranges per partition (A–F, G–M…) |
+| Load spread | Even, because the hash scrambles keys | Can concentrate: today's writes all land in the newest range |
+| Range scans | Must ask every partition | One or a few partitions |
+| Pick when | Point lookups dominate (caches, key-value) | Ordered scans dominate (time series, logs) |
+
+**Hot partitions** are the recurring disease: a celebrity's user id, today's date, a viral post. The first fixes: add a small bucket to the key (`date#hash(user) % 16` splits today's writes 16 ways, and costs 16 reads to reassemble — say the cost), put a short-lived cache in front of hot *reads*, or split the hot partition.
+
+**Consistent hashing, the intuition.** The naive placement is `hash(key) % N`. It spreads keys beautifully until N changes.
+
+**Worked numbers.** 10 nodes → 11. A key stays put only if `h % 10` equals `h % 11`. Across any 110 consecutive hash values, that happens for exactly 10 of them (h = 0…9 within each block of 110), so **100/110 ≈ 91% of keys move**. For a cache, that is a near-total cold start.
+
+Consistent hashing places nodes and keys on the same ring; a key belongs to the next node clockwise. Adding a node takes over only one arc, so only about **1/N of keys move** (1/11 ≈ 9% here). **Virtual nodes** — each machine at many points on the ring — smooth out uneven arcs and spread a dead node's load over everyone. The <a href={`${BASE}sd/lessons/pattern-partitioning/`}>partitioning pattern lesson</a> takes this all the way.
+
+**A word that means two things.** A *network* partition (Chapter 8) is machines that can't talk. A *data* partition is a shard. Interviewers sometimes switch between them mid-question; if it is ambiguous, ask.
+
+<Trace title="Where to cut" steps={partitioning} takeaway="Hash for spread, range for scans; every scheme gets hot spots. Modulo moves almost everything on resize; consistent hashing moves ~1/N." />
+
+**Catch the trap:** "Shard by user_id" and stop. Say what happens to the user with 50 million followers, and which queries now cross partitions (and therefore lose joins and transactions).
+
+<h2 id="ids">Chapter 11 · Naming every row</h2>
+
+<Scene chapter="Chapter 11" title="Naming every row" mood="dawn">
+
+The day after the photos table is split into eight shards, Dev finds two different orders, from two different users, both numbered 4,200,117. Each shard had kept counting from its own auto-increment.
+
+*"An id has one job,"* Mara says. *"What did we just learn it actually has?"* You start a list. It gets long.
+
+</Scene>
+
+A primary key in a distributed system has to be **unique without coordination**, and usually also **compact**, **roughly time-ordered** (so B-tree inserts append instead of scattering), and **not guessable** where it is public. The databases lesson has the short version; here are the mechanisms.
+
+| Scheme | Size | Time-ordered? | Coordination | Catch |
+|---|---|---|---|---|
+| Auto-increment | 64 bits | Yes | One counter per database | Breaks the moment you shard; leaks your volume |
+| **UUIDv4** | 128 bits | No (122 random bits) | None | Random inserts scatter across index pages |
+| **UUIDv7** | 128 bits | Yes (48-bit millisecond timestamp first) | None | Larger than 64 bits; the timestamp is visible |
+| **Snowflake-style** | 64 bits | Yes | A unique machine id per generator | Machine-id assignment; clock going backwards |
+| Ticket server / range allocation | 64 bits | Roughly | A central allocator hands out blocks | The allocator must stay available |
+
+<Figure caption="Two time-ordered layouts. UUIDv7 (RFC 9562) puts a Unix-millisecond timestamp first; a Snowflake-style id packs timestamp, machine and sequence into 64 bits.">
+  <ArrayStrip name="UUIDv7" values={['unix_ts_ms', 'ver', 'rand_a', 'var', 'rand_b']} indices={false} regions={[{ from: 0, to: 0, label: '48 bits', tone: 'gold' }, { from: 1, to: 1, label: '4', tone: 'dim' }, { from: 2, to: 2, label: '12', tone: 'blue' }, { from: 3, to: 3, label: '2', tone: 'dim' }, { from: 4, to: 4, label: '62 bits', tone: 'blue' }]} />
+  <ArrayStrip name="Snowflake" values={['sign', 'timestamp', 'machine', 'sequence']} indices={false} regions={[{ from: 0, to: 0, label: '1 bit', tone: 'dim' }, { from: 1, to: 1, label: '41 bits', tone: 'gold' }, { from: 2, to: 2, label: '10 bits', tone: 'purple' }, { from: 3, to: 3, label: '12 bits', tone: 'green' }]} />
+</Figure>
+
+**Worked numbers for the classic Snowflake layout:**
+
+- 41 bits of milliseconds: 2⁴¹ ms ≈ **69.7 years** from your chosen epoch.
+- 10 bits of machine id: **1,024** generators.
+- 12 bits of sequence: **4,096 ids per millisecond per generator**, about 4.1 million per second.
+- UUIDv4's 122 random bits: a billion ids have roughly a 1-in-10¹⁹ chance of any collision. Randomness is not the risk; index locality is.
+
+**Clock skew** is the Snowflake trap. If NTP moves the clock backwards, the generator could reissue a (timestamp, machine, sequence) it already used. The fix: remember the last timestamp, and refuse or wait until the clock passes it. And because each machine has its own clock, ids from different machines are only *roughly* ordered — fine for index locality, wrong as proof of which event happened first.
+
+**Public ids.** Sequential ids reveal how many orders you take and invite enumeration (`/orders/4200118`). Never let an id be the authorization check: check the caller against the resource (Chapter 1's resource layer).
+
+<Trace title="Pick the id" steps={ids} takeaway="Unique without coordination, compact, time-ordered: UUIDv7 or Snowflake. Never let a clock run backwards into an id." />
+
+<Reveal q="Can you sort Snowflake ids to get the exact global order of events?">
+
+Only approximately. Within one generator, ids are strictly increasing. Across generators, ordering is only as good as clock agreement; with a few milliseconds of skew, an event that happened later on machine B can get a smaller id than one on machine A. For "roughly newest first" in a feed, that is fine. For "which bid came first" in an auction, order through one leader or a log instead.
+
+</Reveal>
+
+<Part n="Part Four" title="When things go wrong">
+
+Launch night, replayed: the retries, the threads, the surge. Each one has a standard defence.
+
+</Part>
+
+<h2 id="retries">Chapter 12 · Try again, carefully</h2>
+
+<Scene chapter="Chapter 12" title="Try again, carefully" mood="storm">
+
+Dev has drawn the launch-night request path with a number on every arrow. Phones tried three times. The gateway tried three times. The feed service tried each search call three times.
+
+*"One user tap,"* he says, *"became twenty-seven searches against a shard that was already drowning."* Then he adds, more quietly: *"And the checkout retries charged eleven people twice."*
+
+Mara writes: **When is it safe to try again — and how many times?**
+
+</Scene>
+
+**Retry the transient, not the permanent.** Timeouts, connection resets, `503 Service Unavailable` and `429 Too Many Requests` (honour its `Retry-After`) are worth retrying. A `400 Bad Request`, a validation error, or "insufficient funds" will fail the same way every time.
+
+**Only retry what is safe to repeat.** An operation is **idempotent** if doing it twice has the same effect as doing it once. "Set the bio to X" and "delete photo 7" are naturally idempotent; "charge ₹500" and "add 1 to the counter" are not. A timeout doesn't tell you whether the operation happened, only that you didn't hear back. So for non-idempotent operations, use an **idempotency key**: the client generates one id per *logical* operation and sends it with every attempt; the server records key → result, and a repeat key returns the stored result instead of acting again. (The check and the record must be atomic with the operation itself; the <a href={`${BASE}sd/lessons/pattern-contention/`}>contention lesson</a> shows how.)
+
+**Exponential backoff with jitter.** Wait longer after each failure, up to a cap, and randomize:
+
+```text
+for attempt in 0 .. maxAttempts - 1:
+    result = call(request, idempotencyKey)       # same key every attempt
+    if result is success or not retryable: return result
+    ceiling = min(cap, base * 2^attempt)          # 100 ms, 200 ms, 400 ms ... capped at 10 s
+    sleep(random(0, ceiling))                     # "full jitter"
+return last error
+```
+
+<Figure caption="Backoff ceilings for attempts 0–8 with base 100 ms and a 10 s cap, in units of 100 ms. Full jitter sleeps a random time below each bar, so clients that failed together don't come back together.">
+  <Bars heights={[1, 2, 4, 8, 16, 32, 64, 100, 100]} pointers={[{ at: 7, label: 'cap', tone: 'red' }]} tones={{ 7: 'hot', 8: 'hot' }} />
+</Figure>
+
+Without jitter, 1,000 clients that failed together retry together: a wall of 1,000 requests at 100 ms, another at 300 ms, and so on, each wall hitting a server that is trying to recover. Jitter turns the walls into a trickle.
+
+**Retry storms.** Retries multiply across layers. Three layers × three attempts each = 3 × 3 × 3 = **27 attempts** at the bottom for one user action. Three rules contain it:
+
+- **Retry at one layer**, usually the one closest to the failure, and let the others fail fast.
+- **Retry budgets.** Cap retries as a fraction of traffic (Google's SRE book describes a per-client budget of about 10%), so a failing dependency sees at most ~1.1× normal load, not 3×.
+- **Deadlines.** Pass the remaining time budget downstream; don't retry work whose caller has already given up.
+
+<Trace title="Retry or not" steps={retries} takeaway="Retry transient failures of idempotent operations, at one layer, with exponential backoff, full jitter and a budget. A timeout means 'unknown', not 'failed'." />
+
+<Reveal q="A client times out on POST /orders and retries — but generates a fresh idempotency key for the retry. What happens?">
+
+Two orders. The server sees two different keys and correctly treats them as two different operations. The key must be generated **once per logical operation** (when the user taps "Buy"), stored by the client, and reused on every retry of that operation. This is the most common way idempotency keys fail in real code.
+
+</Reveal>
+
+**Catch the trap:** "We'll retry on failure." Say *which* failures, *which* operations (idempotent, or keyed), *how many* times, with *what* backoff, at *which* layer. Anything less is how launch night happened.
+
+<h2 id="isolation">Chapter 13 · Stop waiting</h2>
+
+<Scene chapter="Chapter 13" title="Stop waiting" mood="night">
+
+The thread-pool graph from launch night looks like a bathtub filling. At 19:01 the feed service had 20 busy threads. At 19:03 it had 200 of 200, every one of them waiting on search. Checkout used the same pool. Checkout never called search, and checkout died anyway.
+
+*"Search was slow,"* Theo says. *"Slow was worse than dead. Dead would have failed fast."*
+
+</Scene>
+
+**A hung dependency is worse than a dead one.** A dead one refuses connections and you fail in a millisecond. A hung one accepts and never answers, and every caller waits holding a thread, a connection and memory. Little's Law (Chapter 3) says how fast that fills any pool.
+
+**Timeouts on every network call.** Set them from the dependency's measured latency (a little above its p99.9) and inside your own deadline. If your API promises 1 s, two sequential 800 ms timeouts can't both fit. Watch out for library defaults: several common HTTP clients wait forever unless told otherwise (Java's `HttpURLConnection`, for one, treats a timeout of 0 as infinite, and 0 is its default).
+
+**Circuit breakers.** Count recent failures to a dependency. Past a threshold, *open* the circuit: fail immediately, without calling, and serve a fallback. After a cool-down, go *half-open*: let a few trial calls through. Success closes the circuit; failure opens it again.
+
+<Figure caption="The circuit breaker state machine. Open protects both sides: the caller stops waiting, the dependency gets room to recover.">
+  <Mermaid code={`stateDiagram-v2
+    [*] --> Closed
+    Closed --> Open: failure rate over threshold
+    Open --> HalfOpen: cool-down elapsed
+    HalfOpen --> Closed: trial calls succeed
+    HalfOpen --> Open: a trial call fails`} />
+</Figure>
+
+**Bulkheads.** Ships have watertight compartments so one hole doesn't sink the ship. Give each dependency its own pool or concurrency limit: recommendations may use at most 20 of the feed's 200 threads, search at most 60. When search hangs, *its* 60 fill up and its calls fail fast; checkout's threads are untouched.
+
+**Fallbacks and graceful degradation.** Decide in advance what a feature looks like without each dependency: the feed without recommendations, search results without personalization, a cached profile instead of a fresh one. The user sees a slightly worse page instead of an error page.
+
+<Trace title="Contain the damage" steps={isolation} takeaway="Timeouts on every call; breakers that fail fast and probe; bulkheads so one dependency can only drown its own pool; a planned fallback for each." />
+
+<Reveal q="Why not set the timeout to the dependency's average latency?">
+
+Because about half of healthy calls are slower than average, you would cut off a large share of perfectly good requests, and then retry them, adding load. Timeouts belong just above the high percentiles (p99 to p99.9) of healthy behaviour: long enough not to fire on normal slowness, short enough that a hung dependency releases your threads quickly.
+
+</Reveal>
+
+**Catch the trap:** "We'll add a circuit breaker" as a magic word. Say what trips it (error rate or latency over a window), what the caller does while it's open (the fallback), and how it closes (half-open probes).
+
+<h2 id="overload">Chapter 14 · Too much at once</h2>
+
+<Scene chapter="Chapter 14" title="Too much at once" mood="storm">
+
+The last slide of the post-mortem is the one Dev saved for the end. Peak traffic on launch night: 15,000 requests per second. Capacity: 10,000. Kestrel had tried to serve all of them.
+
+*"We queued the extra,"* he says. *"The queue grew five thousand every second. Requests waited, timed out, the phones retried, and we spent the rest of the night serving people who had already given up."*
+
+Mara writes one sentence and underlines it: *A system that tries to serve everyone serves no one.*
+
+</Scene>
+
+**Why overload collapses throughput.** Past capacity, queues grow. Queued requests wait longer than clients will wait, so the server spends its time on requests whose callers have already left — work that produces nothing (low *goodput*). Clients retry, adding more. Throughput can fall *below* capacity just when demand is highest.
+
+**Load shedding.** Reject the excess early and cheaply, ideally at the edge, with `503` and a `Retry-After`. **Worked numbers:** 15,000 offered, 10,000 capacity → shed 5,000/15,000 = **one third**, and serve the other 10,000 fast. Shed the least valuable work first (prefetches, analytics, background refreshes, retries) before logins and checkouts. Tag priority at the edge so every layer makes the same choice.
+
+**Back-pressure.** When a consumer can't keep up, the producer should *feel* it: a bounded queue that blocks or rejects, a consumer that pulls only what it can handle (Kafka consumers pull; reactive streams signal demand), TCP's flow control at the transport layer. An unbounded queue doesn't remove overload; it postpones it and turns it into an out-of-memory crash or hours of lag.
+
+**Rate limiting** is a *policy* limit per client — fairness, abuse, cost — rather than a reaction to current load. The usual algorithm is the **token bucket**: each client's bucket holds up to B tokens and refills at r per second; a request spends a token or gets `429 Too Many Requests`. It belongs at the edge or gateway (Chapter 1: say the layer). The <a href={`${BASE}sd/lessons/rate-limiter/`}>rate limiter walkthrough</a> designs one end to end.
+
+**Autoscaling helps, slowly.** New instances take minutes to start; a surge can kill you in seconds, and the database doesn't autoscale at all. Shedding buys the minutes.
+
+| Tool | Protects | Decides on | The caller sees |
+|---|---|---|---|
+| Timeout | The caller's threads | Elapsed time | An error after a bounded wait |
+| Circuit breaker | The caller, and the sick dependency | Recent error or latency rate | A fast failure or a fallback |
+| Bulkhead | Everything else from one dependency | Per-pool concurrency | Failures only in that feature |
+| Back-pressure | A consumer and its queue | Queue depth | The producer slows or is rejected |
+| Load shedding | The service's capacity right now | Current load, priority | `503` + `Retry-After` |
+| Rate limiting | Fairness between clients | Per-client counter | `429` + `Retry-After` |
+
+<Trace title="Shed, push back, limit" steps={overload} takeaway="Past capacity, queueing makes everyone fail. Shed early by priority, bound every queue, rate-limit per client at the edge." />
+
+<Reveal q="Why not just autoscale instead of shedding load?">
+
+Use both, because they work on different timescales. Shedding reacts in milliseconds and keeps the service inside its capacity while autoscaling spends minutes adding more. And the bottleneck often can't autoscale: a primary database, a third-party API with its own limits, a licensed dependency. Shedding protects those as well.
+
+</Reveal>
+
+**Catch the trap:** "An unbounded queue absorbs spikes." A queue absorbs a spike only if consumers later catch up. If arrivals exceed service for long, the queue fills, latency becomes the queue's length, and memory runs out. Bound it, and say what happens when it is full.
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The design review" steps={drills} takeaway="A number with a reason, a side of CAP per data, retries with every safeguard, leases with fencing, and a different consistency model for each kind of data." />
+
+The original checkpoint, kept as it was. It is still the fastest self-test before a mock:
 
 <Quiz questions={[
   {
@@ -97,10 +855,10 @@ Consequences you'll use constantly: a 5 ms latency budget forbids disk and cross
       '"Partitions are rare enough to ignore"'
     ],
     answer: 1,
-    why: 'Seat inventory is the canonical CP case — wrong answer worse than no answer. Option 1 double-sells seats; 3 and 4 dodge the question, and dodging instead of reasoning aloud is your logged habit to kill.'
+    why: 'Seat inventory is the canonical CP case — a wrong answer is worse than no answer. Option 1 double-sells seats; 3 and 4 dodge the question, and dodging instead of reasoning aloud is your logged habit to kill.'
   },
   {
-    q: 'N=3 replicas, W=2, R=2. Why is a read guaranteed to see the latest write?',
+    q: 'N=3 replicas, W=2, R=2. Why is a read guaranteed to overlap the latest completed write?',
     options: [
       'Because 2 is a majority of 3, and majorities are always consistent',
       'Because W+R=4 > N=3, so any read set overlaps any write set in at least one node',
@@ -108,7 +866,7 @@ Consequences you'll use constantly: a 5 ms latency budget forbids disk and cross
       'Because the coordinator caches the latest write'
     ],
     answer: 1,
-    why: 'The pigeonhole argument: 2 writers + 2 readers among 3 nodes must share at least one node. That node has the newest version. Say the inequality out loud in interviews.'
+    why: 'The pigeonhole argument: 2 writers + 2 readers among 3 nodes must share at least one node, and that node has the newest version. Say the inequality out loud in interviews (and know the edge cases that stop it being fully linearizable).'
   },
   {
     q: 'A user edits their profile and refreshes — must see the change. Their followers can see it 5 seconds later. Cheapest sufficient consistency?',
@@ -125,10 +883,120 @@ Consequences you'll use constantly: a 5 ms latency budget forbids disk and cross
     q: 'Your design chains 4 services serially, each 99.9% available. Roughly what is the path\'s availability?',
     options: ['99.9% — the chain is as strong as each link', '99.99% — redundancy adds up', '~99.6% — serial availabilities multiply', '100% if we add retries'],
     answer: 2,
-    why: '0.999⁴ ≈ 0.996. Every serial box costs availability — argument for fewer boxes in the critical path, and for making non-critical calls async.'
+    why: '0.999⁴ ≈ 0.996. Every serial box costs availability — an argument for fewer boxes in the critical path, and for making non-critical calls async.'
   }
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: **CAP speed round** — 10 systems named rapid-fire (ledger, like-counter, DNS, seat booking, chat history, …), you call CP/AP + consistency model + one-line product reason, 30 seconds each. Then: pick availability nines for each and defend the cost.
+<Scene title="The interview room" mood="night">
+
+Your design for a photo-sharing app is on the whiteboard. The Interviewer folds their arms. *"Okay. Now tell me what happens when things go wrong — and what you're promising about consistency."*
+
+A month ago that question would have scattered you across six boxes at once. Today you start at the top and walk down.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "Let me take it per layer and per kind of data. The API tier is **stateless** — sessions are signed tokens — so it scales out behind the load balancer, with N+2 servers so one failure and one deploy don't hurt. For **consistency**: photo uploads and the follower graph live in a leader-follower database; the uploader **reads their own writes** from the leader for a few seconds, everyone else reads replicas and is **eventually consistent**. Like counts are **AP** — per-region counters merged later. Anything unique, like usernames, is **CP**: one leader decides. **Replication** is async with one synchronous follower, so a failover doesn't lose acknowledged uploads. For **failure**: every call has a **timeout** just above the dependency's p99.9, a **circuit breaker** with a fallback — the feed renders without recommendations — and each dependency has its own **bulkhead**. **Retries** happen at one layer, only for idempotent calls or with an idempotency key, with exponential backoff, full jitter and a retry budget. Search fans out to many shards, so I'd watch **p99**, hedge slow reads, and return partial results at a deadline. Under a surge we **shed** low-priority work at the edge, and per-client **rate limits** live in the gateway. I'm targeting **99.9%** for the feed and treating upload **durability** as a separate, stronger promise."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · There's a network partition between your two regions. What happens to likes, and to username sign-up?">
+
+Likes are AP: both regions keep counting locally, and the per-region counters are summed when the link heals, so nobody sees an error and counts are briefly different. Usernames are CP: the claim goes to a single leader (or a consensus store); the region that can't reach it refuses sign-ups with a clear error rather than risking two owners of one name. CAP's choice is per data, with a product reason.
+
+</Reveal>
+
+<Reveal q="2 · Your search service fans out to 100 shards. Why is p99 so much worse than any single shard's?">
+
+Because the request waits for the slowest of 100. If each shard is slow 1% of the time, 1 − 0.99¹⁰⁰ ≈ 63% of searches hit at least one slow shard. I would cut it with hedged requests after the p95, smaller fan-out through better partitioning, and a deadline that returns partial results, which is acceptable for search ranking.
+
+</Reveal>
+
+<Reveal q="3 · A downstream service starts hanging. Walk me through what your service does.">
+
+The call times out at a value just above the dependency's p99.9, so threads come back. Failures trip the circuit breaker; while open, calls fail immediately and we serve the fallback. The dependency has its own bulkhead, so it can only exhaust its own share of threads. After a cool-down the breaker goes half-open and probes with a few calls. Retries, if any, happen at one layer with backoff, jitter and a budget, so we don't pile onto it.
+
+</Reveal>
+
+<Reveal q="4 · How do you make 'create order' safe to retry?">
+
+The client generates an idempotency key when the user taps Buy and sends it on every attempt. The server stores key → result atomically with creating the order; a repeat key returns the stored result. A timeout means "unknown", so without the key a retry could create a second order. Retries use exponential backoff with full jitter, at one layer only.
+
+</Reveal>
+
+<Reveal q="5 · Your system has a leader. How is it chosen, and what stops two leaders?">
+
+Through consensus — Raft via etcd or ZooKeeper rather than hand-rolled. A candidate needs a majority vote, one vote per node per term, and any two majorities overlap, so only one leader wins a term. Leadership is a lease, renewed early. A paused old leader can wake believing it still leads, so every write carries the term or a fencing token, and storage rejects older ones. Five nodes survive two failures.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you hear… | Say… |
+|---|---|
+| "The cache / rate limiting / consistency…" | Which layer? Name it before answering |
+| "How does it scale?" | Stateless tier scales out; state goes to stores; DB: scale up, replicas, then partition |
+| "Is it fast?" | Latency vs throughput; Little's Law L = λW; run under ~70% utilization |
+| A request fans out | 1 − (1 − p)ⁿ: 1% at fan-out 100 ≈ 63%; hedge, shrink fan-out, deadlines |
+| "How available?" | A number with a reason; series multiply, parallel needs independence; find the SPOF |
+| "What if that node dies?" | Timeout = suspicion; leases + fencing tokens; majority election, odd cluster sizes |
+| "How is it replicated?" | Leader-follower; sync vs async; lost writes on async failover; W + R > N |
+| "Network partition?" | CP or AP per data, with a product reason; P is not optional |
+| "And without a partition?" | PACELC: latency vs consistency |
+| "Is it consistent?" | Name the rung: linearizable, sequential, causal, read-your-writes, monotonic reads, eventual |
+| "How do you shard?" | Key tests: spread and locality; hash vs range; hot partitions; consistent hashing moves ~1/N |
+| "How do you generate ids?" | UUIDv7 or Snowflake; never let the clock run backwards |
+| "What if it fails?" | Retry idempotent only, one layer, backoff + jitter + budget, idempotency keys |
+| "What if it's slow?" | Timeouts, circuit breaker with fallback, bulkheads |
+| "Traffic spike?" | Shed by priority, bounded queues, back-pressure, rate limits at the gateway |
+
+## Five mistakes to leave behind
+
+1. **Answering the wrong layer.** One clarifying clause first: which cache, which limit, which authorization layer.
+2. **"We need full consistency and five nines."** Pick C or A per data during a partition, and a number of nines with a reason.
+3. **Quoting averages.** Tails decide user experience, and fan-out multiplies them.
+4. **"We'll retry."** Without idempotency, backoff, jitter, a single layer and a budget, retries are an attack on yourself.
+5. **Unbounded anything.** No timeout, no queue limit, no pool limit: each one turns a slow component into a total outage.
+
+<Scene title="Mara's last word" mood="dusk">
+
+A month after launch night, the incident review is filed and closed. Mara leaves the seven words on the whiteboard — *layer, state, tail, nines, lease, consistency, retry* — and adds an eighth underneath: *say it.*
+
+*"You knew most of this before,"* she tells you. *"What you didn't have was the habit of saying it before someone asked. That's the whole difference."*
+
+</Scene>
+
+**Keep it warm:** with the buddy, run the **CAP speed round**. Ten systems named rapid-fire: ledger, like counter, DNS, seat booking, chat history, presence, shopping cart, username registry, feature flags, analytics dashboard. For each, in 30 seconds: CP or AP, the consistency rung, and a one-line product reason. Then pick availability nines for each and defend the cost. Finish with one wildcard: name the layer before you answer.
+
+Related: <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> (where these calls go in the interview) · <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a> · <a href={`${BASE}sd/lessons/networking/`}>Networking</a> · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> · <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> · <a href={`${BASE}sd/lessons/load-balancing/`}>Load balancing</a> · <a href={`${BASE}sd/lessons/pattern-partitioning/`}>Partitioning</a> · <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a> · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a> · <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and races</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- *Designing Data-Intensive Applications* (Martin Kleppmann): chapter 1 (percentiles and tail latency), chapter 5 "Replication" (leaders, lag, quorums), chapter 6 "Partitioning", chapter 8 "The Trouble with Distributed Systems" (timeouts, clocks, process pauses, leases, fencing), chapter 9 "Consistency and Consensus" (linearizability, CAP, causality, consensus).
+- [The Tail at Scale](https://doi.org/10.1145/2408776.2408794) (Dean and Barroso, CACM 2013): the fan-out arithmetic of Chapter 4, hedged and tied requests.
+- [Brewer's conjecture and the feasibility of consistent, available, partition-tolerant web services](https://doi.org/10.1145/564585.564601) (Gilbert and Lynch, 2002): the CAP proof, with the precise definitions.
+- [CAP Twelve Years Later: How the "Rules" Have Changed](https://www.infoq.com/articles/cap-twelve-years-later-how-the-rules-have-changed/) (Eric Brewer): why "pick two" was always misleading.
+- [Consistency Tradeoffs in Modern Distributed Database System Design](https://doi.org/10.1109/MC.2012.33) (Daniel Abadi, IEEE Computer 2012): PACELC.
+- [Jepsen: consistency models](https://jepsen.io/consistency): a clickable map of the ladder in Chapter 9, with precise definitions.
+- [Dynamo: Amazon's Highly Available Key-value Store](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf) (SOSP 2007): quorums, consistent hashing, vector clocks, sloppy quorums.
+- [The Raft consensus algorithm](https://raft.github.io/): the paper, visualizations, and the election rules of Chapter 6.
+- [Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/) (AWS Architecture Blog): full jitter versus the alternatives, with simulations.
+- Google SRE book: [Handling Overload](https://sre.google/sre-book/handling-overload/) and [Addressing Cascading Failures](https://sre.google/sre-book/addressing-cascading-failures/): retry budgets, load shedding, deadlines.
+- [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562): UUIDs, including the UUIDv7 layout.
+- [How to do distributed locking](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html) (Martin Kleppmann): leases, process pauses, and fencing tokens.
+
+**Look these up yourself**
+
+- **Vector clocks and version vectors**: how leaderless stores detect concurrent writes instead of guessing with timestamps.
+- **CRDTs**: data types (counters, sets, text) that merge without conflicts, the honest engine behind many AP designs.
+- **Hybrid logical clocks and TrueTime**: how CockroachDB and Spanner order events across machines despite clock skew.
+- **Sloppy quorums and hinted handoff**: what Dynamo-style stores do when the "right" N replicas aren't reachable.
+- **Adaptive concurrency limits** (e.g. Netflix's concurrency-limits library): letting a service discover its own capacity from latency instead of hand-set rate limits.
+- **Cell-based architecture and blast radius**: splitting a system into independent copies so one bad deploy or poison request can't take down everyone.
+- **Kingman's formula**: why variability, not just utilization, drives queueing delay.
+- **Linearizability vs serializability vs strict serializability**: the three words most often confused in database interviews.

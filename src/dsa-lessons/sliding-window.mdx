@@ -1,69 +1,357 @@
 ---
 title: 'Sliding Window'
-description: 'Fixed, variable, and hashmap-tracked windows — one template, five forms, with the shrink-direction rule that decides everything, in Java.'
+description: 'A novel in ten chapters and five side quests. Ride the glass barge of Windmere, learn when a shutter may close and where the logbook entry belongs, and leave able to frame a window nobody showed you.'
 order: 2
-minutes: 35
+minutes: 90
+sessionMinutes: 8
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Playground from '../components/Playground.astro';
+import Practice from '../components/Practice.astro';
+import Trace from '../components/Trace.astro';
+import HintLadder from '../components/HintLadder.astro';
+import Reveal from '../components/Reveal.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Bars from '../components/Bars.astro';
 import Mermaid from '../components/Mermaid.astro';
+import { hints } from '../data/sliding-window/hints';
+import { fixedPane, anagram, darkLamps, noRepeats, baskets, repaint, toll, shoppingList, tallestMast, buyLow, mixedReview } from '../data/sliding-window/traces';
+import { BASE } from '../paths';
 
-## When this pattern fires
+<PatternHub
+  pattern="sliding-window"
+  start="prologue"
+  logline="Windmere's glass barge drifts down the canal one post at a time, and nobody aboard ever sees the whole bank. Two shutters, a slate and a logbook are enough to find the best stretch of it, as long as you know when a shutter may close and when to write in the log."
+  cast={[
+    { name: 'You', role: 'The newest deckhand of the Window Guild. Like any loop, you only see what is behind the glass right now.' },
+    { name: 'The Keeper', role: 'Runs the Guild from the barge roof. Never gives the answer. Asks three questions instead.' },
+    { name: 'Head', role: 'Works the bow shutter. Opens it one post at a time to let the next thing into view. In code: right.' },
+    { name: 'Tail', role: 'Works the stern shutter. Closes it one post at a time to let the oldest thing go. In code: left.' },
+    { name: 'Tally', role: 'The clerk with the slate. Keeps the running state of whatever is in view: a sum, a count, a letter tally.' },
+    { name: 'The Lookout', role: 'Up the mast. Keeps a short queue of the masts that could still be the tallest in view.' },
+  ]}
+  parts={[
+    { name: 'Part One · The fixed pane', description: 'The glass never changes width. One in, one out.', links: [['fixed-pane', 'The fish market'], ['anagram-flags', 'The scrambled bunting']] },
+    { name: 'Part Two · The longest legal stretch', description: 'Grow freely. Close the stern shutter only to repair. Log after.', links: [['dark-lamps', 'The dark lamps'], ['no-repeats', 'No two alike'], ['two-baskets', 'Two baskets'], ['k-repaints', "The painter's strokes"]] },
+    { name: 'Part Three · The shortest that qualifies', description: 'Grow until it qualifies. Log, then squeeze while it still does.', links: [['toll', 'The toll of seven'], ['shopping-list', "The cook's list"]] },
+    { name: 'Part Four · Windows in disguise', description: 'A helper queue on the mast, and a window that is only a low-water mark.', links: [['tallest-mast', 'The tallest mast'], ['buy-low', 'Buy low, sell later']] },
+  ]}
+  extensions={[['exactly-k', 'Exactly K kinds'], ['delete-one', 'Delete one lamp'], ['product-below', 'Products below K'], ['cards', 'Window on the leftovers'], ['negatives', 'When values go negative']]}
+  extras={[['choose-the-tool', 'When the glass lies'], ['wider-family', 'The neighbouring towns'], ['exit-ticket', 'The Guild exam'], ['cheat-sheet', "The Keeper's notebook"]]}
+  note="All 10 roadmap problems, plus side quests that test whether the idea transfers. One chapter per sitting is plenty; the story keeps your place."
+/>
 
-The question asks about a **contiguous run** — "longest substring such that…", "shortest subarray with…", "max sum of any K consecutive…", "does any window contain an anagram of…". Brute force checks every (start, end) pair: O(n²) windows × O(n) evaluation. The window insight: **when the window slides one step, almost nothing changes** — remove one element's contribution, add another's. Maintain state incrementally → O(n).
+<h2 id="prologue">Prologue · The glass barge</h2>
 
-This is "what work am I repeating?" answered: re-scanning overlapping windows.
+<Scene chapter="Prologue" title="The glass barge" mood="dawn">
 
-## Form 1 — Fixed window (size K given)
+Windmere is a canal town, and its oldest barge has a long glass window down one side. Along the bank, every stall, lamp and mooring post carries a painted number. The first is 0.
 
-```java
-// Maximum Average Subarray I — best sum of exactly K consecutive
+The window has two shutters. Head works the bow shutter and opens it, one post at a time, to let the next thing into view. Tail works the stern shutter and closes it, one post at a time, to let the oldest thing go. The current only runs one way. Neither shutter ever slides back.
+
+On your first morning the Keeper hands you a logbook. *"You will never see the whole bank,"* she says. *"You see what is behind the glass. Tally keeps the slate, and you keep the log. Before any shutter moves, answer me three questions."*
+
+</Scene>
+
+A **window** is a contiguous stretch of an array or string, from `left` (Tail) to `right` (Head). You keep a small **state** for what is inside it: a sum, a count, a letter tally. Before every move, ask the Keeper's three questions:
+
+1. **What does the slate say?** The state of the window right now: its sum, its counts, whether it is legal.
+2. **Why is this shutter move safe?** Which windows can you skip for good, and why can't the answer be hiding among them?
+3. **When do I write in the log?** Exactly where the record line goes. Most sliding-window bugs are a record in the wrong place.
+
+<Figure caption="In view: 4 + 1 + 5 + 9 = 19. When the barge moves one post, 2 comes in and 4 goes out: 19 + 2 − 4 = 17. That is two operations, however wide the glass is.">
+  <ArrayStrip values={[3, 1, 4, 1, 5, 9, 2, 6]} pointers={[{ at: 2, label: 'TAIL' }, { at: 5, label: 'HEAD' }]} tones={{ 0: 'out', 1: 'out', 2: 'hot', 3: 'hot', 4: 'hot', 5: 'hot', 6: 'ghost', 7: 'ghost' }} regions={[{ from: 0, to: 1, label: 'let go', tone: 'dim' }, { from: 2, to: 5, label: 'in view', tone: 'gold' }, { from: 6, to: 7, label: 'not yet', tone: 'blue' }]} />
+</Figure>
+
+### When this pattern fires
+
+The question is about a **contiguous run**: "longest substring such that…", "shortest subarray with…", "best sum of any k consecutive…", "does some stretch contain an anagram of…". Brute force tries every start and every end. That is O(n²) windows, and re-scanning each one makes it O(n³). The window insight: **when the window moves one step, almost nothing changes**. One item enters, maybe one leaves, so you update the state instead of recomputing it. Head and Tail each move forward at most n times, so the whole scan does at most 2n moves: **O(n)**.
+
+That speed-up has a price. It needs a **promise that Tail never has to move back**. Here is where the promise comes from, for the two rhythms you will meet over and over:
+
+- **Longest legal window.** Legal means the window obeys a limit, like "at most k dark lamps". If a window breaks the limit, every bigger window that contains it breaks the limit too, because adding items never removes a dark lamp. So once `[Tail..Head]` is illegal, Tail's position can't start a legal window that ends at Head or later. **Tail can move on for good.**
+- **Shortest qualifying window.** Qualifying means the window reaches a goal, like "sum at least 7, with positive values". If a window qualifies, every bigger window that contains it qualifies too. So once `[Tail..Head]` qualifies, it is the shortest qualifying window that starts at Tail; any window that starts there and ends later is longer. **Log it, then Tail can move on for good.**
+
+Both promises lean on **monotonicity**: growing never repairs an illegal window, and growing never breaks a qualifying one. When that fails (negative numbers, for instance), the glass lies. The epilogue shows what to use then.
+
+```java fragment
+// The master template. Every variable window in this book is this loop in a different costume.
+int left = 0;
+for (int right = 0; right < n; right++) {
+    add(items[right]);                          // Head opens: the newcomer joins the slate
+    while (windowNeedsTail()) {                 // the one decision that defines each problem
+        // SHORTEST: record here, before Tail moves (the window still qualifies)
+        remove(items[left]);                    // Tail closes: the oldest item leaves the slate
+        left++;
+    }
+    // LONGEST: record here, after the loop (the window is legal again)
+}
+```
+
+The `while` condition and the record line change places depending on what the problem asks for. You've had this cold on re-entry before. Keep it sharp:
+
+<Mermaid code={`flowchart TD
+    Q{"What does the problem want?"} -->|"LONGEST legal window"| A["shrink WHILE ILLEGAL\nrecord AFTER the while\n(the window is legal there)"]
+    Q -->|"SHORTEST qualifying window"| B["shrink WHILE IT STILL QUALIFIES\nrecord INSIDE the while\n(before Tail moves)"]
+    Q -->|"EXACTLY k wide"| C["add Head, drop the item k back\nrecord once the pane is full"]`} />
+
+<h2 id="playground">The practice canal · You work the shutters</h2>
+
+<Scene title="The training pool">
+
+Behind the Guild house is a short, still stretch of canal with numbered posts along it. Apprentices train there before anyone trusts them on the real water. The shutters don't move by themselves, and the log doesn't fill itself. When you pull the wrong lever, the Keeper doesn't scold. She just tells you which window you would have missed, or which lie you would have written in the log.
+
+</Scene>
+
+Three practice runs: a fixed pane, a longest legal stretch and a shortest qualifying stretch. All three use the same four levers: **grow**, **shrink**, **record** and **finish**. Say where the record belongs **before** you press it. Then try the cases with an empty bank, or with no answer at all.
+
+<Playground lab="sliding-window" />
+
+<Part n="Part One" title="The fixed pane">
+
+The glass is a set width. Every step, one item comes in at the bow and one goes out at the stern.
+
+</Part>
+
+<h2 id="fixed-pane">Chapter 1 · The fish market</h2>
+
+<Scene chapter="Chapter 1" title="The fish market" mood="dawn">
+
+At dawn the barge drifts past the fish market. Each stall has chalked the night's catch on a board, and some boards show a loss: nets that cost more than they caught. The harbourmaster wants to put a new crane over **exactly four neighbouring stalls**, and she wants the four with the best average catch.
+
+The window is exactly four stalls wide today. Tally adds the first four boards, 1 + 12 − 5 − 6, and writes 2 on her slate.
+
+The barge moves one stall. Tally licks her chalk and starts adding all four boards again from scratch. *"Wait,"* says the Keeper. *"Three of those four were on your slate a moment ago. What actually changed?"*
+
+</Scene>
+
+**Problem: Maximum Average Subarray I · Fixed window**
+
+When the window has a set width k, you never decide when to shrink. Build the first window once. Then every slide is the same two operations: **add the item that enters, subtract the item that leaves**. The item that leaves is always the one k places behind the newcomer.
+
+<Figure caption="The best pane: 12 − 5 − 6 + 50 = 51, average 51 / 4 = 12.75. It came from the first pane (sum 2) by adding 50 and dropping 1.">
+  <ArrayStrip values={[1, 12, -5, -6, 50, 3]} pointers={[{ at: 1, label: 'TAIL' }, { at: 4, label: 'HEAD' }]} tones={{ 0: 'out', 1: 'hot', 2: 'hot', 3: 'hot', 4: 'hot', 5: 'ghost' }} regions={[{ from: 1, to: 4, label: 'k = 4, sum 51', tone: 'gold' }]} />
+</Figure>
+
+<Trace title="One in, one out" steps={fixedPane} takeaway="Remember: a fixed window is one addition and one subtraction per step. Start best at the first window's sum, and divide only once at the end, in floating point." />
+
+**Why it works:** a window of width k that ends at position `right` is the previous window, plus `nums[right]`, minus `nums[right - k]`. Every one of the n − k + 1 windows is visited exactly once, so none can be missed.
+
+**What stays true:** after each step, `sum` is exactly the sum of the k items that end at `right`, and `best` is the largest such sum seen so far.
+
+<Reveal q="Why compare sums instead of averages inside the loop?">
+
+All windows have the same width k, so the largest sum is also the largest average. Dividing once at the end avoids k − 1 pointless divisions and any floating-point drift in the comparisons.
+
+</Reveal>
+
+<HintLadder hints={hints.fixed}>
+
+```java id=findMaxAverage
 public double findMaxAverage(int[] nums, int k) {
     long sum = 0;
-    for (int i = 0; i < k; i++) sum += nums[i];   // build first window
+    for (int i = 0; i < k; i++) sum += nums[i];   // build the first pane
     long best = sum;
-    for (int i = k; i < nums.length; i++) {
-        sum += nums[i] - nums[i - k];             // slide: add head, drop tail
+    for (int right = k; right < nums.length; right++) {
+        sum += nums[right] - nums[right - k];     // Head adds, Tail drops the item k back
         best = Math.max(best, sum);
     }
     return (double) best / k;
 }
 ```
 
-Build once, then each slide is O(1): `+ entering − leaving`. Anagram-in-window problems (Permutation in String) are fixed windows where the state is a **frequency map + a matched-count** instead of a sum.
+**O(n) time, O(1) extra space.** LeetCode guarantees `1 <= k <= n`. Under its limits (n up to 10⁵, values up to 10⁴ in size) the sum fits in an `int`, but `long` costs nothing and removes the question.
 
-## Form 2 — Variable window: the master template
+</HintLadder>
 
-Window grows on the right always; shrinks from the left **when a condition triggers**. Everything is this template:
+**Catch the bug:** starting with `best = 0` breaks on all-negative input. For `[-3, -1, -2]` with k = 2 the window sums are −4 and −3, so the answer is −1.5, but a zero start returns 0.0. A second trap is `return best / k` with integer types: 51 / 4 is 12 in integer division, not 12.75. [Solve Maximum Average Subarray I](https://leetcode.com/problems/maximum-average-subarray-i/).
 
-```java
-int left = 0, best = 0;
-for (int right = 0; right < n; right++) {
-    addToState(nums[right]);                  // window grows
-    while (windowInvalid()) {                 // shrink until valid again
-        removeFromState(nums[left]);
-        left++;
+<h2 id="anagram-flags">Chapter 2 · The scrambled bunting</h2>
+
+<Scene chapter="Chapter 2" title="The scrambled bunting" mood="dawn">
+
+For the regatta, someone has strung letter flags along the towpath, one letter per flag, for half a mile. A child on the barge holds up her name card: **ab**. "Is my name up there?" she asks. "Even jumbled. *ba* would count."
+
+Head starts opening the bow shutter, looking for an *a*. Tail is ready to close the stern shutter as soon as Head finds a *b*.
+
+*"How wide,"* the Keeper asks, *"can a jumble of a two-letter name be?"*
+
+Tail stops. A jumble of *ab* is exactly two flags long. Not one, not three. The window doesn't need to grow or shrink. It just needs the right width.
+
+</Scene>
+
+**Problem: Permutation in String · Fixed window with a letter tally**
+
+A permutation of `s1` has exactly the same letter counts as `s1`, and exactly the same length. So slide a pane of width `s1.length()` along `s2`, and ask one question at each position: **do the counts in view equal the counts of s1?**
+
+Comparing two 26-letter tables every step works and is still linear (26 × n). The tidier way keeps one number: **how many letters are currently unbalanced**, meaning the window's count differs from what `s1` needs. Each slide changes at most two letters, so the counter updates in O(1). When it hits zero, you've found an anagram.
+
+<Figure caption="s1 = “ab”, so the pane is two letters wide. At positions 3–4 the slate reads b: 1, a: 1, the same counts as s1, so a permutation is in view.">
+  <ArrayStrip values={['e', 'i', 'd', 'b', 'a', 'o', 'o', 'o']} pointers={[{ at: 3, label: 'TAIL' }, { at: 4, label: 'HEAD' }]} tones={{ 0: 'out', 1: 'out', 2: 'out', 3: 'hot', 4: 'hot', 5: 'ghost', 6: 'ghost', 7: 'ghost' }} regions={[{ from: 3, to: 4, label: 'counts match s1', tone: 'green' }]} />
+</Figure>
+
+<Trace title="Same letters, any order" steps={anagram} takeaway="Remember: an anagram has the same length as the word, so the pane is fixed. Update two counts per slide and watch a single 'unbalanced letters' counter." />
+
+**Why it works:** every substring of `s2` with length `s1.length()` is visited once, in order. A substring is a permutation of `s1` exactly when its 26 counts match, which is exactly when no letter is unbalanced.
+
+**What stays true:** `diff[c]` is (count of c in s1) − (count of c in the window), and `unbalanced` is the number of letters whose `diff` isn't zero.
+
+<Reveal q="Why not a variable window that grows until it holds an a and a b?">
+
+Because extra letters ruin a permutation. “eidba” holds an a and a b, but it is five letters long; it is not a jumble of “ab”. A grow-until-it-qualifies window answers a different question (Chapter 8's “contains all of”). Read the problem for the word **permutation** or **anagram**: same multiset, same length.
+
+</Reveal>
+
+<HintLadder hints={hints.anagram}>
+
+```java id=checkInclusion
+public boolean checkInclusion(String s1, String s2) {
+    int k = s1.length(), n = s2.length();
+    if (k > n) return false;
+    int[] diff = new int[26];                  // need minus have, for each letter
+    for (int i = 0; i < k; i++) diff[s1.charAt(i) - 'a']++;
+    int unbalanced = 0;
+    for (int d : diff) if (d != 0) unbalanced++;
+    for (int right = 0; right < n; right++) {
+        unbalanced += change(diff, s2.charAt(right) - 'a', -1);              // Head brings a letter in
+        if (right >= k) unbalanced += change(diff, s2.charAt(right - k) - 'a', +1); // Tail lets one go
+        if (right >= k - 1 && unbalanced == 0) return true;
     }
-    best = Math.max(best, right - left + 1);  // record — placement depends on goal!
+    return false;
+}
+
+// Applies one count change; returns how the number of unbalanced letters moves (+1, 0 or -1).
+private int change(int[] diff, int letter, int delta) {
+    boolean wasBalanced = diff[letter] == 0;
+    diff[letter] += delta;
+    boolean isBalanced = diff[letter] == 0;
+    return (wasBalanced ? 1 : 0) - (isBalanced ? 1 : 0);
 }
 ```
 
-**The shrink-direction rule — the one decision that defines each problem (you named this cold on re-entry; keep it sharp):**
+**O(|s1| + |s2|) time, O(1) extra space** (26 counters, for the problem's lowercase letters). A window shorter than k can never be balanced, since its counts add up to fewer than k, but the `right >= k - 1` check says so out loud.
 
-<Mermaid code={`flowchart TD
-    Q{"What does the problem want?"} -->|"LONGEST valid window"| A["shrink WHEN INVALID\nrecord AFTER the while\n(window is valid there)"]
-    Q -->|"SHORTEST satisfying window"| B["shrink WHILE STILL SATISFYING\nrecord INSIDE the while\n(before it stops satisfying)"]`} />
+</HintLadder>
 
-- **Longest** (Longest Substring No Repeat, Max Consecutive Ones III): violate → shrink until legal → record. The `while` restores validity; record after it.
-- **Shortest** (Min Size Subarray Sum): reach the target → **record, then shrink** to hunt a shorter one; the `while` runs while the window still satisfies, and the record lives **inside** it. Your logged edge: the `while (sum >= target)` + record-inside-loop combo.
+**Catch the bug:** forgetting Tail. If you only add letters and never give back the one k places behind, the slate holds the whole prefix instead of the pane. It can only balance when the very first k letters are an anagram, so it misses everything later: on `s1 = "ab"`, `s2 = "eidbaooo"` it returns false, but “ba” sits at positions 3–4. [Solve Permutation in String](https://leetcode.com/problems/permutation-in-string/).
 
-```java
-// Max Consecutive Ones III — longest run of 1s with ≤ k zero-flips (your unseen win #2)
+<Part n="Part Two" title="The longest legal stretch">
+
+Head grows the window without asking. Tail closes the stern shutter only to repair a broken rule. The log entry comes after the repair.
+
+</Part>
+
+<h2 id="dark-lamps">Chapter 3 · The dark lamps</h2>
+
+<Scene chapter="Chapter 3" title="The dark lamps" mood="night">
+
+Night falls on the quay. Its lamps stand in a long row, and some have blown out. The lamplighter comes aboard with **two matches** and a question. "The mayor's procession wants the longest unbroken run of lit lamps. I can relight two. Which two?"
+
+You start working out which pairs of dark lamps to relight. There are a lot of pairs.
+
+*"Don't choose the matches,"* the Keeper says. *"Choose the stretch. If a stretch of quay has two dark lamps or fewer, can he light all of it?"*
+
+Of course he can. The question was never about matches. It was about **how many dark lamps a stretch is allowed to hold**.
+
+</Scene>
+
+**Problem: Max Consecutive Ones III · Variable window, reframed**
+
+"Flip at most k zeros" turns into a rule about the window itself: **the window may contain at most k zeros**. Any window that obeys this can be turned into all ones. Any window that breaks it can't. Now it is a longest-legal-window problem:
+
+- Head always takes the next lamp. If it is dark, `zeros++`.
+- **While** `zeros > k`, the window is illegal. Tail lets lamps go, and when a dark one leaves, `zeros--`.
+- **After** the loop the window is legal, so record its length.
+
+This was your unseen win: you cracked the reframe cold. A limit on an **operation** ("flip at most k") becomes a limit on the **window's contents** ("hold at most k zeros"). That reframe is the standard disguise for this whole family, and spotting it is the recognition skill.
+
+<Figure caption="The longest legal stretch: positions 5–10 hold exactly two zeros (dark lamps). Relight both and you have six lit lamps in a row.">
+  <ArrayStrip values={[1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0]} pointers={[{ at: 5, label: 'TAIL' }, { at: 10, label: 'HEAD' }]} tones={{ 0: 'out', 1: 'out', 2: 'out', 3: 'out', 4: 'out', 5: 'hot', 6: 'hot', 7: 'hot', 8: 'hot', 9: 'hot', 10: 'hot' }} regions={[{ from: 5, to: 10, label: 'zeros = 2 ≤ k, length 6', tone: 'gold' }]} />
+</Figure>
+
+<Trace title="Repair, then record" steps={darkLamps} takeaway="Remember: longest means shrink only while illegal, and record after the loop, when the window is legal again. Final answer for this quay: 6." />
+
+**Why Tail may move on:** if `[left..right]` holds more than k zeros, so does every window that starts at `left` and ends at `right` or later. None of them can be the answer, so `left` is finished.
+
+**What stays true:** after the `while` loop, `[left..right]` is the longest legal window that ends at `right`, and `best` is the longest legal window seen so far.
+
+<Reveal q="Why is it a while loop, and not one step of Tail?">
+
+Tail has to pass the lit lamps in front of the oldest dark one before a zero actually leaves. In the trace, the third zero arrives at position 5 and Tail walks past three lit lamps (positions 0, 1, 2) and then the zero at position 3: four steps for one repair. A single `if` step would leave the window illegal.
+
+(There is a famous lazy variant where Tail moves one step per Head step and the window never shrinks. It works here for the same reason as Chapter 6's stale count. Learn the honest `while` first.)
+
+</Reveal>
+
+<HintLadder hints={hints.lamps}>
+
+```java id=longestOnes
 public int longestOnes(int[] nums, int k) {
     int left = 0, zeros = 0, best = 0;
     for (int right = 0; right < nums.length; right++) {
-        if (nums[right] == 0) zeros++;
-        while (zeros > k) {                    // invalid: too many zeros in window
+        if (nums[right] == 0) zeros++;             // Head takes the next lamp
+        while (zeros > k) {                        // illegal: too many dark lamps in view
             if (nums[left] == 0) zeros--;
+            left++;
+        }
+        best = Math.max(best, right - left + 1);   // legal again: log it
+    }
+    return best;
+}
+```
+
+**O(n) time, O(1) extra space.** Each position enters once and leaves at most once. With k = 0 it finds the longest run of ones. If every value is 0 and k = 0, every window is emptied right away and the answer is 0.
+
+</HintLadder>
+
+**Catch the bug:** recording **before** the repair loop logs illegal windows. On `[1, 1, 0]` with k = 0, the window `[1, 1, 0]` would be logged as length 3, but the correct answer is 2. [Solve Max Consecutive Ones III](https://leetcode.com/problems/max-consecutive-ones-iii/).
+
+<h2 id="no-repeats">Chapter 4 · No two alike</h2>
+
+<Scene chapter="Chapter 4" title="No two alike" mood="dusk">
+
+The regatta boats are moored along the bank, each flying one coloured pennant. A painter wants to sketch the **longest row of neighbouring boats with no colour repeated**. Two red pennants in the same sketch, she says, look like a printing error.
+
+Head brings boats into view: amber, blue, blue. Two blues. Tail starts closing the stern shutter until only one blue is left.
+
+Then the painter points out something odd. "I've already noted that the last amber was at the first post. Couldn't Tail just *jump* past it, instead of walking?"
+
+The Keeper smiles. *"He can jump. But tell me where he lands when that old amber is already behind him."*
+
+</Scene>
+
+**Problem: Longest Substring Without Repeating Characters · Variable window with counts**
+
+Legal means every character in view appears once. When Head brings in character `c`, **only `c` can now be repeated**, because the window was legal a moment ago. So shrink while `count[c] > 1`, then record.
+
+There's a faster way to shrink. Remember each character's **last position**, and jump Tail straight past the previous copy: `left = lastSeen[c] + 1`. But only if that copy is **inside** the window. You have tripped on this one before. On `"abba"`, when Head reaches the second `a`, `lastSeen[a] = 0` is already behind Tail (Tail is at 2). Jumping to 0 + 1 = 1 would move Tail **backwards** and bring the second `b` back into view. The guard is `left = Math.max(left, lastSeen[c] + 1)`. Trace `"abba"` by hand once a month until it bores you.
+
+<Figure caption="Head reaches the second a. lastSeen[a] = 0, but position 0 is already behind Tail. max(2, 0 + 1) keeps Tail at 2. Without the max, Tail would slide back to 1, and the window “bba” would hold two b's.">
+  <ArrayStrip values={['a', 'b', 'b', 'a']} pointers={[{ at: 2, label: 'TAIL' }, { at: 3, label: 'HEAD' }, { at: 0, label: 'lastSeen[a]', tone: 'red' }]} tones={{ 0: 'out', 1: 'out', 2: 'hot', 3: 'hot' }} regions={[{ from: 2, to: 3, label: 'in view: “ba”', tone: 'gold' }]} />
+</Figure>
+
+<Trace title="Where does Tail land?" steps={noRepeats} takeaway="Remember: only the newcomer can be repeated. Shrink until its count is 1, or jump with Math.max so Tail never moves backwards. “abba” answers 2." />
+
+**Why it works:** if the window `[left..right]` holds `c` twice, so does every window that starts anywhere from `left` up to the earlier `c` and ends at `right` or later. Jumping past the earlier copy skips only windows that are certainly illegal.
+
+**What stays true:** after each step, `[left..right]` has no repeated character, and it is the longest such window that ends at `right`.
+
+<HintLadder hints={hints.noRepeats}>
+
+The counting version, which uses the same template as every other longest-legal problem:
+
+```java id=noRepeatCounts
+public int lengthOfLongestSubstring(String s) {
+    int[] count = new int[128];
+    int left = 0, best = 0;
+    for (int right = 0; right < s.length(); right++) {
+        char c = s.charAt(right);
+        count[c]++;
+        while (count[c] > 1) {                 // only c can be repeated: the window was legal before c
+            count[s.charAt(left)]--;
             left++;
         }
         best = Math.max(best, right - left + 1);
@@ -72,22 +360,16 @@ public int longestOnes(int[] nums, int k) {
 }
 ```
 
-The reframe that cracked it cold: "flip ≤ k zeros" ⇒ **"window may contain at most k zeros."** Constraint-on-operation → constraint-on-window-contents is the standard disguise; unmasking it IS the recognition rep.
+The jumping version, with the guard you've earned:
 
-## Form 3 — Variable + HashMap (window state is a frequency map)
-
-When validity depends on *what's inside* (distinct chars, char counts), the state is a map:
-
-```java
-// Longest Substring Without Repeating Characters
+```java id=noRepeatJump
 public int lengthOfLongestSubstring(String s) {
     int[] lastSeen = new int[128];
-    java.util.Arrays.fill(lastSeen, -1);
+    Arrays.fill(lastSeen, -1);
     int left = 0, best = 0;
     for (int right = 0; right < s.length(); right++) {
         char c = s.charAt(right);
-        if (lastSeen[c] >= left)                       // repeat INSIDE current window
-            left = Math.max(left, lastSeen[c] + 1);    // jump-left — with the guard!
+        left = Math.max(left, lastSeen[c] + 1);   // jump past the earlier copy, never backwards
         lastSeen[c] = right;
         best = Math.max(best, right - left + 1);
     }
@@ -95,84 +377,785 @@ public int lengthOfLongestSubstring(String s) {
 }
 ```
 
-Your logged edge lives here: the **jump-left `Math.max` guard**. Without it, an old occurrence *behind* the current `left` yanks the window backwards — silently wrong on inputs like `"abba"`. Trace `"abba"` by hand once a month until it's boring.
+Both are **O(n) time, O(1) extra space** (a 128-entry table covers the problem's letters, digits, symbols and spaces). In the jumping version a character never seen has `lastSeen = -1`, so `-1 + 1 = 0` never moves Tail. For general Unicode text, use a `HashMap<Character, Integer>` instead of the arrays.
 
-**Longest Repeating Character Replacement** adds the pattern's cleverest trick: window valid iff `windowLen − maxFreq ≤ k`. And `maxFreq` may go stale when the window shrinks — famously, **you don't need to fix it**: a stale (too-high) maxFreq only lets the window stay too big, and `best` already recorded that size legitimately; the answer can't get worse. Knowing *why* the stale max is safe is a senior-level flex — have the sentence ready.
+</HintLadder>
 
-**Fruit Into Baskets** (queued): "≤ 2 distinct types" — map of counts, shrink while `map.size() > 2`, delete keys at zero. Same template, third costume.
+**Catch the bug:** the unguarded jump.
 
-## Form 4 & 5 — one paragraph each
+```java fragment
+if (lastSeen[c] != -1) left = lastSeen[c] + 1;   // BUG: can move Tail backwards
+```
 
-**Min-So-Far** (Best Time to Buy/Sell Stock): degenerate window — track `minPrice` so far and `best = max(best, price − minPrice)` in one pass. It's "window" only in spirit; recognize it so you don't overbuild.
+On `"abba"` this returns 3 (the window “bba”) instead of 2. [Solve Longest Substring Without Repeating Characters](https://leetcode.com/problems/longest-substring-without-repeating-characters/).
 
-**Deque max** (Sliding Window Maximum, Hard): "max of each window" needs a **monotonic decreasing deque** of indices — front is always the current max; pop back while smaller than the entrant (they can never be max again), pop front when it exits the window left side. Amortized O(1) per step. This bridges into the monotonic-stack pattern.
+<h2 id="two-baskets">Chapter 5 · Two baskets</h2>
 
-## Recognition table
+<Scene chapter="Chapter 5" title="Two baskets">
 
-| You see | Form | State |
-|---------|------|-------|
-| "exactly K consecutive" | fixed | running sum / freq map |
-| "longest … such that ‹condition›" | variable, shrink-when-invalid | condition counter |
-| "shortest … with at least ‹target›" | variable, shrink-while-valid, record inside | running sum |
-| "no repeats / at most K distinct / anagram of" | variable + hashmap | freq map (+ matched count) |
-| "≤ k flips/replacements allowed" | variable — reframe as window-contents budget | violation counter |
-| "max/min of every window" | deque | monotonic deque |
-| "single pass, best pair (sell after buy)" | min-so-far | one running min |
+The barge slows past an orchard where every tree along the bank grows a single kind of fruit. A farmhand comes aboard with **two baskets**. Each basket can only hold one kind of fruit, but as much of it as you like. She'll pick exactly one fruit from each tree, moving downstream without skipping a tree, and stop the moment a tree's fruit fits neither basket.
 
-## Bug bestiary (yours, earned)
+"Where should I start," she asks, "to fill my baskets the most?"
 
-- **Jump-left without `Math.max` guard** → window travels backwards on `"abba"`-shaped inputs.
-- **Record in the wrong place** — longest records after the shrink-while; shortest records inside it. Placement error = off-by-one-window answers that pass half the tests.
-- **Shrink with `if` instead of `while`** — one entrant can invalidate by more than one step's worth.
-- **Forgetting to clean map keys at count 0** — `map.size()` lies about distinct count (Fruit Into Baskets trap).
+Head walks down the row: plum, pear, *quince*. That's three kinds for two baskets. Tail closes the stern shutter and the plum leaves view. Tally rubs plum off the slate, and the farmhand frowns. "You've rubbed out the number, but the word *plum* is still written there. Will your slate say I've still got three kinds?"
 
-<Quiz questions={[
-  {
-    q: '"Shortest subarray with sum ≥ target." Where does the answer-recording line go, and what is the while-condition?',
-    options: [
-      'After the while; while (sum < target)',
-      'INSIDE the while; while (sum >= target) — record each still-satisfying size, then shrink to hunt shorter; when the loop exits the window no longer satisfies',
-      'After the while; while (sum >= target)',
-      'Before adding nums[right]'
-    ],
-    answer: 1,
-    why: 'The shortest-flavor inversion — your specifically logged edge. Recording after the while (option 3) records an UNsatisfying window: the exact bug that passes examples and fails hidden tests.'
-  },
-  {
-    q: '"abba", no-repeat window, right on the second a. lastSeen[a]=0, left=2. Without the Math.max guard, what happens?',
-    options: [
-      'Nothing — left stays 2 either way',
-      'left would be set to lastSeen[a]+1 = 1, dragging the window BACKWARDS to include the "bb" repeat — the guard keeps left = max(2, 1) = 2',
-      'An index out of bounds',
-      'The second a is skipped'
-    ],
-    answer: 1,
-    why: 'The stale-occurrence trap: a\'s last position (0) is OUTSIDE the current window, so it must not move left. This exact trace is in your bestiary — own it cold.'
-  },
-  {
-    q: 'Longest Repeating Char Replacement: the window shrinks and maxFreq is now stale (too high). Why is NOT fixing it still correct?',
-    options: [
-      'maxFreq never actually goes stale',
-      'A too-high maxFreq only permits the window to stay a size it already legitimately achieved — best has recorded that size, and the final answer only cares about the maximum ever seen, which stale maxFreq cannot inflate beyond reality',
-      'It is a known accepted bug in all solutions',
-      'The while-loop recomputes it implicitly'
-    ],
-    answer: 1,
-    why: 'The window never shrinks below the best valid size seen; stale maxFreq can\'t create a NEW larger record without a genuinely higher frequency arriving. Explaining this earns real interview credit — most candidates memorize past it.'
-  },
-  {
-    q: 'Unseen problem: "longest subarray where you may DELETE at most one element so all remaining are 1s." First move?',
-    options: [
-      'DP over delete/keep states',
-      'Reframe: window containing at most ONE zero (the deletable one), answer = window length − 1 — the ≤k-budget disguise with k=1, plus an off-by-one for the mandatory delete',
-      'Two pointers from opposite ends',
-      'Prefix sums of zero counts'
-    ],
-    answer: 1,
-    why: 'Same unmasking as Max Consecutive Ones III (your win #2): operation-budget → window-contents budget. If this reframe fired in under a minute, the Recognition Fear is losing on schedule.'
-  }
-]} />
+</Scene>
 
-## Drill hand-off
+**Problem: Fruit Into Baskets · Variable window with a counts map**
 
-With the buddy: **Permutation in String** next (fixed + freq-map — your untouched sub-form), then the pattern boss: **Minimum Window Substring** (Hard, shrink-while-valid + matched-count). Both pending on your roadmap; the second is a Blind75 staple.
+Strip off the story and it reads: **the longest contiguous run with at most 2 distinct values**. That's the same template again, with a third costume. Keep a map from fruit type to count in view. Shrink while `map.size() > 2`. When a count drops to zero, **remove the key**. Otherwise `size()` keeps counting a fruit that has already gone.
+
+<Figure caption="Two baskets: types 2 and 3. The stretch from position 1 to 4 picks 4 fruits. The 1 at position 0 had to go when the 3 arrived.">
+  <ArrayStrip values={[1, 2, 3, 2, 2]} pointers={[{ at: 1, label: 'TAIL' }, { at: 4, label: 'HEAD' }]} tones={{ 0: 'out', 1: 'hot', 2: 'hot', 3: 'hot', 4: 'hot' }} regions={[{ from: 1, to: 4, label: '2 distinct types, length 4', tone: 'gold' }]} />
+</Figure>
+
+<Trace title="Two kinds, no more" steps={baskets} takeaway="Remember: 'at most two kinds' is a distinct-count limit. A count that reaches zero means its key must leave the map." />
+
+**What stays true:** the map's keys are exactly the distinct types in `[left..right]`, and after the `while` loop there are at most two of them.
+
+<Reveal q="What changes for “at most K kinds”?">
+
+Only the number in the `while` condition: `map.size() > k`. That generalisation is an exit-ticket problem below. Stop and notice how little changed: the window, the map and the record placement are all the same.
+
+</Reveal>
+
+<HintLadder hints={hints.baskets}>
+
+```java id=totalFruit
+public int totalFruit(int[] fruits) {
+    Map<Integer, Integer> inView = new HashMap<>();
+    int left = 0, best = 0;
+    for (int right = 0; right < fruits.length; right++) {
+        inView.merge(fruits[right], 1, Integer::sum);
+        while (inView.size() > 2) {                       // a third kind: illegal
+            int out = fruits[left++];
+            if (inView.merge(out, -1, Integer::sum) == 0) inView.remove(out);
+        }
+        best = Math.max(best, right - left + 1);
+    }
+    return best;
+}
+```
+
+**O(n) time, O(1) extra space**: the map never holds more than three keys. Fruit types are small non-negative integers here, so an `int[]` of counts plus a `distinct` counter works too.
+
+</HintLadder>
+
+**Catch the bug:** the stale key.
+
+```java fragment
+inView.merge(out, -1, Integer::sum);   // BUG: the key stays behind at count 0
+```
+
+On `[1, 2, 3, 2, 2]` the map still holds three keys after the 1 leaves. Tail keeps closing, passes Head, and runs off the end of the array: this exact input throws `ArrayIndexOutOfBoundsException`. [Solve Fruit Into Baskets](https://leetcode.com/problems/fruit-into-baskets/).
+
+<h2 id="k-repaints">Chapter 6 · The painter's strokes</h2>
+
+<Scene chapter="Chapter 6" title="The painter's strokes" mood="dusk">
+
+The cottages along the next reach have front doors painted A-red or B-blue. The town painter has enough paint for **one** door. "Which stretch of neighbouring doors could I make all one colour," she asks, "using one repaint at most?"
+
+Tally keeps a count of each colour in view and one extra number: the most doors of any single colour she has seen in a window. Head opens the bow shutter. Tail closes the stern shutter. The extra number goes up, but it never comes down, even when the doors that set it have floated out of view.
+
+"Your slate is out of date," the painter says.
+
+*"It is,"* says the Keeper. *"So prove to me that it can't give you a wrong answer."*
+
+</Scene>
+
+**Problem: Longest Repeating Character Replacement · Variable window, a cleverer legality test**
+
+A window can become all one letter with at most k repaints exactly when **window length − (count of its most common letter) ≤ k**. You keep the most common letter and repaint the rest. So keep `count[26]` and `maxFreq`, shrink while `len − maxFreq > k`, and record after.
+
+Now the pattern's cleverest trick. When Tail moves, `maxFreq` can become **stale**: higher than the true maximum in the window. You **don't need to fix it**. Here's the argument, in three steps:
+
+1. Each step adds one item and removes at most one, so **the window's length never decreases**.
+2. With a stale `maxFreq`, the test `len − maxFreq > k` passes more easily, so the window may be kept at its current length when it is not really legal. **It never grows because of the stale value.** The window only grows when it is genuinely legal: either nothing has left it yet (so every count on the slate is real), or the newcomer's count has just beaten every count seen before, which makes `maxFreq` a real count inside the current window.
+3. So `best` only ever records lengths that some legal window really had. The answer can't be inflated, and it can't be missed.
+
+Knowing *why* the stale max is safe is the senior-level flex here. Have the sentence ready: "A stale maxFreq only keeps the window at a length we already proved. Only a genuinely higher frequency can make it grow."
+
+<Figure caption="AABA: length 4, and the most common letter, A, appears 3 times. 4 − 3 = 1 door needs repainting, exactly k.">
+  <ArrayStrip values={['A', 'A', 'B', 'A', 'B', 'B', 'A']} pointers={[{ at: 0, label: 'TAIL' }, { at: 3, label: 'HEAD' }]} tones={{ 0: 'hot', 1: 'hot', 2: 'hot', 3: 'hot', 4: 'ghost', 5: 'ghost', 6: 'ghost' }} regions={[{ from: 0, to: 3, label: 'len 4 − maxFreq 3 = 1 ≤ k', tone: 'gold' }]} />
+</Figure>
+
+<Trace title="A stale number on the slate" steps={repaint} takeaway="Remember: legal means len − maxFreq ≤ k. A stale maxFreq holds the window at a size already proven; only a real, higher count lets it grow. AABABBA with k = 1 answers 4." />
+
+<Reveal q="If you did want an exact maxFreq, what would it cost?">
+
+When Tail shrinks the window, rescan all 26 counts for the true maximum. That is O(26) per step, still linear in n, and a perfectly good interview answer if you say why. The stale version is O(1) per step. It's worth knowing because explaining it shows you understand the argument, not because 26 is slow.
+
+</Reveal>
+
+<HintLadder hints={hints.repaint}>
+
+```java id=characterReplacement
+public int characterReplacement(String s, int k) {
+    int[] count = new int[26];
+    int left = 0, maxFreq = 0, best = 0;
+    for (int right = 0; right < s.length(); right++) {
+        maxFreq = Math.max(maxFreq, ++count[s.charAt(right) - 'A']);
+        while (right - left + 1 - maxFreq > k) {   // illegal (by a possibly stale maxFreq)
+            count[s.charAt(left) - 'A']--;
+            left++;
+        }
+        best = Math.max(best, right - left + 1);
+    }
+    return best;
+}
+```
+
+**O(n) time, O(1) extra space** for the problem's uppercase letters. Because `maxFreq` never drops, the `while` runs at most once per step. An `if` would behave the same here, but the `while` keeps the template honest.
+
+</HintLadder>
+
+**Catch the bug:** recording `maxFreq + k` instead of the window's length. It forgets that the repaints must land on doors that exist: on `"AAAA"` with k = 2 it claims 6, but there are only 4 doors. The record is always `right − left + 1`. [Solve Longest Repeating Character Replacement](https://leetcode.com/problems/longest-repeating-character-replacement/).
+
+<Part n="Part Three" title="The shortest that qualifies">
+
+Head grows the window until it is good enough. Then Tail squeezes it, and every squeeze that still qualifies goes in the log before Tail moves again.
+
+</Part>
+
+<h2 id="toll">Chapter 7 · The toll of seven</h2>
+
+<Scene chapter="Chapter 7" title="The toll of seven" mood="storm">
+
+Rain on the glass. The lock-keeper at Windmere's lower lock wants **seven coins** to let the barge through, and the barge has none. Along the bank, each stall will drop a few coins on deck as the barge passes. The stalls are in a fixed order and every one gives at least one coin. The Keeper wants the **shortest stretch of stalls** that adds up to seven or more. She says the crew won't stop at more stalls than they have to.
+
+Head collects: 2, 3, 1, 2. That's eight coins. "Done!" says Head. "We write down four stalls and keep going."
+
+*"Keep going where?"* asks the Keeper. *"You have enough. Is all of it necessary?"*
+
+</Scene>
+
+**Problem: Minimum Size Subarray Sum · Shortest qualifying window**
+
+This is the other rhythm. The window **qualifies** when `sum >= target`. Since every value is positive, a qualifying window keeps qualifying as it grows, so once it qualifies, growing only makes it longer. The useful move now is to **squeeze**:
+
+- Head adds `nums[right]`.
+- **While** `sum >= target`: **record first** (this window qualifies), then Tail drops `nums[left]`.
+- When the loop exits, the window no longer qualifies, so it must not be recorded.
+
+This is your logged edge: `while (sum >= target)` with the **record inside the loop**. The two rhythms are mirror images. In longest problems the window is invalid inside the loop, so you record after. In shortest problems it is valid inside the loop, so you record there.
+
+<Figure caption="The shortest stretch that pays the toll: 4 + 3 = 7, length 2. Along the way the log saw lengths 4, 4, 3, 3 and 2, every one of them a qualifying window, logged before Tail moved.">
+  <ArrayStrip values={[2, 3, 1, 2, 4, 3]} pointers={[{ at: 4, label: 'TAIL' }, { at: 5, label: 'HEAD' }]} tones={{ 0: 'out', 1: 'out', 2: 'out', 3: 'out', 4: 'hot', 5: 'hot' }} regions={[{ from: 4, to: 5, label: 'sum 7 ≥ 7, length 2', tone: 'green' }]} />
+</Figure>
+
+<Trace title="Record, then squeeze" steps={toll} takeaway="Remember: shortest means record inside the while, before Tail moves; shrink while the window still qualifies. [2, 3, 1, 2, 4, 3] with target 7 answers 2." />
+
+**Why Tail may move on:** once `[left..right]` qualifies, it is the shortest qualifying window that starts at `left`. Any window that starts at `left` and ends later is longer. Logging it settles `left` for good.
+
+**What stays true:** at the top of each step, `[left..right-1]` doesn't qualify (the loop squeezed until it stopped), and `best` is the shortest qualifying length seen so far.
+
+<Reveal q="Why must every value be positive for this to work?">
+
+With a negative value, growing the window can *lower* the sum, and squeezing it can *raise* the sum. Then "it qualifies, so every bigger window qualifies" is false, and Tail can't safely skip anything. Side quest 5 shows a window that gives the wrong answer with negatives, and the tool that fixes it.
+
+</Reveal>
+
+<HintLadder hints={hints.toll}>
+
+```java id=minSubArrayLen
+public int minSubArrayLen(int target, int[] nums) {
+    int left = 0, sum = 0, best = Integer.MAX_VALUE;
+    for (int right = 0; right < nums.length; right++) {
+        sum += nums[right];                       // Head collects
+        while (sum >= target) {                   // still qualifies: log it, then squeeze
+            best = Math.min(best, right - left + 1);
+            sum -= nums[left++];
+        }
+    }
+    return best == Integer.MAX_VALUE ? 0 : best;   // 0 means no stretch pays the toll
+}
+```
+
+**O(n) time, O(1) extra space.** Since `target >= 1`, an empty window (sum 0) never qualifies, so Tail can't pass Head. Under LeetCode's limits (n up to 10⁵, values up to 10⁴) the total stays below 2³¹. LeetCode's follow-up asks for an O(n log n) version: prefix sums plus binary search for each start (see the Binary Search lesson).
+
+</HintLadder>
+
+**Catch the bug:** two classic mistakes, and you've met the first one:
+
+```java fragment
+while (sum >= target) sum -= nums[left++];
+best = Math.min(best, right - left + 1);   // BUG: records a window that no longer qualifies
+```
+
+On `[2, 3, 1, 2, 4, 3]` with target 7 this returns 1: it logged the single stall `[2]`, which pays only 2. The other mistake is squeezing with `if` instead of `while`. Then you only squeeze once per step. On `[1, 1, 1, 10]` with target 10 you'd return 4 instead of 1. [Solve Minimum Size Subarray Sum](https://leetcode.com/problems/minimum-size-subarray-sum/).
+
+<h2 id="shopping-list">Chapter 8 · The cook's list</h2>
+
+<Scene chapter="Chapter 8" title="The cook's list" mood="night">
+
+The barge's cook comes up from the galley with a scrap of paper: **A, B, C**. That's an apple, a bread roll and a cheese. The night market stalls along the bank each sell one thing. She'll run along the towpath and buy from one unbroken stretch of stalls, and she wants that stretch as short as possible. The rain is coming back.
+
+Tally needs a different kind of slate this time. She doesn't just need to know what is in view. She needs to know **how much of the list is still missing**.
+
+Head opens the bow shutter: A, D, O, B, E, C. "Everything's in view!" Six stalls. The cook is already pulling on her boots.
+
+*"Is it,"* asks the Keeper, *"the shortest it could be?"*
+
+</Scene>
+
+**Problem: Minimum Window Substring · Shortest qualifying window with a need tally**
+
+Qualifies means **the window contains every character of `t`, with multiplicity**. This is the boss of the pattern. It combines Chapter 7's rhythm with a counts slate.
+
+- `need[c]` starts as the count of `c` in `t`. Head decrements it for each character that comes in. A negative value means **surplus** in view.
+- `missing` counts how many characters of `t` are still not covered. Head decreases it **only when the incoming character was still needed** (`need[c] > 0` before the decrement).
+- While `missing == 0`: record, then Tail lets a character go. If that pushes `need[out]` above 0, the window stops qualifying, so `missing++`.
+
+<Figure caption="“BANC”, positions 9–12, is the shortest stretch holding A, B and C. The first qualifying window was “ADOBEC” (positions 0–5, length 6).">
+  <ArrayStrip values={['A', 'D', 'O', 'B', 'E', 'C', 'O', 'D', 'E', 'B', 'A', 'N', 'C']} pointers={[{ at: 9, label: 'TAIL' }, { at: 12, label: 'HEAD' }]} tones={{ 0: 'out', 1: 'out', 2: 'out', 3: 'out', 4: 'out', 5: 'out', 6: 'out', 7: 'out', 8: 'out', 9: 'hot', 10: 'hot', 11: 'hot', 12: 'hot' }} regions={[{ from: 0, to: 5, label: 'first qualifying: length 6', tone: 'dim' }, { from: 9, to: 12, label: 'shortest: length 4', tone: 'green' }]} />
+</Figure>
+
+<Trace title="What is still missing?" steps={shoppingList} takeaway="Remember: missing drops only for a character that was still needed; surplus makes need[c] negative. Record inside the while; a departing character that was needed re-opens the hunt." />
+
+**Why it works:** this is Chapter 7's argument with "qualifies" meaning "covers `t`". Once `[left..right]` covers `t`, it is the shortest covering window that starts at `left`, so log it and Tail moves on. Every right end gets its shortest covering window logged.
+
+**What stays true:** `need[c]` is (count of c in t) − (count of c in the window), and `missing` is the sum of the positive `need` values. It is 0 exactly when the window covers `t`.
+
+<Reveal q="Why can't you return the first window that covers t?">
+
+Because the first one is the shortest window that *ends* there, not the shortest overall. “ADOBEC” covers A, B, C at length 6, but “BANC”, much later, does it in 4. Every right end has to be given its chance.
+
+</Reveal>
+
+<HintLadder hints={hints.shopping}>
+
+```java id=minWindow
+public String minWindow(String s, String t) {
+    int[] need = new int[128];
+    for (char c : t.toCharArray()) need[c]++;
+    int missing = t.length();                   // characters of t not yet covered
+    int left = 0, bestStart = 0, bestLen = Integer.MAX_VALUE;
+    for (int right = 0; right < s.length(); right++) {
+        char c = s.charAt(right);
+        if (need[c] > 0) missing--;             // this one was still needed
+        need[c]--;                              // negative = surplus in view
+        while (missing == 0) {                  // covers t: log it, then squeeze
+            if (right - left + 1 < bestLen) { bestLen = right - left + 1; bestStart = left; }
+            char out = s.charAt(left++);
+            need[out]++;
+            if (need[out] > 0) missing++;       // we just let go of something t needed
+        }
+    }
+    return bestLen == Integer.MAX_VALUE ? "" : s.substring(bestStart, bestStart + bestLen);
+}
+```
+
+**O(|s| + |t|) time, O(1) extra space** (128 counters for the problem's English letters). LeetCode guarantees `t` is non-empty and the shortest window is unique. This version returns the leftmost one if there are ties. Recording a start and length, rather than building substrings in the loop, keeps it linear.
+
+</HintLadder>
+
+**Catch the bug:** decrementing `missing` for every character that appears in `t`, even surplus ones. With `s = "aa"` and `t = "ab"`, the second `a` would drop `missing` to 0 and report “aa” as covering “ab”. The correct answer is “”. [Solve Minimum Window Substring](https://leetcode.com/problems/minimum-window-substring/).
+
+<Part n="Part Four" title="Windows in disguise">
+
+Sometimes the slate can't be one number. Sometimes the window is so lopsided that it barely looks like one.
+
+</Part>
+
+<h2 id="tallest-mast">Chapter 9 · The tallest mast</h2>
+
+<Scene chapter="Chapter 9" title="The tallest mast" mood="dawn">
+
+The harbour is full of tall ships, and the bridge-keeper downstream wants a report every time the barge moves one berth: **the tallest mast in view**. The glass is three berths wide.
+
+A sum can drop the boat that leaves and add the one that arrives. A maximum can't. If the tallest mast just floated out of view, what was second tallest?
+
+The Lookout climbs the barge's own mast with a short list in her hand. "I don't keep every ship," she calls down. "When a taller one arrives, every shorter mast that came before it is useless to me. It will leave the glass first, and it can never be the tallest while the newcomer is here."
+
+She scratches three names off her list as a big clipper slides into view.
+
+</Scene>
+
+**Problem: Sliding Window Maximum · Fixed window plus a monotonic deque**
+
+The window is a fixed k wide, but its state is "the maximum", and you can't subtract from a maximum. The Lookout's list is a **deque of indices whose values strictly decrease from front to back**:
+
+- **Back:** before Head's index joins, pop every index whose value is `<=` the newcomer's. Those masts are older and no taller, so they'll leave the window before the newcomer does and can never be the maximum again.
+- **Front:** if the front index has fallen out of the window (`<= right - k`), pop it.
+- **Answer:** once the first full window exists, the front is the maximum.
+
+<Figure caption="Window positions 1–3: masts 3, −1, −3. The Lookout's queue holds the same three, already in decreasing order, so the front, 3, is the tallest in view. When 5 arrives at position 4, all three are popped from the back.">
+  <ArrayStrip values={[1, 3, -1, -3, 5, 3, 6, 7]} pointers={[{ at: 1, label: 'TAIL' }, { at: 3, label: 'HEAD' }]} tones={{ 0: 'out', 1: 'hot', 2: 'hot', 3: 'hot', 4: 'ghost', 5: 'ghost', 6: 'ghost', 7: 'ghost' }} regions={[{ from: 1, to: 3, label: 'k = 3, max 3', tone: 'gold' }]} />
+  <ArrayStrip name="queue (index: value)" values={['1: 3', '2: −1', '3: −3']} indices={false} pointers={[{ at: 0, label: 'FRONT = MAX', tone: 'green' }, { at: 2, label: 'BACK', tone: 'purple' }]} />
+</Figure>
+
+<Trace title="Who can still be the tallest?" steps={tallestMast} takeaway="Remember: pop the back while it's no taller than the newcomer; pop the front once its index leaves the window; read the front. [1, 3, −1, −3, 5, 3, 6, 7], k = 3 gives [3, 3, 5, 5, 6, 7]." />
+
+**Why it works:** a popped index `i` had a newcomer `j > i` with `nums[j] >= nums[i]`. Every future window that contains `i` also contains `j`, so `j` always offers at least as much. Throwing `i` away loses nothing.
+
+**What stays true:** the deque holds indices inside the window, in increasing order, with strictly decreasing values. The front is the maximum of the window.
+
+<Reveal q="Each step may pop many items. How is this still O(n)?">
+
+Every index is pushed exactly once and popped at most once, from the front or from the back. Over the whole run that's at most 2n deque operations, so the cost is **amortised O(1)** per step. One expensive step is paid for by many cheap ones before it.
+
+</Reveal>
+
+<HintLadder hints={hints.mast}>
+
+```java id=maxSlidingWindow
+public int[] maxSlidingWindow(int[] nums, int k) {
+    int n = nums.length;
+    int[] result = new int[n - k + 1];
+    Deque<Integer> deque = new ArrayDeque<>();   // indices; values strictly decreasing front to back
+    for (int right = 0; right < n; right++) {
+        while (!deque.isEmpty() && nums[deque.peekLast()] <= nums[right]) deque.pollLast();
+        deque.offerLast(right);
+        if (deque.peekFirst() <= right - k) deque.pollFirst();   // the front has left the glass
+        if (right >= k - 1) result[right - k + 1] = nums[deque.peekFirst()];
+    }
+    return result;
+}
+```
+
+**O(n) time** (amortised), **O(k) extra space** for the deque plus the output. One `if` is enough at the front, because exactly one index (`right - k`) leaves the window each step, and if it's still in the deque it is at the front. LeetCode guarantees `1 <= k <= n`.
+
+</HintLadder>
+
+**Catch the bug:** an off-by-one at the front, as in `if (deque.peekFirst() < right - k)`. The expired index survives one extra step. On `[5, 1, 1]` with k = 2 you'd report `[5, 5]` instead of `[5, 1]`. Store **indices**, not values, or you can't tell when the front has left. [Solve Sliding Window Maximum](https://leetcode.com/problems/sliding-window-maximum/).
+
+<h2 id="buy-low">Chapter 10 · Buy low, sell later</h2>
+
+<Scene chapter="Chapter 10" title="Buy low, sell later" mood="dusk">
+
+A spice trader rides the barge for a week. Every day the price of saffron is chalked on the lock-keeper's board. She may buy **once** and sell **once**, and the sale must come on a later day than the purchase. That's the river: you can't sell on a day you've already floated past.
+
+"Easy," says Head. "Find the highest price and the lowest price, and subtract."
+
+The trader laughs. The highest price was on the first morning, *before* the cheapest day. You can't sell saffron you haven't bought yet.
+
+*"So what,"* the Keeper asks Tail, *"do you need to remember as the days go by?"*
+
+Tail thinks. Only one thing: the cheapest day so far.
+
+</Scene>
+
+**Problem: Best Time to Buy and Sell Stock · The low-water mark**
+
+Picture a window from the buy day (Tail) to the sell day (Head). Head walks forward one day at a time. The only state worth keeping is **the lowest price so far**. If today is a new low, Tail jumps to today: any later sale is better off buying here. Otherwise, selling today earns `price − minPrice`, so keep the best of those.
+
+It is a window "only in spirit": there's no shrinking loop, because the best buy day for any sale is simply the cheapest earlier day. Recognise it so you don't overbuild.
+
+<Figure caption="Buy at 1 on day 1, sell at 6 on day 4: profit 5. Selling at 7 isn't allowed, because day 0 comes before the purchase.">
+  <Bars heights={[7, 1, 5, 3, 6, 4]} pointers={[{ at: 1, label: 'BUY (TAIL)' }, { at: 4, label: 'SELL (HEAD)', tone: 'green' }]} tones={{ 0: 'out', 1: 'hot', 4: 'hot' }} />
+</Figure>
+
+<Trace title="The cheapest day so far" steps={buyLow} takeaway="Remember: keep the lowest price so far; each day, consider selling against it. Max minus min ignores time order. [7, 1, 5, 3, 6, 4] answers 5." />
+
+**What stays true:** after processing day `i`, `minPrice` is the cheapest price on days 0..i, and `best` is the best profit from any buy day ≤ sell day ≤ i.
+
+<HintLadder hints={hints.stock}>
+
+The low-water-mark version:
+
+```java id=maxProfit
+public int maxProfit(int[] prices) {
+    int minPrice = Integer.MAX_VALUE, best = 0;
+    for (int price : prices) {
+        minPrice = Math.min(minPrice, price);       // the cheapest day so far (maybe today)
+        best = Math.max(best, price - minPrice);    // sell today against it
+    }
+    return best;
+}
+```
+
+The same idea written with the Guild's shutters, so you can see the window:
+
+```java id=maxProfitWindow
+public int maxProfit(int[] prices) {
+    int buy = 0, best = 0;                          // Tail = buy day
+    for (int sell = 1; sell < prices.length; sell++) {   // Head = sell day
+        if (prices[sell] < prices[buy]) buy = sell;     // a new low: Tail jumps here
+        else best = Math.max(best, prices[sell] - prices[buy]);
+    }
+    return best;
+}
+```
+
+Both are **O(n) time, O(1) extra space**. If prices only fall, the best is 0: don't trade. Buying and selling on the same day gives 0, which is allowed as "no profit".
+
+</HintLadder>
+
+**Catch the bug:** `max(prices) − min(prices)` ignores time order. On `[7, 1, 5, 3, 6, 4]` it gives 6 (buy at 1 *after* selling at 7), but the answer is 5. On `[2, 1]` it gives 1, but the answer is 0. [Solve Best Time to Buy and Sell Stock](https://leetcode.com/problems/best-time-to-buy-and-sell-stock/).
+
+<Part n="Part Five" title="The Keeper changes one rule">
+
+Side quests. Same canal, same shutters, one rule different. This is where memorised templates break and understanding holds.
+
+</Part>
+
+<Scene title="Side quests" mood="night">
+
+The evening you finish Chapter 10, there's a bundle of cards on your bunk in the Keeper's sharp hand. Each one is a problem you've already solved, with one rule crossed out and a new one written above it.
+
+*"A route you remember is a route,"* says the note on top. *"A reason you remember is a map."*
+
+</Scene>
+
+<h2 id="exactly-k">Side quest 1 · Exactly K kinds</h2>
+
+**The card says:** the orchard again, but now count **every** contiguous run of trees with **exactly** k kinds of fruit. Don't look for the longest one.
+
+"Exactly k" is not monotone. Growing a window can push it from k kinds to k + 1, and shrinking can drop it to k − 1, so neither shutter knows which way to go. But **"at most k"** is monotone, and counting it is easy. For each right end, every start from `left` to `right` gives a window with at most k kinds. That's `right − left + 1` windows, all counted with one addition.
+
+Then subtract: **exactly(k) = atMost(k) − atMost(k − 1)**.
+
+<Reveal q="Check it on [1, 2, 1, 2, 3] with k = 2. What are atMost(2), atMost(1) and the answer?">
+
+atMost(2): right ends 0..4 contribute 1, 2, 3, 4, and then 2 (the 3 forces Tail to position 3). Total **12**. atMost(1): every right end can only keep itself, because neighbours always differ, so the total is **5**. Exactly 2 kinds: 12 − 5 = **7**. Those are [1,2], [2,1], [1,2], [2,3], [1,2,1], [2,1,2] and [1,2,1,2].
+
+</Reveal>
+
+<HintLadder hints={hints.exactlyK}>
+
+```java id=subarraysWithKDistinct
+public int subarraysWithKDistinct(int[] nums, int k) {
+    return atMost(nums, k) - atMost(nums, k - 1);
+}
+
+private int atMost(int[] nums, int k) {
+    Map<Integer, Integer> inView = new HashMap<>();
+    int left = 0, total = 0;
+    for (int right = 0; right < nums.length; right++) {
+        inView.merge(nums[right], 1, Integer::sum);
+        while (inView.size() > k) {
+            int out = nums[left++];
+            if (inView.merge(out, -1, Integer::sum) == 0) inView.remove(out);
+        }
+        total += right - left + 1;      // every legal window that ends at right
+    }
+    return total;
+}
+```
+
+**O(n) time** (two passes), **O(k) extra space** for the map. `atMost(0)` correctly returns 0, because every window gets emptied. Totals stay below n² / 2, which is about 2 × 10⁸ at LeetCode's limit of 2 × 10⁴, so they fit an `int`. Use `long` for bigger inputs.
+
+</HintLadder>
+
+**Transfer test:** "count subarrays with exactly k odd numbers" uses the same subtraction. What plays the role of "kinds"?
+
+<h2 id="delete-one">Side quest 2 · Delete one lamp</h2>
+
+**The card says:** the quay again, but now you **must remove exactly one lamp** from the row. The lamps close up around the gap. What's the longest run of lit lamps you can make?
+
+This is your old quiz question, and it is the Chapter 3 reframe with k = 1. The window may contain **at most one zero**: that's the one you delete. The answer is **window length − 1**, because the deletion is mandatory even when the window has no zero.
+
+<Reveal q="[1, 1, 1] has no dark lamp at all. What's the answer, and why isn't it 3?">
+
+**2.** You must delete one element, so one of the lit lamps goes. That's exactly why the record is `right − left`, not `right − left + 1`. Likewise `[0]` answers 0.
+
+</Reveal>
+
+<HintLadder hints={hints.deleteOne}>
+
+```java id=longestSubarray
+public int longestSubarray(int[] nums) {
+    int left = 0, zeros = 0, best = 0;
+    for (int right = 0; right < nums.length; right++) {
+        if (nums[right] == 0) zeros++;
+        while (zeros > 1) {                       // at most one lamp to delete
+            if (nums[left] == 0) zeros--;
+            left++;
+        }
+        best = Math.max(best, right - left);      // window length minus the deleted one
+    }
+    return best;
+}
+```
+
+**O(n) time, O(1) extra space.** `[0, 1, 1, 1, 0, 1, 1, 0, 1]` answers 5: delete the zero at position 4.
+
+</HintLadder>
+
+**Transfer test:** if you could delete up to k elements but had to delete at least one, what would change: the `while` condition, the record, or both?
+
+<h2 id="product-below">Side quest 3 · Products below K</h2>
+
+**The card says:** the stalls now give you a **multiplier** each (all at least 1). Count every contiguous run whose product is **strictly less than** k.
+
+Two rules changed at once: **product instead of sum**, and **count instead of best**. Products of positive integers only grow as the window grows, so the monotone promise survives. Shrink while `product >= k`, by dividing, which is exact because the product is built from these very numbers. Then every window that ends at `right` and starts at `left` or later qualifies, so add `right − left + 1`.
+
+<Reveal q="Why does the code start with “if (k <= 1) return 0”?">
+
+Every value is at least 1, so every product is at least 1, and nothing is below a k of 0 or 1. Without the guard, the loop would keep dividing after the window is empty (the product is 1, which is still ≥ k), and Tail would run past Head and off the end of the array.
+
+</Reveal>
+
+<HintLadder hints={hints.product}>
+
+```java id=numSubarrayProductLessThanK
+public int numSubarrayProductLessThanK(int[] nums, int k) {
+    if (k <= 1) return 0;                     // every product is at least 1
+    long product = 1;
+    int left = 0, count = 0;
+    for (int right = 0; right < nums.length; right++) {
+        product *= nums[right];
+        while (product >= k) product /= nums[left++];
+        count += right - left + 1;            // all windows ending at right, starting at left or later
+    }
+    return count;
+}
+```
+
+**O(n) time, O(1) extra space.** `[10, 5, 2, 6]` with k = 100 gives 8. Before multiplying, the product is below k (at most 10⁶ under LeetCode's limits) and each value is at most 1000, so the product stays far from overflow. `long` makes that obvious.
+
+</HintLadder>
+
+**Transfer test:** if values could be 0, which promise would break? (Hint: what happens to a product, and to dividing, when a zero is in view?)
+
+<h2 id="cards">Side quest 4 · Window on the leftovers</h2>
+
+**The card says:** cards are laid in a row. You take exactly k cards, each one from **either end**, and score their points. What's the maximum score?
+
+The cards you take come from both ends, so they aren't contiguous. That doesn't look like a window. But **the cards you leave behind are contiguous**: one block of n − k cards in the middle. Maximising what you take is the same as **minimising the block you leave**. So run a fixed window of width n − k for the minimum sum, and subtract it from the total.
+
+<Figure caption="[1, 2, 3, 4, 5, 6, 1], k = 3. The leftover block of 4 with the smallest sum is 1 + 2 + 3 + 4 = 10. Total 22 − 10 = 12, from taking 5, 6 and 1 off the right end.">
+  <ArrayStrip values={[1, 2, 3, 4, 5, 6, 1]} tones={{ 0: 'out', 1: 'out', 2: 'out', 3: 'out', 4: 'hot', 5: 'hot', 6: 'hot' }} regions={[{ from: 0, to: 3, label: 'left behind: sum 10', tone: 'dim' }, { from: 4, to: 6, label: 'taken: 12', tone: 'gold' }]} />
+</Figure>
+
+<HintLadder hints={hints.cards}>
+
+```java id=maxScore
+public int maxScore(int[] cardPoints, int k) {
+    int n = cardPoints.length, keep = n - k;   // the cards left behind form one block
+    int total = 0;
+    for (int p : cardPoints) total += p;
+    int window = 0;
+    for (int i = 0; i < keep; i++) window += cardPoints[i];
+    int smallest = window;
+    for (int right = keep; right < n; right++) {
+        window += cardPoints[right] - cardPoints[right - keep];
+        smallest = Math.min(smallest, window);
+    }
+    return total - smallest;
+}
+```
+
+**O(n) time, O(1) extra space.** When k = n, `keep` is 0 and the empty block sums to 0, so you take everything.
+
+</HintLadder>
+
+**Transfer test:** "remove elements from either end so the removed ones sum to exactly x, using as few as possible" (Minimum Operations to Reduce X to Zero). What is the complement window, and is it longest or shortest?
+
+<h2 id="negatives">Side quest 5 · When values go negative</h2>
+
+**The card says:** Chapter 7 again (shortest run with sum at least k), but now **some stalls take coins away**.
+
+Try the old loop on `[-1, 3]` with k = 3. The running sum goes −1, then 2, and never reaches 3, so the loop never squeezes and reports "no answer". But `[3]` alone qualifies. Tail needed to drop the −1 to *raise* the sum, and the template only squeezes after the window already qualifies. The monotone promise is gone.
+
+The fix changes tools. **Prefix sums** turn every subarray sum into `prefix[end] − prefix[start]`. For each end you want the **latest** start with `prefix[start] <= prefix[end] − k`. A **monotonic deque** of start indices, with increasing prefix values, finds it in amortised O(1):
+
+- **Front:** while `prefix[end] − prefix[front] >= k`, record `end − front` and pop the front. A later end could only make a longer window from that start.
+- **Back:** while `prefix[back] >= prefix[end]`, pop the back. A start with a higher (or equal) prefix that is also earlier is never better than `end` as a start.
+
+<Reveal q="Why is popping the back safe?">
+
+Take an earlier start `i` with `prefix[i] >= prefix[end]`. Any future window from `i` sums to no more than the same window from `end`, and the window from `end` is shorter. So `i` is never the best start again.
+
+</Reveal>
+
+<HintLadder hints={hints.negatives}>
+
+```java id=shortestSubarray
+public int shortestSubarray(int[] nums, int k) {
+    int n = nums.length;
+    long[] prefix = new long[n + 1];
+    for (int i = 0; i < n; i++) prefix[i + 1] = prefix[i] + nums[i];
+    int best = n + 1;
+    Deque<Integer> starts = new ArrayDeque<>();   // candidate starts, prefix values increasing
+    for (int end = 0; end <= n; end++) {
+        while (!starts.isEmpty() && prefix[end] - prefix[starts.peekFirst()] >= k)
+            best = Math.min(best, end - starts.pollFirst());
+        while (!starts.isEmpty() && prefix[starts.peekLast()] >= prefix[end])
+            starts.pollLast();
+        starts.offerLast(end);
+    }
+    return best <= n ? best : -1;
+}
+```
+
+**O(n) time, O(n) extra space.** `[2, -1, 2]` with k = 3 answers 3, and `[-1, 3]` answers 1. Prefix sums go in `long` because they can exceed an `int`.
+
+</HintLadder>
+
+**Transfer test:** Sliding Window Maximum (Chapter 9) and this problem both keep a monotonic deque. Over what values is each deque monotonic, and what does popping the front mean in each?
+
+<Part n="Epilogue" title="Beyond the glass">
+
+When the window is the wrong tool, which towns lie downstream, and the exam that proves you can frame a window yourself.
+
+</Part>
+
+<h2 id="choose-the-tool">When the glass lies</h2>
+
+<Scene title="The tidal reach" mood="storm">
+
+Below the last lock, the canal meets the tide, and the stalls there trade in debt as well as coin. Some drop coins on deck, and some take them back. The Keeper asks for every stretch that nets **exactly one** coin.
+
+Head and Tail try the old routine. 1 coin, then −1, then 1. The sum rises, falls, rises. Should Tail close? Should Head open? Every move could help, and every move could hurt.
+
+*"Your shutters didn't fail,"* the Keeper says at last. *"Their promise did. It needed every stall to give, and nobody checked."*
+
+</Scene>
+
+The sliding window needs a **monotone** promise: growing never repairs an illegal window, or growing never breaks a qualifying one. Check it before you build. It breaks in three common ways:
+
+- **Negative values with sum targets.** "Count subarrays with sum exactly k" on `[1, -1, 1]` with k = 1 has 3 answers: `[1]` twice and `[1, -1, 1]`. No shutter rule finds them. Use **prefix sums with a hash map** of how many times each prefix has appeared: for each new prefix p, add the count of `p − k`. See the <a href={`${BASE}dsa/lessons/prefix-sum/`}>Prefix Sum</a> lesson.
+- **"Exactly" conditions.** Rewrite them as atMost(k) − atMost(k − 1) (Side quest 1) or switch to prefix sums.
+- **Non-contiguous choices.** Subsequences, or "pick any k items", aren't windows. Look at heaps, sorting, or DP. Sometimes the leftovers are contiguous even when the picks aren't (Side quest 4).
+
+```java id=subarraySum
+public int subarraySum(int[] nums, int k) {
+    Map<Integer, Integer> seen = new HashMap<>();   // prefix sum -> how many times seen
+    seen.put(0, 1);                                 // the empty prefix
+    int prefix = 0, count = 0;
+    for (int x : nums) {
+        prefix += x;
+        count += seen.getOrDefault(prefix - k, 0);  // earlier starts that make the sum exactly k
+        seen.merge(prefix, 1, Integer::sum);
+    }
+    return count;
+}
+```
+
+**O(n) expected time, O(n) extra space.** It doesn't care about signs, because it never moves a shutter.
+
+<Reveal q="Does every sliding-window problem need positive numbers?">
+
+No. Counting problems (dark lamps, distinct kinds, repeated letters) are monotone whatever the values are: adding an item never lowers a count. Fixed windows need no promise at all, since you visit every window. Only **sum or product targets** depend on the sign. Name the actual monotone fact each time, not "positive" as a ritual.
+
+</Reveal>
+
+<h2 id="wider-family">The neighbouring towns · How the other roadmap patterns connect</h2>
+
+Windmere isn't the only town on the water. Your roadmap gives some of these ideas their own lessons. Keep those boundaries, but recognise the shared idea: **a contiguous stretch whose state you update instead of recompute**.
+
+| The idea | What it shares with the window | Where it lives |
+|---|---|---|
+| Two boundaries that only move forward | The window is two pointers whose gap is the subarray; Arraytown's Read/Write is its cousin | <a href={`${BASE}dsa/lessons/two-pointers/`}>Arrays & Two Pointers</a> |
+| Sum of any range, signs allowed | Subtract two prefix totals instead of moving shutters | <a href={`${BASE}dsa/lessons/prefix-sum/`}>Prefix Sum</a> |
+| Next greater / smaller element | The same "pop the back while it's no better" discipline as the Lookout's deque | <a href={`${BASE}dsa/lessons/stacks/`}>Stacks</a> |
+| Median or k-th of every window | The state needs two heaps, with lazy deletion as items leave | <a href={`${BASE}dsa/lessons/heaps/`}>Heaps</a> |
+| Shortest qualifying length, O(n log n) | Binary search on the length, or on prefix sums for each start | <a href={`${BASE}dsa/lessons/binary-search/`}>Binary Search</a> |
+| Requests in the last N seconds | The same window, over time instead of positions | <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter (system design)</a> |
+
+**A window is not just any two pointers.** Opposite-end pointers (Container With Most Water) throw away pairs. A window throws away *start positions*, and needs a monotone property to do it.
+
+**A fixed window needs no proof.** It visits every window of width k. The proof only matters when the width changes.
+
+<h2 id="exit-ticket">The Guild exam · Frame a window with the labels removed</h2>
+
+<Scene title="No chapter titles" mood="dawn">
+
+On the morning of the exam, the Keeper hands you a sheet with no chapter names and no hints. There's just a problem, a pen, and the three questions carved on the barge rail.
+
+*"Pick one,"* she says. *"Before you write any code, tell me what's on the slate, why each shutter move is safe, and where the log entry goes."*
+
+</Scene>
+
+Choose one. Use your editor, keep the lesson code closed, and write down the slate, the shutter rule and the record placement before you code.
+
+1. **Longest run with at most K kinds.** A string; the longest substring with at most k distinct characters. Test k = 0, an empty string, and a string with fewer than k distinct characters.
+2. **Exactly k odd.** Count subarrays that contain exactly k odd numbers. Test all-even input, k larger than the number of odds, and a long run of evens between odds.
+3. **Every jumble.** Return every start index where a substring of `s` is an anagram of `p`. Test `p` longer than `s`, repeated letters in `p`, and overlapping answers like `s = "abab"`, `p = "ab"`.
+
+<Reveal q="I've written and tested it. What should my reasoning contain?">
+
+**At most K kinds:** a counts map; shrink while `map.size() > k`, removing keys at zero; record after the loop. It's monotone because adding a character never lowers the distinct count. With k = 0, every window is emptied right away and the answer is 0.
+
+**Exactly k odd:** `atMost(k) − atMost(k − 1)`, where the slate counts odd numbers and each right end adds `right − left + 1`. Equivalently, map odd → 1 and even → 0, then count subarrays with sum exactly k using prefix counts.
+
+**Every jumble:** a fixed pane of width `p.length()`, a `diff` table and an `unbalanced` counter as in Chapter 2. Record `right − k + 1` every time `unbalanced == 0`; don't stop at the first. `"abab"` with `"ab"` gives `[0, 1, 2]`.
+
+Now explain why a slightly wrong version fails on one of your tests. That counterexample is stronger evidence than a memorised template.
+
+</Reveal>
+
+Passing this once is a checkpoint, not a finish line. Rebuild one of the solutions on another day, with a different input and without the headings choosing the pattern for you.
+
+<h2 id="mixed-recall">Quick recall · Keep the rule warm</h2>
+
+Close the code. Name the slate, the shutter rule and where the log entry goes. This short round warms you up for the independent practice below.
+
+<Trace title="Which window is this?" steps={mixedReview} takeaway="Now try the independent session: no pattern title, a new input, and your explanation before the rubric." />
+
+<h2 id="independent-practice">Night watch · The problem won't name its pattern</h2>
+
+The review queue starts with due concepts, then new ones. Hints or corrected attempts bring a concept back tomorrow. Successful recall at a scheduled review stretches the interval to 3, 7, then 14 days. Your reasoning is **self-checked**; nothing here automatically marks a roadmap problem solved.
+
+<Practice pattern="sliding-window" />
+
+<h2 id="cheat-sheet">The Keeper's notebook</h2>
+
+| When you see… | Start with… | The promise to keep |
+|---|---|---|
+| Best sum or average of exactly k consecutive | Build one pane; add the newcomer, drop the item k back | `sum` is exactly the current k items; `best` starts at the first pane |
+| Is some permutation or anagram of p in s | Fixed pane of width `p.length()`; `diff` table + `unbalanced` counter | `unbalanced == 0` exactly when the counts match |
+| Longest run with at most k flips or zeros | Reframe as "at most k zeros in view"; shrink while `zeros > k` | After the loop the window is legal; record after |
+| Longest substring with no repeats | Counts, shrink while the newcomer repeats; or jump with `Math.max` | Tail never moves backwards |
+| Longest run with at most 2 (or K) kinds | Counts map; shrink while `size() > K`; remove keys at zero | Map keys are exactly the kinds in view |
+| Longest same-letter run with at most k changes | Legal iff `len − maxFreq <= k`; stale `maxFreq` is fine | The window grows only when it is genuinely legal |
+| Shortest run with sum at least target (positive values) | Grow; while it qualifies, record, then squeeze | Every qualifying window is logged before Tail moves |
+| Shortest substring containing all of t | `need[]` + `missing`; record inside, squeeze while `missing == 0` | `missing` drops only for characters still needed |
+| Max (or min) of every window of size k | Deque of indices, values strictly decreasing (increasing for min) | Front is the window max (min); expired indices leave from the front |
+| One buy, one later sell | Lowest price so far; profit against it | Only earlier days can be the buy day |
+| Count runs with exactly K kinds | atMost(K) − atMost(K − 1); add `right − left + 1` | Every legal window ending at `right` counted once |
+| Longest run of 1s after deleting exactly one | At most one zero in view; record `right − left` | The deletion is mandatory |
+| Count runs with product below k (values ≥ 1) | Guard `k <= 1`; shrink by division while `product >= k`; count | Product of positives only grows with the window |
+| Take k from either end | Fixed window of width n − k on the leftovers; minimise it | Leftovers are always contiguous |
+| Shortest sum ≥ k with negatives | Prefix sums + monotonic deque of starts | Deque prefixes increase; popped starts can never win |
+| Count sums exactly k, signs allowed | Not a window: prefix sums + hash map | No monotone promise needed |
+
+A window doesn't automatically mean O(1) space or a single loop. Count the state (a map, a deque) and every pass (atMost runs twice).
+
+## Five bugs the Keeper keeps in her pocket
+
+1. **Moving Tail backwards.** A jump without `Math.max` sends Tail behind itself on `"abba"`, so the window holds a repeat and you return 3 instead of 2.
+2. **Recording in the wrong place.** Longest records after the repair loop; shortest records inside the squeeze loop. A misplaced record passes half the tests and fails the hidden ones.
+3. **`if` where you need `while`.** One squeeze per step misses shorter windows: `[1, 1, 1, 10]` with target 10 returns 4 instead of 1.
+4. **Stale map keys.** A count at zero still counts in `map.size()`. Remove the key, or keep a separate distinct counter.
+5. **Trusting the glass without its promise.** Negative values break sum windows; `k <= 1` breaks the product window; `best = 0` breaks an all-negative fixed window. Name the monotone fact before you code.
+
+## Coming back to the barge
+
+<Scene title="The Keeper's last word" mood="dusk">
+
+At the end of the season you hand back the logbook. The Keeper doesn't take it. *"Keep it,"* she says. *"You'll forget which costume each problem wore. That's fine. Remember what's on the slate, why the shutter may close, and where the log entry goes, and you'll find the best stretch of a bank nobody has shown you."*
+
+</Scene>
+
+For each chapter, aim to do three things on a fresh input: **recognise the window and its rhythm, explain why Tail may move on, and code it with the record in the right place without the solution open**. If one feels shaky, that's your next short session.
+
+A simple return routine: one old explanation from memory, one decision puzzle, then one problem or bug trace. Revisit a new idea tomorrow and again a few days later. Mix families so a chapter title doesn't choose the method for you.
+
+All **10 problems from your Sliding Window roadmap** are covered above. The wider roadmap carries the neighbouring ideas: <a href={`${BASE}dsa/lessons/two-pointers/`}>Arrays & Two Pointers</a> for opposite-end and reader/writer pointers, <a href={`${BASE}dsa/lessons/prefix-sum/`}>Prefix Sum</a> for sums with negatives and "exactly k" counts, <a href={`${BASE}dsa/lessons/stacks/`}>Stacks</a> for the monotonic idea behind the Lookout's deque, and <a href={`${BASE}dsa/lessons/heaps/`}>Heaps</a> for medians of a moving window. Use the <a href={`${BASE}dsa/`}>full DSA roadmap</a> to keep going across patterns.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study:** next reps once the ten above feel calm.
+
+- [Find All Anagrams in a String](https://leetcode.com/problems/find-all-anagrams-in-a-string/): Chapter 2, collecting every start.
+- [Subarrays with K Different Integers](https://leetcode.com/problems/subarrays-with-k-different-integers/) and [Count Number of Nice Subarrays](https://leetcode.com/problems/count-number-of-nice-subarrays/): Side quest 1's subtraction, twice.
+- [Longest Subarray of 1's After Deleting One Element](https://leetcode.com/problems/longest-subarray-of-1s-after-deleting-one-element/) and [Subarray Product Less Than K](https://leetcode.com/problems/subarray-product-less-than-k/): Side quests 2 and 3 as real problems.
+- [Maximum Points You Can Obtain from Cards](https://leetcode.com/problems/maximum-points-you-can-obtain-from-cards/) and [Minimum Operations to Reduce X to Zero](https://leetcode.com/problems/minimum-operations-to-reduce-x-to-zero/): windows on the leftovers.
+- [Shortest Subarray with Sum at Least K](https://leetcode.com/problems/shortest-subarray-with-sum-at-least-k/): Side quest 5, the Hard version.
+- [Get Equal Substrings Within Budget](https://leetcode.com/problems/get-equal-substrings-within-budget/) and [Maximum Erasure Value](https://leetcode.com/problems/maximum-erasure-value/): longest-legal windows in new costumes.
+- [Sliding Window Median](https://leetcode.com/problems/sliding-window-median/): a window whose state needs two heaps.
+- [Minimum stack / minimum queue (cp-algorithms)](https://cp-algorithms.com/data_structures/stack_queue_modification.html): another way to get the minimum of every window.
+- [Moving average (Wikipedia)](https://en.wikipedia.org/wiki/Moving_average): the fixed window outside of interviews.
+- [NeetCode roadmap](https://neetcode.io/roadmap): the same patterns in a curated order, with video walkthroughs.
+
+**Look these up yourself:** real ideas this book didn't have room for.
+
+- **Rabin–Karp rolling hash:** a fixed window over a hash value, so substring search compares numbers instead of strings.
+- **Kadane's algorithm:** maximum subarray sum with negatives, a window whose Tail jumps to restart when the running sum turns negative.
+- **Monotonic-queue DP optimisation:** Jump Game VI and Constrained Subsequence Sum use Chapter 9's deque inside a DP.
+- **Two-stack queue:** a queue built from two stacks that keeps the min or max (or any associative aggregate) of a window.
+- **Number of Substrings Containing All Three Characters:** counting with a shortest-qualifying window, where every extension to the right also counts.
+- **Sliding window log vs counter in rate limiters:** how the same window idea trades memory for exactness in system design.
+- **Substring with Concatenation of All Words:** several fixed windows run in parallel, one per offset.

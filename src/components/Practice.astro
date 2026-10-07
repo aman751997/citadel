@@ -1,0 +1,156 @@
+---
+// Independent practice with spaced review. Usage in MDX: <Practice pattern="two-pointers" />
+// The set lives in src/data/practice/<pattern>.ts and is registered in src/lib/registry.ts.
+import { practiceSets } from '../lib/registry';
+interface Props { pattern: string }
+const { pattern } = Astro.props;
+if (!practiceSets[pattern]) throw new Error(`Practice: no practice set registered for "${pattern}"`);
+const { practice } = await practiceSets[pattern]();
+const config = JSON.stringify({ key: practice.storageKey, ids: practice.conceptIds }).replace(/</g, '\\u003c');
+---
+<section class="practice" data-practice={pattern} aria-label="Independent practice and spaced review">
+  <header><div><span class="eyebrow">RECOGNIZE · EXPLAIN · TRANSFER</span><h3>A small session. Real thinking.</h3></div><span data-session-count>3 prompts</span></header>
+  <p>The prompt won't name its pattern. Choose an approach, predict the result, and explain your moves. Hints come one at a time.</p>
+  <p data-review-summary class="muted">Progress is saved in this browser, separately from your roadmap solves.</p>
+  <button type="button" data-session-start class="primary">Start a 3-prompt session</button>
+  <div data-session-body hidden>
+    <p data-challenge-prompt class="challenge-prompt"></p>
+    <form data-challenge-form>
+      <label>1 · What approach fits these constraints?
+        <select data-strategy required><option value="">Choose your approach…</option>{Object.entries(practice.strategies).map(([value, label]) => <option value={value}>{label}</option>)}</select>
+      </label>
+      <label><span data-answer-label>2 · Predict the result</span><input data-answer required autocomplete="off" spellcheck="false" placeholder="Your result" /></label>
+      <label>3 · Explain the moving parts, the safe move, and the stopping rule
+        <textarea data-reason required rows="4" maxlength="2000" placeholder="What is settled? What can I safely rule out or record? When do I stop?" />
+      </label>
+      <p class="muted">Your result and approach are checked automatically. You'll assess your explanation against a rubric.</p>
+      <div class="practice-actions"><button type="submit" class="primary" data-check>Check my attempt</button><button type="button" data-hint>Give me a small hint</button></div>
+    </form>
+    <ol data-hints class="hint-list" aria-live="polite"></ol>
+    <button type="button" data-show-answer hidden>I’m stuck — show a worked answer</button>
+    <p data-attempt-feedback class="attempt-feedback" role="status" aria-live="polite" aria-atomic="true">Try before opening a hint.</p>
+    <div data-rubric-panel hidden>
+      <h4 data-concept-name></h4><p data-explanation></p>
+      <p><strong>Compare your reasoning, point by point:</strong></p><ul data-rubric></ul>
+      <details data-old-note-box hidden><summary>Your explanation from last time</summary><p data-old-note class="old-note"></p></details>
+      <p><a data-review-lesson href="#">Revisit the lesson</a> · For a coding check, write and test it in your editor before opening the lesson's Java.</p>
+      <p class="muted">Be honest with yourself. Choose a self-check below to save this attempt and schedule another review. It does not certify mastery.</p>
+      <div class="practice-actions"><button type="button" data-grade="clean">My reasoning matches</button><button type="button" data-grade="help">I needed the explanation</button></div>
+    </div>
+  </div>
+  <div data-session-end hidden><h4>Good place to stop.</h4><p>You retrieved, checked, and corrected. Your next review dates are below. A new session uses another input for each concept.</p><ul data-session-results></ul></div>
+  <p data-save-status class="muted" role="status"></p>
+  <noscript>Turn on JavaScript for scheduled review. You can still use the lesson's decision questions and hint ladders.</noscript>
+  <script type="application/json" data-practice-config set:html={config} />
+</section>
+<style>
+  .practice { padding:1.5rem; border:1px solid var(--purple); border-radius:16px; background:linear-gradient(145deg,#211b30,var(--bg-raised) 65%); margin:1.5rem 0; }
+  header { display:flex; justify-content:space-between; gap:1rem; align-items:center; }
+  h3 { font-size:1.4rem; margin:.3rem 0; } h4 { font-size:1.1rem; margin:1rem 0 .4rem; }
+  .eyebrow { color:var(--purple); font-size:.7rem; letter-spacing:.08em; font-weight:700; }
+  header>span,.muted { color:var(--text-dim); font-size:.8rem; }
+  .challenge-prompt { font-size:1.15rem; background:var(--bg); border-radius:10px; padding:1.1rem; border-left:3px solid var(--purple); }
+  label { display:block; font-weight:600; margin:1rem 0; font-size:.9rem; }
+  input,textarea,select { display:block; width:100%; margin-top:.5rem; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:7px; padding:.75rem; font:inherit; }
+  textarea { resize:vertical; font-weight:400; }
+  button { background:var(--bg); border:1px solid var(--border); color:var(--text); font:inherit; font-size:.85rem; border-radius:7px; padding:.7rem 1rem; cursor:pointer; }
+  button:hover { border-color:var(--purple); } button.primary { border-color:var(--purple); }
+  button:disabled { opacity:.5; cursor:default; }
+  button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible { outline:2px solid var(--purple); outline-offset:3px; }
+  .practice-actions { display:flex; flex-wrap:wrap; gap:.6rem; }
+  .attempt-feedback { color:var(--purple); } .hint-list { font-size:.9rem; }
+  [data-rubric-panel] { border-top:1px solid var(--border); margin-top:1rem; }
+  .old-note { white-space:pre-wrap; overflow-wrap:anywhere; } summary { cursor:pointer; }
+  @media(max-width:480px) { .practice { padding:1rem; } header { align-items:start; } .practice-actions button { width:100%; } }
+</style>
+<script>
+  import { practiceSets } from '../lib/registry';
+  import { answerMatches, loadBookFor, saveBookFor, gradeReview, reviewQueueFor, reviewSummary, type ReviewBook } from '../lib/review';
+  import type { Challenge, PracticeSet } from '../lib/practice';
+  document.querySelectorAll<HTMLElement>('[data-practice]').forEach(async root => {
+    const get = <T extends HTMLElement = HTMLElement>(s: string) => root.querySelector<T>(s)!;
+    const { key, ids }: { key: string; ids: string[] } = JSON.parse(get('[data-practice-config]').textContent!);
+    let set: PracticeSet | undefined;
+    let book: ReviewBook = loadBookFor(key, ids), queue: string[] = [], position = 0, hints = 0, helped = false, phase: 'idle' | 'answer' | 'review' | 'end' = 'idle';
+    let challenge: Challenge, saved = true;
+    const results: { topic: string; due: number; clean: boolean }[] = [];
+    const date = (n: number) => new Date(n).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const summary = () => {
+      const status = reviewSummary(book, Date.now());
+      get('[data-review-summary]').textContent = `${status.practised}/${ids.length} concepts practised · ${status.due} due for review${!status.due && status.next ? ` · next review ${date(status.next)}` : ''}. Stored in this browser, separately from roadmap solves.`;
+    };
+    const render = () => {
+      const id = queue[position]; challenge = set!.challengeFor(id, book[id]?.attempts || 0);
+      hints = 0; helped = false; phase = 'answer';
+      get('[data-session-start]').hidden = true; get('[data-session-end]').hidden = true; get('[data-session-body]').hidden = false; get('[data-rubric-panel]').hidden = true;
+      get<HTMLFormElement>('[data-challenge-form]').reset();
+      get<HTMLSelectElement>('[data-strategy]').disabled = false; get<HTMLInputElement>('[data-answer]').readOnly = false; get<HTMLTextAreaElement>('[data-reason]').readOnly = false;
+      get<HTMLButtonElement>('[data-check]').disabled = false; get<HTMLButtonElement>('[data-hint]').disabled = false; get('[data-hint]').textContent = 'Give me a small hint';
+      get('[data-hints]').replaceChildren(); get('[data-show-answer]').hidden = true; get('[data-session-count]').textContent = `Prompt ${position + 1} / ${queue.length}`;
+      get('[data-challenge-prompt]').textContent = challenge.prompt; get('[data-answer-label]').textContent = `2 · ${challenge.question}`;
+      get('[data-attempt-feedback]').textContent = 'Try before opening a hint.';
+      get<HTMLSelectElement>('[data-strategy]').focus({ preventScroll: true });
+    };
+    get('[data-session-start]').addEventListener('click', async () => {
+      set ??= (await practiceSets[root.dataset.practice!]()).practice;
+      if (saved) book = loadBookFor(key, ids);
+      queue = reviewQueueFor(book, Date.now(), ids).slice(0, 3); position = 0; results.length = 0; render();
+    });
+    get('[data-hint]').addEventListener('click', () => {
+      if (phase !== 'answer' || hints >= 3) return;
+      helped = true; const li = document.createElement('li'); li.textContent = challenge.hints[hints++]; get('[data-hints]').append(li);
+      get('[data-hint]').textContent = hints === 3 ? 'All hints open' : `Next hint (${hints + 1}/3)`; get<HTMLButtonElement>('[data-hint]').disabled = hints === 3; get('[data-show-answer]').hidden = hints < 3;
+    });
+    get('[data-challenge-form]').addEventListener('submit', event => {
+      event.preventDefault(); if (phase !== 'answer') return;
+      const approach = get<HTMLSelectElement>('[data-strategy]').value === challenge.strategy;
+      const result = answerMatches(challenge, get<HTMLInputElement>('[data-answer]').value);
+      if (!get<HTMLTextAreaElement>('[data-reason]').value.trim()) { get('[data-attempt-feedback]').textContent = 'Write your reasoning first, even if it is only a rough idea.'; return; }
+      if (!approach || !result) {
+        helped = true;
+        get('[data-attempt-feedback]').textContent = `${approach ? 'Your approach fits.' : 'Reconsider the approach under these constraints.'} ${result ? 'Your predicted result is right.' : 'Your result needs another look.'} Retry, or open the next hint.`;
+        return;
+      }
+      showRubric(false);
+    });
+    const showRubric = (worked: boolean) => {
+      phase = 'review';
+      get('[data-attempt-feedback]').textContent = worked ? 'Worked answer shown. This attempt counts as practice with help; compare the reasoning below.' : 'Approach and result check out. Now check the reasoning yourself.';
+      get('[data-show-answer]').hidden = true;
+      get('[data-rubric-panel]').hidden = false;
+      get('[data-concept-name]').textContent = challenge.topic; get('[data-explanation]').textContent = challenge.explanation;
+      const rubric = get('[data-rubric]'); rubric.replaceChildren(); challenge.rubric.forEach(point => { const li = document.createElement('li'); li.textContent = point; rubric.append(li); });
+      get<HTMLAnchorElement>('[data-review-lesson]').href = `#${challenge.section}`;
+      const prior = book[challenge.id]?.note; get('[data-old-note-box]').hidden = !prior; get('[data-old-note]').textContent = prior || '';
+      get<HTMLButtonElement>('[data-check]').disabled = true; get<HTMLButtonElement>('[data-hint]').disabled = true; get<HTMLSelectElement>('[data-strategy]').disabled = true;
+      get<HTMLInputElement>('[data-answer]').readOnly = true; get<HTMLTextAreaElement>('[data-reason]').readOnly = true;
+      get<HTMLButtonElement>('[data-grade="clean"]').focus({ preventScroll: true });
+    };
+    get('[data-show-answer]').addEventListener('click', () => {
+      if (phase !== 'answer' || hints < 3) return;
+      helped = true;
+      get<HTMLSelectElement>('[data-strategy]').value = challenge.strategy;
+      get<HTMLInputElement>('[data-answer]').value = typeof challenge.answer === 'boolean' ? (challenge.answer ? 'yes' : 'no') : typeof challenge.answer === 'string' ? challenge.answer : JSON.stringify(challenge.answer);
+      if (!get<HTMLTextAreaElement>('[data-reason]').value.trim()) get<HTMLTextAreaElement>('[data-reason]').value = 'I needed the worked answer. Reconstruct the reasoning on the next review.';
+      showRubric(true);
+    });
+    root.querySelectorAll<HTMLButtonElement>('[data-grade]').forEach(button => button.addEventListener('click', () => {
+      if (phase !== 'review') return;
+      const id = challenge.id, now = Date.now(), clean = button.dataset.grade === 'clean' && !helped;
+      // Merge another tab's saved progress before writing this concept.
+      if (saved) book = { ...book, ...loadBookFor(key, ids) };
+      book[id] = gradeReview(book[id], clean, now, get<HTMLTextAreaElement>('[data-reason]').value);
+      saved = saveBookFor(key, book);
+      results.push({ topic: challenge.topic, due: book[id].due, clean });
+      get('[data-save-status]').textContent = saved ? `${challenge.topic}: ${clean ? 'recalled without hints; reasoning self-checked' : 'practised with help'}. Review ${date(book[id].due)}.` : 'Practice recorded for this page only. Browser storage is unavailable, so it will not survive a reload.';
+      summary(); position++;
+      if (position < queue.length) render(); else {
+        phase = 'end'; get('[data-session-body]').hidden = true; get('[data-session-end]').hidden = false; get('[data-session-start]').hidden = false;
+        get('[data-session-start]').textContent = 'Start another 3-prompt session'; get('[data-session-count]').textContent = 'Session complete';
+        const list = get('[data-session-results]'); list.replaceChildren(); results.forEach(item => { const li = document.createElement('li'); li.textContent = `${item.topic} — ${item.clean ? 'recalled; reasoning self-checked' : 'with help'} · revisit ${date(item.due)}`; list.append(li); });
+        get<HTMLButtonElement>('[data-session-start]').focus({ preventScroll: true });
+      }
+    }));
+    summary();
+  });
+</script>

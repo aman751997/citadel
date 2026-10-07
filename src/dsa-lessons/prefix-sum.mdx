@@ -1,135 +1,898 @@
 ---
 title: 'Prefix Sum'
-description: 'Precompute running totals so any range collapses to one subtraction — plus the prefix+hashmap trick that cracks "count subarrays summing to K".'
+description: 'A novel in five chapters and six side quests. Take a stool at the Counting House of Tallyford, learn why one subtraction answers any range, and keep a vault of old totals that counts runs you never stored.'
 order: 3
-minutes: 25
+minutes: 75
+sessionMinutes: 8
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Playground from '../components/Playground.astro';
+import Practice from '../components/Practice.astro';
+import Trace from '../components/Trace.astro';
+import HintLadder from '../components/HintLadder.astro';
+import Reveal from '../components/Reveal.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
 import Mermaid from '../components/Mermaid.astro';
+import { hints } from '../data/prefix-sum/hints';
+import { rangeSum, pivot, product, countK, multipleK, mixedReview } from '../data/prefix-sum/traces';
+import { BASE } from '../paths';
 
-## When this pattern fires
+<PatternHub
+  pattern="prefix-sum"
+  start="prologue"
+  logline="The Counting House of Tallyford keeps one ledger and never adds a column twice. One running total per line turns any range into a single subtraction, and a vault of totals already seen counts answers you never stored."
+  cast={[
+    { name: 'You', role: 'The newest clerk at the Counting House. Like any loop, you read one line of the ledger at a time.' },
+    { name: 'The Keeper', role: 'Runs the Counting House. Never adds a column for you; asks three questions instead.' },
+    { name: 'Prefix', role: 'The running-total clerk. On every line she writes the total of everything above it. Her first line is always 0.' },
+    { name: 'Seen', role: 'Warden of the vault. He keeps a drawer for every total Prefix has written, and how many times it appeared.' },
+    { name: 'Count', role: 'The tally-keeper. Chalks one mark for every match Seen reports, and never before Seen has looked.' },
+    { name: 'Suffix', role: 'The night clerk. Walks the ledger from the bottom up, carrying the product of everything below.' },
+    { name: 'Diff', role: 'Keeper of the notice board. Pins a plus where a change starts and a minus just after it stops.' },
+  ]}
+  parts={[
+    { name: 'Part One · The running ledger', description: 'One pass of totals. Every range becomes one subtraction.', links: [['range-sum', 'The auditor’s questions'], ['pivot-index', 'The balance beam'], ['product-except-self', 'Everyone but you']] },
+    { name: 'Part Two · The vault of totals already seen', description: 'Stand at the end of a run and ask the vault about its beginning.', links: [['count-k', 'The smuggler’s signal'], ['multiple-of-k', 'The crate-maker’s dozens']] },
+  ]}
+  extensions={[['equal-zeros-ones', 'Equal 0s and 1s'], ['divisible-by-k', 'Divisible by K, with debts'], ['nice-subarrays', 'Exactly K odd numbers'], ['prefix-xor', 'A different subtraction (XOR)'], ['grid-sums', 'A ledger with two directions'], ['range-updates', 'The notice board (range updates)']]}
+  extras={[['choose-the-tool', 'When the ledger lies'], ['wider-family', 'The neighbouring houses'], ['exit-ticket', 'The clerk’s exam'], ['cheat-sheet', 'The Keeper’s ledger notes']]}
+  note="All 5 roadmap problems, plus six side quests that make the family complete for interviews. Read one chapter per sitting; the story keeps your place."
+/>
 
-You're asked about **sums (or products/counts) over ranges or subarrays**, more than once: "sum of elements between i and j, many queries", "how many subarrays sum to K", "index where left sum equals right sum". Brute force re-adds the same elements over and over — the repeated work IS the signal.
+<h2 id="prologue">Prologue · Nobody adds a column twice</h2>
 
-**The idea:** precompute `prefix[i]` = sum of everything before index i. Then any range is one subtraction:
+<Scene chapter="Prologue" title="The auditor at the counter" mood="dawn">
 
+Tallyford lives on its river. Barges unload at dawn, and every coin that changes hands is written into the great ledger of the Counting House: one line per sale, and the first line is line 0.
+
+On your first morning the auditor is already at the counter. *"Takings from line 1 to line 3, please."* A junior clerk runs a finger down the column, adding. *"Now line 2 to line 4."* The finger goes back up and starts again. By noon the auditor has asked forty questions, and the junior clerk has added the same few numbers two hundred times.
+
+The Keeper watches without a word. Then she rules a fresh column beside the ledger and hands the pen to a clerk called Prefix.
+
+*"One number on every line,"* she says. *"After that, nobody in this house adds a column twice. Show me how."*
+
+</Scene>
+
+Prefix writes, on each line, **the total of everything above it**. Line 0 has nothing above it, so she writes 0. Call that column `prefix`:
+
+- `prefix[0] = 0`
+- `prefix[i + 1] = prefix[i] + nums[i]`, so `prefix[i]` is the sum of the first `i` values, `nums[0]` through `nums[i - 1]`.
+
+Now any range collapses to one subtraction:
+
+```text
+sum(l..r) = prefix[r + 1] - prefix[l]
 ```
-sum(i..j) = prefix[j+1] - prefix[i]
-```
 
-<Mermaid code={`flowchart LR
-    A["nums: [3, 1, 4, 1, 5]"] --> B["prefix: [0, 3, 4, 8, 9, 14]"]
-    B --> C["sum(1..3) = prefix[4] - prefix[1]\n= 9 - 3 = 6  (1+4+1 ✓)"]`} />
+`prefix[r + 1]` is everything from the start through `r`. `prefix[l]` is everything from the start up to, but not including, `l`. Both totals contain the same beginning, so **the shared beginning cancels**, and what is left is exactly `nums[l]` through `nums[r]`.
 
-**Convention that saves you off-by-ones:** make `prefix` length n+1 with `prefix[0] = 0`. Every range query works uniformly — no special case for ranges starting at 0.
+The Keeper asks her three questions here, as everywhere in the realm:
 
-## Form 1 — Standard 1D
+1. **What is settled?** Every line Prefix has written. A written total never changes, because the past never changes.
+2. **Why is this move safe?** Two running totals share their whole beginning. Subtracting cancels it exactly, whatever the signs of the values.
+3. **When do I stop?** When the last value has been absorbed. One pass builds everything; nobody looks back.
 
-```java
-// Range Sum Query — Immutable: build once O(n), answer each query O(1)
+> “Line i holds the total of everything above line i.” That is the promise. Every chapter in this book keeps it, then asks a different question of it.
+
+<Figure caption="The promise, drawn. Prefix’s column has one more line than the takings, starting at 0. The range 1..3 is the total through line 3 (9) minus the total before line 1 (3): 9 − 3 = 6, which is 1 + 4 + 1.">
+  <ArrayStrip name="nums" values={[3, 1, 4, 1, 5]} tones={{ 1: 'hot', 2: 'hot', 3: 'hot' }} regions={[{ from: 1, to: 3, label: 'asked: 1..3', tone: 'gold' }]} />
+  <ArrayStrip name="prefix" values={[0, 3, 4, 8, 9, 14]} pointers={[{ at: 1, label: 'prefix[1] = 3', tone: 'blue' }, { at: 4, label: 'prefix[4] = 9' }]} tones={{ 0: 'ghost' }} />
+</Figure>
+
+**Convention that saves you off-by-ones:** make `prefix` length **n + 1** with `prefix[0] = 0`. Every range query then has the same shape; a range that starts at 0 needs no special case.
+
+### When this pattern fires
+
+You are asked about **sums (or counts, XORs, products) over contiguous ranges**, and the same values would be re-added again and again. The repeated work *is* the signal:
+
+- **Many range questions on data that doesn't change.** Re-adding a range costs O(n) per question, O(n · q) for q questions. A ledger costs O(n) once, then O(1) per question.
+- **“How many subarrays sum to exactly K”**, especially when values can be negative. Checking every subarray is O(n²) even with a running sum. A running total plus a vault of earlier totals does it in **one pass, O(n) expected time**.
+- **“Left of i versus right of i”** — a pivot, a balance point, a product of everything except i.
+- **Many range updates, read once at the end** — the ledger run backwards (side quest 6).
+
+<h2 id="playground">The counting tables · You make every move</h2>
+
+<Scene title="The counting tables">
+
+Behind the counter is a long oak table chalked with squares, where new clerks practise before they are allowed near the real ledger. Nobody writes a line for you. When you reach for the wrong move, the Keeper doesn't take the chalk away; she tells you, using the numbers on the table, exactly which answer you would have spoiled.
+
+</Scene>
+
+Three drills. **Ledger and questions:** write the running totals, then answer each question with the right subtraction. **The vault:** seed it, then for each value add, count, and record — in that order; the drill will catch you if you seed late or record before counting. **The notice board:** post range updates with two pins each, then sweep once. Say the reason **before** pressing the button.
+
+<Playground lab="prefix-sum" />
+
+<Part n="Part One" title="The running ledger">
+
+One pass of totals. Every range becomes one subtraction, and “left of i” and “right of i” come for free.
+
+</Part>
+
+<h2 id="range-sum">Chapter 1 · The auditor’s questions</h2>
+
+<Scene chapter="Chapter 1" title="The auditor’s questions" mood="dawn">
+
+Prefix works down the takings line by line, never looking up more than one line. *Three. Four. Eight. Nine. Fourteen.* Above the first figure she has written a single 0, and the junior clerks snigger at it. Who writes down nothing?
+
+The auditor returns with a sheaf of questions. *Positions 1 to 3. Positions 0 to 2. Position 4 alone.*
+
+You hold your pen over Prefix’s column. Two numbers, one subtraction, for every question. But which two lines — and why did the Keeper insist on that useless-looking zero at the top?
+
+</Scene>
+
+**Problem: Range Sum Query — Immutable · Standard 1D**
+
+Build the ledger once in the constructor. Answer every `sumRange(left, right)` with `prefix[right + 1] - prefix[left]`.
+
+The cleanest picture: **write `prefix[i]` on the fence post just before value `i`**. There are n values and n + 1 fence posts. The range `left..right` sits between post `left` and post `right + 1`, so its total is the difference between those two posts.
+
+<Figure caption="LeetCode’s own example. The ledger is [0, −2, −2, 1, −4, −2, −3]. sumRange(0, 2) = prefix[3] − prefix[0] = 1 − 0 = 1; sumRange(2, 5) = prefix[6] − prefix[2] = −3 − (−2) = −1; sumRange(0, 5) = −3 − 0 = −3. Negative values change nothing about the subtraction.">
+  <ArrayStrip name="nums" values={[-2, 0, 3, -5, 2, -1]} regions={[{ from: 2, to: 5, label: 'sumRange(2, 5)', tone: 'gold' }]} tones={{ 2: 'hot', 3: 'hot', 4: 'hot', 5: 'hot' }} />
+  <ArrayStrip name="prefix" values={[0, -2, -2, 1, -4, -2, -3]} pointers={[{ at: 2, label: 'post 2', tone: 'blue' }, { at: 6, label: 'post 6' }]} tones={{ 0: 'ghost' }} />
+</Figure>
+
+<Trace title="Which two lines?" steps={rangeSum} takeaway="Remember: sum(l..r) = prefix[r + 1] − prefix[l]. The extra zero line makes a range from 0 look exactly like every other range." />
+
+**Why it works:** `prefix[right + 1] = nums[0] + … + nums[right]` and `prefix[left] = nums[0] + … + nums[left − 1]`. Subtract, and the first `left` values cancel term by term. Nothing in that argument cares whether values are positive.
+
+**What stays true:** after the build loop handles index `i`, every line `prefix[0..i + 1]` holds the exact total of the values above it. Lines are never rewritten.
+
+<Reveal q="Why n + 1 lines? Couldn’t prefix[i] simply include nums[i] itself?">
+
+It can — that is an *inclusive* prefix. Then the total of `0..r` is `p[r]`, but a range starting at 0 has no “line before 0” to subtract, so every query needs `left == 0 ? p[right] : p[right] - p[left - 1]`. The leading zero is that “line before 0”, written down once so no query ever needs an `if`. A length-n ledger is where most prefix off-by-ones are born.
+
+</Reveal>
+
+<Reveal q="The ledger is built once. What if the auditor corrects a sale after it is written?">
+
+Every running total **below** the corrected line is now wrong. Rewriting them costs O(n) per correction, which ruins the bargain when corrections and questions interleave. That problem is **Range Sum Query — Mutable**, and the tool is a Fenwick tree or a segment tree (O(log n) per update and per query). See [When the ledger lies](#choose-the-tool).
+
+</Reveal>
+
+<HintLadder hints={hints.rangeSum}>
+
+```java id=NumArray
 class NumArray {
     private final int[] prefix;
+
     public NumArray(int[] nums) {
-        prefix = new int[nums.length + 1];
+        prefix = new int[nums.length + 1];          // prefix[0] = 0: the line above everything
         for (int i = 0; i < nums.length; i++)
             prefix[i + 1] = prefix[i] + nums[i];
     }
+
     public int sumRange(int left, int right) {
-        return prefix[right + 1] - prefix[left];
+        return prefix[right + 1] - prefix[left];    // through right, minus before left
     }
 }
 ```
 
-**Find Pivot Index** — no array even needed: total sum once, then walk with a running `leftSum`; pivot when `leftSum == total - leftSum - nums[i]`.
+**O(n) to build, O(1) per query, O(n) extra space.** LeetCode’s bounds (at most 10⁴ values, each within ±10⁵) keep every running total within ±10⁹, inside `int`. With larger inputs, make the ledger a `long[]`.
 
-**Product of Array Except Self** — prefix thinking without sums: answer[i] = (product of everything left of i) × (product of everything right of i). Two passes, second one runs a running suffix product right-to-left directly into the answer array → O(1) extra space. The "no division" constraint is the trigger screaming *prefix decomposition*.
+</HintLadder>
 
-## Form 2 — Prefix + HashMap (the interview favorite)
+**Catch the bug:** `prefix[right] - prefix[left]` stops one line short and drops `nums[right]`. On the example above, `sumRange(0, 2)` would return `prefix[2] − prefix[0] = −2` instead of 1. [Solve Range Sum Query — Immutable](https://leetcode.com/problems/range-sum-query-immutable/).
 
-"**Count subarrays summing exactly to K**" — sliding window FAILS here (negatives break the shrink logic: growing the window doesn't monotonically grow the sum). The trick:
+<h2 id="pivot-index">Chapter 2 · The balance beam</h2>
 
-A subarray (i..j) sums to K ⟺ `prefix[j+1] - prefix[i] = K` ⟺ `prefix[i] = prefix[j+1] - K`.
+<Scene chapter="Chapter 2" title="The balance beam">
 
-So walk left to right maintaining the running prefix, and ask a hashmap: *"how many earlier prefixes equal (current − K)?"* Each match = one subarray ending here.
+The weigh-house across the quay has a beam that tips if one side is heavier. The harbour master wants to hang the day’s takings on it, one line per hook, and find the **first** hook where everything to the left weighs exactly as much as everything to the right. The hook itself counts for neither side.
 
-```java
-// Subarray Sum Equals K
+You start reaching for Prefix’s whole column. The Keeper stops your hand.
+
+*"You know the weight of the whole day,"* she says. *"And you know the weight on the left, because you carried it there yourself. What does the right side weigh?"*
+
+</Scene>
+
+**Problem: Find Pivot Index · Standard 1D, one running total**
+
+You don’t need the full ledger. **One total and one running sum are enough**, because the three parts must add up:
+
+```text
+total = leftSum + nums[i] + rightSum      so      rightSum = total - leftSum - nums[i]
+```
+
+Walk left to right. At each index compare `leftSum` with `total - leftSum - nums[i]`. The first match is the answer, because you are scanning from the left. An empty side weighs 0, so index 0 and the last index are allowed.
+
+<Figure caption="[1, 7, 3, 6, 5, 6], total 28. At index 3 the left side is 1 + 7 + 3 = 11 and the right side is 28 − 11 − 6 = 11. Indexes 0, 1 and 2 don’t balance, so 3 is the answer.">
+  <ArrayStrip values={[1, 7, 3, 6, 5, 6]} pointers={[{ at: 3, label: 'PIVOT', tone: 'purple' }]} tones={{ 3: 'purple' }} regions={[{ from: 0, to: 2, label: 'left = 11', tone: 'blue' }, { from: 4, to: 5, label: 'right = 11', tone: 'green' }]} />
+</Figure>
+
+<Trace title="Weigh both sides" steps={pivot} takeaway="Remember: right = total − left − nums[i]. Compare first, then add nums[i] to the left side." />
+
+**Why it works:** the three parts always add up to `total`, so `rightSum` is exact without ever being summed. Checking indexes in order makes the first match the leftmost pivot.
+
+**What stays true:** at the top of iteration `i`, `leftSum` is exactly `nums[0] + … + nums[i − 1]`. That is why `leftSum` grows **after** the comparison.
+
+<Reveal q="What goes wrong if you add nums[i] to leftSum before comparing?">
+
+Then `leftSum` includes the hook itself, and you are comparing the wrong two sides. On `[1, 7, 3, 6, 5, 6]` the comparison at index 3 becomes 17 against 28 − 17 − 6 = 5, and no index ever matches: the function returns −1 instead of 3.
+
+</Reveal>
+
+<HintLadder hints={hints.pivot}>
+
+```java id=pivotIndex
+public int pivotIndex(int[] nums) {
+    int total = 0;
+    for (int x : nums) total += x;
+    int leftSum = 0;                                 // nothing to the left of index 0
+    for (int i = 0; i < nums.length; i++) {
+        if (leftSum == total - leftSum - nums[i]) return i;
+        leftSum += nums[i];                          // only now does nums[i] join the left side
+    }
+    return -1;
+}
+```
+
+**O(n) time, O(1) extra space** — two passes, no ledger. Values within ±1000 and at most 10⁴ of them keep totals far inside `int`. (Find the Middle Index in Array is the same problem.)
+
+</HintLadder>
+
+**Catch the bug:** comparing `leftSum` with `total - leftSum` forgets that the pivot belongs to neither side. On `[2, 1, -1]` it misses index 0 (left 0, right 1 + (−1) = 0) and returns −1. [Solve Find Pivot Index](https://leetcode.com/problems/find-pivot-index/).
+
+<h2 id="product-except-self">Chapter 3 · Everyone but you</h2>
+
+<Scene chapter="Chapter 3" title="Everyone but you" mood="night">
+
+At the dye works, a bolt of cloth passes through every vat in turn, and each vat multiplies the colour’s strength by its own factor. The foreman wants a card for each vat: *how strong would the colour be if this vat were skipped?*
+
+“Multiply them all and divide by each one,” you say. The Keeper points at the abacus. It has no division beads. Then she points at vat 3, whose factor is zero.
+
+Prefix has already walked down the row, multiplying as she goes. At the far end, a clerk you haven’t met is lighting a lamp. Suffix works nights, and Suffix walks the other way.
+
+*"Everyone but you,"* says the Keeper, *"is everyone before you, and everyone after you."*
+
+</Scene>
+
+**Problem: Product of Array Except Self · prefix products × suffix products**
+
+Split “everything except `i`” into **everything left of `i`** times **everything right of `i`**. Both are running products: one from the front (Prefix), one from the back (Suffix). The empty product is 1, the same way the empty sum is 0.
+
+Do it in two passes. Pass 1 writes the left products straight into the answer. Pass 2 walks backwards with a single running `suffix` and multiplies it in, so no second array is needed.
+
+<Figure caption="For [1, 2, 3, 4]: left products [1, 1, 2, 6], right products [24, 12, 4, 1], and their products [24, 12, 8, 6]. Pass 2 never stores the right row: Suffix carries it as one number.">
+  <ArrayStrip name="nums" values={[1, 2, 3, 4]} />
+  <ArrayStrip name="left of i" values={[1, 1, 2, 6]} tones={{ 0: 'ghost' }} />
+  <ArrayStrip name="right of i" values={[24, 12, 4, 1]} tones={{ 3: 'ghost' }} />
+  <ArrayStrip name="answer" values={[24, 12, 8, 6]} tones={{ 0: 'done', 1: 'done', 2: 'done', 3: 'done' }} />
+</Figure>
+
+<Trace title="Multiply the two sides" steps={product} takeaway="Remember: answer[i] = left product × right product. In pass 2, use suffix first, then fold nums[i] into it." />
+
+**Why it works:** after pass 1, `answer[i]` is the product of `nums[0..i − 1]`. In pass 2, at the moment Suffix reaches `i`, `suffix` is the product of `nums[i + 1..n − 1]`. Multiplying gives everything except `nums[i]` — no division, so zeros need no special case.
+
+**What stays true:** during pass 2, every position after `i` already holds its final answer, and `suffix` holds exactly the product of those positions’ values.
+
+<Reveal q="Why not compute the total product once and divide by nums[i]?">
+
+The problem forbids division — and it would fail anyway. With one zero, the total is 0, yet the zero’s own position should get the product of everything else. With `[-1, 1, 0, -3, 3]` the answer is `[0, 0, 9, 0, 0]`, and 0 ÷ 0 can’t produce that 9. Division needs a zero count and special cases; the two-sided product needs neither.
+
+</Reveal>
+
+<HintLadder hints={hints.product}>
+
+```java id=productExceptSelf
+public int[] productExceptSelf(int[] nums) {
+    int n = nums.length;
+    int[] answer = new int[n];
+    answer[0] = 1;                                   // nothing lies left of index 0
+    for (int i = 1; i < n; i++)
+        answer[i] = answer[i - 1] * nums[i - 1];     // product of nums[0..i-1]
+    int suffix = 1;                                  // product of everything right of i
+    for (int i = n - 1; i >= 0; i--) {
+        answer[i] *= suffix;                         // use it first...
+        suffix *= nums[i];                           // ...then let nums[i] join it
+    }
+    return answer;
+}
+```
+
+**O(n) time, O(1) extra space** beyond the output array (the problem’s follow-up says the output doesn’t count). The problem guarantees every prefix and suffix product fits in a 32-bit `int`.
+
+</HintLadder>
+
+**Catch the bug:** swapping the two lines in pass 2 (`suffix *= nums[i]` first) folds each value into its own product. On `[1, 2, 3, 4]` every slot becomes 24. [Solve Product of Array Except Self](https://leetcode.com/problems/product-of-array-except-self/).
+
+<Part n="Part Two" title="The vault of totals already seen">
+
+Stop searching for the run. Stand at its end, and ask the vault about its beginning.
+
+</Part>
+
+<h2 id="count-k">Chapter 4 · The smuggler’s signal</h2>
+
+<Scene chapter="Chapter 4" title="The smuggler’s signal" mood="storm">
+
+A customs officer arrives soaked to the knees. Smugglers, she says, signal each other through the ledger: a run of **consecutive** sales that totals exactly 7 coins. Refunds are written as negative lines, so a run can wander up and down.
+
+“Check every start and every end,” says a junior clerk. That is a few hundred thousand pairs by supper.
+
+The Keeper unlocks a cabinet of small drawers behind the counter. Its warden, Seen, files every total Prefix writes — one drawer per total, with a tally of how often it has appeared.
+
+*"Don’t hunt for the run,"* the Keeper says. *"Stand where it ends. If the total here is 14, and the run is worth 7 — what total was written where it began?"*
+
+</Scene>
+
+**Problem: Subarray Sum Equals K · prefix + hashmap (the interview favourite)**
+
+A run `i..j` sums to `k` exactly when
+
+```text
+prefix[j + 1] - prefix[i] = k      ⟺      prefix[i] = prefix[j + 1] - k
+```
+
+So walk left to right keeping the running total, and at each position ask the vault: **how many earlier totals equal `running − k`?** Each one is the start of a different run ending right here. Then record the current total, so later positions can use it as a start.
+
+The vault is a `HashMap` from total to how many times it has appeared. **Counts, not just presence:** equal totals at different positions are different starting points.
+
+<Figure caption="[3, 4, 7, −2, 2] with k = 7. The ledger is [0, 3, 7, 14, 12, 14]. Three pairs of lines differ by exactly 7: 0→7 is the run [3, 4]; 7→14 (line 3) is [7]; 7→14 (line 5) is [7, −2, 2]. Answer: 3.">
+  <ArrayStrip name="nums" values={[3, 4, 7, -2, 2]} />
+  <ArrayStrip name="prefix" values={[0, 3, 7, 14, 12, 14]} pointers={[{ at: 2, label: 'a start: 7', tone: 'blue' }, { at: 5, label: 'here: 14' }]} tones={{ 0: 'blue', 3: 'hot' }} />
+</Figure>
+
+<Mermaid code={`flowchart LR
+  S["seed: vault[0] = 1"] --> A["running += nums[j]"]
+  A --> C["count += vault[running − k]"]
+  C --> R["vault[running] += 1"]
+  R -->|next j| A`} />
+
+**Why not a sliding window?** A window needs monotonicity: grow it and the sum goes up, shrink it and the sum goes down. **Negative values break that**, so a window has no safe direction to move. The vault doesn’t care about direction; it counts every match in one pass. Say that sentence out loud in the interview — this boundary *is* the question half the time.
+
+<Trace title="Ask the vault about the beginning" steps={countK} takeaway="Remember: seed total 0 once, then for each value add → count running − k → record. The seed catches runs from the start; the order stops a total matching itself." />
+
+Two details interviewers watch for:
+
+1. **The seed, `seen.put(0, 1)`.** It is the empty prefix — line 0, above everything. Without it, runs that start at index 0 are never counted: on `[1, 2, 3]` with `k = 3` you find `[3]` but lose `[1, 2]`, returning 1 instead of 2. You’ve read it before and it bears repeating: this is **the** classic bug of the pattern.
+2. **Count before you record.** If the current total goes into the vault first, then with `k = 0` it matches itself — a run of length zero. On `[1]` with `k = 0` that returns 1 instead of 0.
+
+**Why it works:** every run ending at `j` has exactly one start `i`, and so exactly one earlier ledger line `prefix[i]`. At the moment you count, the vault holds `prefix[0]` through `prefix[j]` — exactly the possible starts of a non-empty run ending at `j` — each with its multiplicity.
+
+**What stays true:** before handling index `j`, the vault holds every ledger line `prefix[0..j]` with how often each total occurred, and `count` is the number of qualifying runs that end before `j`.
+
+<Reveal q="Why does the vault keep a tally, not just ‘seen or not seen’?">
+
+Because equal totals at different lines are different starts. In `[1, −1, 1, −1]` with `k = 0`, the ledger is `[0, 1, 0, 1, 0]`. Total 0 appears three times (3 pairs) and total 1 twice (1 pair): **4 runs**. A presence-only set would undercount.
+
+</Reveal>
+
+<HintLadder hints={hints.countK}>
+
+```java id=subarraySum
 public int subarraySum(int[] nums, int k) {
     Map<Integer, Integer> seen = new HashMap<>();
-    seen.put(0, 1);                    // empty prefix — subarrays starting at index 0
+    seen.put(0, 1);                                  // the empty prefix: runs that start at index 0
     int prefix = 0, count = 0;
     for (int x : nums) {
         prefix += x;
-        count += seen.getOrDefault(prefix - k, 0);
-        seen.merge(prefix, 1, Integer::sum);   // add AFTER counting (no self-match)
+        count += seen.getOrDefault(prefix - k, 0);   // every earlier start of a run ending here
+        seen.merge(prefix, 1, Integer::sum);         // record AFTER counting (no self-match)
     }
     return count;
 }
 ```
 
-Two details interviewers watch for:
+**O(n) expected time, O(n) extra space** for the map. LeetCode’s bounds (at most 2 × 10⁴ values within ±1000, `k` within ±10⁷) keep `prefix` and `prefix − k` well inside `int`; for larger values use `long` keys.
 
-1. **`seen.put(0, 1)` seed** — without it, subarrays that start at index 0 are never counted. The most common bug in this problem, period.
-2. **Count before inserting** the current prefix — else a zero-K query matches itself.
+</HintLadder>
 
-**Continuous Subarray Sum** (multiple of K): same skeleton, store `prefix % k` instead of prefix, and store **first index** per remainder (need length ≥ 2, so compare indices). Same remainder seen twice = the between-chunk sums to a multiple of k.
+**Catch the bug:** the two classic failures, side by side.
 
-## Recognition table
+```java fragment
+seen.merge(prefix, 1, Integer::sum);         // BUG: recorded first, so k = 0 matches itself: [1], k = 0 → 1
+count += seen.getOrDefault(prefix - k, 0);
+// ... and with seen.put(0, 1) missing: [1, 2, 3], k = 3 → 1 instead of 2
+```
 
-| You see | Move |
-|---------|------|
-| "many range-sum queries" | build prefix array, O(1) per query |
-| "count subarrays with sum exactly/K-ish" (negatives possible) | prefix + hashmap of seen prefixes |
-| "sum divisible by K" | hashmap of prefix **remainders** |
-| "left sum equals right sum" | running leftSum vs total |
-| "product except self, no division" | prefix × suffix products |
-| "longest subarray with equal 0s and 1s" | map 0→−1, then prefix+hashmap (first-index variant) |
+[Solve Subarray Sum Equals K](https://leetcode.com/problems/subarray-sum-equals-k/).
 
-**Boundary with sliding window:** all-positive + "shortest/longest run meeting threshold" → window. Negatives present, or "count exact" → prefix+hashmap. Say which and why — that one sentence is a recognition rep.
+<h2 id="multiple-of-k">Chapter 5 · The crate-maker’s dozens</h2>
 
-## Bug bestiary (pre-loaded — earn your own)
+<Scene chapter="Chapter 5" title="The crate-maker’s dozens" mood="dusk">
 
-- **Missing `put(0,1)` seed** → subarrays starting at index 0 silently dropped.
-- **Insert before count** → K=0 self-matches inflate the answer.
-- **Length-n prefix array** (no leading 0) → special-casing ranges from index 0, off-by-ones everywhere. Always n+1.
-- **Int overflow** on long arrays of big values — prefix in `long`.
+The crate-maker on Wharf Row packs bolts of cloth in crates of exactly k. He wants to know one thing: is there a run of **at least two** consecutive deliveries that fills crates perfectly, with nothing left over?
 
-<Quiz questions={[
-  {
-    q: '"Count subarrays summing to K" with negative numbers present. Why not sliding window?',
-    options: [
-      'Windows cannot count, only measure length',
-      'With negatives, extending the window does not monotonically change the sum — the shrink/grow logic has no valid direction. Prefix + hashmap counts all matches in one pass instead',
-      'Sliding window is O(n²) here',
-      'It works — window is fine'
-    ],
-    answer: 1,
-    why: 'Window logic needs monotonicity (grow → sum up, shrink → sum down). Negatives kill it. This boundary IS the interview question half the time.'
-  },
-  {
-    q: 'In subarraySum, what breaks without seen.put(0, 1)?',
-    options: [
-      'Nothing — it is an optimization',
-      'Subarrays that START at index 0 are never counted: their match requires an "empty prefix" of value 0 to exist in the map',
-      'The map throws on missing keys',
-      'Negative K values fail'
-    ],
-    answer: 1,
-    why: 'prefix[j+1] − K = 0 means the subarray from the very start sums to K — the map must contain that empty prefix. THE classic bug of this pattern.'
-  },
-  {
-    q: 'Product of Array Except Self, no division, O(1) extra space. The move?',
-    options: [
-      'Compute total product, divide by nums[i] handling zeros specially',
-      'answer[i] = prefix product from the left × suffix product from the right — left pass writes prefixes into answer, right pass multiplies a running suffix in',
-      'Sort and use two pointers',
-      'Nested loops with early exit'
-    ],
-    answer: 1,
-    why: 'The constraint ("no division") is the pattern flag: decompose "everything except i" into left-of-i × right-of-i. Division (option 1) is explicitly banned AND zero-poisoned.'
-  }
-]} />
+Seen opens the vault, but tonight he isn’t filing totals. He files **leftovers** — what remains of each running total after packing full crates. A total of 25 with crates of 6 leaves 1. A total of 29 leaves 5.
 
-## Drill hand-off
+You notice that 5 has turned up before.
 
-With the buddy: **Range Sum Query** (5 min warm-up) → **Subarray Sum Equals K** (the boss — narrate the seed and insert-order out loud) → then the unseen transfer test when you're warm: an equal-0s-and-1s style disguise.
+*"Two totals, the same leftover,"* says the Keeper. *"What does the stretch between them leave?"*
+
+</Scene>
+
+**Problem: Continuous Subarray Sum · prefix remainders + first index**
+
+If two running totals leave the same remainder mod `k`, their difference is a multiple of `k` — and their difference is exactly the run between them. So file **remainders** instead of totals.
+
+Two changes from Chapter 4:
+
+- **Remainders, not totals.** The run `i + 1..j` works when `prefix[j + 1] % k == prefix[i + 1] % k`. Zero counts as a multiple, so `[0, 0]` qualifies for any `k`.
+- **Store the first index, never overwrite it.** The question is about length (at least 2), and the earliest index gives the longest stretch. Seed remainder 0 at index **−1**: the empty prefix sits just before index 0, so a run `0..j` has length `j − (−1) = j + 1`.
+
+<Figure caption="[23, 2, 4, 6, 7] with k = 6. Running totals 23, 25, 29, 35, 42 leave remainders 5, 1, 5, 5, 0. Remainder 5 first appears after index 0 and again after index 2: the stretch between, positions 1..2 = 2 + 4 = 6, has length 2. Return true.">
+  <ArrayStrip name="nums" values={[23, 2, 4, 6, 7]} tones={{ 1: 'hot', 2: 'hot' }} regions={[{ from: 1, to: 2, label: '2 + 4 = 6', tone: 'gold' }]} />
+  <ArrayStrip name="remainder" values={[5, 1, 5, 5, 0]} pointers={[{ at: 0, label: 'first 5', tone: 'blue' }, { at: 2, label: '5 again' }]} />
+</Figure>
+
+<Trace title="Same leftover, twice" steps={multipleK} takeaway="Remember: same remainder ⟹ the stretch between is a multiple of k. Keep the FIRST index of each remainder, seeded with 0 → −1." />
+
+**Why it works:** if `P1 % k == P2 % k`, then `P2 − P1` is divisible by `k`. Every qualifying run ends at some `j`, and if any start works, the earliest index with the same remainder gives the longest run, so checking only the first index is enough to answer “does a run of length ≥ 2 exist?”
+
+**What stays true:** before handling index `j`, the map holds, for every remainder seen so far, the **earliest** index where it appeared (−1 for the empty prefix).
+
+<Reveal q="Why keep the first index? Try [5, 0, 0] with k = 3.">
+
+Remainders: 2 after index 0, still 2 after index 1 (length 1 — too short), still 2 after index 2. With the first index kept (0), index 2 gives length 2 − 0 = 2: positions 1..2 are `[0, 0]`, total 0, a multiple of 3. **True.** Overwrite with the latest index (1) and index 2 gives length 1 again: you return **false**.
+
+</Reveal>
+
+<HintLadder hints={hints.multipleK}>
+
+```java id=checkSubarraySum
+public boolean checkSubarraySum(int[] nums, int k) {
+    Map<Integer, Integer> firstSeen = new HashMap<>();
+    firstSeen.put(0, -1);                            // empty prefix sits just before index 0
+    long rem = 0;                                    // long: rem + nums[i] can exceed int
+    for (int i = 0; i < nums.length; i++) {
+        rem = (rem + nums[i]) % k;
+        Integer first = firstSeen.get((int) rem);
+        if (first == null) firstSeen.put((int) rem, i);   // remember only the first time
+        else if (i - first >= 2) return true;
+    }
+    return false;
+}
+```
+
+**O(n) time, O(min(n, k)) extra space** — there are at most `min(n + 1, k)` distinct remainders. Values here are non-negative, so remainders are too. Values reach 10⁹ and `k` reaches 2³¹ − 1; keeping `rem` in a `long` makes `rem + nums[i]` safe without relying on any promise about the grand total.
+
+</HintLadder>
+
+**Catch the bug:** `firstSeen.put(rem, i)` on every step stores the **latest** index; `[5, 0, 0]` with `k = 3` then returns false. [Solve Continuous Subarray Sum](https://leetcode.com/problems/continuous-subarray-sum/).
+
+<Part n="Part Three" title="The Keeper changes one rule">
+
+Side quests. Same ledger, same vault — one rule different. This is where memorised templates break and understanding doesn’t.
+
+</Part>
+
+<Scene title="Pages with one line crossed out" mood="night">
+
+The evening you finish Chapter 5, there is a stack of ledger pages on your stool. Each one is a problem you’ve already solved, with one rule struck through in red ink and a new rule written above it in the Keeper’s small, tidy hand.
+
+*"Anyone can copy a column,"* says the note on top. *"Show me you know why the column works."*
+
+</Scene>
+
+<h2 id="equal-zeros-ones">Side quest 1 · Equal 0s and 1s</h2>
+
+**The page says:** the values are only 0 and 1. Find the **longest** contiguous stretch containing equally many of each. Not a count, and no `k` in sight.
+
+**The reasoning:** turn every 0 into −1. A stretch has equal 0s and 1s exactly when its ±1 values sum to 0 — Chapter 4 with `k = 0`. Two equal running balances bracket a balanced stretch, and because you want the **longest**, keep the **first** index of each balance, seeded with balance 0 at index −1 (Chapter 5’s trick).
+
+<Figure caption="[0, 1, 1, 1, 1, 1, 0, 0, 0]. Balance after each index (0 → −1, 1 → +1): −1, 0, 1, 2, 3, 4, 3, 2, 1. Balance 1 first appears after index 2 and again after index 8, so positions 3..8 — [1, 1, 1, 0, 0, 0] — are balanced: length 8 − 2 = 6.">
+  <ArrayStrip name="nums" values={[0, 1, 1, 1, 1, 1, 0, 0, 0]} tones={{ 3: 'hot', 4: 'hot', 5: 'hot', 6: 'hot', 7: 'hot', 8: 'hot' }} regions={[{ from: 3, to: 8, label: 'longest balanced: 6', tone: 'gold' }]} />
+  <ArrayStrip name="balance" values={[-1, 0, 1, 2, 3, 4, 3, 2, 1]} pointers={[{ at: 2, label: 'first 1', tone: 'blue' }, { at: 8, label: '1 again' }]} />
+</Figure>
+
+<Reveal q="Why does turning 0 into −1 work, when counting 0s and 1s separately feels more natural?">
+
+Equal counts means `ones − zeros = 0`. With 0 → −1 and 1 → +1, the sum of any stretch is exactly `ones − zeros`. So “equal counts” becomes “sum is 0”, and a sum question is a ledger question. Disguises like this are the whole game: **find the transform that makes the property a sum**.
+
+</Reveal>
+
+<HintLadder hints={hints.contiguous}>
+
+```java id=findMaxLength
+public int findMaxLength(int[] nums) {
+    Map<Integer, Integer> firstSeen = new HashMap<>();
+    firstSeen.put(0, -1);                            // balance 0 before index 0
+    int balance = 0, best = 0;
+    for (int i = 0; i < nums.length; i++) {
+        balance += nums[i] == 1 ? 1 : -1;
+        if (firstSeen.containsKey(balance)) best = Math.max(best, i - firstSeen.get(balance));
+        else firstSeen.put(balance, i);              // first time only: earliest = longest
+    }
+    return best;
+}
+```
+
+**O(n) time, O(n) extra space.** The balance stays within ±n, so an `int[2n + 1]` offset by n can replace the map.
+
+</HintLadder>
+
+**Transfer test:** now **count** the balanced stretches instead of measuring the longest. Which two lines change, and what does the seed become? (Answer: the map stores tallies, the seed is `0 → 1`, and you add `seen[balance]` before recording — Chapter 4 exactly.) [Solve Contiguous Array](https://leetcode.com/problems/contiguous-array/).
+
+<h2 id="divisible-by-k">Side quest 2 · Divisible by K, with debts</h2>
+
+**The page says:** count (don’t just detect) the stretches whose total is divisible by `k` — and the ledger now contains **debts**, negative values.
+
+Counting brings back Chapter 4’s tally; divisibility brings back Chapter 5’s remainders. There is no length rule this time, so no first index: equal remainders, counted in pairs. Since remainders live in `0..k − 1`, an `int[k]` replaces the map.
+
+The trap is Java itself. **Java’s `%` keeps the sign of the left operand**: `-1 % 5` is `-1`, not 4. Mathematically −1 and 4 are the same remainder class, but your buckets would treat them as strangers. Fold every remainder into `0..k − 1` with `((x % k) + k) % k` or `Math.floorMod(x, k)`.
+
+<Reveal q="[−1, 5] with k = 5. What does the naive % version return?">
+
+Running totals are −1 and 4. The stretch `[5]` is divisible by 5, so the answer is **1**. Naively, −1 % 5 = −1 and 4 % 5 = 4 land in different buckets: a `HashMap` version silently returns **0**, and an `int[k]` version throws `ArrayIndexOutOfBoundsException` on index −1. With `floorMod`, −1 becomes 4, which matches the later 4.
+
+</Reveal>
+
+```java fragment
+rem = (rem + x) % k;          // BUG in Java: can be negative, so -1 and 4 never meet
+```
+
+<HintLadder hints={hints.divisible}>
+
+```java id=subarraysDivByK
+public int subarraysDivByK(int[] nums, int k) {
+    int[] seen = new int[k];                         // seen[r] = earlier totals with remainder r
+    seen[0] = 1;                                     // the empty prefix
+    int rem = 0, count = 0;
+    for (int x : nums) {
+        rem = ((rem + x) % k + k) % k;               // fold Java's negative % into 0..k-1
+        count += seen[rem];                          // count first...
+        seen[rem]++;                                 // ...then record
+    }
+    return count;
+}
+```
+
+**O(n + k) time, O(k) extra space.** On LeetCode’s example `[4, 5, 0, −2, −3, 1]` with `k = 5`, the remainders (with the seed) are 0, 4, 4, 4, 2, 4, 0: one pair of 0s plus six pairs of 4s gives **7**.
+
+</HintLadder>
+
+**Transfer test:** combine the two rules — count stretches of length **at least 2** whose total is divisible by `k`. (Hint: record each total one step late, so a run of length 1 can never find its start in the vault.) [Solve Subarray Sums Divisible by K](https://leetcode.com/problems/subarray-sums-divisible-by-k/).
+
+<h2 id="nice-subarrays">Side quest 3 · Exactly K odd numbers</h2>
+
+**The page says:** count the stretches that contain **exactly k odd numbers**. The values themselves no longer matter — only a property of each one.
+
+**The reasoning:** write 1 for an odd value and 0 for an even one. A stretch’s count of odd numbers is now its *sum*, and the problem is Chapter 4 on a 0/1 ledger. The running count never exceeds n, so an `int[n + 1]` of tallies replaces the map.
+
+<Figure caption="[2, 2, 2, 1, 2, 2, 1, 2, 2, 2] with k = 2. The odd-count ledger is [0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2]: four lines hold 0 and four hold 2. Every 0-line pairs with every later 2-line: 4 × 4 = 16 stretches.">
+  <ArrayStrip name="nums" values={[2, 2, 2, 1, 2, 2, 1, 2, 2, 2]} tones={{ 3: 'hot', 6: 'hot' }} />
+  <ArrayStrip name="odd count" values={[0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2]} tones={{ 0: 'blue', 1: 'blue', 2: 'blue', 3: 'blue', 7: 'done', 8: 'done', 9: 'done', 10: 'done' }} regions={[{ from: 0, to: 3, label: 'four 0s', tone: 'blue' }, { from: 7, to: 10, label: 'four 2s', tone: 'green' }]} />
+</Figure>
+
+<Reveal q="The Sliding Window lesson solves this as atMost(k) − atMost(k − 1). Which should you use?">
+
+Both are O(n). The window version needs O(1) extra space but relies on a trick (exactly = at most k minus at most k − 1) that only works because the 0/1 counts are non-negative. The ledger version needs O(n) space, reads more directly, and is the same code you already trust from Chapter 4. Name both in an interview; pick the one you can defend.
+
+</Reveal>
+
+<HintLadder hints={hints.nice}>
+
+```java id=numberOfSubarrays
+public int numberOfSubarrays(int[] nums, int k) {
+    int[] seen = new int[nums.length + 1];           // seen[c] = earlier lines with c odd numbers
+    seen[0] = 1;                                     // the empty prefix has 0 odd numbers
+    int odd = 0, count = 0;
+    for (int x : nums) {
+        odd += x & 1;                                // 1 for odd (works for negatives too)
+        if (odd >= k) count += seen[odd - k];
+        seen[odd]++;
+    }
+    return count;
+}
+```
+
+**O(n) time, O(n) extra space.**
+
+</HintLadder>
+
+**Transfer test:** Binary Subarrays With Sum asks for stretches of a 0/1 array summing to `goal`, and `goal` may be 0. Which single expression changes — and why is `goal = 0` already safe? (Count-before-record means a line never matches itself.) [Solve Count Number of Nice Subarrays](https://leetcode.com/problems/count-number-of-nice-subarrays/).
+
+<h2 id="prefix-xor">Side quest 4 · A different subtraction</h2>
+
+**The page says:** the auditor wants the bitwise **XOR** of positions `l..r`, many times. There is no minus sign for XOR.
+
+**The reasoning:** subtraction was never the point. The point is that the shared beginning **cancels**. XOR cancels itself: `x ^ x = 0`. So a ledger of running XORs works exactly like a ledger of running sums:
+
+```text
+xor(l..r) = px[r + 1] ^ px[l]
+```
+
+<Figure caption="arr = [1, 3, 4, 8], px = [0, 1, 2, 6, 14]. xor(1..2) = px[3] ^ px[1] = 6 ^ 1 = 7 = 3 ^ 4. xor(3..3) = 14 ^ 6 = 8.">
+  <ArrayStrip name="arr" values={[1, 3, 4, 8]} tones={{ 1: 'hot', 2: 'hot' }} regions={[{ from: 1, to: 2, label: '3 ^ 4 = 7', tone: 'gold' }]} />
+  <ArrayStrip name="px" values={[0, 1, 2, 6, 14]} pointers={[{ at: 1, label: 'px[1]', tone: 'blue' }, { at: 3, label: 'px[3]' }]} tones={{ 0: 'ghost' }} />
+</Figure>
+
+**What makes a prefix trick legal:** the operation must have an **inverse** that removes the shared beginning. Sums have subtraction; XOR is its own inverse. Products have division only when there are no zeros — which is exactly why Chapter 3 multiplied two sides instead of dividing. **Max and min have no inverse**, so a prefix-max array answers only ranges that start at 0.
+
+<Reveal q="Then how do you answer ‘maximum on l..r’ many times?">
+
+Not with a ledger. A sparse table answers range-minimum or range-maximum in O(1) after O(n log n) preprocessing, because max is *idempotent* (overlapping two ranges doesn’t double-count). A segment tree handles it in O(log n) and also survives updates. A monotonic deque handles fixed-size sliding windows.
+
+</Reveal>
+
+<HintLadder hints={hints.xor}>
+
+```java id=xorQueries
+public int[] xorQueries(int[] arr, int[][] queries) {
+    int[] px = new int[arr.length + 1];              // px[0] = 0, the XOR of nothing
+    for (int i = 0; i < arr.length; i++) px[i + 1] = px[i] ^ arr[i];
+    int[] answer = new int[queries.length];
+    for (int q = 0; q < queries.length; q++)
+        answer[q] = px[queries[q][1] + 1] ^ px[queries[q][0]];
+    return answer;
+}
+
+// The vault works with XOR too: count stretches whose XOR is exactly k.
+public long countXorK(int[] nums, int k) {
+    Map<Integer, Integer> seen = new HashMap<>();
+    seen.put(0, 1);
+    int px = 0;
+    long count = 0;
+    for (int x : nums) {
+        px ^= x;
+        count += seen.getOrDefault(px ^ k, 0);       // start total s with s ^ px == k, so s = px ^ k
+        seen.merge(px, 1, Integer::sum);
+    }
+    return count;
+}
+```
+
+**O(n + q) time for the queries, O(n) space.** The counting version is O(n) expected time. XOR never carries, so there is no overflow to worry about.
+
+</HintLadder>
+
+**Transfer test:** which of these have a prefix trick — range sum, range XOR, range product with zeros, range maximum, range GCD? Defend each answer with the word “inverse”. [Solve XOR Queries of a Subarray](https://leetcode.com/problems/xor-queries-of-a-subarray/).
+
+<h2 id="grid-sums">Side quest 5 · A ledger with two directions</h2>
+
+**The page says:** the takings now come in a table — rows of barges, columns of days — and the auditor asks for the total of any **rectangle**.
+
+**The reasoning:** let `P[r + 1][c + 1]` be the total of the block from the top-left corner down to `(r, c)`. Same n + 1 convention, in both directions: row 0 and column 0 of `P` are zeros. Any rectangle is then four corner lookups:
+
+```text
+sum = P[r2+1][c2+1] - P[r1][c2+1] - P[r2+1][c1] + P[r1][c1]
+```
+
+Take the big block, cut off the strip above, cut off the strip to the left — and **add back the corner block**, which you cut off twice. That is inclusion–exclusion, and it builds the table too: `P[r+1][c+1] = m[r][c] + P[r][c+1] + P[r+1][c] − P[r][c]`.
+
+<Figure caption="matrix [[1, 2, 3], [4, 5, 6], [7, 8, 9]] and its 4 × 4 ledger P. The rectangle rows 1..2, columns 1..2 holds 5 + 6 + 8 + 9 = 28 = P[3][3] − P[1][3] − P[3][1] + P[1][1] = 45 − 6 − 12 + 1.">
+  <ArrayStrip name="matrix row 0" values={[1, 2, 3]} indices={false} />
+  <ArrayStrip name="matrix row 1" values={[4, 5, 6]} indices={false} tones={{ 1: 'hot', 2: 'hot' }} />
+  <ArrayStrip name="matrix row 2" values={[7, 8, 9]} indices={false} tones={{ 1: 'hot', 2: 'hot' }} />
+  <ArrayStrip name="P row 0" values={[0, 0, 0, 0]} indices={false} tones={{ 0: 'ghost', 1: 'ghost', 2: 'ghost', 3: 'ghost' }} />
+  <ArrayStrip name="P row 1" values={[0, 1, 3, 6]} indices={false} tones={{ 0: 'ghost', 1: 'blue', 3: 'out' }} />
+  <ArrayStrip name="P row 2" values={[0, 5, 12, 21]} indices={false} tones={{ 0: 'ghost' }} />
+  <ArrayStrip name="P row 3" values={[0, 12, 27, 45]} indices={false} tones={{ 0: 'ghost', 1: 'out', 3: 'hot' }} />
+</Figure>
+
+<Reveal q="Why add P[r1][c1] back instead of subtracting it a third time?">
+
+The block above the rectangle and the block to its left **overlap** in the top-left corner. Subtracting both removes that corner twice, so it must be added back once. In the figure: 45 − 6 − 12 would remove the 1 in the corner twice and give 27; adding it back gives 28.
+
+</Reveal>
+
+<HintLadder hints={hints.grid}>
+
+```java id=NumMatrix
+class NumMatrix {
+    private final int[][] P;                         // P[r+1][c+1] = block (0,0)..(r,c)
+
+    public NumMatrix(int[][] matrix) {
+        int rows = matrix.length, cols = matrix[0].length;   // LeetCode guarantees at least 1 x 1
+        P = new int[rows + 1][cols + 1];
+        for (int r = 0; r < rows; r++)
+            for (int c = 0; c < cols; c++)
+                P[r + 1][c + 1] = matrix[r][c] + P[r][c + 1] + P[r + 1][c] - P[r][c];
+    }
+
+    public int sumRegion(int row1, int col1, int row2, int col2) {
+        return P[row2 + 1][col2 + 1] - P[row1][col2 + 1] - P[row2 + 1][col1] + P[row1][col1];
+    }
+}
+```
+
+**O(rows × cols) to build, O(1) per query, O(rows × cols) extra space.** LeetCode’s bounds (at most 200 × 200 cells within ±10⁴) keep every block total within ±4 × 10⁸, inside `int`.
+
+</HintLadder>
+
+**Transfer test:** count the sub-rectangles that sum to a target. Fix a pair of rows, collapse the columns between them into a 1-D array of column totals, and run Chapter 4 on it — O(rows² × cols). Why is that better than checking every rectangle? [Solve Range Sum Query 2D — Immutable](https://leetcode.com/problems/range-sum-query-2d-immutable/).
+
+<h2 id="range-updates">Side quest 6 · The notice board</h2>
+
+**The page says:** this time the auditor doesn’t ask questions. Thousands of **bookings** arrive — “add 25 seats to every flight from 2 to 5” — and you must report every flight’s total once, at the end.
+
+**The reasoning:** run the ledger backwards. Diff keeps a notice board, one slot per flight plus one spare. A booking pins **+v where it starts** and **−v just after it ends**. One sweep of running totals across the board then rebuilds every flight’s count: the +v switches the booking on, and the −v switches it off. Two pins per booking instead of touching every flight in its range.
+
+<Figure caption="LeetCode’s example, n = 5, bookings [1,2,10], [2,3,20], [2,5,25] (flights numbered from 1, slots from 0). Pins: +10 at slot 0 and −10 at 2; +20 at 1 and −20 at 3; +25 at 1 and −25 at 5, the spare slot past the end. The sweep gives 10, 55, 45, 25, 25.">
+  <ArrayStrip name="diff" values={[10, 45, -10, -20, 0, -25]} tones={{ 5: 'ghost' }} regions={[{ from: 5, to: 5, label: 'past the end', tone: 'dim' }]} />
+  <ArrayStrip name="answer" values={[10, 55, 45, 25, 25]} tones={{ 0: 'done', 1: 'done', 2: 'done', 3: 'done', 4: 'done' }} />
+</Figure>
+
+Try **The notice board** in the [counting tables](#playground); one of its wrong buttons pins the minus one slot too early.
+
+<Reveal q="Why does the board need n + 1 slots?">
+
+A booking that ends at the last flight pins its −v at slot n, one past the end. Nobody ever reads that slot; it only exists so the code needs no `if (last < n)` check. It is the mirror image of the ledger’s extra zero line.
+
+</Reveal>
+
+<HintLadder hints={hints.flights}>
+
+```java id=corpFlightBookings
+public int[] corpFlightBookings(int[][] bookings, int n) {
+    int[] diff = new int[n + 1];                     // one spare slot past the last flight
+    for (int[] b : bookings) {
+        diff[b[0] - 1] += b[2];                      // flights are 1-indexed: first flight -> slot first-1
+        diff[b[1]] -= b[2];                          // switch off just AFTER flight last (slot last)
+    }
+    int[] answer = new int[n];
+    int running = 0;
+    for (int i = 0; i < n; i++) {
+        running += diff[i];
+        answer[i] = running;
+    }
+    return answer;
+}
+```
+
+**O(n + bookings) time, O(n) extra space.** Painting every booking’s range directly is O(n × bookings) — 400 million writes at LeetCode’s 2 × 10⁴ × 2 × 10⁴. Totals stay under 2 × 10⁸, inside `int`.
+
+</HintLadder>
+
+**Transfer test:** in Car Pooling, passengers ride from `from` and get off **at** `to`. Where does the −passengers pin go, and why is it not `to + 1`? (They have left the car at `to`: the range is half-open.) [Solve Corporate Flight Bookings](https://leetcode.com/problems/corporate-flight-bookings/).
+
+<Part n="Epilogue" title="Beyond the Counting House">
+
+When the ledger is the wrong book, who lives next door, and the exam that proves you can find your own way.
+
+</Part>
+
+<h2 id="choose-the-tool">When the ledger lies</h2>
+
+<Scene title="The amended ledger" mood="storm">
+
+At noon a barge-master storms in: line 2 was written wrong, and he was overcharged. The junior clerk scratches out the figure and writes the right one.
+
+Prefix goes pale. Every running total below line 2 is now wrong. She starts recopying the column — and halfway down, another correction arrives, at line 1.
+
+The Keeper takes the pen gently out of her hand. *"The ledger promised that the past never changes,"* she says. *"That promise is what made one subtraction enough. When the past starts changing, you need a different book."*
+
+</Scene>
+
+A prefix ledger is the right tool when **the data is fixed and the questions are many**, or when a single pass can count matches against earlier totals. It is the wrong tool when:
+
+- **Values change between questions.** A point update invalidates O(n) ledger lines. Use a **Fenwick tree** or **segment tree**: O(log n) per update and per query.
+- **All values are positive and you want the shortest or longest run meeting a threshold.** A sliding window does it in O(n) time with O(1) space, because positives make the window sum monotone. **The boundary sentence:** all-positive plus shortest/longest run meeting a threshold → window. Negatives present, or “count exactly K” → prefix + hashmap. Say which, and why — that one sentence is a recognition rep.
+- **The operation has no inverse** (max, min, GCD). A ledger answers only ranges that start at 0; use a sparse table, a segment tree, or a monotonic deque.
+- **There is only one question.** Building a ledger to answer it once is just a loop with extra memory.
+
+<Reveal q="All values are strictly positive and you must COUNT the runs summing to exactly k. Window or vault?">
+
+Both are correct. With **strictly positive** values each run end has at most one matching start, and the window finds it in O(n) time and O(1) space. The vault also works in O(n) expected time but costs O(n) space. The moment zeros or negatives appear, the window’s shrink rule loses its proof and only the vault remains. Name the constraint that decides it.
+
+</Reveal>
+
+<h2 id="wider-family">The neighbouring houses · How the other roadmap patterns connect</h2>
+
+The Counting House isn’t the only building in the realm that keeps a running total. The shared idea: **summarise the past in one number, so the present can ask about any stretch of it.**
+
+| Shared idea | Where it shows up | Where it belongs |
+|---|---|---|
+| Look up what you need before recording what you have | Two Sum’s hash map is the vault, holding single values instead of running totals | <a href={`${BASE}dsa/`}>Hashing & Sets · roadmap</a> |
+| Running sum along a root-to-node path | Path Sum III: the vault on a tree path, removing a total when you backtrack | <a href={`${BASE}dsa/`}>Trees (DFS) · roadmap</a> |
+| Running totals of positive values are sorted | Binary search the ledger (Random Pick with Weight) | <a href={`${BASE}dsa/lessons/binary-search/`}>Binary Search</a> |
+| +1 where something starts, −1 where it ends | Meeting Rooms II is a notice board over time: the sweep’s running total is the rooms in use | <a href={`${BASE}dsa/lessons/intervals/`}>Intervals</a> |
+| Best run ending here | Maximum Subarray (Kadane): the best ledger line minus the smallest earlier line | <a href={`${BASE}dsa/`}>Greedy · roadmap</a> |
+| A contiguous run with moving boundaries | Positive values only: grow and shrink a window instead of storing totals | <a href={`${BASE}dsa/lessons/sliding-window/`}>Sliding Window</a> |
+
+**The vault is Two Sum, generalised.** Two Sum asks “have I seen `target − x`?”; Chapter 4 asks “have I seen `running − k`, and how often?” Both look up before recording, so nothing pairs with itself.
+
+**A ledger can live on a tree.** In Path Sum III the “array” is the path from the root to the current node. Record each running total on the way down and **remove it on the way back up**, so the vault only ever holds the current path.
+
+<h2 id="exit-ticket">The clerk’s exam · Build a solution with the labels removed</h2>
+
+<Scene title="No chapter titles" mood="dawn">
+
+On the morning of the exam the Keeper hands you a page with no chapter names and no hints — three problems, a pen, and the three questions carved over the counter behind her.
+
+*"Pick one,"* she says. *"Before you write a line of code, tell me what your ledger holds, why the subtraction is safe, and what the vault must contain at the moment you ask it."*
+
+</Scene>
+
+Choose one. Keep the tutorial code closed. Write down the ledger, the seed, and the order of operations before coding.
+
+1. **The longest exact run.** Integers (negatives allowed) and a target `k`: return the length of the longest contiguous run summing to `k`. Test: no such run, the whole array, a run starting at index 0, all zeros with `k = 0`.
+2. **Balanced letters.** A string of `a`s and `b`s: count the substrings with as many `a`s as `b`s. Test the empty string, `"ab"`, `"aabb"`, and a string of one letter.
+3. **Book, then audit.** `n` counters start at 0. Apply `m` range increments, then answer `q` range-sum questions on the final counters, in O(n + m + q).
+
+<Reveal q="I’ve written and tested it. What should my reasoning contain?">
+
+**Longest exact run:** a map from running total to its **first** index, seeded `0 → −1`. At index `j`, if `running − k` is in the map, the run has length `j − first`. Record a total only if it is absent. Chapter 4’s lookup plus Chapter 5’s first-index rule.
+
+**Balanced letters:** `a → +1`, `b → −1`; a balanced substring has sum 0. A tally map seeded `0 → 1`; at each position add the tally of the current balance, **then** record it. Side quest 1, counting instead of measuring.
+
+**Book, then audit:** pins on a notice board (two per increment), one sweep to rebuild the counters, then a second running-total pass to build a ledger, and each question is one subtraction. Two prefix passes, stacked.
+
+Now explain why a slightly wrong version fails one of your tests — a missing seed, recording too early, a minus pinned one slot early. That counterexample is stronger evidence of understanding than a memorised template.
+
+</Reveal>
+
+Passing this once is a useful checkpoint. Rebuild one of these on another day, with a changed input and without the headings choosing the pattern for you.
+
+<h2 id="mixed-recall">Quick recall · Keep the rule warm</h2>
+
+Close the code. Name the ledger, the seed and the order of operations, and say what each move preserves. This short round is a warm-up for the independent practice below.
+
+<Trace title="Which tool fits?" steps={mixedReview} takeaway="Now try the independent session: no pattern title, a new input, and your explanation before the rubric." />
+
+<h2 id="independent-practice">Night ledger · The problem won’t name its pattern</h2>
+
+The review queue starts with due concepts, then new ones. Hints or corrected attempts bring a concept back tomorrow. Successful recall at a scheduled review stretches the interval to 3, 7, then 14 days. Your reasoning is **self-checked**; nothing here automatically marks a roadmap problem solved.
+
+<Practice pattern="prefix-sum" />
+
+<h2 id="cheat-sheet">The Keeper’s ledger notes</h2>
+
+| When you see… | Start with… | The promise to keep |
+|---|---|---|
+| Many range-sum questions, fixed data | Ledger of n + 1 lines; `prefix[r + 1] − prefix[l]` | Line i holds the total of everything before i |
+| Left side equals right side | Total once; `right = total − left − nums[i]` | `leftSum` covers exactly `0..i − 1` when you compare |
+| Product of everything except i, no division | Left products in the answer, then a running suffix | Suffix holds the product of everything after i |
+| Count runs summing to exactly K (negatives possible) | Running total + tally map seeded `0 → 1`; count, then record | The vault holds every earlier line, with multiplicity |
+| A run of length ≥ 2 summing to a multiple of K | Remainder → first index, seeded `0 → −1`; never overwrite | Each remainder maps to its earliest index |
+| Longest run with equal 0s and 1s | 0 → −1, balance → first index | Equal balances bracket a balanced run |
+| Count runs divisible by K, negatives present | `int[k]` tallies of `floorMod` remainders, seeded at 0 | Every remainder lies in `0..k − 1` |
+| Count runs with exactly K odd numbers | 1 for odd, 0 for even; Chapter 4 on the counts | The vault holds earlier odd-counts |
+| Range XOR questions | XOR ledger; `px[r + 1] ^ px[l]` | XOR is its own inverse |
+| Rectangle sums in a fixed table | (rows + 1) × (cols + 1) ledger; add back the corner | `P[r][c]` is the block above and left of `(r, c)` |
+| Many range updates, one read | Notice board: +v at start, −v just after the end; one sweep | The sweep’s running total is the true value |
+
+The ledger does **not** automatically mean O(1) space. The vault costs O(n); the 2-D ledger costs O(rows × cols); only Find Pivot Index and Product Except Self (beyond its output) run in O(1) extra space. Count every structure you build.
+
+## Five bugs the Keeper keeps in her pocket
+
+1. **The missing seed.** Without `seen.put(0, 1)` — or `0 → −1` when you measure lengths — runs that start at index 0 vanish silently.
+2. **Recording before counting.** The current total matches itself, and with `k = 0` every position counts a phantom empty run.
+3. **A ledger of length n.** Ranges from index 0 need special cases and off-by-ones creep in everywhere. Always n + 1, with a zero on top; `prefix[r] − prefix[l]` drops the last value.
+4. **Int overflow.** Long arrays of big values overflow a running `int` total. When the bounds don’t promise otherwise, keep the ledger in `long`.
+5. **Java’s negative remainder.** `-1 % 5 == -1`. Fold with `Math.floorMod` or `((x % k) + k) % k` before using a remainder as a key or an index.
+
+## Coming back to the Counting House
+
+<Scene title="The Keeper’s last word" mood="dusk">
+
+At the end of the season the Keeper walks you past the ledger one last time. Prefix is writing her zero at the top of a fresh page, the way she does every morning. Seen is oiling the drawers of the vault.
+
+*"You’ll forget the chapter names,"* the Keeper says. *"That’s fine. Remember what the column means — everything above this line — and remember to ask the vault before you feed it. The rest is subtraction."*
+
+</Scene>
+
+For each chapter, aim to do three things on a fresh input: **recognise the variation, explain why the subtraction (or the lookup) is safe, and code it without the solution open**. If one feels shaky, that’s your next short session.
+
+A drill plan that has worked for you with the buddy: **Range Sum Query** as a five-minute warm-up, then **Subarray Sum Equals K** as the boss — narrate the seed and the count-before-record order out loud — then, once warm, an unseen transfer test such as an equal-0s-and-1s disguise. Revisit a new idea tomorrow and again a few days later, and mix families so the chapter title doesn’t choose the method for you.
+
+All **5 problems from your Prefix Sum roadmap** are covered above, with six side quests around them. The neighbouring patterns live in their own books: <a href={`${BASE}dsa/lessons/sliding-window/`}>Sliding Window</a> for positive-only runs, <a href={`${BASE}dsa/lessons/intervals/`}>Intervals</a> for sweeps over time, and <a href={`${BASE}dsa/lessons/binary-search/`}>Binary Search</a> for searching a sorted ledger. Use the <a href={`${BASE}dsa/`}>full DSA roadmap</a> to continue across patterns.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study** — next reps once the five above feel calm:
+
+- [Range Sum Query — Mutable](https://leetcode.com/problems/range-sum-query-mutable/) — the amended ledger; build a Fenwick tree.
+- [Path Sum III](https://leetcode.com/problems/path-sum-iii/) — the vault on a tree path, with removal on backtrack.
+- [Maximum Size Subarray Sum Equals k](https://leetcode.com/problems/maximum-size-subarray-sum-equals-k/) — exit ticket 1 as a real problem (LeetCode Premium).
+- [Binary Subarrays With Sum](https://leetcode.com/problems/binary-subarrays-with-sum/) — side quest 3’s transfer test.
+- [Car Pooling](https://leetcode.com/problems/car-pooling/) — the notice board with half-open ranges.
+- [Number of Submatrices That Sum to Target](https://leetcode.com/problems/number-of-submatrices-that-sum-to-target/) — 2-D ledger plus the vault.
+- [Shortest Subarray with Sum at Least K](https://leetcode.com/problems/shortest-subarray-with-sum-at-least-k/) — negatives defeat the window; prefix sums plus a monotonic deque win.
+- [Prefix sum (Wikipedia)](https://en.wikipedia.org/wiki/Prefix_sum) — history, parallel scans, and uses beyond interviews.
+- [Summed-area table (Wikipedia)](https://en.wikipedia.org/wiki/Summed-area_table) — side quest 5 as used in computer vision.
+- [Fenwick tree (cp-algorithms)](https://cp-algorithms.com/data_structures/fenwick.html) — the ledger that survives updates.
+
+**Look these up yourself** — real ideas this book didn’t have room for:
+
+- **Fenwick tree (binary indexed tree)** — prefix sums with O(log n) point updates; the standard answer to “what if the array changes?”
+- **Segment tree with lazy propagation** — range updates *and* range queries interleaved, both in O(log n).
+- **2-D difference arrays** — the notice board on a grid (Stamping the Grid); four pins per rectangle.
+- **Prefix sums with a monotonic deque** — shortest subarray with sum ≥ K when negatives are allowed.
+- **Count of Range Sum** — counting pairs of ledger lines whose difference falls in a band, with merge sort or a Fenwick tree.
+- **Sparse tables** — O(1) range minimum for operations with no inverse but harmless overlap.
+- **Parallel prefix scan (Blelloch)** — how GPUs compute running totals in O(log n) depth.
+- **Kadane’s algorithm as a ledger** — the best subarray is the largest gap between a line and the smallest line above it.

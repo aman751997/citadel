@@ -1,0 +1,110 @@
+---
+// "You make every move" playground. Usage in MDX: <Playground lab="sliding-window" />
+// The lab lives in src/lib/labs/<lab>.ts and is registered in src/lib/registry.ts.
+import { labs } from '../lib/registry';
+interface Props { lab: string; title?: string; intro?: string }
+const { lab: labId, title = 'Make every move.', intro = 'No autoplay. Choose a move, watch what it changes, and say what stays true. A wrong move explains what it would break and leaves your board safe to retry.' } = Astro.props;
+if (!labs[labId]) throw new Error(`Playground: no lab registered for "${labId}"`);
+const { lab } = await labs[labId]();
+const modes = Object.entries(lab.modes);
+---
+<section class="lab" data-lab={labId} aria-label="Playground">
+  <header><div><span class="eyebrow">YOUR HANDS ON THE CONTROLS</span><h3>{title}</h3></div><span data-lab-case>Case 1 / {modes[0][1].cases}</span></header>
+  <p>{intro}</p>
+  {modes.length > 1 && <label>Choose a playground <select data-lab-mode>{modes.map(([value, info]) => <option value={value}>{info.name}</option>)}</select></label>}
+  <div data-lab-board class="board" aria-live="off"></div>
+  <p class="legend">{lab.legend || 'Gold = active · green = settled · faded = ruled out'}</p>
+  <p data-lab-prompt class="prompt"></p>
+  <div data-lab-actions class="actions"></div>
+  <p data-lab-feedback class="feedback" role="status" aria-live="polite" aria-atomic="true">Loading the playground…</p>
+  <div class="controls"><button type="button" data-lab-undo disabled>Undo last move</button><button type="button" data-lab-reset>Restart case</button><button type="button" data-lab-next>Next case →</button></div>
+  <details><summary>Your move history</summary><ol data-lab-history><li>No moves yet.</li></ol></details>
+  <noscript>The playground needs JavaScript. The story, hints, and Java below remain readable.</noscript>
+</section>
+<style>
+  .lab { border: 1px solid var(--blue); border-radius: 16px; background: linear-gradient(130deg, #14212d, var(--bg-raised) 70%); padding: 1.4rem; margin: 1.5rem 0; }
+  header { display:flex; justify-content:space-between; gap:1rem; align-items:center; }
+  header h3 { margin:.3rem 0; font-size:1.5rem; }
+  .eyebrow { font-size:.7rem; color:var(--blue); letter-spacing:.1em; font-weight:700; }
+  header > span,.legend { color:var(--text-dim); font-size:.8rem; }
+  label { display:flex; gap:.8rem; flex-wrap:wrap; align-items:center; font-size:.85rem; margin:1rem 0; }
+  select,.lab :global(button) { background:var(--bg); color:var(--text); font:inherit; border:1px solid var(--border); padding:.65rem .8rem; border-radius:8px; }
+  .lab :global(button) { cursor:pointer; text-align:left; }
+  .lab :global(button:hover),select:hover { border-color:var(--blue); }
+  .lab :global(button:disabled) { opacity:.4; cursor:default; }
+  .lab :global(button:focus-visible),select:focus-visible { outline:2px solid var(--blue); outline-offset:3px; }
+  .board :global(.row-label) { font-size:.8rem; color:var(--text-dim); margin-top:1rem; }
+  .board :global(.cells) { display:flex; gap:.4rem; overflow-x:auto; padding:.5rem 0; align-items:stretch; }
+  .board :global(.cell) { flex:1; min-width:55px; border:1px solid var(--border); border-radius:8px; text-align:center; padding:.45rem .25rem; transition: background .25s, border-color .25s, opacity .25s; }
+  .board :global(.cell.tone-hot) { border-color:var(--accent); background:#e3b34114; }
+  .board :global(.cell.tone-done) { background:#3fb95018; border-color:#3fb95055; }
+  .board :global(.cell.tone-out) { opacity:.35; }
+  .board :global(.cell.tone-ghost) { border-style:dashed; opacity:.7; }
+  .board :global(.cell strong) { display:block; font:600 1.25rem var(--mono); white-space:nowrap; }
+  .board :global(.cell small) { display:block; font-size:.62rem; color:var(--text-dim); min-height:1.15rem; white-space:nowrap; }
+  .board :global(.cell .pointer-label) { color:var(--accent); font-weight:700; }
+  .board :global(.join) { align-self:center; color:var(--text-dim); font-family:var(--mono); flex:0 0 auto; }
+  .board :global(.empty) { color:var(--text-dim); font-style:italic; padding:.6rem 0; }
+  .prompt { font-family:var(--mono); font-size:.85rem; }
+  .actions,.controls { display:flex; flex-wrap:wrap; gap:.5rem; }
+  .actions :global(button) { flex:1; min-width:130px; }
+  .feedback { border-left:3px solid var(--blue); padding:.7rem 1rem; background:var(--bg); border-radius:0 6px 6px 0; }
+  .feedback.oops { border-left-color:var(--red); }
+  .controls button { font-size:.78rem; }
+  details { margin-top:1rem; font-size:.85rem; } summary { cursor:pointer; color:var(--text-dim); }
+  @media(max-width:480px) { .lab { padding:1rem; } header { align-items:start; } select { width:100%; } }
+</style>
+<script>
+  import { labs } from '../lib/registry';
+  import type { Lab, LabBase } from '../lib/lab';
+  document.querySelectorAll<HTMLElement>('[data-lab]').forEach(async root => {
+    const get = <T extends HTMLElement = HTMLElement>(selector: string) => root.querySelector<T>(selector)!;
+    const { lab } = await labs[root.dataset.lab!]() as { lab: Lab<LabBase> };
+    const modeIds = Object.keys(lab.modes);
+    let mode = modeIds[0], variant = 0, mistakes = 0, lastWrong = false;
+    let state = lab.create(mode, variant), history: LabBase[] = [];
+    const node = (tag: string, text: string, cls = '') => { const e = document.createElement(tag); e.textContent = text; e.className = cls; return e; };
+    const render = () => {
+      const board = get('[data-lab-board]'); board.replaceChildren();
+      lab.view(state).forEach(row => {
+        board.append(node('div', row.name, 'row-label'));
+        const cells = node('div', '', 'cells');
+        row.cells.forEach((cell, index) => {
+          if (row.join && index > 0) cells.append(node('span', row.join, 'join'));
+          const tile = node('div', '', 'cell' + (cell.tone ? ` tone-${cell.tone}` : ''));
+          tile.append(node('strong', cell.value), node('small', cell.label || '', 'pointer-label'));
+          cells.append(tile);
+        });
+        if (!row.cells.length) cells.append(node('span', row.empty || 'Empty', 'empty'));
+        board.append(cells);
+      });
+      get('[data-lab-prompt]').textContent = lab.describe(state);
+      get('[data-lab-case]').textContent = `Case ${variant + 1} / ${lab.modes[mode].cases} · ${state.moves} moves`;
+      const actions = get('[data-lab-actions]'); actions.replaceChildren();
+      lab.modes[mode].actions.forEach(({ action, label }) => { const button = document.createElement('button'); button.type = 'button'; button.textContent = label; button.dataset.labAction = action; button.disabled = state.done; actions.append(button); });
+      const feedback = get('[data-lab-feedback]');
+      feedback.classList.toggle('oops', lastWrong);
+      feedback.textContent = state.message + (state.done ? ` ${mistakes ? 'Finished with a few detours. Restart and narrate each move out loud.' : 'Clean run. Try another case without peeking at the rule.'}` : '');
+      get<HTMLButtonElement>('[data-lab-undo]').disabled = history.length === 0;
+      const log = get('[data-lab-history]'); log.replaceChildren();
+      history.forEach((past, index) => log.append(node('li', `Step ${index + 1}: ${lab.describe(past)}`)));
+      if (!history.length) log.append(node('li', 'No moves yet.'));
+    };
+    const reset = () => { state = lab.create(mode, variant); history = []; mistakes = 0; lastWrong = false; render(); };
+    get('[data-lab-actions]').addEventListener('click', event => {
+      const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-lab-action]'); if (!button) return;
+      const action = button.dataset.labAction!;
+      const result = lab.move(state, action);
+      if (result.accepted) history.push(state); else mistakes++;
+      lastWrong = !result.accepted;
+      state = result.state; render();
+      // Buttons are redrawn; restore a predictable keyboard focus position.
+      const focus = root.querySelector<HTMLButtonElement>(`[data-lab-action="${action}"]:not(:disabled)`) || get<HTMLButtonElement>('[data-lab-next]'); focus.focus({ preventScroll: true });
+    });
+    root.querySelector<HTMLSelectElement>('[data-lab-mode]')?.addEventListener('change', event => { mode = (event.target as HTMLSelectElement).value; variant = 0; reset(); });
+    get('[data-lab-reset]').addEventListener('click', reset);
+    get('[data-lab-next]').addEventListener('click', () => { variant = (variant + 1) % lab.modes[mode].cases; reset(); });
+    get('[data-lab-undo]').addEventListener('click', () => { const previous = history.pop(); if (previous) { state = previous; lastWrong = false; render(); } });
+    render();
+  });
+</script>

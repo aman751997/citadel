@@ -1,79 +1,1180 @@
 ---
-title: 'Databases: SQL vs NoSQL, Sharding, Replication'
-description: 'The database decisions every design makes — picking a store, splitting it, copying it, and generating IDs — with defensible reasons.'
+title: 'Databases: Choosing, Modeling, Indexing, Replicating, Sharding'
+description: 'The design review where Kestrel Market almost picked a database by its logo. Access patterns to stores, many-to-many schemas, B-trees and LSM-trees, isolation anomalies, replicas, shards and IDs — each with a reason that survives two follow-ups.'
 module: 2
 order: 1
-minutes: 35
+minutes: 120
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { chooseStore, modeling, manyToMany, storage, indexes, acid, anomalies, locking, replicationLag, quorums, capacity, sharding, ids, pooling, running, drills } from '../data/sd/databases';
+import { BASE } from '../paths';
 
-## The decision that opens every design
+<PatternHub
+  pattern="sd-databases"
+  start="prologue"
+  logline="A database is a bet on which questions you will ask. Write the questions down first. Then the store, the keys, the indexes, the copies and the splits follow — and each one comes with a reason that survives two follow-ups."
+  cast={[
+    { name: 'You', role: 'Four weeks at Kestrel. You write SQL every day. You have never had to defend a schema to a room.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Hands you the marker and asks questions until the design is yours.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has seen every outage twice, and keeps a paper phone book on his desk for teaching.' },
+    { name: 'Dev Okafor', role: 'SRE. Reads incident timelines aloud in a calm 3 a.m. voice.' },
+    { name: 'Iris Tan', role: 'Product lead. Every meeting ends with her “oh, and also…”.' },
+    { name: 'The Interviewer', role: 'Waits at the end of the lesson to test the same ideas in forty-five minutes.' },
+  ]}
+  parts={[
+    { name: 'Part One · Choosing and modeling', description: 'Access patterns to stores; 1:1, 1:N and many-to-many schemas.', links: [['choose-store', 'Postgres until proven otherwise'], ['modeling', 'Model the questions, not the nouns'], ['many-to-many', 'Many to many']] },
+    { name: 'Part Two · Finding rows fast', description: 'B-trees, LSM-trees, composite and covering indexes.', links: [['storage-engines', 'Two ways to keep a book sorted'], ['composite-indexes', 'The phone-book rule']] },
+    { name: 'Part Three · Many hands, one row', description: 'ACID, isolation anomalies, optimistic and pessimistic control.', links: [['acid', 'All or nothing'], ['isolation', 'What the others can see'], ['concurrency-control', 'Two buyers, one guitar']] },
+    { name: 'Part Four · Copies', description: 'Leaders, followers, lag, conflicts and quorums.', links: [['replication', 'Leader and followers'], ['multi-leader', 'More than one leader']] },
+    { name: 'Part Five · Splitting', description: 'Capacity arithmetic, shard keys, hot keys, resharding, IDs.', links: [['capacity', 'Will it fit?'], ['sharding', 'When one box is not enough'], ['ids', 'ID strategies: naming a billion things']] },
+    { name: 'Part Six · Running it', description: 'Connection pools, replicas versus caches, migrations without downtime.', links: [['pooling', 'Too many hands'], ['replicas-vs-cache', 'Replica or cache?'], ['migrations', 'Changing the engine mid-flight']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Design review → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Make the calls interviewers probe, with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="This is the longest lesson in the toolbox. Read one part per sitting; the drills at the end mix all six."
+/>
 
-After the API phase, the first real design decision is always the same: **where does the data live?** Interviewers don't care which logo you pick — they care whether your reason survives two follow-up questions.
+<h2 id="prologue">Prologue · A bet on the questions</h2>
 
-## SQL vs NoSQL — the honest decision rule
+<Scene chapter="Prologue" title="It scales" mood="dawn">
 
-Start from this default: **Postgres until proven otherwise.** Relational databases give you ACID transactions, joins, secondary indexes, and 40 years of tooling. A single beefy Postgres box handles thousands of QPS and terabytes — most systems in interviews never actually outgrow it (your estimation lesson exists to prove this with numbers).
+Kestrel Market launches in six weeks: buy and sell secondhand gear inside the app everyone already has. The design review starts at ten. By ten past, the whiteboard says **DATABASE: MongoDB (it scales)**.
 
-You reach for NoSQL when you have a *specific* reason:
+Mara doesn't erase it. She draws a line under it and waits.
 
-| Store type | Reach for it when | Examples |
-|-----------|-------------------|---------|
-| **Key-value** | simple get/put by key at huge scale, predictable low latency | DynamoDB, Redis |
-| **Wide-column** | write-heavy, time-ordered data, known query patterns | Cassandra (feeds, messages, metrics) |
-| **Document** | nested, schema-flexible entities, queried whole | MongoDB (product catalogs) |
-| **Graph** | queries that walk many-hop relationships | Neo4j (fraud rings, social graphs) |
+Theo, leaning on the windowsill, says what he always says. *"Every database is a bet on which questions you'll ask. I've watched teams lose that bet twice — once with Mongo, once with Postgres. Same mistake both times."*
 
-The real difference isn't "scale" — modern SQL shards fine. It's this: **NoSQL asks you to know your query patterns up front and denormalize for them; SQL lets you ask new questions later.** Cassandra is fast because it's basically a sorted write-optimized log per partition key — and it punishes you the day you need a query you didn't model for.
+*"Which was?"* you ask.
 
-Interview shape: "I'll start with Postgres for the transactional entities. Messages, though, are append-heavy, time-ordered, and read by conversation — that access pattern fits Cassandra partitioned by `conversation_id`." Specific data → specific store → specific reason.
+*"They picked the store before they wrote down the questions."*
 
-## Replication — copies for safety and reads
+Mara holds out the marker. *"So write them down. What will this data be asked, how often, and how fast must it answer? Then tell me where it lives."*
 
-<Mermaid code={`flowchart LR
-    W["✍️ Writes"] --> P[(Primary)]
-    P -->|replication| R1[(Replica 1)]
-    P -->|replication| R2[(Replica 2)]
+</Scene>
+
+Every system design reaches this moment right after the API: **where does the data live?** Interviewers don't care which logo you pick. They care whether your reason survives two follow-up questions — *"why that one?"* and *"what happens when it grows?"*
+
+Three lines in your own records point at this lesson. **Many-to-many modeling** sits in your gap register, so Chapter 3 gives it a full worked schema with every query it serves. The question bank's *Unique ID generator* is answered in Chapter 13. And the drill waiting after this lesson — the shard-key gauntlet — leans on Chapter 12.
+
+**The rule. The data layer is five decisions, made in this order, each with a reason:**
+
+1. **Access patterns** — the queries, their rates, their latency budgets, and which must be transactional.
+2. **Store** — the engine whose native access path matches the hottest pattern.
+3. **Model and keys** — tables or documents, relationships, primary keys, IDs.
+4. **Indexes** — one for each query shape you serve, columns in the right order.
+5. **Copies and splits** — replication for availability and reads; partitioning for size and writes.
+
+<Figure caption="The five decisions. Skipping the first one is how a whiteboard ends up saying “MongoDB (it scales)”.">
+  <Mermaid code={`flowchart LR
+    AP["1 · Access patterns\nqueries, rates, budgets"] --> ST["2 · Store\nfits the hottest pattern"]
+    ST --> MO["3 · Model + keys\nrelationships, IDs"]
+    MO --> IX["4 · Indexes\none per query shape"]
+    IX --> CS["5 · Copies + splits\nreplicas, shards"]`} />
+</Figure>
+
+<Part n="Part One" title="Choosing and modeling">
+
+Pick the store from the questions, then shape the data so each question is cheap to answer.
+
+</Part>
+
+<h2 id="choose-store">Chapter 1 · Postgres until proven otherwise</h2>
+
+<Scene chapter="Chapter 1" title="Six questions">
+
+You write five questions on the board. *Show a listing. Show a seller's active listings. Check out: order, payment and stock, all or nothing. Show the latest messages in a conversation. Search listings by text.*
+
+Iris reads them and adds a sixth without looking up from her phone. *"Oh, and also — Trust & Safety wants to find fraud rings."*
+
+Mara taps each line in turn. *"Six questions. Do they all want the same database?"*
+
+</Scene>
+
+**Start from a default: Postgres until proven otherwise.** A relational database gives you ACID transactions, joins, constraints, secondary indexes, ad-hoc queries and forty years of tooling. One well-provisioned primary handles thousands of writes a second and terabytes of data — the exact ceiling depends on hardware and query shape, so benchmark it — and most systems in interviews never outgrow it. Your estimation lesson exists to prove that with numbers (Chapter 11 does it here).
+
+**You leave the default for a specific reason:** an access pattern the relational model serves badly, or a volume one node cannot hold.
+
+| Store | Data shape | Built for | Weak at | Kestrel use | Examples |
+|---|---|---|---|---|---|
+| **Relational** | Tables of rows, foreign keys | Transactions across rows, joins, constraints, questions you haven't thought of yet | Scaling writes past one node without sharding or a distributed SQL engine | Users, listings, orders, payments | PostgreSQL, MySQL |
+| **Key-value** | An opaque value per key | Get and put by exact key, very low latency, huge scale | Any question not keyed by the key | Sessions, carts, idempotency keys | Redis (in memory), DynamoDB |
+| **Wide-column** | Partition key → rows sorted by clustering columns | Heavy writes; reading one partition in sorted order | Ad-hoc queries, joins, read-modify-write, queries without the partition key | Chat messages, activity feeds | Cassandra, ScyllaDB, HBase, Bigtable |
+| **Document** | Nested JSON-like documents | Loading and saving a whole aggregate by id; varying attributes | Many-to-many joins across documents; invariants across documents | Product catalogue with category-specific attributes | MongoDB, Couchbase, Postgres `jsonb` |
+| **Graph** | Nodes and typed edges | Multi-hop traversals | Bulk aggregation; sharding a densely connected graph | Fraud rings, “people you may know” | Neo4j, Amazon Neptune |
+| **Time-series** | (series, timestamp) → value | Append-mostly ingest, time-range scans, downsampling, retention | Updates; lookups by anything but series and time | Metrics, price history, device telemetry | Prometheus, InfluxDB, TimescaleDB |
+| **Search** | Inverted index over text and fields | Full text, typo tolerance, relevance ranking, facets | Being the source of truth; transactions; read-after-write (refresh is near real time) | Listing search, typeahead | Elasticsearch, OpenSearch |
+
+The real difference isn't “scale” — relational databases shard too. It is this: **NoSQL stores ask you to know your query patterns up front and shape the data for them; SQL lets you ask new questions later.** Cassandra is fast because each partition is a sorted, write-optimised run of rows — and it punishes the day you need a query you didn't model.
+
+Two more facts keep you honest. **“NoSQL means no transactions” is out of date**: MongoDB has multi-document transactions, DynamoDB has transactional writes, Cassandra has compare-and-set “lightweight transactions”. The question is what is *cheap* in each store, not what is possible. And two more families exist: **distributed SQL** (Spanner, CockroachDB, YugabyteDB) spreads SQL and transactions across nodes and pays with coordination latency on writes; **columnar warehouses** (BigQuery, Redshift, ClickHouse) scan a few columns over billions of rows for analytics, not for the per-request path of your product.
+
+**One source of truth, many derived copies.** Using several stores is normal — but each fact has one home. The search index, the graph, the cache and the warehouse are *derived*: fed from the source by change-data-capture or events (see <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a>), and rebuildable from it.
+
+**Worked numbers — Kestrel Market's six questions:**
+
+| Question | Peak rate (assumed) | Shape | Where it runs |
+|---|---|---|---|
+| Show a listing | 20,000 reads/s | One row by id, plus seller and photos | Postgres, behind a cache |
+| Seller's active listings | 300 reads/s | One seller's rows, newest first | Postgres, composite index (Chapter 5) |
+| Checkout | ~120 writes/s | Order + payment + stock, all or nothing | Postgres transaction |
+| Latest messages | ~35,000 writes/s | Append-heavy; one conversation in time order | Wide-column, partitioned by conversation |
+| Text search | 2,000 queries/s | Relevance, typos, filters | Search index fed by CDC |
+| Fraud rings | A few a minute | Three-hop traversals | Graph store fed by events |
+
+The interview shape, in one breath: *"I'll start with Postgres for the transactional entities. Messages, though, are append-heavy, time-ordered and read by conversation — that access pattern fits a wide-column store like Cassandra, partitioned by `conversation_id`."* Specific data → specific store → specific reason.
+
+<Trace title="Pick the store" steps={chooseStore} takeaway="Name the access pattern first; the store whose native access path matches it is the answer. Everything else is a derived copy fed from the source of truth." />
+
+<Reveal q="“Why not one NoSQL database for everything? It scales.”">
+
+For most data, scale isn't the scarce resource — flexibility is. Orders at 120 writes a second fit one Postgres primary for years. Put them in a store keyed for one access pattern and every new finance question becomes a new table or a full scan, and checkout atomicity becomes code you write and debug. Use the specialised store where an access pattern demands it (messages, search, traversals), and keep the transactional core relational.
+
+</Reveal>
+
+**Catch the trap:** logo-dropping. *"Cassandra because it scales"*, *"WhatsApp uses something similar"*, *"NoSQL is standard for chat"* — each dies to *"why exactly?"*. Always say the data, its access pattern, the store, and the reason they fit.
+
+<h2 id="modeling">Chapter 2 · Model the questions, not the nouns</h2>
+
+<Scene chapter="Chapter 2" title="Seven joins">
+
+Theo pulls up your first draft schema. Twelve tables, beautifully normalised, one for every noun in the product spec: users, listings, photos, offers, reviews.
+
+*"Lovely,"* he says. *"Now show me the query behind the home screen."*
+
+You write it. It joins seven tables.
+
+*"Twenty thousand times a second,"* Theo says, mildly. *"Nouns tell you what exists. Questions tell you how it must be laid out. Which questions did this schema come from?"*
+
+</Scene>
+
+**Model from access patterns.** For every screen and API, write down the query, its rate, its latency budget and whether it must be transactional (the table in Chapter 1). Then shape the data so the hottest questions touch the fewest rows and places.
+
+**Relationships, and where each one lives:**
+
+- **One-to-one** (a user and their settings): if the two are read together, put them in the same row. Split them only if one side is large, rarely read, or has different access rules — and then key the second table by the first one's id, so the database enforces the “one”.
+- **One-to-many** (a seller and their listings): a foreign key on the *many* side. **Index it.** Postgres does not create an index on a foreign-key column for you (MySQL's InnoDB requires one and creates it). Without it, “listings of seller 42” scans the table, and deleting a user scans listings to check for references.
+- **Many-to-many**: a join table. It gets the whole next chapter.
+
+```sql
+CREATE TABLE users (
+  id          BIGINT PRIMARY KEY,
+  handle      TEXT NOT NULL UNIQUE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 1:1, keyed by the user itself so there can only ever be one row per user
+CREATE TABLE user_settings (
+  user_id      BIGINT PRIMARY KEY REFERENCES users(id),
+  language     TEXT NOT NULL DEFAULT 'en',
+  push_offers  BOOLEAN NOT NULL DEFAULT true
+);
+
+-- 1:N, the foreign key lives on the many side
+CREATE TABLE listings (
+  id           BIGINT PRIMARY KEY,
+  seller_id    BIGINT NOT NULL REFERENCES users(id),
+  title        TEXT NOT NULL,
+  price_cents  BIGINT NOT NULL CHECK (price_cents > 0),
+  status       TEXT NOT NULL CHECK (status IN ('active', 'sold', 'removed')),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX listings_by_seller ON listings (seller_id, status, created_at DESC);
+```
+
+**In a document store, embed or reference?** Embed what is *owned, bounded and read together* — an order's line items, a shipping address. Reference what is *shared or unbounded* — the seller (shared by many listings), the comments on a photo (unbounded).
+
+**Normalise first, then denormalise on purpose.** Normalised data stores each fact once and joins at read time. Denormalising copies a fact next to where it is read. It is a trade, never a free speed-up:
+
+| You gain | You pay |
+|---|---|
+| Fewer joins; one-key or one-partition reads | Every change to the fact must update every copy (write fan-out) |
+| Predictable read latency on the hot path | Copies drift unless one owner keeps them in step: the same transaction, an event consumer, or a reconciliation job |
+| A shape that fits one partition of a NoSQL store | Backfills whenever the fact's shape changes; more storage |
+
+**The rule: denormalise facts that are read far more often than they change, and name who keeps the copy correct.**
+
+**Worked numbers — the like count.** The feed shows a like count on every post: 400,000 post views a second, against about 5,000 likes a second (assumed). Normalised, every view runs `COUNT(*)` over the likes table; a viral post with 3 million likes makes each of its views walk 3 million index entries. Denormalised, each like adds one to a `like_count` column on the post — 5,000 small updates a second spread across many posts — and every view reads one column. The new cost: a single viral post getting 2,000 likes a second turns its row into a hot row, because each update takes that row's lock in turn. Shard the counter across several rows and sum them on read (the sharded-counter tool in <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series</a>).
+
+**Single-table thinking, briefly.** In a wide-column store you design **one table per query**: `messages_by_conversation` and `conversations_by_user` hold overlapping data, each partitioned for one read. In DynamoDB's single-table style, several entity types share one table with keys shaped for the queries — partition key `USER#42`, sort key `ORDER#2026-10-07#981` — so “this user's orders, newest first” is one partition read, and a secondary index with the keys swapped serves the reverse question. Both are denormalisation by design: you trade write fan-out and rigidity for one-hop reads, and you must know the questions before you write the first row.
+
+<Trace title="Shape the data" steps={modeling} takeaway="1:1 read together → same row. 1:N → foreign key on the many side, indexed; unbounded N gets its own table. Denormalise the hot read, and name who keeps the copy right." />
+
+<Reveal q="Joins are slow, so should a serious design avoid them?">
+
+No. A join on indexed keys that returns a handful of rows costs well under a millisecond of database work. Joins hurt in two places: when one request joins many rows on a hot path (the seven-join home screen at 20,000 a second), and across shards, where the database cannot join at all and the application must. Denormalise for those cases, not as a reflex.
+
+</Reveal>
+
+**Catch the trap:** *"I'll denormalise for performance."* Say which fact you copy, which read it serves, and who updates the copies — and what a reader sees while they disagree.
+
+<h2 id="many-to-many">Chapter 3 · Many to many</h2>
+
+<Scene chapter="Chapter 3" title="The other side of the array">
+
+Iris has a new feature and a new name for it. *"Kestrel Events. People host meetups — guitar swaps, photo walks. You RSVP, you see who's going, and you see your own calendar."*
+
+You sketch an events table and add a column: `attendee_ids`, an array. Mara looks at it for a long moment.
+
+*"Who is going to Saturday's photo walk?"* You point at the array. *"Good. Now — which events is Priya going to?"*
+
+Your finger stops halfway to the board.
+
+*"That's the one in your gap register,"* Mara says. *"Every many-to-many has two questions, one from each side. Design for both."*
+
+</Scene>
+
+**A many-to-many relationship** is one where each side can have many of the other: a user attends many events; an event has many attendees. Users follow many users; users are followed by many users. Neither side can hold the relationship in one column without breaking the other side's question.
+
+**Why an array column (or a comma-separated list) fails:**
+
+- **The reverse question scans.** “Which events is Priya going to?” must look inside every event row. (Postgres can index arrays with a GIN index, which helps lookups — but the next three problems remain.)
+- **No integrity.** Nothing stops an id that points at a deleted user, or the same id twice.
+- **Contention.** Every RSVP rewrites one ever-growing row that thousands of people update at once.
+- **Nowhere to put facts about the relationship** — the RSVP answer, who invited whom, when.
+
+**The fix is a join table** (also called a junction or associative table): **one row per pair**, a composite primary key that forbids duplicates, foreign keys to both sides, **an index in each direction**, and the relationship's own attributes on the row.
+
+<Figure caption="The join table is an entity of its own — an attendance. Its primary key answers one direction; a second index answers the other.">
+  <Mermaid code={`erDiagram
+    USERS ||--o{ EVENT_ATTENDEES : "attends"
+    EVENTS ||--o{ EVENT_ATTENDEES : "has"
+    USERS ||--o{ EVENTS : "hosts"
+    EVENT_ATTENDEES {
+      bigint event_id PK
+      bigint user_id PK
+      text rsvp
+      bigint invited_by
+      timestamptz starts_at
+    }`} />
+</Figure>
+
+**The worked schema:**
+
+```sql
+CREATE TABLE events (
+  id          BIGINT PRIMARY KEY,
+  host_id     BIGINT NOT NULL REFERENCES users(id),
+  title       TEXT NOT NULL,
+  starts_at   TIMESTAMPTZ NOT NULL,          -- an instant, stored in UTC
+  ends_at     TIMESTAMPTZ NOT NULL,
+  tz          TEXT NOT NULL,                 -- IANA zone for display, e.g. 'Europe/Berlin'
+  CHECK (ends_at > starts_at)
+);
+
+CREATE TABLE event_attendees (
+  event_id    BIGINT NOT NULL REFERENCES events(id),
+  user_id     BIGINT NOT NULL REFERENCES users(id),
+  rsvp        TEXT NOT NULL CHECK (rsvp IN ('yes', 'no', 'maybe')),
+  invited_by  BIGINT REFERENCES users(id),
+  starts_at   TIMESTAMPTZ NOT NULL,          -- copied from events (see below)
+  PRIMARY KEY (event_id, user_id)            -- serves "who is coming to event 9?"
+);
+
+-- the reverse direction: serves "my upcoming events", already in time order
+CREATE INDEX event_attendees_by_user ON event_attendees (user_id, starts_at);
+```
+
+Notice `starts_at` on the join table. That is a deliberate **denormalisation**: it lets “my upcoming events” be answered from one index, in order, without visiting every event. Its cost is exactly the one Chapter 2 warned about — rescheduling an event with 1,000 attendees updates 1,000 attendee rows, in the same transaction as the event. Rescheduling is rare; opening your calendar happens every time the app starts. The trade is worth it, and you can say why.
+
+**The queries it serves:**
+
+```sql
+-- 1. Who is coming to event 9?  (primary key: leading event_id)
+SELECT u.id, u.handle, a.rsvp
+FROM event_attendees a
+JOIN users u ON u.id = a.user_id
+WHERE a.event_id = 9 AND a.rsvp = 'yes';
+
+-- 2. My next 20 events  (reverse index: leading user_id, then starts_at)
+SELECT e.id, e.title, e.starts_at, a.rsvp
+FROM event_attendees a
+JOIN events e ON e.id = a.event_id
+WHERE a.user_id = 42 AND a.starts_at >= now()
+ORDER BY a.starts_at
+LIMIT 20;
+
+-- 3. Is user 42 going to event 9?  (one primary-key lookup)
+SELECT rsvp FROM event_attendees WHERE event_id = 9 AND user_id = 42;
+
+-- 4. RSVP, safely retryable: a second tap updates instead of duplicating
+INSERT INTO event_attendees (event_id, user_id, rsvp, starts_at)
+SELECT id, 42, 'yes', starts_at FROM events WHERE id = 9
+ON CONFLICT (event_id, user_id) DO UPDATE SET rsvp = EXCLUDED.rsvp;
+
+-- 5. Does event 9 clash with anything user 42 already said yes to?
+SELECT e.id, e.title
+FROM event_attendees a
+JOIN events e ON e.id = a.event_id
+JOIN events n ON n.id = 9
+WHERE a.user_id = 42 AND a.rsvp = 'yes' AND e.id <> 9
+  AND e.starts_at < n.ends_at          -- two intervals overlap when each
+  AND e.ends_at   > n.starts_at;       -- starts before the other ends
+```
+
+**A self-referencing many-to-many: follows.** Same shape, both columns point at users.
+
+```sql
+CREATE TABLE follows (
+  follower_id  BIGINT NOT NULL REFERENCES users(id),
+  followee_id  BIGINT NOT NULL REFERENCES users(id),
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (follower_id, followee_id),      -- "whom do I follow?"
+  CHECK (follower_id <> followee_id)
+);
+CREATE INDEX follows_by_followee ON follows (followee_id, follower_id);  -- "who follows me?"
+
+-- Mutuals: people 42 follows who follow 42 back
+SELECT f1.followee_id
+FROM follows f1
+JOIN follows f2 ON f2.follower_id = f1.followee_id
+               AND f2.followee_id = f1.follower_id
+WHERE f1.follower_id = 42;
+```
+
+**Worked numbers — how big is the follow graph?** Assume 50 million users following 200 accounts on average: **10 billion rows**. A row of three 8-byte columns plus per-row overhead is roughly 50 bytes; each of the two indexes adds roughly 30 bytes per row. About 110 bytes per follow → **10 × 10⁹ × 110 B ≈ 1.1 TB** before replication. One large Postgres node can hold that; the write rate and the celebrity rows are what push you to shard. **When you do shard, the reverse index becomes a second table** — `following` partitioned by `follower_id`, `followers` partitioned by `followee_id` — so a follow is two writes to two shards. Write one and derive the other from an event or the change log, and accept a moment where they disagree.
+
+### Worked example: a calendar
+
+The bank's *Google Calendar* question is this chapter plus time.
+
+- **Attendance is the many-to-many above**, with RSVP on the join row.
+- **Single events** store instants in UTC (`TIMESTAMPTZ`) plus the event's IANA zone name for display.
+- **Recurring events store the rule, not the instances.** A series row holds an iCalendar recurrence rule (RFC 5545 `RRULE`, for example `FREQ=WEEKLY;BYDAY=MO`), the local start time and the zone. You either **expand on read** for the window being viewed, or **materialise instances** for a rolling horizon (say, the next year) so free/busy and clash checks become plain index range queries — more storage and a background job to extend the horizon, in exchange for simple reads.
+- **Exceptions** — one meeting moved, one cancelled — are override rows keyed by `(series_id, original_start)` (iCalendar calls this the `RECURRENCE-ID`) or excluded dates.
+- **Clashes** use the overlap rule from query 5: intervals `[s1, e1)` and `[s2, e2)` overlap exactly when `s1 < e2` and `s2 < e1`. When a clash must be *impossible* rather than merely detected — one meeting room, never double-booked — let Postgres enforce it:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS btree_gist;     -- lets a GiST index handle plain equality on room_id
+CREATE TABLE room_bookings (
+  room_id  BIGINT NOT NULL,
+  during   TSTZRANGE NOT NULL,                 -- half-open [start, end) by default
+  EXCLUDE USING gist (room_id WITH =, during WITH &&)
+);
+```
+
+<Reveal q="Why store a weekly 9 a.m. meeting as local time plus a zone, rather than as a UTC time?">
+
+Daylight saving. 9:00 in New York is 13:00 UTC in summer (UTC−4) and 14:00 UTC in winter (UTC−5). A series stored as “every Monday at 13:00 UTC” drifts to 8:00 local when the clocks change in November. Store the wall-clock time and the zone for the rule; convert each instance to UTC when you expand it.
+
+</Reveal>
+
+**Many-to-many in a NoSQL store** is the same two-direction idea. In DynamoDB's adjacency-list style, an item with partition key `EVENT#9` and sort key `USER#42` holds the RSVP; querying `EVENT#9` lists attendees. A global secondary index that swaps the two keys answers “events for `USER#42`”. Base table plus inverted index — exactly a join table plus its reverse index.
+
+<Trace title="Model the many-to-many" steps={manyToMany} takeaway="One row per pair, primary key for one direction, a reverse index for the other, and the relationship's own facts on the row." />
+
+**Catch the trap:** a join table with only its primary key. Say both questions out loud — “who is in this event?” and “which events is this user in?” — and name the index that serves each.
+
+<Part n="Part Two" title="Finding rows fast">
+
+An index is a promise to find rows without reading the table. Know how that promise is kept, and what it costs on every write.
+
+</Part>
+
+<h2 id="storage-engines">Chapter 4 · Two ways to keep a book sorted</h2>
+
+<Scene chapter="Chapter 4" title="The disk is not fine" mood="night">
+
+Dev forwards a graph with a one-line comment: *"The device-events table is fine. The disk is not."* Inserts per second: flat at forty thousand. Disk utilisation: pinned at a hundred percent.
+
+Theo reads it and almost smiles. *"Postgres is doing exactly what a B-tree does — finding the right page for every row and rewriting it. Forty thousand times a second, all over the disk."*
+
+He draws two pictures side by side: a tree of pages, and a stack of sorted files. *"Both keep the data sorted,"* he says. *"They disagree about when to pay for it."*
+
+</Scene>
+
+An index exists so the database can **seek** instead of **scan**: jump to the rows it needs in a sorted structure, rather than reading fifty million rows to find twenty. There are two great families of sorted structure on disk.
+
+**The B-tree** (PostgreSQL, MySQL InnoDB, SQL Server, Oracle). Data lives in fixed-size **pages** — 8 KB by default in Postgres, 16 KB in InnoDB. A root page points to internal pages, which point to leaf pages that hold the keys in order, each leaf linked to the next for range scans. Each page holds hundreds of keys, so the tree is shallow. To write, the engine finds the leaf for the key, changes it in place (splitting it if it is full), and records the change in a **write-ahead log** (WAL) first so a crash can be recovered.
+
+- **Postgres** keeps table rows in an unordered *heap*; every index, including the primary key, points into it.
+- **InnoDB** stores the rows *inside* the primary-key B-tree (a **clustered index**), and every secondary index stores the primary key as its pointer — so a fat primary key makes every secondary index fatter.
+
+<Figure caption="A B-tree lookup is one root-to-leaf path. With a few hundred keys per page, four levels cover tens of billions of keys.">
+  <Mermaid code={`flowchart TD
+    R["Root page\n… | 3,000,000 | 6,000,000 | …"] --> I1["Internal page\n… | 3,010,000 | 3,020,000 | …"]
+    R --> I2["Internal page\n…"]
+    I1 --> L1["Leaf page\nkeys 3,010,000 – 3,010,399"]
+    I1 --> L2["Leaf page\nkeys 3,010,400 – 3,010,799"]
+    L1 -.->|next leaf| L2`} />
+</Figure>
+
+**Worked numbers — how deep?** Say a page holds about 400 keys. Then one level reaches 400 keys, two reach 160,000, three reach 64 million, and **four reach 25.6 billion**. A billion-row index is four levels deep. The root and internal pages are hit so often that they stay in memory, so a lookup costs about **one or two disk reads**.
+
+**The LSM-tree** (log-structured merge-tree: Cassandra, ScyllaDB, HBase, RocksDB, LevelDB). It never updates in place.
+
+1. A write is appended to a **commit log** (for crash recovery) and inserted into the **memtable**, a sorted structure in memory. That's the whole write — sequential I/O only.
+2. When the memtable fills, it is flushed to disk as an immutable sorted file, an **SSTable**.
+3. **Compaction** runs in the background, merging SSTables, keeping the newest version of each key and dropping overwritten values and old **tombstones** (deletes are written as markers, not erasures).
+4. A read checks the memtable, then SSTables from newest to oldest. Each SSTable carries a **Bloom filter** that can say “definitely not here”, so most files are skipped without touching disk.
+
+<Figure caption="LSM write path: cheap sequential writes now, sorting and merging later in the background.">
+  <Mermaid code={`flowchart LR
+    W["write"] --> CL["commit log\n(append only)"]
+    W --> MT["memtable\n(sorted, in memory)"]
+    MT -->|"flush when full"| S3["SSTable (newest)"]
+    S3 --> C["compaction\nmerge + drop old versions"]
+    S2["SSTable"] --> C
+    S1["SSTable (oldest)"] --> C
+    C --> M["one larger SSTable"]`} />
+</Figure>
+
+**Write amplification** is the bytes the engine writes to disk divided by the bytes you asked it to write. Both families pay it, at different times:
+
+- **B-tree**: change a 100-byte row and the engine eventually writes its whole 8 KB page — 80 times the data, if nothing else on that page changed before it was flushed — plus the WAL record. Postgres also logs a full image of a page the first time it changes after each checkpoint, to survive torn writes.
+- **LSM**: each byte goes to the commit log, then to a flushed SSTable, then is rewritten every time compaction merges it into a larger file. Over a key's life that can be **ten times or more**, depending on the compaction strategy and workload. The difference is that these are large sequential writes, done in the background.
+
+| | B-tree | LSM-tree |
+|---|---|---|
+| Write path | Find the leaf page, change it in place (plus WAL) | Append to the log and memtable; sort and merge later |
+| Write cost | Random page writes; a whole page per small change | Sequential writes; compaction rewrites data several times |
+| Read cost | One root-to-leaf path, ~1–2 disk reads | Memtable plus possibly several SSTables; Bloom filters bound it |
+| Range scans | Excellent: leaves are in key order | Good, but merges across files |
+| Space | Partly empty pages after splits | Old versions and tombstones until compaction; compresses well |
+| Latency | Steady | Compaction competes for disk and can cause spikes |
+| Fits | Read-heavy and update-heavy transactional work | Write-heavy, append-mostly data |
+
+One more Postgres detail worth having: under its multi-version concurrency control (MVCC), an `UPDATE` writes a **new row version** and leaves the old one for `VACUUM` to reclaim later. If no indexed column changed and the page has room, a *HOT* (heap-only tuple) update skips touching the indexes at all — one more reason not to index columns that change constantly.
+
+<Trace title="Choose the engine" steps={storage} takeaway="B-trees pay at write time with random page rewrites and read predictably. LSM-trees write sequentially and pay later in compaction, with Bloom filters keeping reads cheap." />
+
+<Reveal q="If LSM-trees write so well, why isn't every database an LSM?">
+
+Reads may consult several files, compaction competes with foreground traffic and causes latency spikes, and tuning it is a craft of its own. B-trees give steady reads and in-place updates, which suits read-heavy, update-heavy transactional work. Some ecosystems offer both: MySQL-compatible servers such as Percona Server and MariaDB can run InnoDB (B-tree) or MyRocks (an LSM engine built on RocksDB) side by side.
+
+</Reveal>
+
+**Catch the trap:** *"NoSQL is faster."* Speed comes from the storage engine and the access path, not the label. A B-tree database drowns in scattered inserts; an LSM store suffers under read-modify-write and ad-hoc reads.
+
+<h2 id="composite-indexes">Chapter 5 · The phone-book rule</h2>
+
+<Scene chapter="Chapter 5" title="Every Dev">
+
+The seller dashboard takes four seconds. Dev runs `EXPLAIN ANALYZE` and pastes the plan into the channel: an index scan that walked thirty-one million entries and threw away all but twenty.
+
+*"But there is an index,"* someone protests. *"On created_at and seller_id."*
+
+Theo picks up the paper phone book he keeps on his desk for exactly this conversation. *"Sorted by surname, then first name. Find me every Okafor."* Easy. *"Now find me every Dev."* He waits while you think about it. *"The order of the columns is the whole game."*
+
+</Scene>
+
+**A composite index is sorted by its first column, then by the second within each first, and so on** — exactly like a phone book sorted by surname, then first name. The analogy maps one to one:
+
+- “Okafor, Dev” — both columns: one seek.
+- Every Okafor — the **leftmost prefix**: one seek, then read along.
+- Every Dev — the second column alone: the Devs are scattered through every surname. Read the whole book.
+- Surnames from O to P, first name Dev — a range on the first column: walk the whole O–P section checking first names. The range stops the second column from narrowing the seek; it can only filter.
+
+**The rules that follow:**
+
+1. **Leftmost prefix.** An index on `(a, b, c)` serves filters on `a`; on `a` and `b`; on `a`, `b` and `c`. Not on `b` alone or `c` alone. (Some engines can “skip scan” when the leading column has few distinct values — MySQL 8.0 can, and recent Postgres versions too — but never design on it.)
+2. **Equality columns first, then the range or sort column.** After the first range column, later columns can't narrow the seek.
+3. **`ORDER BY` comes free when it follows the equality prefix in index order** (or exactly reversed). The engine reads rows already sorted and stops at the `LIMIT` — no sort step.
+4. **Order the equality columns by what else they must serve.** “Most selective column first” matters much less than people think for pure equality lookups — the B-tree lands on the same entries either way. Pick the order whose prefixes also serve your other queries.
+5. **A covering index answers from the index alone.** If every column the query touches is in the index, the engine never visits the table (an *index-only scan*). Postgres lets you add non-key payload columns with `INCLUDE`; InnoDB secondary indexes already carry the primary key.
+6. **Every index is paid for on every write.** Each insert, each delete, and each update to an indexed column must maintain every index.
+
+<Figure caption="Index on (seller_id, status, created_at DESC). One seek lands on seller 42's active listings, already newest first; read 20 entries and stop.">
+  <ArrayStrip values={['41·active·10-02', '42·active·10-06', '42·active·10-04', '42·active·09-30', '42·sold·10-05', '43·active·10-07']} indices={false} pointers={[{ at: 1, label: 'seek here', tone: 'gold' }]} regions={[{ from: 1, to: 3, label: 'seller 42, active, newest first', tone: 'green' }]} tones={{ 0: 'ghost', 4: 'ghost', 5: 'ghost' }} />
+</Figure>
+
+```sql
+-- The dashboard query
+SELECT id, title, price_cents
+FROM listings
+WHERE seller_id = 42 AND status = 'active'
+ORDER BY created_at DESC
+LIMIT 20;
+
+-- Equality, equality, then the sort column
+CREATE INDEX listings_by_seller ON listings (seller_id, status, created_at DESC);
+
+-- Or make it covering, so the table is never visited (Postgres 11+)
+CREATE INDEX listings_by_seller_cov ON listings (seller_id, status, created_at DESC)
+  INCLUDE (id, title, price_cents);
+
+-- Always check what the planner actually did
+EXPLAIN ANALYZE SELECT ...;
+```
+
+**Worked numbers.** `listings` holds 50 million rows. With the old index on `(created_at, seller_id)`, the engine walks backwards through time checking every listing for seller 42 — for a seller whose last listing is months old, that is tens of millions of entries. With `(seller_id, status, created_at DESC)` it descends about four levels, reads one leaf page of 20 entries, then fetches 20 rows — or none at all with the covering version. And the cost on the other side: a table with **six indexes does seven structure updates per insert**. At 120 inserts a second that's nothing; on the 35,000-a-second messages table it would be 245,000 structure updates a second. Index the queries you serve, and no others.
+
+<Trace title="Order the columns" steps={indexes} takeaway="Leftmost prefix; equality first, then range or sort; cover the hot query when it pays; and remember every index taxes every write." />
+
+<Reveal q="There's an index on (a, b). Do you also need one on (a)?">
+
+No. Through the leftmost-prefix rule, `(a, b)` already serves queries on `a` alone. A separate `(a)` index only adds write cost. An index on `(b)`, though, is a genuinely different index — the `(a, b)` one can't help a query that filters on `b` alone.
+
+</Reveal>
+
+**Catch the trap:** *"I'll add an index."* Which columns, in which order, serving which query? Unindexed queries on big tables in your design are the interviewer's easiest kill shot; the second easiest is an index in the wrong order.
+
+<Part n="Part Three" title="Many hands, one row">
+
+Transactions promise that concurrent work won't trip over itself. The promise has fine print, and interviews read it.
+
+</Part>
+
+<h2 id="acid">Chapter 6 · All or nothing</h2>
+
+<Scene chapter="Chapter 6" title="The log said it happened" mood="storm">
+
+Kestrel Wallet lets sellers keep their earnings in the app. On a Tuesday, a deploy restarts the payments service in the middle of a transfer. Dev finds the log line: a buyer's wallet debited €25, the seller's never credited.
+
+*"Before anyone panics,"* Theo says, *"look in the database."* You do. The debit isn't there. Neither is the credit. The buyer still has the money.
+
+*"But the log said it happened,"* you say.
+
+*"The log said we started it,"* Theo corrects. *"The database keeps only what commits. Four letters make that promise. Most people can recite them. Few can say what each one does not promise."*
+
+</Scene>
+
+A **transaction** groups several reads and writes into one unit. **ACID** names four guarantees — and each has a limit worth saying out loud.
+
+| Letter | The promise | Not a promise of | How engines keep it |
+|---|---|---|---|
+| **Atomicity** | All of a transaction's writes take effect, or none do; a failure or abort leaves no trace | Anything about concurrency | Write-ahead log and undo; incomplete transactions are rolled back on recovery |
+| **Consistency** | Each transaction moves the data from one valid state to another, by your invariants | CAP's “every replica returns the latest write” — a different idea with the same name | Constraints you declare (`NOT NULL`, `UNIQUE`, `CHECK`, foreign keys) plus your application logic |
+| **Isolation** | Concurrent transactions don't see each other's partial work | Behaving as if run one at a time — unless you ask for Serializable | MVCC snapshots and locks, to the degree the isolation level says (next chapter) |
+| **Durability** | Once commit returns, the data survives a crash | Surviving the loss of the machine or disk — that is replication and backups | The WAL is flushed to disk before commit returns |
+
+```sql
+BEGIN;
+UPDATE wallets SET balance_cents = balance_cents - 2500
+ WHERE user_id = 7 AND balance_cents >= 2500;      -- app checks: exactly 1 row, else ROLLBACK
+UPDATE wallets SET balance_cents = balance_cents + 2500
+ WHERE user_id = 9;
+INSERT INTO wallet_transfers (transfer_id, from_user, to_user, amount_cents)
+VALUES ('tr_8f3a', 7, 9, 2500);                     -- transfer_id is UNIQUE: a retried request can't apply twice
+COMMIT;
+```
+
+**Durability costs a disk flush per commit** — but not one flush per transaction: engines use *group commit*, flushing the log once for many transactions that commit at nearly the same moment. Postgres also lets a session trade durability for latency (`synchronous_commit = off`): a crash can lose the last fraction of a second of commits, but never corrupts the data.
+
+**Transactions stop at the edge of one database.** A transfer that spans two services or two shards has no single `COMMIT`. Two-phase commit exists, but it blocks if the coordinator fails at the wrong moment, so most designs use sagas, idempotency keys and an outbox — the tools in <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a>.
+
+<Trace title="Name the letter" steps={acid} takeaway="Atomicity is all-or-nothing under failure. ACID consistency is your invariants. Isolation is a dial. Durability survives a crash, not a lost disk." />
+
+<Reveal q="Is a single UPDATE statement a transaction?">
+
+Yes. Outside an explicit `BEGIN … COMMIT`, each statement runs as its own transaction (autocommit), so `UPDATE … SET n = n + 1` is atomic by itself. Logic that spans several statements — read, decide, write — needs an explicit transaction, and the right isolation level or lock (the next two chapters).
+
+</Reveal>
+
+**Catch the trap:** *"We need SQL because we need ACID."* Name the invariant: *"the order row, the payment and the stock decrement commit together, or not at all."*
+
+<h2 id="isolation">Chapter 7 · What the others can see</h2>
+
+<Scene chapter="Chapter 7" title="The empty rota" mood="night">
+
+Dev tells this story at every onboarding. Two years ago the on-call rota had one rule: at least one engineer on call, always. The app enforced it — *count who's on call; if it's two or more, let me off.*
+
+One Friday night, Dev and Priya both tapped *Go off call* in the same second. Each transaction counted two. Each took one person off. Both committed.
+
+*"No error,"* Dev says. *"No deadlock. Every statement did exactly what it was told. At 2 a.m. the pager rang into an empty rota."*
+
+*"Which rule did the database break?"* Mara asks you.
+
+*"None,"* Theo says, before you can answer. *"It was running Read Committed, and it kept every promise it made. Nobody asked it for the one they needed."*
+
+</Scene>
+
+**Isolation is the illusion that transactions run one at a time.** The full illusion — **Serializable** — costs throughput or retries, so databases offer weaker levels. Each weaker level lets certain **anomalies** through. Learn the five by their shape:
+
+1. **Dirty read** — you read another transaction's uncommitted write, which may later roll back. *You see a balance mid-transfer that never really existed.*
+2. **Non-repeatable read** (read skew) — you read the same row twice in one transaction and get different values, because someone committed in between.
+3. **Phantom** — you run the same query twice and *different rows* match, because someone inserted or deleted matching rows.
+4. **Lost update** — two transactions each read a value, compute in the application, and write back; the second write silently erases the first.
+5. **Write skew** — two transactions read the same facts, then write *different* rows based on what they read; each is valid alone, together they break an invariant. The empty rota.
+
+(Every level prevents *dirty writes* — overwriting another transaction's uncommitted write — with row locks.)
+
+<Figure caption="Write skew: no row is written twice, so there is no conflict to detect. The invariant lived across two rows.">
+  <Mermaid code={`sequenceDiagram
+    participant D as Dev's transaction
+    participant DB as Database
+    participant P as Priya's transaction
+    D->>DB: count on-call engineers → 2
+    P->>DB: count on-call engineers → 2
+    D->>DB: UPDATE rota: Dev off call
+    P->>DB: UPDATE rota: Priya off call
+    D->>DB: COMMIT
+    P->>DB: COMMIT
+    Note over DB: on call: nobody`} />
+</Figure>
+
+**What the SQL standard says.** The standard defines four levels by three phenomena only:
+
+| Level | Dirty read | Non-repeatable read | Phantom |
+|---|---|---|---|
+| Read Uncommitted | possible | possible | possible |
+| Read Committed | prevented | possible | possible |
+| Repeatable Read | prevented | prevented | possible |
+| Serializable | prevented | prevented | prevented |
+
+Lost update and write skew aren't in that list — which is why engines with the same level names behave differently. **What real engines do:**
+
+| Anomaly | Read Committed (Postgres, MySQL) | Repeatable Read — Postgres | Repeatable Read — MySQL InnoDB | Serializable |
+|---|---|---|---|---|
+| Dirty read | prevented | prevented | prevented | prevented |
+| Non-repeatable read | possible | prevented | prevented for plain `SELECT`s (one snapshot) | prevented |
+| Phantom | possible | prevented (snapshot) | plain `SELECT`s see one snapshot; locking reads take gap locks | prevented |
+| Lost update (read, then write back) | possible | prevented: the second writer gets a serialization error and must retry | **possible** | prevented |
+| Write skew | possible | possible | possible | prevented |
+
+**Defaults: Postgres runs Read Committed; MySQL's InnoDB runs Repeatable Read.** Postgres's Read Uncommitted behaves exactly like Read Committed — it never shows dirty reads. Postgres's Repeatable Read is *snapshot isolation*: the transaction sees one snapshot taken at its first statement. Postgres's Serializable is *Serializable Snapshot Isolation*: it watches for dangerous read/write patterns and aborts one transaction with a serialization failure, so **your code must retry**. MySQL's Serializable instead turns plain reads into shared-lock reads (when autocommit is off), so conflicting transactions wait for each other — and when they wait in a cycle, a deadlock aborts one of them. For any other engine, check its documentation; the names don't travel.
+
+**Fixing write skew without Serializable.** Lock the rows your decision depends on:
+
+```sql
+BEGIN;
+SELECT name FROM rota
+ WHERE shift_id = 12 AND on_call
+ FOR UPDATE;                                -- locks every on-call row for this shift
+-- app: only if 2 or more rows came back...
+UPDATE rota SET on_call = false WHERE shift_id = 12 AND name = 'Dev';
+COMMIT;
+```
+
+Priya's identical `SELECT … FOR UPDATE` now waits for Dev's commit, then sees only one on-call row, and refuses. (Under Postgres's Repeatable Read she would get a serialization error instead, and retry.) **This only works when the rows exist.** If the rule is about *absence* — “no booking exists for this room at this time” — there is nothing to lock. Then use a unique or exclusion constraint (Chapter 3's room bookings), pre-create rows to lock (one row per room-slot), or run Serializable.
+
+**Choosing a level in practice:** Read Committed plus targeted fixes — atomic statements, `FOR UPDATE`, constraints — is the common default. Reach for Serializable, with a retry loop, when an invariant spans rows no single statement or constraint can protect.
+
+<Trace title="Name the anomaly" steps={anomalies} takeaway="Dirty read, non-repeatable read, phantom, lost update, write skew. Know which your level lets through — and that Postgres defaults to Read Committed, MySQL to Repeatable Read." />
+
+<Reveal q="The Interviewer: “Which isolation level would you run checkout in?”">
+
+Read Committed — the Postgres default — is enough *if the statements enforce the invariants themselves*: a conditional stock decrement (`… WHERE stock > 0`), a unique constraint on the payment's idempotency key, and all of it in one transaction. I'd move to Serializable, with a retry loop, only for an invariant that spans rows no single statement or constraint protects — the on-call rule is the classic example.
+
+</Reveal>
+
+**Catch the trap:** *"It's in a transaction, so it's safe."* Which level? Read Committed lets lost updates and write skew through, and MySQL's Repeatable Read still loses updates for read-then-write code.
+
+<h2 id="concurrency-control">Chapter 8 · Two buyers, one guitar</h2>
+
+<Scene chapter="Chapter 8" title="Two buyers, one guitar">
+
+Kestrel Market's first real bug report arrives with a photo: two buyers, two order confirmations, one 1962 guitar.
+
+Theo reads the checkout code aloud, slowly, the way a detective reads an alibi. *"Select the stock. If it's above zero, insert the order and decrement."* He sets the printout down. *"Two buyers. Same millisecond. Both read one."*
+
+Mara writes two words on the board: OPTIMISTIC and PESSIMISTIC. *"Both fix this. They make opposite bets about how often people collide. Which bet fits a guitar? Which fits a flash sale?"*
+
+</Scene>
+
+Read-then-write is the bug. **Close the gap between the check and the change.** In order of preference:
+
+**1 · Make it one atomic statement.** The database checks and changes under a row lock; the loser simply matches zero rows.
+
+```sql
+UPDATE inventory SET stock = stock - 1
+ WHERE item_id = 7 AND stock > 0;           -- 1 row changed: you got it. 0 rows: sold out.
+```
+
+**2 · Let a constraint say no.** For a one-of-a-kind listing, a partial unique index makes a second live order impossible, whatever the code does:
+
+```sql
+CREATE UNIQUE INDEX one_live_order_per_listing
+  ON orders (listing_id) WHERE status <> 'cancelled';
+```
+
+**3 · Pessimistic: lock first, then decide.** When the decision needs logic the database can't express in one statement:
+
+```sql
+BEGIN;
+SELECT stock, price_cents FROM inventory WHERE item_id = 7 FOR UPDATE;   -- others wait here
+-- app: check stock, apply today's discount rules...
+UPDATE inventory SET stock = stock - 1 WHERE item_id = 7;
+INSERT INTO orders (id, item_id, buyer_id, price_cents, status) VALUES (...);
+COMMIT;
+```
+
+**4 · Optimistic: read freely, write only if nothing changed.** A version column turns the write into a compare-and-set:
+
+```sql
+SELECT title, description, version FROM listings WHERE id = 42;    -- version = 7
+-- ...ten minutes in the edit form...
+UPDATE listings
+   SET description = 'Sunburst finish, new frets', version = version + 1
+ WHERE id = 42 AND version = 7;             -- 0 rows: someone saved first. Reload and reapply.
+```
+
+**5 · Serializable and retry** — when the invariant is too wide for any of the above (Chapter 7).
+
+| | Optimistic (version, compare-and-set) | Pessimistic (`SELECT … FOR UPDATE`) |
+|---|---|---|
+| The bet | Conflicts are rare | Conflicts are likely |
+| Cost with no conflict | Nothing extra | A lock held for the transaction |
+| Cost on conflict | The loser redoes its work | The loser waits |
+| Danger | Retry storms on hot rows | Lock waits, deadlocks, locks held across slow calls |
+| Fits | Edit forms, profiles, long human think time, low contention | Short critical sections on contended rows: stock, seats, balances |
+
+**Lock hygiene.** Hold a row lock for milliseconds — never across human think time, and never across a call to another service. Lock rows in a consistent order (by id) so two transactions can't deadlock. `NOWAIT` fails fast instead of queueing; `SKIP LOCKED` lets job-queue workers each grab a different row (both in Postgres 9.5+ and MySQL 8.0+).
+
+**Worked numbers — a hot row's ceiling is one over the lock time.** If each purchase holds the guitar's stock row for 2 ms, that row serialises at most **1 ÷ 0.002 s = 500 purchases a second**. Call the payment provider inside the transaction — 300 ms while holding the lock — and the ceiling collapses to **about 3 a second**, with every other buyer queued behind it. Take the payment outside the lock: reserve, commit, charge, confirm.
+
+<Trace title="Close the gap" steps={locking} takeaway="Atomic statement first, constraint second; lock briefly when contention is high; version when it is rare and people think slowly." />
+
+<Reveal q="Ticketmaster-style seat holds: optimistic or pessimistic?">
+
+Neither in the long-lock sense. Each seat is a row, and a hold is one atomic conditional update: `SET held_by = ?, held_until = now() + interval '10 minutes' WHERE seat_id = ? AND (held_by IS NULL OR held_until < now())`. One row changed means you hold it; payment happens later, outside any database lock, and an unpaid hold simply expires. The waiting-room and fairness parts live in <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a>.
+
+</Reveal>
+
+**Catch the trap:** holding a database lock across a call to a payment provider. Say where the lock starts and ends.
+
+The <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and races</a> dossier shows five real races from production code, each solved with a different one of these tools.
+
+<Part n="Part Four" title="Copies">
+
+Copies keep you alive when a machine dies and spread the reads. Every copy is also a place where the truth can be late.
+
+</Part>
+
+<h2 id="replication">Chapter 9 · Leader and followers</h2>
+
+<Scene chapter="Chapter 9" title="Not in the order she lived it">
+
+Sana, who runs seller support, forwards a screenshot with three question marks. A seller changed her price from €400 to €350, saved, and the page came back showing €400. She saved again. Then both edits landed.
+
+Dev reads the timeline aloud in his calm 3 a.m. voice. *"Write to the primary at 14:02:11.200. Read from replica two at 14:02:11.450. Replica two was 900 milliseconds behind."* He shrugs. *"Everything worked. Just not in the order she lived it."*
+
+Mara draws one box with three arrows leaving it. *"We copy the data for a few reasons. Which — and what does each copy cost us?"*
+
+</Scene>
+
+**Why replicate:** to survive a machine dying (availability), to spread reads (scale), to put data near users (latency), and to keep heavy reads such as reports away from the primary (isolation).
+
+**Leader-follower** (also primary-replica) is the default. All writes go to the leader; it streams its change log — the WAL in Postgres, the binlog in MySQL — to followers, which replay it in order. Reads can go to any of them.
+
+<Figure caption="Leader-follower. Followers replay the leader's log; how long the leader waits for them is the key lever.">
+  <Mermaid code={`flowchart LR
+    W["✍️ Writes"] --> P[("Leader")]
+    P -->|"change log"| R1[("Follower 1")]
+    P -->|"change log"| R2[("Follower 2")]
     R1 --> READS["📖 Reads"]
-    R2 --> READS`} />
+    R2 --> READS
+    P --> READS`} />
+</Figure>
 
-**Leader-follower** (the default): all writes to the primary, replicas follow. Two design levers:
+| Mode | Commit returns when… | On leader failure | Write latency |
+|---|---|---|---|
+| **Asynchronous** | the leader has it | The unreplicated tail is lost | Lowest |
+| **Synchronous (all followers)** | every follower has it | Nothing lost | Highest; one slow follower stalls every write |
+| **Semi-synchronous** (one sync follower) | at least one follower has it | Nothing lost, if that follower is promoted | One extra round trip |
 
-- **Sync vs async replication.** Sync = no data loss on failover, slower writes. Async = fast writes, replicas lag (milliseconds to seconds), failover can lose the last writes. Most systems: async, and you *say* you accept the lag.
-- **Replica lag creates the classic bug:** user writes to primary, immediately reads from a lagging replica, their change "disappears." Fix: read-your-own-writes — route that user's reads to the primary briefly, or use a session token carrying the last-write position.
+Most systems run asynchronous, or one synchronous follower plus asynchronous others (Postgres configures this with `synchronous_standby_names`; MySQL has semi-synchronous replication). Whatever you choose, *say* what you accept: *"async, so a failover can lose the last second of writes."*
 
-**Multi-leader / leaderless** (Dynamo-style) come up in infra questions — quorums from the core-concepts lesson. For product designs, leader-follower is almost always the answer.
+**Failover** promotes a follower when the leader dies. Three things go wrong: the async tail is lost (and if the new leader reissues ids the old one had already used, data can collide); the old leader comes back believing it still leads (**split brain** — fence it off with epochs or a lease); and a timeout that is too short fails over during a mere slow patch.
 
-## Sharding — splitting when one box isn't enough
+**Replication lag creates three classic anomalies:**
 
-When estimation says one node can't hold the data or the write QPS, you **shard**: split rows across nodes by a **partition key**.
+| Missing guarantee | Symptom | Fix |
+|---|---|---|
+| **Read-your-own-writes** | Your own edit vanishes after reload (Sana's seller) | Read what the user just changed from the leader for a short window; or remember the write's log position and read from a follower only once it has replayed that far |
+| **Monotonic reads** | A comment appears, vanishes, reappears | Pin each user to one follower (hash the user id) |
+| **Consistent prefix** | An answer appears before its question | Keep causally related writes in the same partition, or track causality |
 
-**The whole game is choosing the key.** Test any candidate key against two questions:
+Waiting for a log position is concrete in both engines: Postgres followers report how far they have replayed (`pg_last_wal_replay_lsn()`), and MySQL can wait for a GTID set (`WAIT_FOR_EXECUTED_GTID_SET`).
 
-1. **Does it spread load evenly?** Sharding tweets by `user_id` puts a celebrity's storm on one shard (hot shard). Sharding by `tweet_id` spreads evenly.
-2. **Do your common queries stay on one shard?** "All messages in conversation X" wants sharding by `conversation_id` — one shard answers the query. Shard by `message_id` and every conversation read becomes a scatter-gather across all shards.
+**Worked numbers — replicas scale reads, never writes.** Kestrel Market's listings take 40,000 reads and 2,000 writes a second. Four followers serve 10,000 reads a second each — and **every follower still replays all 2,000 writes a second**. Add a fifth follower and read capacity grows; write capacity doesn't move. Lag is usually milliseconds, but replay is often less parallel than the leader's write path, so under a write burst or a long query on a follower it can stretch to seconds or minutes.
 
-These two often conflict — that tension IS the deep dive. Say it explicitly: "user_id keeps a user's data together for cheap queries, but risks hot shards for power users; I'll take user_id and handle the celebrity case separately."
+<Trace title="Read the lag" steps={replicationLag} takeaway="Async replication means stale followers and a lossy failover. Give the author read-your-writes, give everyone monotonic reads, and say what failover can lose." />
 
-Cross-shard consequences you must name before the interviewer does: no cross-shard joins (denormalize or query-side join), no cross-shard transactions (sagas/idempotency — contention pattern lesson), resharding is painful (consistent hashing helps — partitioning lesson).
+<Reveal q="Does read-your-own-writes mean sending all of a user's reads to the leader?">
 
-## ID generation — small topic, frequent question
+No — that would make the leader the bottleneck again. Send only reads of what the user just changed, for a short window (their profile for ten seconds after editing it), or have the client carry the log position of its last write and let any follower that has caught up serve it.
 
-Auto-increment breaks the moment you shard (two shards both issue id=42). Options:
+</Reveal>
 
-| Strategy | Property | Catch |
-|----------|----------|-------|
-| **UUIDv4** | no coordination, globally unique | random → terrible index locality, 36 chars |
-| **UUIDv7 / ULID** | no coordination + **time-ordered** | the modern default |
-| **Snowflake** (timestamp + machine-id + sequence) | 64-bit, time-ordered, compact | needs machine-id assignment; clock skew must be handled (refuse to go backwards) |
-| **Ticket server / DB range allocation** | simple, dense IDs | central service to keep available |
+**Catch the trap:** *"We'll add read replicas."* Say what lag does to your users, and which reads must not go to a follower.
 
-Interview default: "Snowflake-style or UUIDv7 — time-ordered so indexes append instead of scattering, no coordination needed." Time-ordering matters because B-tree inserts at random positions thrash pages; appending to the right edge is cheap.
+<h2 id="multi-leader">Chapter 10 · More than one leader</h2>
 
-## Indexes — the 10-second version you must have
+<Scene chapter="Chapter 10" title="Twice in one sentence">
 
-An index is a sorted structure (usually B-tree) letting the DB find rows without scanning. Every index speeds one read shape and taxes **every write**. When you say "we query messages by (conversation_id, created_at)", say "with a composite index on exactly that." Unindexed query on a big table in your design = the interviewer's easiest kill shot.
+Iris is back from a conference with two ideas. *"One: Kestrel is huge in Brazil and Japan now, and they hate our write latency. Two: the Events calendar should work offline, on the subway."*
+
+Theo laughs out loud, which he rarely does. *"She just asked for multi-leader replication twice in one sentence."*
+
+Mara draws three boxes this time, with arrows in every direction. *"If two places can accept a write to the same row, at the same moment, without talking first — who wins?"*
+
+</Scene>
+
+**Multi-leader replication**: several nodes — one per region, or every offline phone — accept writes and replicate to each other asynchronously. A calendar app that works offline *is* a multi-leader system: every device is a leader until it syncs. The gain is local write latency and writes that survive a partition. **The price is conflicts**: two leaders accept different writes to the same record, and both must eventually agree.
+
+| Conflict strategy | How | Cost |
+|---|---|---|
+| **Avoid them** | Route all writes for a record to its home region | Awkward when the home region fails; the most practical default |
+| **Last write wins** | Keep the version with the highest timestamp | Silently discards writes; clock skew picks the “winner” |
+| **Merge** | Application logic combines versions (union of RSVPs) | Code per data type |
+| **CRDTs** | Data types that merge automatically (counters, sets, text) | Only some shapes fit; see <a href={`${BASE}sd/lessons/pattern-sync-collab/`}>Sync & collaboration</a> |
+| **Keep both, ask** | Store siblings; a person resolves | Pushes work onto users |
+
+**Leaderless replication** (the design in Amazon's 2007 Dynamo paper; used by Cassandra and Riak — not to be confused with the DynamoDB service, which works differently inside). Every replica accepts writes. A write goes to all **N** replicas holding the key and succeeds after **W** acknowledge; a read asks **R** replicas and keeps the newest version it sees.
+
+**If W + R > N, every read set overlaps every write set**, so at least one replica in any read has the latest acknowledged write. Replicas that missed writes are repaired by *read repair* (fix stale replicas a read noticed), *hinted handoff* (a stand-in holds writes for a down node, then hands them over) and *anti-entropy* (background comparison, often with Merkle trees). Cassandra lets you choose the level per request: `ONE`, `QUORUM`, `ALL`.
+
+<Figure caption="N = 3, W = 2, R = 2. Any two replicas out of three share at least one with any other two.">
+  <ArrayStrip name="write W = 2" values={['A', 'B', 'C']} indices={false} tones={{ 0: 'done', 1: 'done', 2: 'ghost' }} />
+  <ArrayStrip name="read R = 2" values={['A', 'B', 'C']} indices={false} tones={{ 0: 'ghost', 1: 'blue', 2: 'blue' }} pointers={[{ at: 1, label: 'overlap', tone: 'gold' }]} />
+</Figure>
+
+**Worked numbers — the quorum table:**
+
+| N | W | R | W + R > N? | Writes survive … down | Reads survive … down |
+|---|---|---|---|---|---|
+| 3 | 2 | 2 | yes (4 > 3) | 1 | 1 |
+| 3 | 1 | 1 | **no** (2) | 2 | 2 |
+| 3 | 3 | 1 | yes (4 > 3) | 0 | 2 |
+| 5 | 3 | 3 | yes (6 > 5) | 2 | 2 |
+
+**Overlap is not the same as strong consistency.** Concurrent writes to the same key, a write that succeeded on some replicas but failed overall, *sloppy* quorums that write to stand-in nodes during a partition, and timestamp-based conflict resolution can all still return stale or lose data. Quorums give you a strong probability of fresh reads, not linearizability. The theory sits in <a href={`${BASE}sd/lessons/core-concepts/`}>Core concepts</a> (CAP, the consistency ladder, quorums).
+
+<Trace title="Count the quorum" steps={quorums} takeaway="W + R > N means reads and writes overlap. N − W and N − R are the failures each side survives. Overlap still isn't linearizability." />
+
+<Reveal q="Iris wants “active-active in three regions”. What's the first question you ask?">
+
+“What happens when two regions accept conflicting writes to the same record?” Then pick per data type: user profiles get a home region (avoid conflicts); RSVPs merge as a set; counters are CRDTs; money never goes multi-leader — it stays with one leader per account and pays the cross-region latency.
+
+</Reveal>
+
+**Catch the trap:** proposing multi-region writes with no conflict story. “Last write wins” is a conflict story — one that loses data — so say so if you choose it.
+
+<Part n="Part Five" title="Splitting">
+
+Shard only when the numbers say so. Then the whole game is the key — and the IDs that live inside it.
+
+</Part>
+
+<h2 id="capacity">Chapter 11 · Will it fit?</h2>
+
+<Scene chapter="Chapter 11" title="Two numbers">
+
+Theo has a ritual before anyone may say the word *shard*. He writes two numbers on the board — rows per day and bytes per row — and makes you finish the arithmetic in front of everyone.
+
+*"Half the sharding projects I've seen,"* he says, *"should have been a bigger disk and an archive job. The other half started a year too late."*
+
+He writes ORDERS on the left of the board and MESSAGES on the right. *"Same company, same week. One of these needs sharding on day one. Show me which."*
+
+</Scene>
+
+**The recipe:** rows per day → bytes per row, *including each index* → × 365 → × replication factor → compare with what one node holds comfortably. Then check peak writes per second against what one node sustains.
+
+**Worked numbers** (assumptions in the first rows; sizes before compression):
+
+| | Orders | Messages |
+|---|---|---|
+| Rows per day | 2 million | 20M daily users × 50 = **1 billion** |
+| Average writes/s | 2,000,000 ÷ 86,400 ≈ 23 | 10⁹ ÷ 86,400 ≈ 11,600 |
+| Peak (assumed multiplier) | 5× ≈ 116/s | 3× ≈ 35,000/s |
+| Bytes per row with indexes | ~1 KB (wide row, several indexes) | ~200 B row + 2 index entries × ~40 B ≈ 280 B |
+| Per day | 2 GB | 280 GB |
+| Per year, one copy | 730 GB | ~102 TB |
+| Per year, 3 copies | ~2.2 TB | ~307 TB |
+| Verdict | **One primary and two replicas, for years** | **Partition from day one** |
+
+For messages, at a comfortable ~10 TB per node (leaving room for compaction, rebuilds and growth — your number depends on your hardware): 102 TB ÷ 10 TB ≈ 10.2, so **11 nodes per copy per year, about 31 with three copies** — and next year adds as many again.
+
+**Before you shard, climb this ladder** — each rung is cheaper than the next:
+
+1. **A bigger machine.** Vertical scaling goes further than people expect.
+2. **Read replicas and caches** for read load (Chapter 15).
+3. **Archive or expire cold data.** Most queries touch the last few months.
+4. **Partition the table inside one database.** Postgres declarative partitioning by month keeps indexes small and turns retention into `DROP` of an old partition — instant — instead of a giant `DELETE`.
+5. **Shard** across machines — the next chapter.
+
+<Trace title="Size it" steps={capacity} takeaway="Rows per day × bytes per row (with indexes) × 365 × replicas. Orders fit one primary for years; messages need partitioning on day one." />
+
+<Reveal q="Messages are partitioned by conversation. Why do designs often add a time bucket to the partition key?">
+
+Because one conversation partition grows forever. An extreme group chat posting a message every second writes about 86,400 × 200 B ≈ 17 MB a day, so a month is about 0.5 GB in one partition. A key like `(conversation_id, month)` caps it; if that is still too large for your store's comfortable partition size (check its current guidance), bucket by day. Reading “the latest 50” then touches the current bucket, and occasionally the one before.
+
+</Reveal>
+
+**Catch the trap:** proposing sharding with no numbers — or doing the numbers without indexes and replication, which easily multiply raw size by four.
+
+<h2 id="sharding">Chapter 12 · When one box is not enough</h2>
+
+<Scene chapter="Chapter 12" title="What does the phone ask for?" mood="dusk">
+
+Messages will be partitioned from day one; that's settled. The argument now is about the key. Half the room wants `message_id` — *"perfectly even!"* The other half wants `conversation_id`.
+
+Theo lets them argue for ten minutes. Then he asks a single question: *"When a phone opens a chat, what does it ask for?"*
+
+The room goes quiet.
+
+Mara writes the two questions she uses to judge every shard key. *"Does it spread the load? Does the hot query stay on one shard? When they disagree — and they will — that tension is the deep dive."*
+
+</Scene>
+
+**Partitioning (sharding)** splits rows across nodes by a **partition key**; each row lives on exactly one partition (plus its replicas).
+
+| Strategy | How | Good at | Bad at |
+|---|---|---|---|
+| **Hash** | Partition from a hash of the key | Even spread | Range scans across keys — they hit every shard |
+| **Range** | Each partition owns a contiguous key range | Ordered range scans | A hot tail when keys grow monotonically (time, auto-increment): every new write hits the last partition |
+| **Hash, then range** (compound) | Hash the first part to pick the partition; sort by the second inside it | Even spread *and* ordered reads within a partition — Cassandra's partition key plus clustering columns | Queries must supply the first part |
+| **Directory** | A lookup table maps key → shard | Flexible placement (big tenants on their own shard) | An extra hop; the directory must be highly available |
+
+**The whole game is choosing the key.** Test every candidate against two questions:
+
+1. **Does it spread load evenly?** Sharding posts by `user_id` puts a celebrity's storm on one shard (a hot shard). Sharding by `post_id` spreads evenly.
+2. **Do the common queries stay on one shard?** “All messages in conversation X” wants `conversation_id`: one shard answers. Shard by `message_id` and every conversation read becomes a scatter-gather across all shards, then a merge.
+
+These two often conflict, and that tension *is* the deep dive. Say it explicitly: *"`user_id` keeps a user's data together for cheap queries but risks hot shards for power users; I'll take `user_id` and handle the celebrity case separately."*
+
+**Name the cross-shard consequences before the interviewer does:**
+
+- **No cross-shard joins.** Denormalise, or join in the application.
+- **No cross-shard transactions.** Sagas and idempotency (<a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a>).
+- **Secondary indexes get harder.** A *local* index (each shard indexes its own rows) makes any query by another column a scatter-gather. A *global* index is partitioned by the indexed value — one-shard reads, but every write now updates another shard too, usually asynchronously.
+- **Uniqueness is only enforceable on the shard key.** Unique emails across user shards need a lookup table sharded by email.
+
+**Hot keys** — one key with far more traffic than the rest — don't spread however many shards you add, because a key lives on exactly one. Serve hot *reads* from a cache in front (the celebrity chapter in <a href={`${BASE}sd/lessons/caching/`}>Caching</a>); split hot *writes* by **salting** the key into sub-keys (`listing:77#0` … `#9`) and summing on read; or give the hottest tenants their own shard.
+
+**Resharding.** Never map keys with `hash(key) mod N`: changing N moves almost every key. Going from 4 to 5 shards, a key stays put only if its hash leaves the same remainder mod 4 and mod 5 — 4 of every 20 values — so **80% of the data moves**. Going from 16 to 17, about 94% moves. Instead, **pre-split into many fixed logical partitions** and map those to nodes; growing moves whole partitions. Consistent hashing gets the same effect with a ring. Both are taught in <a href={`${BASE}sd/lessons/pattern-partitioning/`}>Partitioning</a>.
+
+<Figure caption="Fixed logical partitions. Keys never change partition; only the partition map changes when nodes are added.">
+  <Mermaid code={`flowchart LR
+    K["key"] -->|"hash mod 1024"| P["logical partition\n0 … 1023"]
+    P -->|"partition map"| N1["node 1\npartitions 0–63"]
+    P --> N2["node 2\npartitions 64–127"]
+    P --> N16["node 16\npartitions 960–1023"]`} />
+</Figure>
+
+**Worked numbers.** 1,024 logical partitions on 16 nodes is 64 per node. Add a 17th node and it takes about 1,024 ÷ 17 ≈ 60 partitions — **about 6% of the data moves**, against 94% with `mod N`. And the hot key: one flash-sale listing at 50,000 reads a second against a shard that serves about 10,000 needs a cache in front, not more shards; its view counter, salted into 10 sub-keys, puts about 5,000 writes a second on each.
+
+<Trace title="Choose the key" steps={sharding} takeaway="The hot query must carry the shard key; the key must spread load; hot keys need caching or salting; pre-split so growth moves partitions, not keys." />
+
+<Reveal q="You shard users by user_id. How does login-by-email find the right shard?">
+
+With a second table, `email → user_id`, sharded by email — a global secondary index you maintain yourself. Login reads it, then goes to the user's shard. It is also the only place a unique-email rule can be enforced, so the signup flow writes it first: claim the email, then create the user.
+
+</Reveal>
+
+**Catch the trap:** a shard key that the hottest query doesn't carry. And sharding before the numbers in Chapter 11 say you must.
+
+<h2 id="ids">Chapter 13 · ID strategies: naming a billion things</h2>
+
+<Scene chapter="Chapter 13" title="Order 1048577" mood="storm">
+
+The first shard split goes perfectly until 11:40, when Dev posts a single line: *"Order 1048577 exists twice."* Each shard had its own auto-increment counter. Each one was sure it was the only one.
+
+Theo isn't surprised; he never is. *"An ID is a promise that nobody, anywhere, will ever say the same number. One database keeps that promise by counting. Twenty databases can't — not unless they agree on how."*
+
+Mara writes on the board: *unique, compact, sortable, uncoordinated — how many can you have?*
+
+</Scene>
+
+**What you want from an ID:** unique without coordination; compact (it sits in every index — 64 bits beats 128); roughly time-ordered (inserts append to the index, and “newest first” comes free); not guessable when exposed in URLs; cheap to generate at your peak rate.
+
+**Auto-increment** is simple, dense and ordered — on one node. Its limits:
+
+- **One writer.** Two shards with their own counters both issue 42. (MySQL can offset counters — shard 1 issues odd numbers, shard 2 even — but adding a shard means renumbering the scheme.)
+- **Overflow.** A signed 32-bit id stops at 2,147,483,647. At 1,000 inserts a second that is **under 25 days**. Use `BIGINT` from day one.
+- **It leaks.** Sequential ids reveal your volume and let anyone enumerate your objects.
+- **Gaps and order.** Postgres sequences don't give back values from rolled-back transactions, and concurrent transactions can commit out of id order.
+
+**UUIDv4**: 122 random bits in 128; no coordination; collisions are not a practical worry. But random keys **land on random pages of the B-tree** — every insert touches a different part of the index, pages split everywhere and the cache thrashes. In InnoDB the rows themselves are clustered by the primary key, so the table scatters too, and every secondary index carries the 16-byte key (36 characters if someone stored it as text).
+
+**UUIDv7** (standardised in RFC 9562, 2024): a 48-bit Unix millisecond timestamp, then version and variant bits, then 74 random bits. Same 128 bits and same column type as v4, but **time-ordered**, so inserts append. Order *within* one millisecond depends on the implementation (the RFC allows an optional counter for that). Recent Postgres versions ship a generator function — check yours. **ULID** is the same idea in a 26-character string: 48-bit milliseconds plus 80 random bits.
+
+**Snowflake** (Twitter, 2010): a 64-bit integer built from three fields.
+
+<Figure caption="Snowflake: 1 unused sign bit, 41 bits of milliseconds since a custom epoch, 10 bits of machine id, 12 bits of sequence. 1 + 41 + 10 + 12 = 64.">
+  <ArrayStrip name="Snowflake" values={['0', '41 · ms since epoch', '10 · machine', '12 · sequence']} indices={false} tones={{ 0: 'ghost', 1: 'blue', 2: 'purple', 3: 'done' }} />
+  <ArrayStrip name="UUIDv7" values={['48 · unix ms', '4 · version', '12 · random', '2 · variant', '62 · random']} indices={false} tones={{ 0: 'blue', 1: 'ghost', 2: 'done', 3: 'ghost', 4: 'done' }} />
+</Figure>
+
+**Worked numbers.** 2⁴¹ ms ≈ 2.2 × 10¹² ms ≈ **69.7 years** from your chosen epoch — which is why Snowflake counts from a recent custom epoch, not 1970. 2¹² = **4,096 ids per millisecond per machine**, about 4.1 million a second. 2¹⁰ = **1,024 machines** (Twitter split those bits into 5 for the datacenter and 5 for the worker).
+
+**The parts that make Snowflake an interview answer, not a diagram:**
+
+- **Machine ids must be unique.** Assign them from configuration, or lease them from a coordination service (ZooKeeper, etcd) so two live nodes can never share one.
+- **Clock skew.** If the clock moves backwards (an NTP correction), the generator must **refuse — or wait — until the clock passes the last timestamp it used**; otherwise it can repeat a timestamp it already used and, with the same machine id and sequence, issue a duplicate. Twitter's original implementation refused.
+- **Sequence exhaustion.** More than 4,096 ids in one millisecond: wait for the next millisecond.
+- **Ordering is per machine.** Ids from one machine are strictly increasing; across machines they are only *roughly* time-ordered, because clocks differ by milliseconds.
+- **JavaScript.** 64-bit ids exceed 2⁵³, the largest integer a JavaScript number holds exactly — send them as strings in JSON.
+
+**Ticket servers / range allocation:** a central service hands each app server a block of ids (say 10,000 at a time). Dense, compact, roughly ordered; the allocator must stay available, and a crashed server wastes the rest of its block.
+
+| Strategy | Size | Time-ordered? | Coordination | Catch |
+|---|---|---|---|---|
+| **Auto-increment** | 64-bit (use `BIGINT`) | Yes, on one node | A single writer | Breaks when you shard; leaks volume |
+| **UUIDv4** | 128-bit | No | None | Random inserts scatter the index |
+| **UUIDv7 / ULID** | 128-bit | By millisecond | None | Twice the size of 64-bit; order within a millisecond is implementation-defined |
+| **Snowflake** | 64-bit | Roughly (exactly, per machine) | Machine-id assignment | Clock skew; ~69-year horizon; JavaScript precision |
+| **Ticket server / ranges** | 64-bit | Roughly | A central allocator | Must stay available; gaps on crash |
+
+**Interview default:** *"Snowflake-style or UUIDv7 — time-ordered, so indexes append instead of scattering, and no coordination per id."* Time-ordering matters because B-tree inserts at random positions thrash pages; appending at the right edge is cheap.
+
+<Trace title="Name a billion things" steps={ids} takeaway="Time-ordered ids keep B-tree inserts at the right edge. Snowflake: 41 + 10 + 12 bits, ~69 years, 4,096 per ms per machine — and it must never run its clock backwards." />
+
+<Reveal q="“Design a unique ID generator.” What do you ask, and what do you say, in sixty seconds?">
+
+Ask: must ids fit in 64 bits? Must they sort by time? What peak rate, and across how many datacenters? Must they be unguessable? Then: *"Snowflake layout — 41 bits of milliseconds from a custom epoch (about 69 years), 10 bits of machine id leased from etcd so no two live nodes share one, 12 bits of sequence (4,096 per millisecond per node). Each node generates locally with no network call. If the clock moves backwards, the node refuses until it passes its last timestamp; if a millisecond's sequence runs out, it waits for the next. Ids are k-sorted across nodes, strictly increasing per node, and sent as strings to JavaScript clients. If 128 bits are fine and I'd rather not run machine-id leasing, UUIDv7."*
+
+</Reveal>
+
+**Catch the trap:** *"Just use UUIDs."* Which version, and what do random keys do to your index? And a Snowflake answer with no clock-skew story is half an answer.
+
+<Part n="Part Six" title="Running it">
+
+The design survives the whiteboard. These three chapters are about surviving Black Friday, lunchtime, and Thursday's deploy.
+
+</Part>
+
+<h2 id="pooling">Chapter 14 · Too many hands</h2>
+
+<Scene chapter="Chapter 14" title="Too many clients already" mood="storm">
+
+Black Friday, 9:00 a.m. The autoscaler does its job beautifully: forty app pods become a hundred and twenty in four minutes. Then every new pod crashes on startup with the same error: *sorry, too many clients already.*
+
+Dev's incident note is three lines long. *"Database CPU: 30%. Database memory: fine. Database connections: all of them."*
+
+Theo, who has seen this one twice, doesn't look at the dashboard. *"How many queries can that machine actually run at once?"* he asks. *"And how many connections did we ask it to hold open?"*
+
+</Scene>
+
+**A connection is not free.** Postgres runs one operating-system process per connection, with its own memory — a few megabytes at rest, more while it works. Its `max_connections` default is 100. MySQL uses a thread per connection, cheaper, but the same arithmetic applies. A database can only *execute* as many queries at once as it has cores and I/O to run them; thousands of mostly idle connections add memory and scheduling overhead and buy nothing.
+
+**Pooling** reuses a small set of connections:
+
+- **In the application** (HikariCP in Java, for example): each process keeps a pool and borrows a connection per transaction.
+- **An external pooler** (PgBouncer, or a managed proxy) sits between many app processes and the database, multiplexing thousands of client connections onto a few dozen server connections. In PgBouncer's **transaction mode**, a server connection is lent for one transaction at a time — the most efficient mode, but it breaks anything tied to a session: `SET` variables, session advisory locks, `LISTEN`, and (in older versions) prepared statements. Check what your driver relies on.
+
+<Figure caption="Many pods, few database connections. The pooler absorbs the autoscaler's enthusiasm.">
+  <Mermaid code={`flowchart LR
+    A1["pod 1 … pod 120\n(10 client connections each)"] -->|"1,200 client connections"| B["PgBouncer\ntransaction mode"]
+    B -->|"~40 server connections"| P[("Postgres primary")]`} />
+</Figure>
+
+**Worked numbers — Little's law sizes the pool.** Busy connections = arrival rate × time each one is held. At 5,000 queries a second holding a connection for 4 ms each: **5,000 × 0.004 = 20** connections busy on average. Add headroom for bursts and you need tens of server connections, not the 1,200 that 120 pods × 10 would open directly. (HikariCP's pool-sizing guide starts from roughly cores × 2 plus the number of disks, then measures.)
+
+**Long transactions are worse than many.** A transaction left open — “idle in transaction” — holds its connection and its locks, and in Postgres its snapshot also stops `VACUUM` from cleaning up old row versions anywhere they might still be visible. Set `idle_in_transaction_session_timeout`, and never hold a transaction open across a network call.
+
+<Trace title="Count the connections" steps={pooling} takeaway="Server connections should track what the database can execute in parallel — rate × hold time — not how many pods you run. Put a pooler in between." />
+
+**Catch the trap:** *"We scale the app tier horizontally."* Every new pod multiplies database connections. Say where the pooler sits.
+
+<h2 id="replicas-vs-cache">Chapter 15 · Replica or cache?</h2>
+
+<Scene chapter="Chapter 15" title="What the slow reads have in common">
+
+The listing page is slow again at lunch. Two proposals land on Mara's desk within the same hour. Dev wants two more read replicas. You want a Redis cache.
+
+Mara writes both on the board side by side and asks one question: *"What do the slow reads have in common?"*
+
+Dev pulls the logs. Ninety percent of the reads are for the same ten thousand listings. The other ten percent are sellers' sales reports — and no two of them are alike.
+
+</Scene>
+
+| | Read replica | Cache |
+|---|---|---|
+| Holds | A full copy of the database | The hot working set, as values under keys you designed |
+| Serves | Any query: joins, reports, the long tail | Lookups by those keys |
+| Freshness | Replication lag: milliseconds, with spikes | TTL plus the invalidation you design |
+| Cost per read | A real query on a full database server | A memory lookup, usually under a millisecond |
+| Cost per write | Replays every write | An invalidation per write |
+| Best when | Reads are diverse; reports need isolating; you also want a failover standby | A small set of keys is read over and over |
+
+**Often both:** cache the hot keys, send the long tail and the reports to replicas, and send read-your-own-writes to the leader.
+
+**Worked numbers.** 40,000 reads a second; 90% — 36,000 — go to 10,000 popular listings of about 4 KB each, which is **40 MB**: trivially small for a cache. At a 95% hit ratio on those, 1,800 misses a second fall through, plus 4,000 long-tail reads, so **about 5,800 reads a second reach the database tier** instead of 40,000. Two more replicas would have bought capacity for the same hot pages at the price of two more full database servers. Designing the cache itself — key, TTL, invalidation, failure plan — is <a href={`${BASE}sd/lessons/caching/`}>Caching</a>.
+
+<Reveal q="Cache misses are filled from a read replica. What can go wrong?">
+
+A stale value can be cached right after an invalidation. The writer updates the leader and deletes the key; a reader misses, reads a follower that hasn't replayed the write yet, and puts the *old* value back — where it stays until the TTL expires. Fill misses for recently written keys from the leader, use versioned values that refuse to overwrite newer data, or keep the TTL short enough that the window doesn't matter.
+
+</Reveal>
+
+**Catch the trap:** replicas for a hot-key problem, or a cache for ad-hoc report queries. Match the tool to the shape of the reads.
+
+<h2 id="migrations">Chapter 16 · Changing the engine mid-flight</h2>
+
+<Scene chapter="Chapter 16" title="A statement that never started" mood="dusk">
+
+Theo's darkest story takes forty seconds to tell. A one-line migration — add a column — on a busy table. It should have taken milliseconds. Instead it waited for a lock behind one slow analytics query, and while it waited, every other query on that table queued behind *it*.
+
+*"Four minutes of total outage,"* he says, *"from a statement that never even started."*
+
+Now Iris needs `users.name` renamed to `display_name` before the redesign ships on Thursday. Two hundred million rows. Old and new code will run side by side for an hour during the deploy.
+
+*"So,"* Mara says, *"how do you change the shape of a table that nobody is allowed to stop using?"*
+
+</Scene>
+
+Two facts make schema changes dangerous. **Old and new code run at the same time** during every rolling deploy, so the schema must work for both at every instant. And **DDL takes locks**: most `ALTER TABLE` forms in Postgres take an `ACCESS EXCLUSIVE` lock. Even when the change itself is instant, the request for that lock queues behind any long-running transaction — and every new query on the table queues behind the request. That is Theo's four minutes.
+
+**Expand, migrate, contract** (also called parallel change) — every step backward compatible, each deployed and verified on its own:
+
+1. **Expand.** Add the new column, nullable. In Postgres this is a catalogue-only change (since Postgres 11, even with a constant default).
+2. **Dual-write.** Deploy code that writes both `name` and `display_name`, still reading `name`.
+3. **Backfill** existing rows in small batches.
+4. **Switch reads** to `display_name` (still writing both). Verify: zero rows where the two differ.
+5. **Stop writing** `name`.
+6. **Contract.** Drop `name`.
+
+Until step 6, every step can be rolled back by redeploying the previous code.
+
+<Figure caption="Expand → migrate → contract. At every arrow, old and new code can run side by side.">
+  <Mermaid code={`flowchart LR
+    E["1 · Add column\n(nullable)"] --> D["2 · Write both"]
+    D --> B["3 · Backfill\nin batches"]
+    B --> R["4 · Read new"]
+    R --> S["5 · Stop writing old"]
+    S --> C["6 · Drop old column"]`} />
+</Figure>
+
+```sql
+SET lock_timeout = '2s';            -- give up and retry rather than queue everyone behind us
+ALTER TABLE users ADD COLUMN display_name TEXT;
+
+-- Backfill one batch at a time; pause between batches so replicas keep up
+UPDATE users SET display_name = name
+ WHERE id >= 1 AND id < 10001 AND display_name IS NULL;
+
+-- Build indexes without blocking writes (slower; cannot run inside a transaction block;
+-- a failed build leaves an INVALID index to drop and retry)
+CREATE INDEX CONCURRENTLY users_by_display_name ON users (display_name);
+
+-- Enforce NOT NULL without a long lock: add the check unvalidated, then validate
+ALTER TABLE users ADD CONSTRAINT display_name_present
+  CHECK (display_name IS NOT NULL) NOT VALID;               -- instant; checks new writes only
+ALTER TABLE users VALIDATE CONSTRAINT display_name_present; -- scans, but reads and writes continue
+```
+
+Foreign keys get the same treatment (`NOT VALID`, then `VALIDATE CONSTRAINT`). In MySQL, many changes run as online DDL (`ALGORITHM=INPLACE` or `INSTANT`, depending on the change and version), and tools such as gh-ost and pt-online-schema-change copy the table in the background and swap it in.
+
+**Worked numbers — the backfill.** 200 million rows in batches of 10,000 is **20,000 batches**. At about 0.2 s per batch plus a 0.3 s pause, that's 20,000 × 0.5 s = 10,000 s — **about 2.8 hours**. Slow on purpose: each batch holds its row locks briefly, and the pauses keep replication lag (and Chapter 9's anomalies) away.
+
+<Trace title="Run the database" steps={running} takeaway="Hot repeated keys → cache; diverse reads → replicas. Change schemas by expand, migrate, contract — never in one step." />
+
+<Reveal q="Why not backfill with a single UPDATE of all 200 million rows?">
+
+One giant transaction holds a lock on every row it touched until it commits, blocking every concurrent update to those users. It produces a burst of WAL that every replica must replay — a lag spike that turns into read-your-own-writes bugs across the product. It leaves 200 million dead row versions for `VACUUM`. And if it fails at 90%, all of it rolls back. Batches keep every lock short and let the replicas keep up.
+
+</Reveal>
+
+**Catch the trap:** *"We'll do it in a maintenance window."* The modern answer is zero downtime: expand, migrate, contract — plus a lock timeout on every DDL statement.
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The data-layer review" steps={drills} takeaway="Access pattern → store → model → indexes → copies and splits. Say the reason for each, and the cost." />
 
 <Quiz questions={[
   {
@@ -85,7 +1186,7 @@ An index is a sorted structure (usually B-tree) letting the DB find rows without
       '"NoSQL is standard for chat apps"'
     ],
     answer: 1,
-    why: 'Access pattern → storage model fit. Options 1, 3, 4 are logo-dropping — they die to the follow-up "why exactly?"'
+    why: 'Access pattern → storage model fit. Options 1, 3 and 4 are logo-dropping — they die to the follow-up "why exactly?"'
   },
   {
     q: 'You shard a URL shortener by user_id. What breaks?',
@@ -119,9 +1220,140 @@ An index is a sorted structure (usually B-tree) letting the DB find rows without
     ],
     answer: 2,
     why: 'Index locality. Random keys turn every insert into a random-page write; time-ordered keys make inserts sequential. At high write QPS this is a real, measurable difference.'
+  },
+  {
+    q: 'Postgres, default settings. Two transactions each read a balance of 100, compute a new balance in the app, and write it back. What protects you?',
+    options: [
+      'Nothing at the default level — Read Committed allows the lost update. Use an atomic UPDATE … SET balance = balance + :delta, SELECT … FOR UPDATE, or Repeatable Read with a retry',
+      'The default Serializable level aborts one of them',
+      'MVCC makes lost updates impossible',
+      'The primary key on wallets prevents it'
+    ],
+    answer: 0,
+    why: 'Postgres defaults to Read Committed, which permits lost updates for read-then-write code. Fix it in the statement, with a lock, or with a stronger level plus retries.'
   }
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: **shard-key gauntlet** — 6 systems (chat, tweets, orders, metrics, URL shortener, Uber locations), you name partition key + the query it optimizes + the hot-spot risk, 90 seconds each. Your M:N modeling trap gets one rep too.
+<Scene title="The interview room" mood="night">
+
+The Interviewer has drawn a marketplace with chat on the whiteboard, then puts the pen down and asks, almost lazily: *"Where does the data live?"* A year ago you would have said a logo. Today you take a breath and start with the questions.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "First the access patterns. Users, listings and orders are relational and transactional — an order, its payment and the stock decrement commit together — and at about 120 writes a second at peak they fit one **Postgres** primary with two replicas for years: roughly 730 GB a year. Messages are different: about 35,000 writes a second at peak, 280 GB a day, always read as the latest page of one conversation. That fits a **wide-column store partitioned by conversation and month**, clustered by message id, newest first. Listing search goes to **Elasticsearch fed by CDC**; Postgres stays the source of truth. **Model**: follows and event attendance are join tables — primary key one way, a reverse index the other. **Indexes**: listings on `(seller_id, status, created_at)` for the dashboard — equality first, then the sort. **Concurrency**: stock is one conditional `UPDATE … WHERE stock > 0`; listing edits use a version column. **Replication**: async followers for reads, and an author's own reads go to the primary for a few seconds after they write. **IDs**: Snowflake-style 64-bit, time-ordered so inserts append. **Growth**: orders get monthly partitions inside Postgres; messages add nodes by moving logical partitions; schema changes are expand-and-contract."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · Why not put everything in one NoSQL store?">
+
+Because the transactional core needs atomic multi-row writes, constraints and questions nobody has asked yet, and at about 120 writes a second it doesn't need horizontal scale. I use a partitioned store only where an access pattern demands it — messages — and feed derived stores (search, cache) from the source of truth.
+
+</Reveal>
+
+<Reveal q="2 · How do you shard messages, and what about a huge group chat?">
+
+Partition key `(conversation_id, month)`, clustering by message id descending, so “latest 50” is one partition slice. The month bucket caps partition size for very busy chats — an extreme chat at one message a second is about 0.5 GB a month. Nodes are added by moving whole logical partitions, never by re-hashing mod N, which would move about 80% of the data going from 4 to 5 nodes.
+
+</Reveal>
+
+<Reveal q="3 · A seller edits a price, reloads, and sees the old price. Why, and what's the fix?">
+
+Async replication lag: the reload hit a follower that hadn't replayed the write. Read-your-own-writes: route that seller's reads of what they just changed to the primary for a short window, or carry the write's log position and read from a follower only once it has caught up. Everyone else keeps reading followers.
+
+</Reveal>
+
+<Reveal q="4 · Which isolation level, and where could it bite you?">
+
+Postgres's default, Read Committed, with the invariants enforced in the statements: the conditional stock decrement, a unique idempotency key on payments, all in one transaction. It would bite on read-then-write code (lost updates) and on rules spanning several rows (write skew) — so those get `SELECT … FOR UPDATE` or Serializable with a retry loop.
+
+</Reveal>
+
+<Reveal q="5 · How do you add a NOT NULL column to a 2-billion-row table with no downtime?">
+
+Expand, migrate, contract. Add it nullable (instant), deploy code that writes it, backfill in batches with pauses so replicas keep up, add a `CHECK … NOT VALID` constraint and then `VALIDATE` it (reads and writes continue), then `SET NOT NULL` — which Postgres 12+ can do without another full scan, because the validated check already proves it. Anything old is dropped last. Every DDL statement runs with a short `lock_timeout` so it can never queue the whole table behind it.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| “Where does the data live?” | Access patterns first; Postgres until proven otherwise |
+| Append-heavy, read by one key in time order | Wide-column, partition by that key (+ time bucket) |
+| Free text, typos, ranking | Search index fed by CDC; not the source of truth |
+| Multi-hop relationships | Graph store, derived from the source |
+| Metrics, retention, downsampling | Time-series store |
+| Varying attributes, read whole by id | Document model (or Postgres `jsonb`) |
+| One-to-one | Same row, or a table keyed by the parent's id |
+| One-to-many | Foreign key on the many side — and index it |
+| Many-to-many | Join table: composite PK one way, reverse index the other, relationship facts on the row |
+| “Denormalise for speed” | Which fact, which read, who keeps the copies right |
+| Write-heavy, never updated | LSM-tree; B-trees for read- and update-heavy work |
+| Composite index | Equality columns first, then range or sort; leftmost prefix |
+| Query reads few columns | Covering index (`INCLUDE`) → index-only scan |
+| “Index everything” | Every index taxes every write |
+| Read, compute, write back | Lost update: atomic `UPDATE`, `FOR UPDATE`, or version column |
+| Invariant across rows | Write skew: `FOR UPDATE` on the rows, a constraint, or Serializable + retry |
+| Isolation defaults | Postgres Read Committed; MySQL InnoDB Repeatable Read |
+| “My edit disappeared” | Replica lag → read-your-own-writes |
+| Multi-region writes | Conflict strategy per data type |
+| Leaderless | W + R > N for overlap; N − W and N − R failures tolerated |
+| “Do we need to shard?” | rows/day × bytes (with indexes) × 365 × replicas |
+| Shard key | Spreads load? Hot query on one shard? |
+| Growing the cluster | Fixed logical partitions or consistent hashing, never mod N |
+| Unique IDs | Snowflake (41/10/12) or UUIDv7; clock skew → refuse until caught up |
+| Pods × pool > max_connections | Pooler; size by rate × hold time |
+| Hot repeated reads vs diverse reads | Cache vs replicas |
+| Schema change | Expand → migrate → contract, with `lock_timeout` |
+
+## Five mistakes to leave behind
+
+1. **Naming a database before the access patterns.** The logo is the last word of the answer, not the first.
+2. **A many-to-many with one index** — or an array column. Both questions, both indexes.
+3. **Indexes in the wrong order**, or indexes on everything. Equality first, then range; every index costs writes.
+4. **Trusting the default isolation level** with read-then-write code. Postgres's Read Committed loses updates; so does MySQL's Repeatable Read.
+5. **Sharding without numbers, or by a key the hot query doesn't carry.** And never `mod N`.
+
+<Scene title="Mara's last word" mood="dusk">
+
+Kestrel Market launches on a Thursday. Nothing interesting happens, which is the point.
+
+On Friday, you pass the design-review room. The whiteboard still holds the old line — **DATABASE: MongoDB (it scales)** — but someone has written the six questions underneath it in neat columns, each with a store, a key and a reason. Mara is standing in front of it with her coffee.
+
+*"Leave it up,"* she says. *"The top line is the most useful thing on there. It reminds people what the question isn't."*
+
+</Scene>
+
+**Keep it warm:** with the buddy, run the **shard-key gauntlet** — six systems (chat, tweets, orders, metrics, URL shortener, Uber driver locations). For each, ninety seconds: the partition key, the query it keeps on one shard, and the hot-spot risk. Then one rep for your logged gap: model a **many-to-many** from scratch (students and courses, or playlists and songs) — the join table, both indexes, a relationship attribute, and the three queries it serves.
+
+Related: <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a> (the numbers behind Chapter 11) · <a href={`${BASE}sd/lessons/core-concepts/`}>Core concepts</a> (CAP, consistency, quorums) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (what sits in front of the database) · <a href={`${BASE}sd/lessons/pattern-partitioning/`}>Partitioning</a> (consistent hashing, rebalancing) · <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a> (locks, idempotency, ledgers) · <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series</a> (sharded counters, LSM-shaped stores) · <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> (CDC) · <a href={`${BASE}sd/lessons/search/`}>Search</a> (the inverted index) · <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and races</a> · <a href={`${BASE}sd/war/multi-tenancy/`}>War Room: multi-tenancy</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- *Designing Data-Intensive Applications* (Martin Kleppmann, first edition) — chapter 2 “Data Models and Query Languages”, chapter 3 “Storage and Retrieval” (B-trees, LSM-trees), chapter 5 “Replication”, chapter 6 “Partitioning” and chapter 7 “Transactions” (the anomalies and write skew). Most of this lesson in depth.
+- [PostgreSQL: Transaction Isolation](https://www.postgresql.org/docs/current/transaction-iso.html) — exactly what each level allows in Postgres, and why Serializable needs retries.
+- [MySQL: InnoDB Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.0/en/innodb-transaction-isolation-levels.html) — consistent reads, locking reads and gap locks.
+- [Hermitage](https://github.com/ept/hermitage) — Kleppmann's test suite showing which anomalies each real database's isolation levels actually prevent.
+- [PostgreSQL: Multicolumn Indexes](https://www.postgresql.org/docs/current/indexes-multicolumn.html) and [Index-Only Scans and Covering Indexes](https://www.postgresql.org/docs/current/indexes-index-only-scans.html) — Chapter 5, from the source.
+- [Dynamo: Amazon's Highly Available Key-value Store](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf) (SOSP 2007) — leaderless replication, quorums, hinted handoff, Merkle trees.
+- *Bigtable: A Distributed Storage System for Structured Data* (OSDI 2006) and *Spanner: Google's Globally-Distributed Database* (OSDI 2012) — the wide-column model, and distributed SQL with synchronised clocks.
+- [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562) (UUID formats, including v7) and [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545) (iCalendar, including `RRULE`).
+- [Twitter's Snowflake](https://github.com/twitter-archive/snowflake) — the original id generator, archived.
+- [HikariCP: About Pool Sizing](https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing) — why small pools are faster.
+
+**Look these up yourself**
+
+- **MVCC, VACUUM and table bloat in Postgres** — why long transactions make tables grow, and what autovacuum tuning does.
+- **The transactional outbox pattern** — writing a row and an event atomically, so CDC-fed copies never miss a change.
+- **Change data capture with Debezium** — how the search index and caches in this lesson stay in step with the source of truth.
+- **Spanner's TrueTime and CockroachDB's hybrid logical clocks** — how distributed SQL orders transactions across machines.
+- **Vector clocks and version vectors** — how leaderless and multi-leader stores detect concurrent writes instead of guessing with timestamps.
+- **Instagram's sharded ID scheme and Flickr's ticket servers** — two published alternatives to Snowflake, each with a different trade.
+- **Postgres declarative partitioning** — partition pruning, and why retention by `DROP PARTITION` beats `DELETE`.
+- **Cassandra data modeling: partition sizing and tombstones** — why huge partitions and delete-heavy workloads hurt an LSM store.

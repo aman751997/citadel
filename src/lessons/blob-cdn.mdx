@@ -1,88 +1,940 @@
 ---
 title: 'Blob Storage & CDNs'
-description: 'Where the big bytes live — S3, presigned URLs, chunking, dedup, and the CDN layer that keeps them off your servers.'
+description: 'The night Kestrel’s app servers melted carrying photos they never needed to touch. Where big bytes live, how they get in without you, what they cost to keep, and the edge network that serves them a city away.'
 module: 2
 order: 5
-minutes: 25
+minutes: 100
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { split, objectModel, durability, presigned, lifecycleOfUpload, multipart, dedup, tiers, offload, cacheKeys, headers, purge, shield, privateContent, video, images, sweep, drills } from '../data/sd/blob-cdn';
+import { BASE } from '../paths';
 
-## The rule that reshapes every media design
+<PatternHub
+  pattern="sd-blob-cdn"
+  start="prologue"
+  logline="Big bytes never flow through your app servers. They live in object storage under a key, travel through a CDN, and your services only ever handle facts about them. Say where the bytes go, how they get there, what they cost to keep, and how the edge serves them — and every photo, video and file design starts from solid ground."
+  cast={[
+    { name: 'You', role: 'Two months at Kestrel. You know what S3 is. You have never paid its bill.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Draws the bytes as a thick arrow and asks whose machines it crosses.' },
+    { name: 'Dev Okafor', role: 'SRE. Was on call on New Year’s Eve. Is still a little calm about it.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has restored a database that was mostly JPEGs.' },
+    { name: 'Iris Tan', role: 'Product lead. Every “oh, and also…” in this lesson is hers: video, paid courses, forty avatar sizes.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · Where the bytes live', description: 'The metadata split, the object model, and what durability really promises.', links: [['why-not-db', 'The database that was mostly JPEGs'], ['object-model', 'A flat world of keys'], ['durability', 'Eleven nines is not uptime']] },
+    { name: 'Part Two · Getting bytes in', description: 'Presigned URLs, the upload state machine, multipart uploads, and dedup.', links: [['presigned', 'The night the app servers melted'], ['upload-states', 'Pending forever'], ['multipart', 'Ninety-nine percent'], ['dedup', 'The same file twice']] },
+    { name: 'Part Three · Keeping it cheap', description: 'Storage classes, lifecycle rules, and the arithmetic of the bill.', links: [['tiers', 'The bill']] },
+    { name: 'Part Four · The edge', description: 'How a CDN works, and every lever it gives you.', links: [['cdn', 'A thousand doorways'], ['cache-keys', 'One photo, three keys'], ['headers', 'Yesterday’s JavaScript'], ['purge', 'Take it down now'], ['shield', 'Two hundred doors, one origin'], ['private', 'Paid content'], ['video', 'Seek to 41:10'], ['image-edge', 'Forty sizes of one avatar']] },
+    { name: 'Part Five · The whiteboard', description: 'Pastebin and a photo app, end to end, in numbers.', links: [['worked-numbers', 'The whiteboard sweep']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Make the calls interviewers probe, with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="Read one part per sitting. Part Four leans on the caching lesson's HTTP layer; if Cache-Control is hazy, skim that first. The drills at the end mix everything."
+/>
 
-**Big bytes never flow through your app servers.** Photos, videos, files, backups — they live in blob storage (S3), travel via CDN, and your services only ever handle *metadata about them*. The moment a design streams a 2 GB video through an app server, the interview is going badly.
+<h2 id="prologue">Prologue · The thick arrow</h2>
 
-## Blob storage in one table
+<Scene chapter="Prologue" title="00:00:41, January 1st" mood="storm">
 
-| Property | Meaning for your design |
-|----------|------------------------|
-| Key → bytes | no queries, no indexes — you always fetch by exact key |
-| Practically infinite, cheap | never estimate yourself out of S3; estimate to pick *storage class* |
-| 11 nines durability via replication/erasure coding | "durability is S3's problem" — one sentence, move on |
-| HTTP access | clients can talk to it DIRECTLY — the key insight below |
+Dev's message arrives forty-one seconds into the new year: *"Feed is timing out everywhere. App servers at 100% threads busy. CPU is… 12%?"*
 
-**The metadata split** — the pattern every file/media design uses: blob in S3 under a key, row in your DB with `{id, owner, s3_key, size, content_hash, created_at}`. The DB answers every question ("list my files"); S3 only ever serves bytes.
+Everyone at the party has just taken a photo of the fireworks, and everyone is posting it. Kestrel's upload endpoint accepts each photo, holds the connection while a congested phone dribbles two megabytes up at walking pace, then streams the same bytes on to storage. Every worker thread in the fleet is waiting on a phone. The feed, which needs a thread for a tenth of a second, can't get one.
 
-## Presigned URLs — clients talk to S3 directly
+On January 2nd Mara draws the system on the whiteboard and uses a thick marker for one arrow only: the photo bytes. It runs straight through the app servers.
 
-<Mermaid code={`sequenceDiagram
+*"Where should this arrow go,"* she asks, *"so that it never touches a machine we have to scale?"*
+
+</Scene>
+
+This lesson is the toolbox for every design with **large, mostly immutable bytes**: photos, videos, documents, pastes, backups, build artefacts, ML datasets. It shows up as the core of Pastebin, Instagram, YouTube, Dropbox and "design S3", and as a supporting box in nearly every other design. The interviewer is listening for one thing first:
+
+**The rule. Big bytes never flow through your app servers.** They live in **object storage** under a key, they arrive through **presigned uploads**, they leave through a **CDN**, and your services only ever handle **metadata about them**. The moment a design streams a 2 GB video through an app server, the interview is going badly.
+
+Your gap register has two entries this lesson guards against. **Layer conflation**: "the cache" in a media design could mean the browser, the CDN or Redis — name which. **Cache hand-waves**: a CDN is a cache, so the four promises from <a href={`${BASE}sd/lessons/caching/`}>Caching</a> apply to it too — key, TTL with a reason, invalidation, failure plan. Part Four makes you say all four for the edge.
+
+<Figure caption="The shape of every media design. The thick arrows (bytes) never pass through the app tier; the thin ones (permission and metadata) do.">
+  <Mermaid code={`flowchart LR
+    P["Phone"] -->|"1 · ask to upload"| API["App servers\nauth + metadata"]
+    API -->|"2 · presigned URL"| P
+    P ==>|"3 · bytes, directly"| OS[("Object storage\nkey to bytes")]
+    OS -->|"4 · upload event"| API
+    API --> DB[("Database\nmetadata rows")]
+    P ==>|"5 · reads"| CDN["CDN edge\nnear the user"]
+    CDN ==>|"misses only"| OS`} />
+</Figure>
+
+<Part n="Part One" title="Where the bytes live">
+
+Before you move bytes anywhere, decide what is a fact and what is a payload.
+
+</Part>
+
+<h2 id="why-not-db">Chapter 1 · The database that was mostly JPEGs</h2>
+
+<Scene chapter="Chapter 1" title="The database that was mostly JPEGs" mood="dawn">
+
+Theo tells you about Kestrel's first year. Avatars went into the `users` table as a `BYTEA` column, because it was one less system to run. It was fine at ten thousand users.
+
+At twenty million, a replica died and the rebuild took most of a working day. The nightly backup ran into the morning. The replica lag graph had a sawtooth every time a burst of people changed their avatars.
+
+*"The table was four terabytes,"* he says. *"Twenty gigabytes of it was data. The rest was faces."* He looks at you. *"So which part did the database actually need?"*
+
+</Scene>
+
+A **blob** (binary large object) is a payload your system stores and returns but never looks inside: a photo, a video, a PDF, a paste. Databases are built for the opposite — small rows, indexes, transactions, queries over fields. Put terabytes of payload in one and every database chore starts carrying it.
+
+**Worked numbers — Kestrel's avatars.** 20M users × 200 KB avatar = **4 TB**; 20M × 1 KB of profile columns = **20 GB**. The avatars are 4 TB ÷ 4.02 TB ≈ **99.5%** of the table.
+
+```text
+Replica rebuild at 200 MB/s     4 TB  → 20,000 s ≈ 5.6 hours      20 GB → 100 s
+Backups, snapshots, restores    every byte, every time
+Replication stream              each avatar change ships 200 KB to every replica
+Storage price                   replicated SSD block storage, ×3 copies — easily several times
+                                the per-GB price of object storage (check your provider)
+Serving                         every image request needs an app server and a DB connection;
+                                a CDN can't read your database
+```
+
+Be precise about one thing the interviewer may push on: **not every query slows down.** Postgres stores large values out of line (TOAST), so a query that doesn't select the avatar column doesn't read those bytes. The damage is to backups, replication, cost and serving — the operational life of the database — and to any `SELECT *`.
+
+**The metadata split** is the pattern every file and media design uses. The bytes go to object storage under a key; a row in your database records the facts about them:
+
+```sql
+CREATE TABLE photos (
+  id            BIGINT       PRIMARY KEY,          -- public id, random or Snowflake
+  owner_id      BIGINT       NOT NULL REFERENCES users(id),
+  storage_key   TEXT         NOT NULL,             -- 'photos/7f/7f3a9c…/orig', chosen by the server
+  content_hash  CHAR(64),                          -- SHA-256 hex, filled in after upload
+  size_bytes    BIGINT,
+  mime_type     TEXT,
+  width_px      INT,
+  height_px     INT,
+  status        TEXT         NOT NULL,             -- 'pending' | 'active' | 'deleted'
+  visibility    TEXT         NOT NULL DEFAULT 'public',
+  created_at    TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+CREATE INDEX photos_by_owner ON photos (owner_id, created_at DESC);
+```
+
+**The database answers every question** ("list my photos newest first", "is this photo mine?", "is it private?"). **The object store only ever serves bytes by exact key.** The row is a few hundred bytes; the object is megabytes.
+
+<Figure caption="The metadata split. Queries hit the left side; bytes come from the right side; the key is the only link between them.">
+  <Mermaid code={`flowchart LR
+    subgraph DB["Database: facts"]
+      R["photos row\nid 9182, owner 42\nkey photos/7f/7f3a\nsize 2.1 MB, status active"]
+    end
+    subgraph OS["Object storage: bytes"]
+      O1["photos/7f/7f3a/orig\n2.1 MB"]
+      O2["photos/7f/7f3a/w640\n90 KB"]
+    end
+    R -->|"storage_key"| O1
+    R -.->|"derived key"| O2`} />
+</Figure>
+
+| | Database row | Object storage |
+|---|---|---|
+| Holds | Facts you query, filter, join, check | Opaque bytes |
+| Access | By any indexed field, in transactions | By exact key, whole object or byte range |
+| Size sweet spot | Bytes to a few KB per row | KB to terabytes per object |
+| Scales by | Sharding, replicas — your problem | The provider's problem |
+| Served to users | Through your API | Directly (presigned URL) or through a CDN |
+
+**When a blob may stay in the database:** tiny and few (a 2 KB icon per tenant), or when it must commit atomically with other rows and is small. A Microsoft Research study, *To BLOB or Not To BLOB* (Sears, van Ingen, Gray, 2006), found databases competitive for objects up to roughly a few hundred KB and file systems better above about 1 MB — the crossover depends on the system, but the shape of the answer has held.
+
+<Trace title="Split the facts from the bytes" steps={split} takeaway="The database stores facts you query; the object store stores bytes you fetch by key. The key is the only bridge." />
+
+<Reveal q="Pastebin pastes average 10 KB. Shouldn't they just live in the database?">
+
+You could, and for a small pastebin it would work. The split still wins on three counts: the **size tail** (allow 10 MB pastes and a few of them dominate the bytes), a **lean database** (metadata stays hot in memory; backups stay fast) and **cacheable reads** (paste bodies are immutable, so a CDN can serve them without touching your servers). Say it as a judgment call: *"Small pastes would fit in the DB, but the tail and the CDN make the split worth it."* Chapter 17 runs the numbers.
+
+</Reveal>
+
+**Catch the trap:** "I'll store the image in the database." Even if the interviewer lets it pass, you have just made your database the bottleneck for backups, replication and serving. Say the split in one breath: *"Bytes in object storage under a server-chosen key; a metadata row with key, size, hash, owner and status."*
+
+<h2 id="object-model">Chapter 2 · A flat world of keys</h2>
+
+<Scene chapter="Chapter 2" title="A flat world of keys">
+
+You open the storage console expecting folders. There are folders: `photos/`, `photos/7f/`, `photos/7f/7f3a9c…/`. Mara asks you to delete the folder `photos/7f/`. You can't find a "delete folder" that does what you expect.
+
+*"There are no folders,"* she says. *"There's a very long list of names. Some of them happen to contain slashes. What else don't you know about the thing that holds all our photos?"*
+
+</Scene>
+
+**The object model, in five sentences.**
+
+1. A **bucket** is a named container with its own settings (region, access policy, versioning, lifecycle rules, event notifications).
+2. Inside it, a **key** — any string, like `photos/7f/7f3a9c/orig` — maps to an **object**: the bytes plus a little metadata (size, content type, an `ETag`, your custom headers).
+3. The namespace is **flat**. A "folder" is just a shared **prefix**; listing `photos/7f/` means "list keys starting with that string", paginated.
+4. Objects are **written whole**. There is no "change bytes 100–200": you PUT the whole object again, under the same key (overwrite) or a new one. Reads can fetch a byte range.
+5. Access is plain **HTTP**: PUT, GET, HEAD, DELETE, LIST. That is the property the rest of this lesson exploits — clients can talk to the store directly.
+
+| Property | What it means for your design |
+|---|---|
+| Key → bytes, no queries | Every question goes to your metadata database; never "scan the bucket" on a request path |
+| Practically unlimited capacity | Never estimate yourself out of object storage; estimate to choose a **storage class** (Chapter 8) |
+| Whole-object writes | Big mutable files get **chunked** (Chapter 7); small edits shouldn't rewrite gigabytes |
+| HTTP access | **Presigned URLs** let clients upload and download without you (Chapter 4) |
+| Versioning (optional) | An overwrite or delete keeps the old version; your undo button against bugs (Chapter 3) |
+
+**Consistency — know the date.** For years S3 was eventually consistent for some operations: an overwrite or a LIST right after a write could return stale results. **Since December 2020, S3 provides strong read-after-write consistency** for object PUTs (new and overwrite), DELETEs and LISTs, automatically. Bucket-level configuration changes are still eventually consistent. Google Cloud Storage also documents strong consistency for object operations and listings. For any other provider, an older system, or a self-hosted S3-compatible store, **check its documented model** — "S3-compatible" describes the API, not the guarantees.
+
+**Concurrent writes: last writer wins.** Two PUTs to the same key with no conditions: one silently replaces the other. Avoid shared mutable keys — **the server chooses a fresh key per upload** (a random id or hash), so writers never collide. Where you genuinely need "create only if absent" or compare-and-swap, some stores now support conditional writes (S3 added them in 2024, e.g. `If-None-Match: *`; check current docs for what your store supports).
+
+**Request rates are per prefix.** Object stores partition the key space by prefix. AWS documents at least 3,500 writes and 5,500 reads per second **per partitioned prefix**, scaling up as load grows (check current docs). A single hot **key** can't be split, which is one more reason hot objects belong behind a CDN (Chapter 13).
+
+<Trace title="Know your object store" steps={objectModel} takeaway="Flat keys, whole-object writes, last writer wins. S3 is strongly read-after-write consistent since December 2020; check anyone else's docs." />
+
+<Reveal q="A teammate wants keys like users/{name}/avatar.jpg. What goes wrong?">
+
+Three things. Users can change their names, and object keys can't be renamed — only copied and deleted. Writers can collide on one key (last writer wins). And readable names leak information if a key is ever exposed. Use **server-chosen, opaque, immutable keys** (`avatars/7f3a9c…`) and keep the human facts in the metadata row.
+
+</Reveal>
+
+**Catch the trap:** "S3 is eventually consistent, so after upload I'll wait before reading." That was true before December 2020. Say the current guarantee, and the caveat that it is S3's — not every store's.
+
+<h2 id="durability">Chapter 3 · Eleven nines is not uptime</h2>
+
+<Scene chapter="Chapter 3" title="Eleven nines is not uptime" mood="night">
+
+Iris reads the storage product page aloud in a meeting: *"Eleven nines! So it's never down."*
+
+Dev, without looking up: *"It was down for four hours last year."*
+
+*"But—"*
+
+*"It didn't lose anything,"* Dev says. *"It just wouldn't give it to us."*
+
+</Scene>
+
+Two different promises hide behind "reliable":
+
+- **Durability** — the probability that **stored bytes are not lost**. S3 Standard is designed for 99.999999999% (eleven nines) annual durability.
+- **Availability** — the fraction of time **requests succeed**. S3 Standard is designed for 99.99%; the contractual SLA is lower (check current docs). One-zone classes are designed for less, because one zone can go away.
+
+**Worked numbers.** Eleven nines means an annual loss probability of 10⁻¹¹ per object. Kestrel stores 10 million objects: 10⁷ × 10⁻¹¹ = 10⁻⁴ objects lost a year — **one object every 10,000 years** on average. Four nines of availability allows 0.0001 × 525,960 minutes ≈ **53 minutes a year** of failed requests. Durability is astronomically better than availability, and they are bought differently.
+
+**How stores buy durability: replication versus erasure coding.**
+
+- **Replication**: keep N full copies on different machines, racks, zones. Three copies survive any two losses and cost **3×** raw space. Repair is simple: copy one surviving replica.
+- **Erasure coding** (Reed–Solomon `(k, m)`): split the object into `k` data fragments, compute `m` parity fragments, store all `k + m` in different places. **Any `k` of them rebuild the object.** RS(10, 4) survives the loss of **any 4 of 14** fragments at **1.4×** raw space.
+
+<Figure caption="Reed–Solomon (10, 4): fourteen fragments in different failure domains, any ten of which reconstruct the object.">
+  <Mermaid code={`flowchart LR
+    O["Object"] --> S["split into 10\ndata fragments"]
+    S --> P["compute 4\nparity fragments"]
+    P --> F["14 fragments spread over\ndisks, racks and zones"]
+    F --> R["read any 10\nto rebuild"]`} />
+</Figure>
+
+| | 3× replication | RS(10, 4) erasure coding |
+|---|---|---|
+| Raw space for 5.5 PB | 16.4 PB | 7.7 PB |
+| Survives | Any 2 losses | Any 4 losses |
+| Repair one lost piece | Copy 1 replica | Read 10 fragments, recompute (network-heavy) |
+| Read latency | Read one copy | Read across fragments (or the data fragments directly, when healthy) |
+| Good for | Small, hot, latency-sensitive data | Large, warm and cold bulk data |
+
+Large stores commonly erasure-code bulk data and spread fragments across availability zones; many pack small objects into larger extents before coding, so per-object overhead stays low. In an interview, one sentence is enough — *"the store erasure-codes across zones for durability; that's the provider's problem"* — but know what the sentence means.
+
+**Durability is not backup.** Eleven nines faithfully preserves your mistakes: a buggy job that deletes `photos/` is durably recorded. Protection against **you** comes from **versioning** (deletes and overwrites keep the previous version), **object lock / WORM retention** for compliance data, and **replication to a separate account or region** that the same credentials can't delete.
+
+<Trace title="Durability, availability, and you" steps={durability} takeaway="Durability: bytes not lost. Availability: requests succeed. Erasure coding buys durability cheaply; versioning protects against your own bugs." />
+
+<Reveal q="Why don't you multiply object storage by 3 in a storage estimate, when you do for a database?">
+
+A managed object store replicates or erasure-codes **internally** and bills you for the **logical** bytes you stored; the redundancy is priced into its per-GB rate. If you run the store yourself (Ceph, MinIO, HDFS), the multiplier is yours: ×3 for replication, about ×1.4 for RS(10, 4). Say which one you are estimating.
+
+</Reveal>
+
+**Catch the trap:** "Eleven nines, so we don't need backups." Durability protects against disks dying. It does nothing about a bad deploy, a compromised credential or a fat-fingered lifecycle rule. Name versioning or a cross-account copy.
+
+<Part n="Part Two" title="Getting bytes in">
+
+The bytes must reach storage without passing through you, survive bad networks, and be stored once.
+
+</Part>
+
+<h2 id="presigned">Chapter 4 · The night the app servers melted</h2>
+
+<Scene chapter="Chapter 4" title="The night the app servers melted" mood="storm">
+
+The New Year's post-mortem has one slide Dev is proud of: a graph of the app tier with two lines. CPU sits at twelve percent all night. Busy worker threads hit the ceiling at 00:00:20 and stay there for nine minutes.
+
+*"We weren't out of compute,"* he says. *"We were out of waiting."*
+
+Mara writes three numbers on the board: 1,500 uploads a second, 2 megabytes each, 2 megabits a second per phone. *"How many uploads were we holding at once? And how many should we have been holding?"*
+
+</Scene>
+
+**Worked numbers — the night it melted.** Assumptions from <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a>'s Kestrel Moments: 5M uploads a day at 2 MB → 5M ÷ 10⁵ × 3 = **150 uploads/s** at a normal peak; New Year's midnight ran **10×**, 1,500/s. Congested phone uplinks: 2 Mbps. Fleet: 27 app servers × 200 worker threads = **5,400 threads**.
+
+```text
+One upload       2 MB × 8 = 16 Mb ÷ 2 Mbps = 8 s holding a thread
+In flight        Little's law: 1,500/s × 8 s = 12,000 uploads      vs 5,400 threads → starved
+Normal peak      150/s × 8 s = 1,200 threads ≈ 22% of the pool doing nothing but waiting
+Feed needs       15,000 req/s × 0.1 s = 1,500 threads — which it couldn't get
+Bandwidth        1,500 × 2 MB = 3 GB/s = 24 Gbps in, and the same 24 Gbps out to storage
+                 = 48 Gbps through the app tier (the whole feed API is 2.4 Gbps)
+If buffered      12,000 × 2 MB = 24 GB of RAM across the fleet just holding photos
+With presigned   app work per upload ≈ 5 ms (auth, insert row, sign): 1,500 × 0.005 = 7.5 threads
+```
+
+The app tier didn't run out of CPU. It ran out of **waiting slots**, because slow clients turned a 2 MB request into an 8-second request. Proxying also makes every byte cross your network twice and makes your autoscaling track **upload bandwidth** instead of business logic.
+
+**A presigned URL** is a time-limited, signed permission slip for **one operation on one key**. Your server computes it locally with its storage credentials (an HMAC signature — no call to the store needed) and hands it to the client. The client then talks to the store directly. The store checks the signature and expiry, and accepts or rejects. **Uploads and downloads both use them: your API does auth and metadata; the store does bytes.**
+
+<Figure caption="Before and after. Left: every byte crosses the app tier twice and pins a thread for 8 seconds. Right: the app tier spends 5 ms granting permission.">
+  <Mermaid code={`sequenceDiagram
+    participant C as Phone
+    participant API as App server
+    participant S as Object storage
+    Note over C,S: Proxying, the night it melted
+    C->>API: POST 2 MB photo, 8 s on a slow link
+    API->>S: PUT the same 2 MB
+    S-->>API: 200 OK
+    API-->>C: 201 Created
+    Note over C,S: Presigned, the fix
+    C->>API: I want to upload photo.jpg, 2 MB, image/jpeg
+    API->>API: auth, quota, insert row status pending, sign URL
+    API-->>C: presigned PUT URL, key chosen by server, expires 15 min
+    C->>S: PUT bytes directly, the app tier never sees them
+    S-->>API: event, object created
+    API->>API: validate, then mark row active`} />
+</Figure>
+
+**Rules for issuing one** — each closes a real hole:
+
+| Rule | Because |
+|---|---|
+| **The server chooses the key** | A client-chosen key can overwrite someone else's object or plant files on paths you serve |
+| **One method, one key** | A PUT URL can't be used to GET or to write elsewhere |
+| **Short expiry** (minutes) | It is a **bearer** token: anyone holding it can use it until it expires, and you generally can't revoke a single URL early |
+| **Pin what you can** | Sign the content type; to cap size, S3's presigned **POST** policy supports a `content-length-range` condition |
+| **Never trust what arrives** | After upload, check size and real type (magic bytes, not the extension), scan if needed, re-encode images, **strip EXIF location data** |
+
+For **downloads** of private objects, the same idea in reverse: the API checks access, then returns a short-lived presigned GET (or, at scale, a CDN signed URL — Chapter 14).
+
+<Trace title="Count the waiting" steps={presigned} takeaway="Slow clients turn small requests into long ones. Let the store hold the slow connections; your server signs a narrow, short-lived permission and gets out of the way." />
+
+<Reveal q="The interviewer asks: 'Isn't the presigned URL a security risk? Anyone with the link can upload.'">
+
+Yes — for its lifetime, it is a bearer credential. That is why it is narrow (one method, one server-chosen key, pinned content type, size-limited where the store supports it) and short (minutes). Uploading to it achieves nothing on its own: the object stays invisible until your service validates it and flips the metadata row to active. Worst case, an attacker who steals a URL uploads junk to a key you'll reject and clean up.
+
+</Reveal>
+
+**Catch the trap:** "The API receives the file and stores it in S3." It sounds harmless and it is the one sentence that tells the interviewer you have never run this at scale. Lead with the presigned flow, and say *why* in numbers: slow clients × upload rate = held connections.
+
+<h2 id="upload-states">Chapter 5 · Pending forever</h2>
+
+<Scene chapter="Chapter 5" title="Pending forever" mood="dusk">
+
+Two weeks after the fix, support forwards a strange ticket: *"My photo uploaded — the progress bar finished — but it never appears."* Dev finds the row. Status: `pending`. Created yesterday. The object is right there in storage, perfectly fine.
+
+*"The event never arrived,"* he says. *"Or it arrived and our handler threw. Either way, two systems disagree and nobody is checking."*
+
+Mara: *"Then who checks?"*
+
+</Scene>
+
+The database and the object store are **two systems with no shared transaction**. You can't commit "row is active" and "bytes exist" atomically, so you order the steps so that **every failure is harmless**, and you run a job that repairs the leftovers. This pending → active state machine is what separates people who have built upload systems from people who have read about them.
+
+<Figure caption="The upload state machine. Every arrow is idempotent, and the sweeper covers every arrow that can go missing.">
+  <Mermaid code={`stateDiagram-v2
+    [*] --> pending: API inserts row, signs URL
+    pending --> processing: object-created event, or client confirms
+    processing --> active: validated, thumbnails made, EXIF stripped
+    processing --> rejected: wrong type, too big, failed scan
+    pending --> expired: sweeper finds no object after 24 h
+    active --> deleted: user deletes, row first
+    deleted --> [*]: object deleted async, sweeper retries`} />
+</Figure>
+
+**How the loop closes:**
+
+- **Two signals, one idempotent handler.** The store's event notification (S3 sends object-created events to a queue or function) and the client's own "I'm done" call both trigger the same handler: HEAD the key, check size and type, move `pending → processing`. Handling it twice is harmless.
+- **Events are not a guarantee of timeliness or uniqueness.** S3 documents its event notifications as delivered **at least once**, usually within seconds but sometimes a minute or more. Expect duplicates and delays.
+- **A sweeper reconciles.** Every few minutes: rows `pending` for longer than the URL expiry plus a margin → HEAD the key; if the object exists, process it; if not, mark it expired. Objects with no row (the client uploaded, then the row was lost) → a periodic listing job, or upload into a staging prefix with a lifecycle rule that deletes anything older than a day.
+- **Processing is asynchronous.** Thumbnails, transcoding, scanning: put a job on a queue (see <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> and <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs</a>). The row goes `active` only when the derived objects exist, so a feed never shows a photo without its thumbnail.
+
+**Deleting is the same problem backwards.** Mark the row `deleted` first (users stop seeing it immediately), then delete the object and its derived variants asynchronously, with the sweeper retrying failures. The failure you allow is orphaned bytes (a small cost, cleaned up later), never a row pointing at nothing (a broken image in every feed). Remember the CDN still holds copies — Chapter 12.
+
+<Trace title="Close the loop" steps={lifecycleOfUpload} takeaway="Two systems, no shared commit: order the steps so failures leave orphans, never dangling pointers, and run a sweeper." />
+
+**Catch the trap:** "When the upload completes, S3 notifies us and we mark it done." Say what happens when that notification is late, duplicated or dropped by your own handler. *"The handler is idempotent, and a sweeper reconciles pending rows older than an hour"* is the sentence.
+
+<h2 id="multipart">Chapter 6 · Ninety-nine percent</h2>
+
+<Scene chapter="Chapter 6" title="Ninety-nine percent" mood="night">
+
+Iris has launched Kestrel Clips: videos up to 2 GB. The first review on the app store is one star. *"Uploaded my 20-minute video on the train. Tunnel at 99%. Started again from zero. Twice."*
+
+Mara reads it aloud and asks only one question: *"What did that user lose, in seconds?"*
+
+</Scene>
+
+A single PUT is **all or nothing**. A dropped connection leaves no object, and the next attempt starts from byte zero.
+
+**Multipart upload** splits the object into parts that upload **independently**:
+
+1. **Initiate** — the API starts a multipart upload and gets an **upload id**; it presigns a URL per part (or per batch of parts).
+2. **Upload parts** — the client PUTs each part, in parallel if it helps, and records each part's returned `ETag`. A failed part is retried alone.
+3. **Complete** — the client (or API) sends the list of part numbers and ETags; the store assembles the object. Or **abort**, which discards the parts.
+
+**Resuming** after the app is killed: the client keeps the upload id and asks the store which parts already arrived (S3's `ListParts`), then uploads only the rest.
+
+**Worked numbers — a 2 GB clip on a 10 Mbps uplink.**
+
+```text
+Whole upload     2,000 MB × 8 = 16,000 Mb ÷ 10 Mbps = 1,600 s ≈ 27 min
+Single PUT       drop at 99% → lose ≈ 1,584 s, restart from zero
+8 MB parts       2,000 ÷ 8 = 250 parts; a drop loses one part: 64 Mb ÷ 10 Mbps = 6.4 s
+Part sizing      S3: parts 5 MiB to 5 GiB (last part may be smaller), at most 10,000 parts,
+                 objects up to 5 TB — check current docs
+                 → part size ≥ object size ÷ 10,000: 100 GB needs parts of at least 10 MB
+```
+
+<Figure caption="Multipart: parts are independent, so a failure costs one part, not the file.">
+  <Mermaid code={`sequenceDiagram
     participant C as Client
-    participant API as Your API
-    participant S3 as S3
-    C->>API: "I want to upload photo.jpg (8MB)"
-    API->>API: authorize, create metadata row (status: pending)
-    API-->>C: presigned PUT URL (expires 15 min)
-    C->>S3: PUT bytes directly (your servers never see them)
-    S3-->>API: event: upload complete
-    API->>API: mark metadata row active`} />
+    participant API as App server
+    participant S as Object storage
+    C->>API: start upload, 2 GB video
+    API->>S: create multipart upload
+    S-->>API: upload id
+    API-->>C: upload id + presigned URLs for parts 1 to 250
+    par part 1
+      C->>S: PUT part 1
+    and part 2
+      C->>S: PUT part 2
+    end
+    Note over C,S: tunnel, part 249 fails, retry part 249 only
+    C->>API: complete, part numbers and ETags
+    API->>S: complete multipart upload
+    S-->>API: one 2 GB object`} />
+</Figure>
 
-A presigned URL is a time-limited, signed permission slip for one exact operation on one exact key. Uploads AND downloads both use them: your API does auth + metadata, S3 does bytes. Say the flow with the completion event — the "pending → active" state transition is what separates people who've built this from people who've read about it.
+| | Single PUT | Multipart | Offset-resumable session |
+|---|---|---|---|
+| Shape | One request | Many independent parts, then complete | One session URL; client asks "what offset did you get?" and continues |
+| Failure cost | Everything | One part | From the last committed offset |
+| Parallel | No | Yes | Usually sequential |
+| Examples | Small files (S3 recommends multipart from about 100 MB) | S3 multipart | Google Cloud Storage resumable uploads, the open tus protocol |
 
-## Chunking — big files go in pieces
+**Housekeeping that bites:** parts of an upload that is never completed or aborted **stay stored and billed**. Add a lifecycle rule that aborts incomplete multipart uploads after a few days. And parallel parts help most on fat or high-latency links; on one congested phone link they mainly add resilience, not speed.
 
-Upload a 2 GB file as one PUT and a network blip at 99% restarts everything. So: split into chunks (5–10 MB), upload independently (parallel, resumable — only failed chunks retry), reassemble by manifest. This is S3 multipart upload, and it's also the foundation of Dropbox-style sync:
+<Trace title="Lose a part, not the file" steps={multipart} takeaway="Parts are independent: failures cost one part, resumes skip what arrived, and abandoned uploads need a lifecycle rule." />
 
-- **Content-hash each chunk** (SHA-256) → the chunk's identity.
-- **Dedup**: chunk already stored (same hash, any user)? Don't store it again — just reference it.
-- **Delta sync**: file edited → only chunks whose hashes changed get uploaded. A 1-line edit to a 1 GB file ships a few MB.
+**Catch the trap:** "We'll chunk it." Chunk how big, why that size, and what happens on failure? Say: *"8 MB parts, presigned per part, retried individually, resumable via the upload id, and a lifecycle rule to abort abandoned uploads."*
 
-That triplet (chunk, hash, dedup) is the entire heart of the Dropbox walkthrough later.
+<h2 id="dedup">Chapter 7 · The same file twice</h2>
 
-## CDN — the cache with a thousand locations
+<Scene chapter="Chapter 7" title="The same file twice" mood="dawn">
 
-A CDN is a geographically distributed **cache for HTTP responses**, so it inherits the whole caching lesson: keys (the URL), TTLs, invalidation. Origin = S3 or your servers; edge = hundreds of POPs near users.
+Kestrel's new Drive feature has a curious storage graph: every Monday morning, a spike of identical 500 MB uploads. A company's whole team syncs the same onboarding video.
 
-- **Pull CDN** (default): edge misses → fetches from origin → caches per `Cache-Control` TTL.
-- **The invalidation trick — immutable URLs**: purging CDN caches is slow and unreliable, so don't update content — publish new content at a new URL. `avatar_v2.jpg`, `app.9f3ab2.js` (content-hashed filenames), `Cache-Control: immutable, max-age=1yr`. Deploy = new URLs, old ones die by TTL. This is how every serious frontend ships.
-- **What to CDN**: static assets always; video segments always (YouTube's real serving layer is "CDN with a transcoding pipeline behind it"); API responses rarely (per-user + auth makes them uncacheable — say this when asked).
-- **Signed CDN URLs/cookies**: private content (paid course videos) still needs auth at the edge — same presigning idea, CDN edition.
+Theo raises an eyebrow. *"We are storing that video two hundred times. And when someone fixes a typo in a 1 GB design file, the client uploads a gigabyte."*
 
-## Bandwidth estimation reflex (from the estimation lesson)
+Mara: *"What if a piece of a file was named by what's in it?"*
 
-Media designs are where the bandwidth axis stops being "ignore it": 1M video views/day × 100 MB average = 100 TB/day egress ≈ 1.2 GB/s average, ×3 peak. Conclusion sentence: "that's CDN territory — origin serves each segment once per edge, users pull from edges." The estimate exists to justify the CDN box.
+</Scene>
+
+**Content addressing.** Name each piece of data by a cryptographic hash of its bytes (SHA-256). Same bytes, same name — across files, users and time. Three things fall out:
+
+- **Dedup.** Before uploading a chunk, check whether that hash is already stored. If it is, don't store it again; just reference it.
+- **Delta sync.** A file is a **manifest**: an ordered list of chunk hashes. When it changes, only chunks whose hashes changed are uploaded.
+- **Integrity.** The name verifies the content. A corrupted chunk doesn't match its own hash.
+
+That triplet — **chunk, hash, dedup** — is the heart of the Dropbox walkthrough and of <a href={`${BASE}sd/lessons/pattern-sync-collab/`}>Sync & collaboration</a>.
+
+<Figure caption="Content-addressed storage. Two files share chunks; each manifest is a list of hashes; each chunk is stored once.">
+  <Mermaid code={`flowchart LR
+    A["File A manifest\nh1, h2, h3"] --> C1[("chunk h1")]
+    A --> C2[("chunk h2")]
+    A --> C3[("chunk h3")]
+    B["File B manifest\nh1, h2, h4"] --> C1
+    B --> C2
+    B --> C4[("chunk h4")]`} />
+</Figure>
+
+**Worked numbers.** A 500 MB file in 4 MB chunks is 125 chunks. A second user with the same file: all 125 hashes already exist → **no new chunk storage**, one new manifest. Note what did the work: **your chunking layer, not the object store.** S3 does not deduplicate identical objects for you; two PUTs of the same bytes are two billed objects.
+
+**Fixed versus content-defined chunking.** Edit bytes in place (same length) and only the chunk holding them changes. **Insert** one byte at the start and, with fixed 4 MB boundaries, every following byte shifts: **all 125 chunks change**. **Content-defined chunking** picks boundaries where a rolling hash of the content hits a pattern, so boundaries move with the data; an insertion changes about one or two chunks. rsync's rolling checksum and modern backup tools use this family of ideas.
+
+**Deleting shared chunks** needs **reference counting** (decrement on manifest delete; delete the chunk at zero, carefully — a concurrent upload may be about to reuse it) or periodic **mark-and-sweep** garbage collection over all live manifests. Most designs pick GC with a grace period, because refcounts drift under failures.
+
+**The privacy caveat — say it unprompted.** If the client sends hashes first and the server says "already have it" **for chunks stored by anyone**:
+
+- **Existence leak.** An attacker who suspects someone holds a specific file (a leaked document) hashes it, "uploads" it, and watches whether the bytes were needed. For files with a small unknown part (a form letter with a PIN), they can try every variant.
+- **Access hole.** If "already have it" links the chunk into the requester's account on the hash alone, **knowing a hash becomes enough to download the file.** A hash is not proof of possession.
+
+Mitigations: **dedup only within a user or tenant** (most of the savings in many workloads, none of the cross-user leak); **dedup server-side** after receiving the bytes, so the client can't observe it (saves storage, not upload bandwidth); or a **proof-of-ownership** step. Encrypting content per user removes cross-user dedup entirely — that's the trade.
+
+**Pastebin flavour.** Key the paste body by `sha256(content)`: two identical pastes share one object, two metadata rows. But **never use the hash as the public paste id**: anyone could compute the URL of a paste whose text they can guess, and identical "private" pastes would share a URL. Public id: random. Storage key: hash.
+
+<Trace title="Name it by its content" steps={dedup} takeaway="Hash the chunk, store it once, sync only what changed — and remember that a visible dedup answer is a side channel." />
+
+<Reveal q="Why SHA-256 and not a fast hash like CRC32 or MD5 for chunk identity?">
+
+Identity must survive adversaries, not just accidents. CRC32 has only 32 bits — accidental collisions are routine at billions of chunks — and MD5 collisions can be manufactured on purpose, which would let an attacker make two different chunks share an identity. SHA-256 has no known practical collisions. Use fast checksums (CRC32C) for transport integrity, and a cryptographic hash for identity.
+
+</Reveal>
+
+**Catch the trap:** "We dedup by hash" with nothing else. The follow-up is always *"so what does a user learn when their upload is skipped?"* Have the scope answer ready.
+
+<Part n="Part Three" title="Keeping it cheap">
+
+Storage is cheap per gigabyte and expensive per petabyte. The lever is how long each byte stays hot.
+
+</Part>
+
+<h2 id="tiers">Chapter 8 · The bill</h2>
+
+<Scene chapter="Chapter 8" title="The bill" mood="dusk">
+
+The finance team forwards the storage invoice with one line: *"Is this right?"* It is. Moments has three years of photos, sixteen petabytes, all in the default storage class.
+
+Dev pulls the access logs. Photos older than a month get almost no views; older than a year, nearly none. *"We're paying front-row prices,"* he says, *"for an attic."*
+
+</Scene>
+
+**Storage classes** trade the price of keeping bytes against the price and speed of reading them. Names below are S3's; other clouds have close equivalents. **Prices change — the relative magnitudes are what to carry, and check current price sheets.**
+
+| Class (S3 name) | Storage price vs Standard | Read | The catch |
+|---|---|---|---|
+| **Standard** | 1 | Milliseconds | None — the default for anything hot |
+| **Standard-IA** (infrequent access) | about ½ | Milliseconds | Per-GB retrieval fee; 30-day minimum billed duration; objects billed as at least 128 KB |
+| **One Zone-IA** | a bit below IA | Milliseconds | One availability zone: lost if that zone is lost — only for re-creatable data (thumbnails you can regenerate) |
+| **Glacier Instant Retrieval** | about ⅙ | Milliseconds | Higher retrieval fee; 90-day minimum |
+| **Glacier Flexible Retrieval** | lower still | Minutes to hours (restore first) | Must restore before reading; 90-day minimum |
+| **Glacier Deep Archive** | about 1/20 or less | Hours | 180-day minimum; for compliance and "just in case" |
+| **Intelligent-Tiering** | moves objects for you | Milliseconds for the frequent and infrequent tiers | Small per-object monitoring fee; tiny objects aren't tiered |
+
+**Lifecycle rules** move or delete objects automatically by age (filtered by prefix, tag or size): *"after 30 days → Standard-IA; after 365 days → Glacier Instant Retrieval; abort incomplete multipart uploads after 7 days; delete `tmp/` after 1 day."*
+
+<Figure caption="A lifecycle policy for Moments photos. Bytes move to cheaper shelves as they cool; reads still work at every step until the archive tiers that need a restore.">
+  <Mermaid code={`flowchart LR
+    N["New photo"] --> S["Standard\n0 to 30 days\nprice 1"]
+    S -->|"day 30"| IA["Standard-IA\n30 to 365 days\nprice about 0.5"]
+    IA -->|"day 365"| G["Glacier Instant Retrieval\nafter a year\nprice about 0.17"]`} />
+</Figure>
+
+**Worked numbers — Moments after three years.** 15 TB of photos a day (5M uploads × 3 MB: a 2 MB original plus ~1 MB of renditions), 5,475 TB a year, 16,425 TB after three years. Relative prices 1 : ½ : ⅙.
+
+```text
+Standard  (last 30 days)        15 TB × 30  =    450 TB × 1   =    450 units
+Standard-IA (days 30–365)       15 TB × 335 =  5,025 TB × 1/2 =  2,513 units
+Glacier IR (older than a year)  16,425 − 5,475 = 10,950 TB × 1/6 = 1,825 units
+Tiered total                                                    ≈ 4,788 units
+All Standard                    16,425 TB × 1                   = 16,425 units
+                                → tiered ≈ 29% of the bill, about 3.4× cheaper per month
+```
+
+**The fees that eat the savings:**
+
+- **Retrieval.** Cold classes charge per GB read. If old photos are actually viewed (a "this day three years ago" feature), retrieval can cost more than you saved. The **CDN absorbs repeat reads** of the same object, which helps.
+- **Minimum size.** Standard-IA bills each object as at least 128 KB. A 20 KB thumbnail is billed at 6.4× its size, at half the price: **3.2× more** than leaving it in Standard. Keep tiny objects in Standard (or pack them).
+- **Minimum duration.** Delete an IA object after 10 days and you still pay for 30.
+- **Transition requests.** Lifecycle transitions are billed per object; moving billions of tiny objects costs real money.
+
+When the access pattern is unknown, **Intelligent-Tiering** moves objects between tiers by observed access, for a small monitoring fee per object.
+
+<Trace title="Read the bill" steps={tiers} takeaway="Price bytes by how long they stay hot. Lifecycle rules do the moving; minimum sizes, minimum durations and retrieval fees decide whether it pays." />
+
+**Catch the trap:** "Move everything older than 30 days to Glacier." Glacier Flexible Retrieval and Deep Archive need a **restore** before reading — minutes to hours. A user tapping an old photo can't wait hours. Pick an instant-retrieval tier for anything users can still open, and say the minimum-size and retrieval caveats.
+
+<Part n="Part Four" title="The edge">
+
+A CDN is a cache with a thousand locations. Everything from Caching applies — and a few things only the edge has.
+
+</Part>
+
+<h2 id="cdn">Chapter 9 · A thousand doorways</h2>
+
+<Scene chapter="Chapter 9" title="A thousand doorways" mood="dawn">
+
+A user in Jakarta opens Moments. The feed JSON arrives in a blink; then ten grey squares sit there for two full seconds before photos fill them in, one by one, each image crossing an ocean to the bucket in Virginia.
+
+Mara draws a world map with a single dot on it. Then she draws two hundred more. *"Which dot should the photo come from? And how does it get there?"*
+
+</Scene>
+
+A **CDN** (content delivery network) is a global fleet of reverse proxies — **points of presence (PoPs)**, or edges — that cache HTTP responses close to users. The machine you own and the CDN reads from is the **origin**: here, the object store. How a phone reaches its nearest PoP (GeoDNS or anycast) and what a CDN does for uncacheable API traffic (terminating TLS nearby, reusing warm connections to the origin) is in <a href={`${BASE}sd/lessons/networking/`}>Networking</a>. This chapter is about the bytes.
+
+**Pull versus push:**
+
+| | Pull CDN (the default) | Push / pre-positioning |
+|---|---|---|
+| How | Edge misses → fetches from origin → caches per the response's headers | You upload or pre-warm content to the edge ahead of demand |
+| Like | Cache-aside, at the edge | Write-through, at the edge |
+| Good for | Almost everything: photos, assets, segments, the long tail | Big, predictable releases: a game patch at 10:00, a season premiere |
+| Cost | First request per PoP is slow; misses spike under purges | You manage what goes where, and pay to store things nobody may request |
+
+Video giants run the push model at enormous scale: Netflix's Open Connect, for example, publicly describes filling its caching appliances with predicted-popular titles during off-peak hours.
+
+**The arithmetic.** It is the cache rule from Caching again, with bytes: **origin egress = (1 − h) × total egress**.
+
+**Worked numbers — Moments** (from <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a>): 500M feed opens a day × 10 images × 200 KB = 1 PB/day → 10 GB/s average → **30 GB/s (240 Gbps) at peak**.
+
+| CDN hit ratio | Origin egress at peak | Note |
+|---|---|---|
+| 90% | 3 GB/s | Still a very busy origin |
+| 95% | 1.5 GB/s | The estimation lesson's assumption |
+| 99% | 0.3 GB/s | 5× less than at 95% — the last points matter most |
+
+**Request hit ratio is not byte hit ratio.** 990 thumbnail hits of 20 KB and 10 video-segment misses of 4 MB: 99% of requests hit, but only 19.8 MB of 59.8 MB came from cache — a **33% byte hit ratio**. Origin bandwidth and your egress bill follow bytes; origin request load follows requests. Track both.
+
+<Figure caption="Pull CDN. The origin only sees misses, and the phone only crosses a city, not an ocean.">
+  <Mermaid code={`flowchart LR
+    U1["Phones in Jakarta"] --> E1["PoP Jakarta"]
+    U2["Phones in Lagos"] --> E2["PoP Lagos"]
+    U3["Phones in Lima"] --> E3["PoP Lima"]
+    E1 -->|"miss"| O[("Origin\nobject storage")]
+    E2 -->|"miss"| O
+    E3 -->|"miss"| O`} />
+</Figure>
+
+**What to put on a CDN:** static assets, always. Images and video segments, always — at the serving layer, a video platform is largely a CDN with a transcoding pipeline behind it. Public, identical-for-everyone pages and API responses, sometimes, with short TTLs. **Per-user, authenticated API responses, rarely** — they can't be shared between users; say so if asked, and say what the CDN does for them anyway (TLS termination near the user).
+
+<Trace title="Feel the misses" steps={offload} takeaway="Origin load is (1 − h) × total, and bytes are not requests: watch the byte hit ratio too." />
+
+**Catch the trap:** "Add a CDN" as a box with no numbers. Say the egress at peak, the hit ratio you expect and why (immutable objects, a long TTL, a popular head of the distribution), and the origin load that leaves.
+
+<h2 id="cache-keys">Chapter 10 · One photo, three keys</h2>
+
+<Scene chapter="Chapter 10" title="One photo, three keys">
+
+The CDN dashboard says the hit ratio for images is 61%. It should be well above 90%: the photos never change. Dev samples the logs and finds the same photo requested as `?w=400&h=300`, as `?h=300&w=400`, and with a marketing tag appended by the email team.
+
+*"The CDN isn't wrong,"* he says. *"We told it these were three different things."*
+
+</Scene>
+
+The **cache key** is promise number one at the edge: what exactly makes two requests "the same"? By default most CDNs key on scheme, host, path and the **full query string**, compared as strings. Every difference that doesn't change the response is a wasted miss.
+
+**Normalise the key:**
+
+- **Sort query parameters** so order doesn't matter.
+- **Allow-list the parameters that change the response** (`w`, `h`, `fmt`); drop everything else (`utm_*`, click ids, cache-busters you didn't mean).
+- **Keep auth out of the key** — signature parameters on signed URLs (Chapter 14) are unique per user; if they're in the key, every user is a miss.
+- **Lowercase and canonicalise** where your origin treats variants the same.
+
+**`Vary` adds request headers to the key.** `Vary: Accept-Encoding` is normal (a gzip copy and a Brotli copy). `Vary: User-Agent` or `Vary: Cookie` shards the cache into thousands of near-empty slices. If the response genuinely differs by device or format, map the header into a **few buckets** at the edge and key on the bucket (Chapter 16).
+
+**Cookies and `Authorization`.** By the HTTP caching rules (RFC 9111), a shared cache must not reuse a response to a request carrying `Authorization` unless the response explicitly allows it (`public`, `s-maxage` or `must-revalidate`); many CDNs also skip caching when cookies are present unless configured otherwise — check yours. Serve public images from a **cookieless domain or path** so they cache cleanly.
+
+<Trace title="What makes two requests the same?" steps={cacheKeys} takeaway="The cache key is a promise: only what changes the response belongs in it. Sort, allow-list, and never Vary on a high-cardinality header." />
+
+**Catch the trap:** blaming the TTL for a low hit ratio. With immutable images, a low hit ratio is almost always **key fragmentation** (query strings, Vary, cookies) or a long tail. Look at the keys first.
+
+<h2 id="headers">Chapter 11 · Yesterday's JavaScript</h2>
+
+<Scene chapter="Chapter 11" title="Yesterday's JavaScript" mood="night">
+
+Release night. The web team ships a fix for a checkout bug. Half an hour later, support is still getting the bug. The CDN has `app.js` with a one-day TTL, and so does every browser that loaded the page today.
+
+Someone suggests purging. Mara asks: *"And the browsers? Can you purge those?"* Silence. *"Then let's never need to."*
+
+</Scene>
+
+Promise number two is **how long, and who**. The origin says it in the `Cache-Control` response header; <a href={`${BASE}sd/lessons/caching/`}>Caching</a> introduced it, and here is the edge-level detail:
+
+| Directive | Meaning | Use it for |
+|---|---|---|
+| `max-age=N` | Fresh for N seconds, in browsers **and** shared caches | The default lifetime |
+| `s-maxage=N` | Fresh for N seconds in **shared caches only** (CDNs, proxies); overrides `max-age` there | Long at the edge (purgeable), short in browsers (not purgeable) |
+| `public` | Any cache may store it, even for authenticated requests | Public assets fetched with credentials |
+| `private` | Only the browser may store it, **never the CDN** | Per-user responses |
+| `no-cache` | **May** be stored, but must be revalidated before every use | HTML entry points that must always be current |
+| `no-store` | Must not be stored anywhere | Sensitive data |
+| `immutable` | Won't change while fresh: browsers that honour it skip revalidation on reload (RFC 8246) | Fingerprinted assets |
+| `stale-while-revalidate=N` | Serve stale for up to N s while refreshing in the background (RFC 5861) | Smoothing refreshes |
+| `stale-if-error=N` | Serve stale for up to N s if the origin errors (RFC 5861) | Riding out origin outages |
+
+Some CDNs also read their own header (`CDN-Cache-Control`, standardised in RFC 9213, or vendor-specific ones) so you can steer the edge without touching what browsers see.
+
+**Revalidation is cheap.** When a cached copy goes stale, the cache asks the origin "has it changed?" with `If-None-Match: "etag"` (or `If-Modified-Since`). If not, the origin answers **304 Not Modified** with no body. Validators turn expiry from "refetch everything" into "a tiny round trip".
+
+**Fingerprinted URLs: the invalidation problem, designed away.** Put a hash of the content in the file name: `app.9f3ab2.js`, `avatars/7f3a9c.jpg`. Serve it with `Cache-Control: public, max-age=31536000, immutable`. A deploy publishes **new URLs**; the HTML (served with `no-cache` or a short TTL) points to them; old URLs simply stop being requested and age out. Nothing is ever purged, nothing is ever stale. This is how serious frontends ship, and it works for user content too: a new avatar is a new key, and the profile row points at it.
+
+<Figure caption="Fingerprinting. The only file that must stay fresh is the HTML, because it names everything else.">
+  <Mermaid code={`flowchart LR
+    H["index.html\nno-cache"] --> A1["app.9f3ab2.js\nmax-age 1 year, immutable"]
+    H --> A2["styles.c41d07.css\nmax-age 1 year, immutable"]
+    D["Deploy"] -->|"new build"| H2["index.html now names\napp.e81b44.js"]
+    H2 --> A3["app.e81b44.js\nnew URL, cold, fetched once"]`} />
+</Figure>
+
+<Trace title="Who caches it, and for how long?" steps={headers} takeaway="Long and immutable for fingerprinted URLs; s-maxage for the edge you can purge; short or no-cache for the HTML that names the fingerprints." />
+
+<Reveal q="If fingerprinted assets are cached for a year, how does a user ever get the new version?">
+
+They never need the old URL's new version, because there isn't one. The HTML they load names `app.e81b44.js`, a URL their browser has never seen, so it fetches it. The one-year TTL applies to content that, by construction, never changes at that URL. That is why the HTML itself must not be long-cached.
+
+</Reveal>
+
+**Catch the trap:** "Set a one-year TTL on everything." Do that to the HTML and nobody sees a deploy for a year. Long TTLs belong only on URLs whose content can never change.
+
+<h2 id="purge">Chapter 12 · Take it down now</h2>
+
+<Scene chapter="Chapter 12" title="Take it down now" mood="storm">
+
+Legal calls on a Friday afternoon: a photo must come down, now. The row is marked deleted. The object is deleted. And yet the photo is still loading, from the CDN, for anyone who has the link.
+
+Dev hits purge. Ninety seconds later it's gone from the edge. Twenty minutes later a reporter still has it on screen, from her own browser's cache.
+
+</Scene>
+
+Promise number three: **how the edge learns the truth changed**. Fingerprinted URLs avoid the question for content that is replaced. For content that must **disappear** or change in place, you purge:
+
+- **By URL** — exact objects. **By prefix or wildcard** — where supported. **By tag** — the origin labels responses with tags (Fastly calls them surrogate keys; other CDNs have cache tags), and one call purges everything carrying a tag, like "every image of user 42".
+- **Latency varies widely by CDN**, from well under a second to several minutes, and some charge per purge path beyond an allowance. Check yours, and don't design a correctness guarantee around a purge.
+- **Purge only clears the CDN.** Browsers and apps that already hold a copy keep it until their `max-age` runs out. For content that might have to vanish (private photos, anything takedown-prone), keep **browser TTLs short** and use `s-maxage` for the edge — or serve it through **expiring signed URLs** (Chapter 14), so even a leaked link dies.
+- **A purge is a mass expiry.** Purge a hot object at 200 PoPs and you get up to 200 near-simultaneous origin fetches — more if PoPs don't collapse concurrent misses. It is a cache stampede at continental scale; the origin shield (next chapter) is the fix.
+
+<Trace title="Make it disappear" steps={purge} takeaway="Purge reaches the CDN, not browsers, and it causes a refill burst. Prefer new URLs for changes; plan short browser TTLs for anything that may have to vanish." />
+
+**Catch the trap:** "We'll purge the CDN when content changes" as your whole invalidation story. Say what reaches the browsers, how long the purge takes, and what the origin sees afterwards.
+
+<h2 id="shield">Chapter 13 · Two hundred doors, one origin</h2>
+
+<Scene chapter="Chapter 13" title="Two hundred doors, one origin" mood="storm">
+
+A pop star posts a Moments photo at 20:00. By 20:01 it is the most requested object Kestrel has ever served: fifty thousand requests a second from every continent.
+
+The CDN holds. The origin graph jumps anyway: the photo is new, so every PoP misses at once, and some PoPs miss several times before their first fetch returns. Theo watches the store's error rate tick up. *"Throttling,"* he says. *"On one key."*
+
+</Scene>
+
+Promise number four: **the failure plan** — at the edge, that means the hot new object and the refill storm.
+
+- **Request collapsing (coalescing).** When many requests miss on the same key at the same PoP, one goes to the origin and the rest wait for its response. The per-key lock from Caching's stampede chapter, done by the CDN.
+- **Origin shield / tiered caching.** PoPs don't miss to the origin; they miss to a **regional or shield cache**, which misses to the origin. 200 PoPs become one (or a few) origin fetchers per object. It also raises the effective hit ratio: a PoP's miss is often the shield's hit.
+- **Long TTLs on immutable URLs**, so a hot object is fetched about once per shield per TTL.
+- **`stale-while-revalidate` and `stale-if-error`**, so a refresh or an origin hiccup never turns into user-visible errors.
+- **Pre-warming** for predictable spikes (a scheduled launch): request the objects through the shield before the crowd arrives.
+
+<Figure caption="Tiered caching. Each layer collapses concurrent misses, so a burst of 50,000 requests a second becomes one origin fetch.">
+  <Mermaid code={`flowchart LR
+    U["50K req/s\nworldwide"] --> P1["PoP 1"]
+    U --> P2["PoP 2"]
+    U --> P3["... PoP 200"]
+    P1 -->|"collapsed misses"| SH["Origin shield\nregional cache"]
+    P2 --> SH
+    P3 --> SH
+    SH -->|"one fetch"| O[("Origin\nobject storage")]`} />
+</Figure>
+
+**Why not serve hot objects straight from the store?** One key lives in one partition of the store's key space. AWS documents at least 5,500 GETs a second per prefix, and scaling up takes time, during which a store returns throttling errors (S3's `503 Slow Down`). Fifty thousand requests a second for one key, direct, invites exactly that — and every viewer pays the full distance to one region. Behind a shield, the store sees roughly one request per TTL.
+
+<Trace title="Protect the origin" steps={shield} takeaway="Collapse misses at the PoP, collapse again at the shield, keep immutable TTLs long: a viral object becomes one origin fetch." />
+
+<Reveal q="The interviewer asks: 'What happens if the CDN itself goes down?'">
+
+First, it's rare that a whole CDN goes down, but it has happened. If the design depends on 95% offload, the origin can't absorb 20× its normal egress, so say what degrades: **serve lower-resolution renditions**, shed non-essential media (autoplay video), and, for very large services, run **multiple CDNs** behind DNS-based steering so traffic can move. The honest sentence: *"The CDN is load-bearing; our fallback is a second CDN and graceful degradation, not the origin."*
+
+</Reveal>
+
+**Catch the trap:** "The CDN handles hot content." It does — if it collapses misses, if there is a shield, and if the TTL is long. Name the mechanism; it is the same stampede story as Redis.
+
+<h2 id="private">Chapter 14 · Paid content</h2>
+
+<Scene chapter="Chapter 14" title="Paid content" mood="dusk">
+
+Iris, inevitably: *"Oh, and also — we're launching Kestrel Courses. Paid video lessons. Only buyers can watch. Still fast, please."*
+
+Mara writes two words on the board: CDN and PRIVATE. *"The edge is where the speed is,"* she says. *"So the edge has to be where the permission is checked. How does a cache in Lagos know who paid?"*
+
+</Scene>
+
+**Signed CDN URLs and signed cookies** carry the same idea as presigned URLs, checked at the edge. Your API checks the purchase, then gives the client a signature over a **policy**: which resource (one URL or a path pattern like `/courses/42/*`), until when, and optionally from which IP range. The edge verifies the signature with a key you registered with it (a public key, or a shared secret on some CDNs) and serves from cache; no call home.
+
+- **Signed URL** — one resource. Good for a single download.
+- **Signed cookie** — a path pattern. Good for **many files**: an HLS video of 2 hours in 6-second segments is 7,200 ÷ 6 = **1,200 segments per rendition**. Signing each segment URL would mean a per-user playlist; one cookie covers them all and the playlists stay shared and cacheable.
+- **Keep signatures out of the cache key.** Every user's signature is unique; if it's in the key, the hit ratio is zero. Check how your CDN handles its own signing parameters.
+- **Lock the origin.** If the bucket is publicly readable, the signature check is a door in a wall with no wall. The origin should accept requests **only from the CDN** — for example CloudFront's origin access control on an S3 bucket, or a secret header the origin requires.
+- **Expiries** are short for downloads (minutes), session-length for streaming. A leaked link dies on its own.
+
+<Figure caption="Private content at the edge. The API checks the purchase once; the edge checks the signature on every request without calling home.">
+  <Mermaid code={`sequenceDiagram
+    participant C as Player
+    participant API as Courses API
+    participant E as CDN edge
+    participant O as Locked origin
+    C->>API: play course 42
+    API->>API: check purchase
+    API-->>C: signed cookie, path /courses/42/*, expires in 4 h
+    C->>E: GET playlist and segments, cookie attached
+    E->>E: verify signature and expiry
+    E->>O: on miss only, origin accepts the CDN alone
+    O-->>E: segment
+    E-->>C: segment, cached for the next buyer`} />
+</Figure>
+
+<Trace title="Permission at the edge" steps={privateContent} takeaway="Sign at the API, verify at the edge, lock the origin, keep signatures out of the cache key. Cookies for many files, URLs for one." />
+
+**Catch the trap:** "Private content can't use the CDN." It can — the bytes are identical for every buyer, so they cache perfectly; only the permission is per-user, and that travels in a signature.
+
+<h2 id="video">Chapter 15 · Seek to 41:10</h2>
+
+<Scene chapter="Chapter 15" title="Seek to 41:10" mood="night">
+
+Kestrel Clips' first long video is a 2-hour concert. A viewer on a train drags the playhead to 41:10, then goes through a tunnel, then comes out with one bar of signal. The video keeps playing — blurrier for twenty seconds, then sharp again.
+
+Iris wants to know how that worked. Mara asks you to explain it with nothing but files and HTTP.
+
+</Scene>
+
+**Range requests.** HTTP lets a client ask for part of an object: `Range: bytes=0-1048575` (the first MiB). A server that supports it answers **`206 Partial Content`** with a `Content-Range` header (and advertises `Accept-Ranges: bytes`). This powers seeking in a progressive download, resuming a broken download, and parallel downloads of big files. Object stores and CDNs support ranges; how a CDN caches them varies (some fetch the whole object on a range miss, others fetch and cache it in slices) — check yours for very large files.
+
+**Segmented streaming (HLS and DASH)** goes further. At upload, the video is transcoded into a **ladder** of renditions (say 1080p at about 5 Mbps down to 360p at under 1 Mbps). Each rendition is cut into **segments** of a few seconds (commonly 2–6 s). A **manifest** — an `.m3u8` playlist for HLS, an `.mpd` file for DASH — lists the renditions and their segments.
+
+- The player downloads the manifest, picks a rendition from its **measured bandwidth**, and fetches segments one by one.
+- **Adaptive bitrate**: segments of every rendition line up in time, so at any segment boundary the player can switch up or down. That was the train tunnel.
+- **Seeking** is arithmetic: 41:10 = 2,470 s; with 6-second segments, ⌊2,470 ÷ 6⌋ = **segment 411**, covering 2,466–2,472 s.
+- Each segment is a **small, immutable file**: 6 s at 5 Mbps = 30 Mb = **3.75 MB**. Perfect CDN material — long TTLs, high hit ratios on popular videos.
+
+**TTLs for video:** segments — long (they never change). **VOD manifests** — long (a finished video's playlist doesn't change). **Live manifests** — very short, about a segment duration or less, because a new segment is appended every few seconds; the segments themselves are still long-lived.
+
+<Figure caption="An HLS stream: one master playlist, one playlist per rendition, thousands of small immutable segments.">
+  <Mermaid code={`flowchart TD
+    M["master.m3u8\nlists renditions"] --> R1["1080p.m3u8\nabout 5 Mbps"]
+    M --> R2["720p.m3u8"]
+    M --> R3["360p.m3u8"]
+    R1 --> S1["seg 410.ts"]
+    R1 --> S2["seg 411.ts\n2466 to 2472 s"]
+    R3 --> S3["seg 411.ts\nsame moment,\nlower bitrate"]`} />
+</Figure>
+
+<Trace title="Files, not streams" steps={video} takeaway="A video stream is a manifest plus small immutable segments. Seeking is division; adapting is choosing another rendition at the next boundary." />
+
+**Catch the trap:** "We stream the video from the server." Say the shape: transcode asynchronously into a bitrate ladder, segment it, serve manifests and segments over a CDN with long TTLs (short for live manifests), and let the player adapt. See <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs</a> for the transcoding pipeline.
+
+<h2 id="image-edge">Chapter 16 · Forty sizes of one avatar</h2>
+
+<Scene chapter="Chapter 16" title="Forty sizes of one avatar" mood="dawn">
+
+The design team counts the places an avatar appears: comment threads, profile headers, notifications, share cards, three screen densities. Iris wants each one crisp and small. The upload pipeline currently makes one thumbnail.
+
+*"Do we pre-generate forty files per user?"* you ask. Mara: *"Or do we generate each one the first time someone needs it — and only those?"*
+
+</Scene>
+
+Two ways to produce image variants:
+
+| | Pre-generate at upload | Transform at the edge, on demand |
+|---|---|---|
+| How | The processing job writes a fixed set of renditions | The URL says what is wanted (`/img/7f3a.jpg?w=320&fmt=webp`); the edge or an image service resizes from the original on a miss and caches the result |
+| Storage | Every variant for every image, even never-viewed ones | Only variants someone requested (cached, often not stored permanently) |
+| New size next quarter | Backfill billions of images | Just request it |
+| Risk | Wasted storage | Unbounded variants, CPU on misses |
+
+Many CDNs offer image transformation; you can also run a small resizing service behind the CDN. Either way, **bound the inputs**:
+
+- **Allow-list widths** (say 160, 320, 640, 1080) and snap anything else to the nearest. An open `w=` parameter lets anyone request w=1 … w=4000: thousands of uncached variants, each costing a resize.
+- **Format negotiation without key explosion.** Browsers advertise AVIF/WebP support in the `Accept` header, but raw `Accept` strings vary across browsers and versions. Map `Accept` into a **format bucket** (avif, webp, jpeg) at the edge and put the bucket in the cache key: **4 widths × 3 formats = at most 12 variants** per image.
+- **Sign transformation URLs** if variants are expensive, so only your pages can request them.
+
+<Trace title="Bound the variants" steps={images} takeaway="Generate variants lazily at the edge, but only from an allow-list: a fixed set of widths and a few format buckets in the cache key." />
+
+**Catch the trap:** "We resize on the fly" with no limit. The interviewer hears "unbounded cache key and unbounded CPU". Say the allow-list.
+
+<Part n="Part Five" title="The whiteboard">
+
+Two classic questions, end to end, every multiplier said out loud.
+
+</Part>
+
+<h2 id="worked-numbers">Chapter 17 · The whiteboard sweep</h2>
+
+<Scene chapter="Chapter 17" title="The whiteboard sweep">
+
+The Interviewer, two rooms over, on two different days. Monday: *"Design Pastebin."* Thursday: *"Design photo sharing — just the media path."*
+
+Same toolbox, she says, sliding the marker across. *"Show me which numbers change which boxes."*
+
+</Scene>
+
+**Pastebin — Kestrel Snippets.** Assumptions: 1M new pastes a day · 10 KB average, 10 MB maximum · 10 reads per paste (10M reads a day) · kept 1 year by default, with optional shorter expiry · ~300 B of metadata per paste including indexes · peak 3×.
+
+```text
+Writes       1M/day ÷ 10⁵ = 10/s avg → 30/s peak                            → trivial
+Blob store   1M × 10 KB = 10 GB/day → × 365 = 3.65 TB/year logical
+             self-run, 3 replicas ≈ 11 TB raw; managed object storage bills ≈ 3.65 TB
+Metadata     1M × 300 B = 300 MB/day → ≈ 110 GB/year                         → one Postgres primary
+Egress       10M × 10 KB = 100 GB/day ÷ 10⁵ ≈ 1 MB/s avg (exact 1.16) → 3 MB/s peak ≈ 24 Mbps
+                                                                              → bandwidth is NOT the driver
+Dedup        if 10% of pastes are exact duplicates: saves ≈ 0.37 TB/year      → nice, not decisive
+```
+
+**Conclusions:** the split is justified by the **size tail** and a **lean metadata database**, not by bandwidth. The paste body is immutable, so it is served by a **CDN with a long TTL**, keyed by the content hash, with the public id random (Chapter 7). **Expiry:** the metadata row carries `expires_at` and reads check it, so an expired paste 404s instantly; a sweeper deletes the object later (or store bodies under per-retention prefixes such as `exp-7d/` with matching lifecycle rules, because lifecycle rules filter on prefix, tag and age — not on a date in your database). And the CDN TTL must never outlive the paste: cap `s-maxage` at the time remaining, and purge on early delete.
+
+**Photo sharing — Kestrel Moments** (the estimation lesson's numbers, now with this lesson's levers). Assumptions: 50M DAU · 5M uploads a day · 2 MB original + ~1 MB renditions · 500M feed opens × 10 images × 200 KB · peak 3×.
+
+```text
+Uploads in   5M × 2 MB = 10 TB/day → 100 MB/s avg → 300 MB/s peak = 2.4 Gbps → presigned, multipart for video
+Storage      5M × 3 MB = 15 TB/day → 5.5 PB/year logical
+             self-run: × 3 replicas ≈ 16.4 PB raw  vs  RS(10, 4) × 1.4 ≈ 7.7 PB raw
+Tiering      after 3 years, Standard → IA → instant archive ≈ 29% of the all-Standard bill
+Egress       1 PB/day → 10 GB/s avg → 30 GB/s (240 Gbps) peak                → CDN, no question
+Origin       hit ratio 95% → 1.5 GB/s peak;  99% → 0.3 GB/s                  → fingerprinted URLs, shield
+App tier     upload requests: 150/s peak × 5 ms ≈ 1 thread; no bytes          → stateless, small
+```
+
+<Figure caption="Kestrel Moments, media path. Every box is there because a number put it there.">
+  <Mermaid code={`flowchart LR
+    Ph["Phones"] -->|"1 · request upload"| API["API\nauth, pending row,\npresigned URL"]
+    Ph ==>|"2 · 300 MB/s peak, direct"| OS[("Object storage\n5.5 PB per year,\nlifecycle tiers")]
+    OS -->|"3 · event"| Q["Queue"] --> W["Workers\nvalidate, resize,\nstrip EXIF"]
+    W --> OS
+    W --> DB[("Metadata DB\nrow to active")]
+    Ph ==>|"4 · 30 GB/s peak"| CDN["CDN\n95 to 99 pct hits"] --> SH["Origin shield"] ==>|"0.3 to 1.5 GB/s"| OS`} />
+</Figure>
+
+<Trace title="Which numbers move which boxes?" steps={sweep} takeaway="Pastebin: bytes are small, so the split is about the tail and a lean DB. Photos: egress puts the CDN in, uploads take the bytes off the app tier, storage growth puts lifecycle tiers in." />
+
+**Catch the trap:** using the same justification for every design. "CDN because of bandwidth" is right for photos and wrong for Pastebin, where 3 MB/s is nothing. Let the numbers say which boxes are load-bearing.
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The media review" steps={drills} takeaway="Bytes direct to storage with presigned URLs; facts in the database; pending → active with a sweeper; content-hash dedup with a privacy scope; tiers by age; a CDN with normalised keys, fingerprinted URLs, a shield, and signatures for private content." />
 
 <Quiz questions={[
   {
     q: 'Interviewer: "Walk me through a user uploading a 50 MB video." Which is the strong shape?',
     options: [
       'Client POSTs the file to our API, API streams it to S3',
-      'Client asks our API, gets a presigned multipart URL, uploads chunks directly to S3 in parallel; S3 completion event flips our metadata row from pending to active',
+      'Client asks our API, gets presigned multipart URLs, uploads parts directly to S3 in parallel; the completion event (plus a sweeper) flips our metadata row from pending to active',
       'Client uploads to the CDN, CDN forwards to S3',
       'Client uploads to the nearest app server which chunks it server-side'
     ],
     answer: 1,
-    why: 'Bytes bypass your servers (rule #1), chunks give resumability, the pending→active event closes the loop. Option 1 melts app servers at scale; CDNs (option 3) serve reads, not uploads (mostly).'
+    why: 'Bytes bypass your servers (rule one), parts give resumability, and the pending → active transition closes the loop. Option 1 melts app servers at scale (Chapter 4); CDNs serve reads, not uploads (mostly).'
   },
   {
     q: 'Two users upload the same 500 MB file. Your Dropbox-style design stores how much, and how does it know?',
     options: [
       '1 GB — separate users, separate storage for isolation',
-      '~500 MB — chunks are content-hashed; the second upload\'s hashes all match existing chunks, so only references are created',
+      '~500 MB — chunks are content-hashed; the second upload’s hashes all match existing chunks, so only references are created',
       '~500 MB — S3 automatically deduplicates identical objects',
       '1 GB — dedup across users is a privacy violation'
     ],
     answer: 1,
-    why: 'Content-addressed chunks make dedup nearly free — the client sends hashes first, the server answers "I already have 3 of these 100, send the rest." S3 does NOT dedup for you (option 3).'
+    why: 'Content-addressed chunks make dedup nearly free. S3 does NOT dedup for you (option 3). Cross-user dedup does carry a privacy cost when clients can see "already have it" (Chapter 7) — so scope it per user, dedup server-side, or require proof of possession — but the design still stores the bytes once.'
   },
   {
     q: 'You deployed new JS but users still get the old version from the CDN. The senior prevention (not fix)?',
@@ -93,10 +945,131 @@ Media designs are where the bandwidth axis stops being "ignore it": 1M video vie
       'Serve JS from the origin, CDN only for images'
     ],
     answer: 2,
-    why: 'Immutable-URL versioning designs the invalidation problem out of existence. Purging (1) is slow/unreliable per-POP; short TTLs (2) throw away most of the CDN\'s value.'
+    why: 'Immutable-URL versioning designs the invalidation problem out of existence. Purging (1) is slow per CDN and never reaches browser caches; short TTLs (2) throw away most of the CDN’s value. Keep the HTML itself short-lived.'
+  },
+  {
+    q: 'Which statement about "11 nines" is true?',
+    options: [
+      'The store is available 99.999999999% of the time',
+      'Objects are very unlikely to be lost by the store — but deletes and overwrites by your own code are durably kept too',
+      'You never need backups',
+      'It requires three full replicas'
+    ],
+    answer: 1,
+    why: 'Durability is about not losing bytes, not about uptime (availability is typically 99.99% by design). It doesn’t protect you from your own bugs — versioning or a cross-account copy does — and stores usually reach it with erasure coding, not just replication.'
   }
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: 8-minute mini-design — "profile picture upload + serving at Instagram scale." Must include: presigned upload, metadata row states, CDN with immutable URLs, and the bandwidth estimate that justifies the CDN. Every component in one breath each.
+<Scene title="The interview room" mood="night">
+
+The Interviewer has drawn a phone and a feed. *"Users upload profile pictures and photos, and everyone sees them. How do the bytes work?"* A year ago you would have drawn an arrow from the phone to the API. Today you draw it somewhere else.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "Bytes never touch the app tier. A photo is a **metadata row** in Postgres — id, owner, a **server-chosen storage key**, size, SHA-256, status — and an **object** in object storage. **Upload**: the client asks the API; the API authorises, inserts a `pending` row and returns a **presigned PUT**, one key, fifteen-minute expiry; video gets presigned **multipart** URLs, so a dropped connection costs one 8 MB part. The store's object-created event — and a sweeper for anything it misses — triggers async processing: validate the real type, strip EXIF location, make renditions, then flip the row to `active`. **Storage** grows about 15 TB a day, 5.5 PB a year; the store erasure-codes it, versioning protects us from our own deletes, and lifecycle rules move photos to infrequent access after 30 days and an instant-retrieval archive after a year — under a third of the all-hot bill. **Serving**: about 30 GB/s at peak, so a **CDN** in front of the store with an origin shield. URLs are **fingerprinted** — a new avatar is a new key — so objects are `immutable` with a one-year max-age and we never purge for updates; cache keys allow-list only width and format, widths snap to four sizes. At a 95% hit ratio the origin sees 1.5 GB/s; pushing to 99% cuts that to 0.3. Private photos use **signed URLs** with short expiries, and the bucket only accepts requests from the CDN."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · Why not just proxy uploads through the API? It's simpler.">
+
+Slow clients turn a 2 MB upload into an 8-second request. At 1,500 uploads a second that is 12,000 held threads against a fleet of 5,400, plus every byte crossing our network twice — 48 Gbps through an app tier whose real API traffic is 2.4 Gbps. Presigned uploads cost us about 5 ms per upload instead.
+
+</Reveal>
+
+<Reveal q="2 · The upload finished but the event got lost. What does the user see?">
+
+The row stays `pending`, so the photo doesn't appear yet. The handler is idempotent and is triggered by both the store's event and the client's "done" call; a sweeper reconciles pending rows older than the URL expiry by HEADing the key — process it if it exists, expire the row if not. Events are at-least-once, so duplicates are harmless.
+
+</Reveal>
+
+<Reveal q="3 · A user changes their avatar. How does everyone see the new one?">
+
+The new avatar gets a **new key**, and the profile row points to it. Old URLs aren't invalidated — they're simply no longer referenced, and they age out. No purge, no stale browser caches. For a takedown, where the old image must vanish, we purge the CDN and rely on short browser TTLs or expiring signed URLs, because a purge can't reach browsers.
+
+</Reveal>
+
+<Reveal q="4 · A photo goes viral. What protects the store?">
+
+Immutable URL with a long TTL; request collapsing at each PoP; an origin shield so 200 PoPs become one origin fetcher. One hot key on the store directly would hit its per-prefix request limits and get throttled; through the CDN it's about one fetch per TTL.
+
+</Reveal>
+
+<Reveal q="5 · Two users upload the same file. Do you store it twice?">
+
+With content-addressed chunks, no: the second upload matches existing hashes and only a manifest is created. But if the client can see "already have it" across users, that leaks whether someone else has the file, and trusting a client-supplied hash as proof of possession would let anyone fetch a file by its hash. So I'd dedup within a user or tenant, or server-side after the bytes arrive.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| Photos, video, files, pastes | Metadata row in the DB + object in storage, server-chosen key |
+| "The API receives the upload" | Presigned PUT, one key, short expiry; bytes never touch the app tier |
+| Large files, mobile networks | Multipart, ~8 MB parts, retry per part, resume by upload id; abort-incomplete lifecycle rule |
+| "When is the upload done?" | `pending → active` via idempotent handler on event + client call, plus a sweeper |
+| Deleting | Row first, object async, sweeper for orphans; purge the CDN if it must vanish |
+| Same files, many users; file sync | Content-hash chunks, manifests, dedup — scoped for privacy; content-defined chunking for inserts |
+| "Is S3 consistent?" | Strong read-after-write since Dec 2020 (objects and LIST); check other stores |
+| "11 nines" | Durability, not availability; erasure coding; versioning protects against you |
+| Storage growing by PB/year | Lifecycle: Standard → IA → instant archive; mind min size, min duration, retrieval fees |
+| Global readers, big egress | CDN; origin = (1 − h) × egress; watch byte hit ratio |
+| Low CDN hit ratio on static content | Key fragmentation: sort and allow-list query params, no Vary on User-Agent/Cookie |
+| Deploys or updated media | Fingerprinted URLs + `max-age=31536000, immutable`; HTML `no-cache` |
+| Different TTL for edge and browser | `s-maxage` for the CDN, short `max-age` for browsers |
+| "Take it down now" | Purge (CDN only) + short browser TTLs or expiring signed URLs |
+| Viral object, purge storms | Request collapsing + origin shield + long TTLs + stale-if-error |
+| Paid or private media | Signed URLs (one file) or cookies (many segments), origin locked to the CDN |
+| Video | Transcode ladder → HLS/DASH segments; long TTL segments, short live manifests; ranges for seeking |
+| Many image sizes | Edge transformation from an allow-list of widths × format buckets |
+| Pastebin | Hash as storage key, random public id, `expires_at` check, CDN TTL ≤ time left |
+
+## Five mistakes to leave behind
+
+1. **Proxying bytes through the API.** Presign, and say the held-connection arithmetic.
+2. **Treating the upload as done when the bytes land.** Pending → active, idempotent handler, sweeper.
+3. **"We dedup by hash" with no privacy scope.** Per-user, server-side, or proof of possession.
+4. **Long TTLs on mutable URLs** (or on the HTML). Long TTLs belong to fingerprinted, immutable URLs.
+5. **"Eleven nines, so it's safe."** Durability isn't availability, and it isn't backup.
+
+<Scene title="Mara’s last word" mood="dusk">
+
+The next New Year's Eve, you are on call. At 00:00:41 the upload rate goes vertical, ten times the normal peak, and the app tier's busy-thread graph twitches up to fourteen and settles. Somewhere in a data centre you'll never see, an object store politely holds twelve thousand slow connections.
+
+Dev sends one message to the channel: *"Quiet."* Mara replies with a photo of the fireworks. It loads instantly, from a PoP a few kilometres away.
+
+</Scene>
+
+**Keep it warm:** with the buddy, an 8-minute mini-design — **"profile picture upload and serving at Instagram scale."** It must include: the presigned upload, the metadata row and its states, a CDN with fingerprinted immutable URLs, and the bandwidth estimate that justifies the CDN. Every component in one breath each. Then do it again for Pastebin and notice which sentences change.
+
+Related: <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (the four promises, HTTP caching layers) · <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a> (storage and bandwidth chains) · <a href={`${BASE}sd/lessons/networking/`}>Networking</a> (PoPs, anycast, TLS at the edge) · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> (where the metadata lives) · <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> (claim-check: big payloads by reference) · <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs</a> (transcoding pipelines) · <a href={`${BASE}sd/lessons/pattern-sync-collab/`}>Sync & collaboration</a> (Dropbox) · <a href={`${BASE}sd/lessons/pattern-fanout/`}>Fan-out</a> (Instagram's feed) · <a href={`${BASE}sd/war/pii-and-blind-index/`}>War Room: PII and blind indexes</a> (encryption trade-offs that also kill dedup) · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- *Finding a needle in Haystack: Facebook's photo storage* (OSDI 2010) — why a photo store keeps metadata in memory and packs many photos into large files; Chapters 1–3 at enormous scale.
+- *f4: Facebook's Warm BLOB Storage System* (OSDI 2014) — hot versus warm blobs, and moving from replication to erasure coding for the warm tier; Chapters 3 and 8.
+- *Erasure Coding in Windows Azure Storage* (USENIX ATC 2012) — local reconstruction codes, which cut the repair cost from Chapter 3.
+- *To BLOB or Not To BLOB* (Sears, van Ingen, Gray, Microsoft Research, 2006) — the database-versus-file-system crossover from Chapter 1.
+- [Amazon S3 strong consistency](https://aws.amazon.com/s3/consistency/) and the [multipart upload overview](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpuoverview.html) — the guarantees and limits from Chapters 2 and 6, from the source.
+- [RFC 9111: HTTP Caching](https://www.rfc-editor.org/rfc/rfc9111), [RFC 8246: immutable](https://www.rfc-editor.org/rfc/rfc8246), [RFC 5861](https://www.rfc-editor.org/rfc/rfc5861) and [RFC 9213: CDN-Cache-Control](https://www.rfc-editor.org/rfc/rfc9213) — the header semantics in Chapters 10–12.
+- [RFC 9110: HTTP Semantics](https://www.rfc-editor.org/rfc/rfc9110) (range requests, 206) and [RFC 8216: HTTP Live Streaming](https://www.rfc-editor.org/rfc/rfc8216) — Chapter 15.
+- [tus](https://tus.io/) — an open protocol for resumable uploads; a good contrast with multipart.
+- [Netflix Open Connect](https://openconnect.netflix.com/) — a public description of a push-style, pre-positioned video CDN.
+- [MDN: Cache-Control](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control) — a readable reference for every directive.
+
+**Look these up yourself**
+
+- **Content-defined chunking (Rabin fingerprints, FastCDC)** — how boundaries are chosen, and how average chunk size trades dedup ratio against metadata.
+- **Convergent (message-locked) encryption** — encrypting with a key derived from the content so dedup still works, and exactly what it leaks.
+- **Object lock / WORM retention** — compliance-grade immutability, and governance versus compliance modes.
+- **CMAF and low-latency HLS/DASH** — one segment format for both protocols, and partial segments for live latency of a few seconds.
+- **Multi-CDN steering** — DNS- or client-based switching between CDNs for resilience and cost.
+- **S3 Transfer Acceleration and edge upload** — when the edge helps uploads, too.
+- **Signed URL key rotation** — how CDNs let you rotate signing keys without breaking live sessions.
+- **Egress pricing and "data transfer out"** — why moving bytes often costs more than storing them, and how CDN contracts change the picture.

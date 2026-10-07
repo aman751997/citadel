@@ -1,0 +1,1097 @@
+---
+title: 'Tries'
+description: 'A novel in three chapters and six side quests. Apprentice in the Word Garden of Quillhedge, where every word is a path from one old root, words that begin alike share their branches, and a single walk answers questions that used to take a scan of the whole register.'
+order: 16
+minutes: 85
+sessionMinutes: 8
+---
+import PatternHub from '../components/PatternHub.astro';
+import Playground from '../components/Playground.astro';
+import Practice from '../components/Practice.astro';
+import Trace from '../components/Trace.astro';
+import HintLadder from '../components/HintLadder.astro';
+import Reveal from '../components/Reveal.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Mermaid from '../components/Mermaid.astro';
+import { hints } from '../data/tries/hints';
+import { anatomy, wildcard, wordGrid, mixedReview } from '../data/tries/traces';
+import { BASE } from '../paths';
+
+<PatternHub
+  pattern="tries"
+  start="prologue"
+  logline="In the Word Garden of Quillhedge every word is a path from one old root, one lettered branch per step. Words that begin alike share their branches, so a single walk answers whether a word was planted, whether any word begins this way — and which of thirty thousand words hide in a tiled courtyard floor."
+  cast={[
+    { name: 'You', role: 'The newest apprentice in the Word Garden. Like any loop, you read one letter at a time.' },
+    { name: 'The Keeper', role: 'Runs the Gardeners’ Guild. Never plants a word for you; asks three questions instead.' },
+    { name: 'Root', role: 'The old stump at the garden’s heart. It carries no letter; every walk starts at its foot.' },
+    { name: 'Node', role: 'The walker. She stands on one joint of the tree and moves down exactly one lettered branch per step. She never jumps.' },
+    { name: 'Bloom', role: 'The florist. She ties a flower where a word ends. “app” and “apple” share every branch; only her flower tells them apart.' },
+    { name: 'Dot', role: 'A visitor whose rain-smudged slips have letters nobody can read. Where he writes a dot, every branch must be tried.' },
+    { name: 'Pruner', role: 'Carries the shears. Cuts away any branch that can no longer lead to a word anyone is looking for.' },
+    { name: 'Tally', role: 'Chalks two counters on every joint: how many words pass through, and how many end right here.' },
+  ]}
+  parts={[
+    { name: 'Part One · One walk, three questions', description: 'Plant words letter by letter; answer word, prefix and wildcard questions with the same walk.', links: [['implement-trie', 'The first planting'], ['wildcard-search', 'The smudged slips']] },
+    { name: 'Part Two · Many words, one walk', description: 'Walk a grid and the garden in lockstep, and prune as you go.', links: [['word-search-ii', 'The tiled courtyard']] },
+  ]}
+  extensions={[['count-and-erase', 'Tallies and shears (counts, erase)'], ['replace-words', 'The shortest root'], ['longest-word', 'One letter at a time'], ['search-suggestions', 'Three suggestions per keystroke'], ['max-xor', 'A garden of bits (maximum XOR)'], ['top-k-autocomplete', 'The busiest paths (top-K typeahead)']]}
+  extras={[['choose-the-tool', 'When the garden is the wrong tool'], ['wider-family', 'The neighbouring gardens'], ['exit-ticket', 'The gardener’s exam'], ['cheat-sheet', 'The Keeper’s seed packets']]}
+  note="All 3 roadmap problems, plus six side quests that make the family complete for interviews — including the top-K typeahead the System Design wing builds on. Read one chapter per sitting; the story keeps your place."
+/>
+
+<h2 id="prologue">Prologue · Words that begin alike</h2>
+
+<Scene chapter="Prologue" title="The register at the gate" mood="dawn">
+
+Quillhedge keeps every word its people have ever agreed on. At the gate of the town hall sits the register: ten thousand words, one per line, in the order they were accepted.
+
+On your first morning a queue has already formed. A printer wants to know whether any word begins with *tran*. A child asks whether *tram* is a word. The clerk runs a finger down all ten thousand lines for the first visitor, then starts again at the top for the second.
+
+The Keeper watches for a while. Then she walks you through the hall’s back door, into a walled garden where a single old stump grows branches, and every branch has one painted letter on it.
+
+*"Every word in that register is planted here,"* she says. *"Tell me how many lines the clerk would need to read, if he asked the garden instead."*
+
+</Scene>
+
+A **trie** (said “try”, from re*trie*val; also called a prefix tree) stores a set of words as paths from a root. Each edge carries **one letter**. Each node therefore stands for exactly one prefix — the letters on the path from the root down to it — and **words that begin alike share the nodes of their common beginning**.
+
+Because a path can stop anywhere, every node also carries a flag, **`isEnd`**: true when an inserted word ends exactly here. Without it, “app” and “apple” would be indistinguishable, because “app” is a prefix of “apple” and every node of “app” already exists on the way to “apple”.
+
+<Figure caption="The garden holding app, apple, apt and bat. Green joints carry a bloom (isEnd = true). “app” and “apple” share three nodes; “apt” shares two of them. Asking “does any word begin with ap?” is a walk of two steps, whatever else is planted.">
+  <Mermaid code={`flowchart TD
+  R(("root")) -->|a| A["a"]
+  A -->|p| AP["ap"]
+  AP -->|p| APP["app ✓"]
+  APP -->|l| APPL["appl"]
+  APPL -->|e| APPLE["apple ✓"]
+  AP -->|t| APT["apt ✓"]
+  R -->|b| B["b"]
+  B -->|a| BA["ba"]
+  BA -->|t| BAT["bat ✓"]
+  classDef word fill:#1f3a24,stroke:#3fb950,color:#e6edf3
+  class APP,APPLE,APT,BAT word`} />
+</Figure>
+
+The Keeper asks her three questions here, as everywhere in the realm:
+
+1. **What is settled?** The node you stand on *is* the letters walked so far. Every stored word with that beginning lives somewhere below it, and no other word does.
+2. **Why is this move safe?** Following the next letter’s branch throws away only words that differ from the query at that letter — and they can never match.
+3. **When do I stop?** When the letters run out (then the bloom answers “is this a word?”, and simply being there answers “does any word start this way?”), or when the next branch is missing (no stored word continues this way, so nothing below can match).
+
+> “The node I stand on is the prefix I have walked.” That is the promise. Every chapter in this book keeps it, then asks a different question of it.
+
+### When this pattern fires
+
+You are asked about **prefixes** — or about **many words at once** against the same input — and checking words one by one would repeat the same letter comparisons:
+
+- **“Does any word start with…”, autocomplete, suggestions as you type.** Scanning n stored words costs O(n · L) per question. A trie walk costs **O(L)**, independent of n.
+- **Patterns with wildcards over a dictionary** (`b.d`). The walk branches only at the wildcards.
+- **Find all dictionary words in a grid or a text.** One walk of the input serves every word that shares those letters — tens of thousands of separate searches become one.
+- **Shortest or longest stored prefix of a word** (replace words with roots; routers do longest-prefix matching on addresses).
+- **Maximise XOR** — a trie over the *bits* of numbers, walked greedily from the highest bit.
+
+<h2 id="playground">The potting benches · You make every move</h2>
+
+<Scene title="The potting benches">
+
+Along the garden wall stand long benches covered in soil trays, where apprentices practise on small gardens before they are allowed near the real one. Nobody plants a letter for you. When you reach for the wrong move, the Keeper doesn’t take the trowel away; she tells you, using the words in the tray, exactly what that move would have broken.
+
+</Scene>
+
+Three drills. **Plant words:** for each letter, follow the branch if it exists or grow it if it doesn’t; at the end of the word, tie the bloom. **search vs startsWith:** walk the letters, then decide — the bloom matters for one question and not the other. **Wildcard search:** at a letter there is one branch; at a dot, try every child in turn and back out of dead ends. Say the reason **before** pressing the button.
+
+<Playground lab="tries" />
+
+<Part n="Part One" title="One walk, three questions">
+
+Plant a word by walking it. Ask about a word by walking it. The only difference is what you check when the walk ends.
+
+</Part>
+
+<h2 id="implement-trie">Chapter 1 · The first planting</h2>
+
+<Scene chapter="Chapter 1" title="The first planting" mood="dawn">
+
+The Keeper presses a packet of seed into your hand. Painted on the packet: *apple*.
+
+You start at Root. There is no *a* branch yet, so you grow one. No *p* under it, so you grow that, and another *p*, and *l*, and *e*. At the last joint Bloom ties a white flower.
+
+A visitor arrives with a slip. *"Is app a word in your garden?"*
+
+Node walks it for you: *a*, *p*, *p*. Every branch is there. She stands on the third joint and looks up at you, waiting.
+
+*"You arrived,"* the Keeper says. *"Does arriving mean yes?"*
+
+</Scene>
+
+**Problem: Implement Trie (Prefix Tree) · Construction**
+
+Build a class with `insert(word)`, `search(word)` (was this exact word inserted?) and `startsWith(prefix)` (was any inserted word starting with this prefix?). Words are lowercase `a`–`z`.
+
+**A node is two things:** an array of 26 child references, one slot per letter (`children[c - 'a']`), and the boolean `isEnd`. The root is an ordinary node that stands for the empty prefix.
+
+<Figure caption="One node from the garden that holds apple and apt: the node for “ap”. Of its 26 child slots, only p and t are filled; the other 24 hold null. Its isEnd is false — nobody planted “ap”. That empty space is the price of O(1) child lookup.">
+  <ArrayStrip name="children of “ap”" values={['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']} indices={false} tones={{ 0: 'ghost', 1: 'ghost', 2: 'ghost', 3: 'ghost', 4: 'ghost', 5: 'ghost', 6: 'ghost', 7: 'ghost', 8: 'ghost', 9: 'ghost', 10: 'ghost', 11: 'ghost', 12: 'ghost', 13: 'ghost', 14: 'ghost', 15: 'hot', 16: 'ghost', 17: 'ghost', 18: 'ghost', 19: 'hot', 20: 'ghost', 21: 'ghost', 22: 'ghost', 23: 'ghost', 24: 'ghost', 25: 'ghost' }} />
+</Figure>
+
+All three operations are **one walk** from the root, one letter per step:
+
+- **insert** — walk the word; whenever the next letter’s slot is null, grow a node there; at the end, set `isEnd = true`.
+- **search** — walk the word; a null slot means `false`; at the end, **return `isEnd`**.
+- **startsWith** — the same walk; a null slot means `false`; reaching the end means `true`. No flag check.
+
+<Trace title="Does arriving mean yes?" steps={anatomy} takeaway="Remember: one walk, three operations. Insert grows missing branches and ties a bloom; search returns the bloom; startsWith only needs to arrive." />
+
+**Why it works:** a node exists only if some inserted word passed through it, so arriving at the end of a prefix proves an inserted word starts with it. `isEnd` is set only on the last node of an inserted word, so it is true exactly for the prefixes that were inserted as words.
+
+**What stays true:** every node stands for exactly one prefix (the letters on its path); a node exists if and only if some inserted word has that prefix; and `isEnd` is true if and only if that prefix was itself inserted.
+
+<Reveal q="Why not keep a HashSet of the words, and scan it for startsWith?">
+
+A `HashSet<String>` answers `search` in O(L) — hash the word, look it up. But `startsWith` would have to test every stored word: O(n · L) per question. With 100,000 words and 100,000 prefix questions, that is about 10¹⁰ letter comparisons. The trie answers each in O(L), however many words are stored. If you never ask about prefixes, the HashSet wins — see [When the garden is the wrong tool](#choose-the-tool).
+
+</Reveal>
+
+<Reveal q="Then why not a HashSet of every prefix of every word?">
+
+It works for `startsWith`, and for small inputs it is a fair answer. But a word of length L adds L prefixes, and hashing each costs up to O(L), so an insert is O(L²) and the memory is the sum of all those prefix strings. Worse, the set can only say yes or no: it can’t list the words under a prefix, branch at a wildcard, or walk a grid in lockstep. The trie stores each shared beginning once and keeps the structure you need for everything that follows.
+
+</Reveal>
+
+<HintLadder hints={hints.trie}>
+
+```java id=Trie
+class Trie {
+    private static class Node {
+        Node[] children = new Node[26];          // one slot per letter 'a'..'z'
+        boolean isEnd;                           // an inserted word ends exactly here
+    }
+
+    private final Node root = new Node();        // the empty prefix
+
+    public void insert(String word) {
+        Node node = root;
+        for (char c : word.toCharArray()) {
+            int i = c - 'a';
+            if (node.children[i] == null) node.children[i] = new Node();   // grow
+            node = node.children[i];                                        // follow
+        }
+        node.isEnd = true;                                                  // bloom
+    }
+
+    public boolean search(String word) {
+        Node node = walk(word);
+        return node != null && node.isEnd;       // arriving is not enough: the bloom decides
+    }
+
+    public boolean startsWith(String prefix) {
+        return walk(prefix) != null;             // arriving is enough
+    }
+
+    private Node walk(String s) {                // the one walk all three share
+        Node node = root;
+        for (char c : s.toCharArray()) {
+            node = node.children[c - 'a'];
+            if (node == null) return null;       // no stored word continues this way
+        }
+        return node;
+    }
+}
+```
+
+**O(L) time per operation** for a word of length L, independent of how many words are stored. **Space: at most one node per inserted letter**, so O(total letters) nodes — and each node carries 26 slots, so O(total letters × 26) references in the worst case. For 10,000 words of 8 letters with no sharing at all, that is 80,000 nodes and 2,080,000 slots: roughly 8 MB of references at the 4 bytes per reference a 64-bit JVM typically uses. Real words share beginnings, so it is usually far less.
+
+</HintLadder>
+
+**Array or map?** The 26-slot array gives O(1) child lookup and no hashing, and it naturally visits children in alphabetical order — handy later. It wastes memory when nodes are sparse, and it only works when the alphabet is small and known. When it isn’t — Unicode names, arbitrary characters, a huge alphabet — store the children in a map, which holds only the children that exist:
+
+```java id=MapTrie
+class MapTrie {
+    private static class Node {
+        Map<Character, Node> children = new HashMap<>();   // only the letters that actually occur
+        boolean isEnd;
+    }
+
+    private final Node root = new Node();
+
+    public void insert(String word) {
+        Node node = root;
+        for (char c : word.toCharArray()) node = node.children.computeIfAbsent(c, k -> new Node());
+        node.isEnd = true;
+    }
+
+    public boolean search(String word) {
+        Node node = walk(word);
+        return node != null && node.isEnd;
+    }
+
+    public boolean startsWith(String prefix) {
+        return walk(prefix) != null;
+    }
+
+    private Node walk(String s) {
+        Node node = root;
+        for (char c : s.toCharArray()) {
+            node = node.children.get(c);
+            if (node == null) return null;
+        }
+        return node;
+    }
+}
+```
+
+| | `Node[26]` children | `HashMap` children |
+|---|---|---|
+| Child lookup | O(1), one array index | O(1) expected, one hash |
+| Memory per node | 26 slots, used or not | proportional to real children, but each entry costs more |
+| Alphabet | small and known (`a`–`z`, bits, digits) | large or unknown (Unicode, mixed case, symbols) |
+| Children in sorted order | free (index order) | needs a `TreeMap` or a sort |
+
+**Catch the bug:** the most common Trie bug is a `search` that forgets the bloom:
+
+```java fragment
+public boolean search(String word) {
+    return walk(word) != null;    // BUG: that is startsWith. insert("apple"), then search("app") returns true
+}
+```
+
+[Solve Implement Trie (Prefix Tree)](https://leetcode.com/problems/implement-trie-prefix-tree/).
+
+<h2 id="wildcard-search">Chapter 2 · The smudged slips</h2>
+
+<Scene chapter="Chapter 2" title="The smudged slips" mood="storm">
+
+It rains for three days. On the fourth a visitor called Dot arrives with a satchel of question slips, every one of them blurred. *"B, something, d,"* he reads, squinting. *"Is there a word like that in your garden?"*
+
+He has written the blur as a dot: **b.d**.
+
+Node walks the *b* branch without hesitation. Then she stops at the joint and looks at its children — *a*, *e*, *i* — and back at the dot.
+
+*"Which way?"* she asks.
+
+*"You don’t know which letter he lost,"* the Keeper says. *"So which branches can you afford to skip?"*
+
+</Scene>
+
+**Problem: Design Add and Search Words Data Structure · Trie + DFS**
+
+`addWord(word)` is Chapter 1’s `insert`, unchanged. `search(word)` may contain dots, and **each dot matches exactly one letter of any kind**.
+
+At a letter, there is still exactly one branch to follow. At a dot, **every non-null child is a candidate**, and you don’t know which one leads to a match — so try them in turn, depth-first, and return true the moment one succeeds. The recursion carries two things: the position `i` in the pattern and the node you stand on.
+
+<Figure caption="search(“.ad”) on bad, dad, mad. The dot at the root makes b, d and m all candidates; the search tries b first, follows a and d, finds a bloom, and stops: true after three nodes. search(“..”) would reach ba, da and ma, find no bloom at any of them, and return false.">
+  <Mermaid code={`flowchart TD
+  R(("root")) -->|b| B["b"]
+  R -->|d| D["d"]
+  R -->|m| M["m"]
+  B -->|a| BA["ba"]
+  D -->|a| DA["da"]
+  M -->|a| MA["ma"]
+  BA -->|d| BAD["bad ✓"]
+  DA -->|d| DAD["dad ✓"]
+  MA -->|d| MAD["mad ✓"]
+  classDef word fill:#1f3a24,stroke:#3fb950,color:#e6edf3
+  classDef walk stroke:#e3b341,stroke-width:3px
+  class BAD,DAD,MAD word
+  class B,BA,BAD walk`} />
+</Figure>
+
+<Trace title="Which branches can you skip?" steps={wildcard} takeaway="Remember: a letter follows one branch; a dot tries every child and succeeds if any does. The pattern ends on a bloom, or it doesn’t match." />
+
+**Why it works:** a word matches the pattern exactly when its letter at each position equals the pattern’s letter there (or the pattern has a dot). The recursion explores precisely the trie paths that satisfy that position by position, so it finds a match if and only if one exists — and the `i == length` check ensures the word ends exactly where the pattern does.
+
+**What stays true:** a call `search(word, i, node)` stands on a node whose prefix matches `word[0..i − 1]`, and it returns true exactly when some stored word below `node` matches the rest, `word[i..]`.
+
+<Reveal q="With at most two dots, couldn’t you keep a HashSet and try all 26 × 26 letters for the dots?">
+
+Yes — with at most 2 dots that is at most 676 lookups of O(L) each, which is honest and fast enough. LeetCode caps the dots at 2 for exactly this reason. But it scales as 26^d: with 6 dots it is over 300 million lookups. The trie’s search never visits more nodes than the garden holds, because it only explores branches that exist. Say both in an interview, then choose the trie.
+
+</Reveal>
+
+<HintLadder hints={hints.wildcard}>
+
+```java id=WordDictionary
+class WordDictionary {
+    private static class Node {
+        Node[] children = new Node[26];
+        boolean isEnd;
+    }
+
+    private final Node root = new Node();
+
+    public void addWord(String word) {                       // Chapter 1's insert, unchanged
+        Node node = root;
+        for (char c : word.toCharArray()) {
+            int i = c - 'a';
+            if (node.children[i] == null) node.children[i] = new Node();
+            node = node.children[i];
+        }
+        node.isEnd = true;
+    }
+
+    public boolean search(String word) {
+        return search(word, 0, root);
+    }
+
+    private boolean search(String word, int i, Node node) {
+        if (i == word.length()) return node.isEnd;           // pattern used up: a word must end here
+        char c = word.charAt(i);
+        if (c != '.') {
+            Node next = node.children[c - 'a'];              // a letter: one branch, or none
+            return next != null && search(word, i + 1, next);
+        }
+        for (Node next : node.children)                      // a dot: every branch gets a turn
+            if (next != null && search(word, i + 1, next)) return true;
+        return false;                                        // only after every child has failed
+    }
+}
+```
+
+**addWord: O(L). search: O(L) with no dots; with d dots at most 26^d paths survive the dot levels, so O(26^d · L)** — and never more than the number of nodes in the garden. The recursion depth is at most L (25 on LeetCode).
+
+</HintLadder>
+
+**Catch the bug:** returning from inside the loop gives only the first child a turn.
+
+```java fragment
+for (Node next : node.children)
+    if (next != null) return search(word, i + 1, next);   // BUG: the first child's answer is final
+return false;
+// words "ax" and "by": search(".y") tries a, fails, and returns false — "by" never gets a turn
+```
+
+[Solve Design Add and Search Words Data Structure](https://leetcode.com/problems/design-add-and-search-words-data-structure/).
+
+<Part n="Part Two" title="Many words, one walk">
+
+Stop searching for each word. Plant them all, and let one walk of the input ask about every word at once.
+
+</Part>
+
+<h2 id="word-search-ii">Chapter 3 · The tiled courtyard</h2>
+
+<Scene chapter="Chapter 3" title="The tiled courtyard" mood="night">
+
+Behind the guildhall lies a courtyard floored with lettered tiles, twelve by twelve. Legend says words are hidden in it: start on any tile, step to a tile beside it — up, down, left or right — and never stand on the same tile twice within one word.
+
+The town wants to know which of the register’s thirty thousand words are hidden there. A junior gardener has taken a lantern and started on the first word, *aardvark*, tile by tile. At this pace he will reach *zymurgy* sometime next winter.
+
+The Keeper hands you the lantern and a cutting from the garden.
+
+*"He walks the courtyard once per word,"* she says. *"The garden already knows which beginnings are worth walking. Take it with you."*
+
+</Scene>
+
+**Problem: Word Search II · Trie + DFS (backtracking)**
+
+Given a board of letters and a list of words, return every word that can be traced on the board through horizontally or vertically adjacent cells, using no cell twice in one word.
+
+Running Word Search I once per word repeats the same grid walks for every word that shares a beginning. Instead:
+
+1. **Plant every word** in a trie, and store **the whole word on its end node** (a `String word` field instead of a boolean).
+2. **Start a DFS from every cell**, carrying a trie node. Step into a cell only if the current node has a child for that cell’s letter — the board and the garden move **in lockstep**.
+3. **When a node holds a word, record it and set the field to null**, so it is reported exactly once.
+4. **Mark the cell** (`'#'`) while it is on the current path, and restore it on the way back.
+5. **Prune:** on the way back, if the node now has no children and no word, unlink it from its parent. A **child counter** per node makes “is it empty?” an O(1) check.
+
+<Figure caption="LeetCode’s example. Words oath, pea, eat, rain. Gold: oath, traced o(0,0) → a(0,1) → t(1,1) → h(2,1). Green: eat, traced e(1,3) → a(1,2) → t(1,1). pea has no p on the board; rain’s r at (2,3) has no a beside it. Answer: [eat, oath], in any order.">
+  <ArrayStrip name="row 0" values={['o', 'a', 'a', 'n']} indices={false} tones={{ 0: 'hot', 1: 'hot' }} />
+  <ArrayStrip name="row 1" values={['e', 't', 'a', 'e']} indices={false} tones={{ 1: 'hot', 2: 'done', 3: 'done' }} />
+  <ArrayStrip name="row 2" values={['i', 'h', 'k', 'r']} indices={false} tones={{ 1: 'hot' }} />
+  <ArrayStrip name="row 3" values={['i', 'f', 'l', 'v']} indices={false} />
+  <Mermaid code={`flowchart TD
+  R(("root")) -->|o| O["o"]
+  R -->|p| P["p"]
+  R -->|e| E["e"]
+  R -->|r| RR["r"]
+  O -->|a| OA["oa"] -->|t| OAT["oat"] -->|h| OATH["oath ✓"]
+  P -->|e| PE["pe"] -->|a| PEA["pea ✓"]
+  E -->|a| EA["ea"] -->|t| EAT["eat ✓"]
+  RR -->|a| RA["ra"] -->|i| RAI["rai"] -->|n| RAIN["rain ✓"]
+  classDef word fill:#1f3a24,stroke:#3fb950,color:#e6edf3
+  class OATH,PEA,EAT,RAIN word`} />
+</Figure>
+
+**Why this beats one search per word — with numbers.** LeetCode allows a 12 × 12 board, up to 30,000 words, each up to 10 letters. A path of k cells has at most 4 choices for its first step and 3 for each later step, so from one starting cell there are at most 1 + 4 + 12 + … + 4 · 3⁸ = **39,365** paths of up to 10 cells. Over 144 starting cells that is about **5.7 million** path steps in the worst case.
+
+| | One search per word | One walk with the garden |
+|---|---|---|
+| Worst-case grid steps | 5.7 million × 30,000 words ≈ **1.7 × 10¹¹** | ≈ **5.7 million** in total |
+| Setup | none | plant 30,000 × 10 = 300,000 letters |
+| What stops a walk early | the one word’s next letter | **every** word’s next letter at once |
+
+The garden doesn’t make a single walk cheaper; it makes **one walk serve every word**, and a dead prefix stops the walk for all of them together.
+
+<Trace title="Walk the courtyard with the garden" steps={wordGrid} takeaway="Remember: step only where the garden has a branch, consume a word when you find it, restore the tile on the way back, and prune branches that are empty." />
+
+**Why it works:** every hidden word is traced along some path of distinct cells from some starting cell. The DFS from that cell follows the path as long as the garden has the matching branches — and it does, because the word’s own branch is never pruned while the word is unfound (a node is pruned only when it holds no word and has no children). When the node is null, no word has this path’s letters as a beginning, so no extension of the path can produce one: stopping there loses nothing.
+
+**What stays true:** when the DFS stands on cell `(r, c)` with trie node `node`, the letters along the current path spell `node`’s prefix, every cell on the path is marked `'#'`, and the garden still holds every word not yet found.
+
+<Reveal q="Pruning doesn’t change the answer. Why bother?">
+
+Because it changes the running time on the inputs that hurt. Take a 12 × 12 board of nothing but `a` and the single word of ten `a`s. Without pruning, the word is found from the first cell — and then each of the other 143 starting cells still walks every path of up to ten `a`s, up to 39,365 each, for a word that is already found. With pruning, the moment the word is consumed its node is empty, so it is cut, then its parent, and so on up to the root: the next 143 starts stop after one lookup. Pruning is what keeps the garden as small as the work that is left.
+
+</Reveal>
+
+<Reveal q="Why null the word instead of collecting results in a HashSet?">
+
+A set would also remove duplicates, but the search would keep re-walking to found words and re-adding them. Nulling the field consumes the word: later walks pass through silently, and an empty node becomes prunable. One field write does both jobs.
+
+</Reveal>
+
+<HintLadder hints={hints.wordSearch}>
+
+```java id=findWords
+static class TrieNode {
+    TrieNode[] children = new TrieNode[26];
+    int childCount;                  // children still attached (for O(1) pruning)
+    String word;                     // the whole word, on its end node; null elsewhere
+}
+
+public List<String> findWords(char[][] board, String[] words) {
+    TrieNode root = new TrieNode();
+    for (String w : words) {                                 // plant every word
+        TrieNode node = root;
+        for (char c : w.toCharArray()) {
+            int i = c - 'a';
+            if (node.children[i] == null) { node.children[i] = new TrieNode(); node.childCount++; }
+            node = node.children[i];
+        }
+        node.word = w;
+    }
+    List<String> found = new ArrayList<>();
+    for (int r = 0; r < board.length; r++)
+        for (int c = 0; c < board[0].length; c++)
+            dfs(board, r, c, root, found);
+    return found;
+}
+
+private void dfs(char[][] board, int r, int c, TrieNode parent, List<String> found) {
+    if (r < 0 || c < 0 || r >= board.length || c >= board[0].length) return;
+    char ch = board[r][c];
+    if (ch == '#') return;                                   // already on the current path
+    TrieNode node = parent.children[ch - 'a'];
+    if (node == null) return;                                // no unfound word continues this way
+    if (node.word != null) {                                 // a word ends here
+        found.add(node.word);
+        node.word = null;                                    // consume it: reported once
+    }
+    board[r][c] = '#';                                       // mark
+    dfs(board, r + 1, c, node, found);
+    dfs(board, r - 1, c, node, found);
+    dfs(board, r, c + 1, node, found);
+    dfs(board, r, c - 1, node, found);
+    board[r][c] = ch;                                        // restore on the way back
+    if (node.childCount == 0 && node.word == null) {         // prune: nothing left below
+        parent.children[ch - 'a'] = null;
+        parent.childCount--;
+    }
+}
+```
+
+**Time: O(W) to plant, where W is the total number of letters, plus O(M · N · 4 · 3^(L − 1)) for the search** on an M × N board with words of length at most L — the bound counts paths, not words, which is the whole point. **Space: O(W)** for the garden plus O(L) recursion depth. The board is restored exactly as it was given.
+
+</HintLadder>
+
+**Catch the bug:** forgetting `node.word = null` reports a word once per path that traces it. On the board `[["a","a"]]` with words `["a"]`, the answer comes back `["a", "a"]`. Forgetting `board[r][c] = ch` is the other classic: later starts find `'#'` where a letter should be and silently miss words.
+
+```java fragment
+if (node.word != null) found.add(node.word);   // BUG: never consumed — [["a","a"]], ["a"] gives ["a", "a"]
+```
+
+[Solve Word Search II](https://leetcode.com/problems/word-search-ii/).
+
+<Part n="Part Three" title="The Keeper changes one rule">
+
+Side quests. Same garden, same walk — one rule different. This is where memorised templates break and understanding doesn’t.
+
+</Part>
+
+<Scene title="Seed packets with one word crossed out" mood="night">
+
+The evening you finish the courtyard, there is a row of seed packets on your bench. Each one is a problem you have already solved, with one rule struck through in red ink and a new rule written above it in the Keeper’s small, tidy hand.
+
+*"Anyone can plant a word,"* says the note on top. *"Show me you know why the garden answers."*
+
+</Scene>
+
+<h2 id="count-and-erase">Side quest 1 · Tallies and shears</h2>
+
+**The packet says:** the same word may be planted many times, and words can be **erased**. Answer `countWordsEqualTo(word)` and `countWordsStartingWith(prefix)`.
+
+**The reasoning:** a flag can’t count, so Tally replaces it with two counters on every node: **`pass`**, the number of stored words that pass through (or end at) this node, and **`end`**, the number that end exactly here. Insert adds 1 to `pass` on every node it walks and 1 to `end` on the last. Both counts are then one walk away.
+
+**Erasing is where deletion gets its teeth.** Walk the word again, subtracting 1 from `pass` on each node. The moment a child’s `pass` reaches 0, no stored word goes through it any more — **cut it off at the parent and stop**; everything below it was only there for this copy.
+
+<Figure caption="After inserting apple, apple, app, apt. Each node shows pass / end. countWordsStartingWith(“app”) = 3 (two apples and app); countWordsEqualTo(“apple”) = 2. erase(“apt”) drops the t node’s pass to 0, so the shears cut it — and ap’s pass falls to 3.">
+  <Mermaid code={`flowchart TD
+  R(("root")) -->|a| A["a · 4 / 0"]
+  A -->|p| AP["ap · 4 / 0"]
+  AP -->|p| APP["app · 3 / 1"]
+  APP -->|l| APPL["appl · 2 / 0"]
+  APPL -->|e| APPLE["apple · 2 / 2"]
+  AP -->|t| APT["apt · 1 / 1"]
+  classDef word fill:#1f3a24,stroke:#3fb950,color:#e6edf3
+  classDef cut stroke:#f85149,stroke-dasharray:4 3
+  class APP,APPLE word
+  class APT cut`} />
+</Figure>
+
+<Reveal q="In Chapter 1’s trie, why can’t you delete a word just by setting isEnd = false?">
+
+Because the branch stays. Insert “apple”, then “delete” it by clearing the flag: `search("apple")` is false, but `startsWith("app")` is still **true** — the nodes are there, and the promise “every node lies on a stored word’s path” is broken. Real deletion must also remove the nodes that no stored word needs: walk back up from the end and unlink each node that has no children and no flag (a child counter makes that check O(1)), or keep `pass` counts and cut where `pass` reaches 0, as here.
+
+</Reveal>
+
+<HintLadder hints={hints.countErase}>
+
+```java id=TrieII
+class Trie {
+    private static class Node {
+        Node[] children = new Node[26];
+        int pass;      // stored words that pass through (or end at) this node
+        int end;       // stored words that end exactly here
+    }
+
+    private final Node root = new Node();
+
+    public void insert(String word) {
+        Node node = root;
+        for (char c : word.toCharArray()) {
+            int i = c - 'a';
+            if (node.children[i] == null) node.children[i] = new Node();
+            node = node.children[i];
+            node.pass++;
+        }
+        node.end++;
+    }
+
+    public int countWordsEqualTo(String word) {
+        Node node = walk(word);
+        return node == null ? 0 : node.end;
+    }
+
+    public int countWordsStartingWith(String prefix) {       // prefix has at least one letter
+        Node node = walk(prefix);
+        return node == null ? 0 : node.pass;
+    }
+
+    public void erase(String word) {                         // the word is guaranteed to be stored
+        Node node = root;
+        for (char c : word.toCharArray()) {
+            int i = c - 'a';
+            Node next = node.children[i];
+            if (--next.pass == 0) {                          // nobody passes here any more:
+                node.children[i] = null;                     // cut the whole branch and stop
+                return;
+            }
+            node = next;
+        }
+        node.end--;
+    }
+
+    private Node walk(String s) {
+        Node node = root;
+        for (char c : s.toCharArray()) {
+            node = node.children[c - 'a'];
+            if (node == null) return null;
+        }
+        return node;
+    }
+}
+```
+
+**O(L) per operation.** Duplicates cost nothing extra: they only raise counters. The root carries no counter, which is why the prefix must be non-empty (LeetCode guarantees it).
+
+</HintLadder>
+
+**Catch the bug:** an `erase` that only does `end--` at the last node leaves every `pass` stale: insert “apple”, erase it, and `countWordsStartingWith("app")` still says 1.
+
+**Transfer test:** Map Sum Pairs stores a value per key and asks for the sum of values over all keys with a prefix — and inserting an existing key **overwrites** its value. What does each node store instead of `pass`, and what do you add along the path when a key is overwritten? (A running sum; add the *difference* between the new and old value.) [Implement Trie II (Prefix Tree)](https://leetcode.com/problems/implement-trie-ii-prefix-tree/) is LeetCode Premium; [Map Sum Pairs](https://leetcode.com/problems/map-sum-pairs/) is free.
+
+<h2 id="replace-words">Side quest 2 · The shortest root</h2>
+
+**The packet says:** you are given a dictionary of **roots** and a sentence. Replace each word by the **shortest** root that it starts with; leave words with no root unchanged.
+
+**The reasoning:** plant the roots. For each sentence word, walk it from the root, and stop at the **first bloom** — the first root you meet is the shortest, because the walk meets prefixes in order of length. A missing branch before any bloom means no root fits.
+
+<Reveal q="“the cattle was rattled by the battery”, roots cat, bat, rat. Walk “cattle”: where do you stop?">
+
+c, a, t — and *t* blooms (cat), so stop: “cattle” becomes “cat”. “the” falls off at the root (no *t* branch). The sentence becomes “the cat was rat by the bat”. Comparing every root against every word would cost O(roots × words × L); one walk per word costs O(L).
+
+</Reveal>
+
+<HintLadder hints={hints.replaceWords}>
+
+```java id=replaceWords
+static class TrieNode {
+    TrieNode[] children = new TrieNode[26];
+    boolean isEnd;
+}
+
+public String replaceWords(List<String> dictionary, String sentence) {
+    TrieNode root = new TrieNode();
+    for (String r : dictionary) {
+        TrieNode node = root;
+        for (char c : r.toCharArray()) {
+            int i = c - 'a';
+            if (node.children[i] == null) node.children[i] = new TrieNode();
+            node = node.children[i];
+        }
+        node.isEnd = true;
+    }
+    StringBuilder out = new StringBuilder();
+    for (String word : sentence.split(" ")) {
+        if (out.length() > 0) out.append(' ');
+        out.append(shortestRoot(root, word));
+    }
+    return out.toString();
+}
+
+private String shortestRoot(TrieNode root, String word) {
+    TrieNode node = root;
+    for (int i = 0; i < word.length(); i++) {
+        node = node.children[word.charAt(i) - 'a'];
+        if (node == null) return word;                       // fell off: no root fits
+        if (node.isEnd) return word.substring(0, i + 1);     // the first bloom is the shortest root
+    }
+    return word;                                             // every root is longer than the word
+}
+```
+
+**O(D + S) time**, where D is the total length of the roots and S the length of the sentence; O(D) space for the garden.
+
+</HintLadder>
+
+**Catch the bug:** walking past the first bloom (remembering the *last* one) returns the **longest** root: roots `a, aa, aaa` turn “aaaa” into “aaa” instead of “a”.
+
+**Transfer test:** a router must forward each address to the **longest** stored prefix that matches it. What single change turns this walk into longest-prefix match? (Keep walking, remember the last bloom you passed, and return it when the walk ends or falls off.) [Solve Replace Words](https://leetcode.com/problems/replace-words/).
+
+<h2 id="longest-word">Side quest 3 · One letter at a time</h2>
+
+**The packet says:** find the longest word in the list that can be **built one letter at a time** by other words in the list — every shorter beginning of it must also be a word. Ties go to the alphabetically smallest; return `""` if none.
+
+**The reasoning:** in the garden, “every beginning is a word” means **every node on the path blooms**. So walk depth-first from the root, entering only children that bloom. Visit children `a` to `z`, and replace the best word only when the new one is **strictly longer**: depth-first in alphabetical order meets words in alphabetical order, so the first word found at the best length is the smallest.
+
+<Reveal q="Words a, banana, app, appl, ap, apply, apple. Why not banana?">
+
+“banana” is the longest word, but “b” is not in the list — the walk never enters the *b* branch, because node “b” has no bloom. Along *a*: a, ap, app, appl all bloom; under “appl” both “apple” and “apply” bloom, and *e* comes before *y*, so “apple” is found first and “apply” is not strictly longer. Answer: **apple**.
+
+</Reveal>
+
+<HintLadder hints={hints.longestWord}>
+
+```java id=longestWord
+static class TrieNode {
+    TrieNode[] children = new TrieNode[26];
+    String word;                                       // set on end nodes
+}
+
+private String best = "";
+
+public String longestWord(String[] words) {
+    TrieNode root = new TrieNode();
+    for (String w : words) {
+        TrieNode node = root;
+        for (char c : w.toCharArray()) {
+            int i = c - 'a';
+            if (node.children[i] == null) node.children[i] = new TrieNode();
+            node = node.children[i];
+        }
+        node.word = w;
+    }
+    best = "";
+    dfs(root, 0);
+    return best;
+}
+
+private void dfs(TrieNode node, int depth) {
+    if (depth > best.length()) best = node.word;      // strictly longer only: a..z order keeps the smallest
+    for (TrieNode child : node.children)              // children in order a..z
+        if (child != null && child.word != null)      // enter only nodes that bloom
+            dfs(child, depth + 1);
+}
+```
+
+**O(W) time and space**, W the total number of letters. Without a trie: sort the words, keep a set of buildable words, and accept a word if it has one letter or its prefix without the last letter is already buildable — O(W log n) for the sort.
+
+</HintLadder>
+
+**Catch the bug:** forgetting the “every beginning is a word” rule and returning the longest word overall — on the example above that is “banana”.
+
+**Transfer test:** the same words, but you must return **all** buildable words of maximum length. What changes in `dfs`? (Collect into a list; clear it on a strictly longer word, append on an equal one.) [Solve Longest Word in Dictionary](https://leetcode.com/problems/longest-word-in-dictionary/).
+
+<h2 id="search-suggestions">Side quest 4 · Three suggestions per keystroke</h2>
+
+**The packet says:** as a customer types a search word letter by letter, show after each letter up to **three products** that start with the letters typed so far, alphabetically smallest first.
+
+**The reasoning — two honest ways:**
+
+- **Garden with lists.** Sort the products first, then plant them **in sorted order**. Each node keeps a list of at most three words: the first three that pass through it. Because they arrive sorted, those are the three smallest with that prefix. Each keystroke is one step down and one ready-made list. **This is the typeahead idea in miniature: prepare the answer at every node before anyone types.**
+- **Sorted array alone.** All words with a given prefix sit **next to each other** in sorted order, starting at the first word ≥ the prefix. Binary search for that position and read up to three words forward while they still start with the prefix.
+
+<Figure caption="The products sorted: mobile, moneypot, monitor, mouse, mousepad. Every word starting with “mo” is in one contiguous run, and the first three are the answer for “m” and “mo”. For “mou” the run begins at mouse: mouse, mousepad.">
+  <ArrayStrip values={['mobile', 'moneypot', 'monitor', 'mouse', 'mousepad']} regions={[{ from: 0, to: 2, label: 'after “mo”', tone: 'gold' }, { from: 3, to: 4, label: 'after “mou”', tone: 'green' }]} tones={{ 0: 'hot', 1: 'hot', 2: 'hot', 3: 'done', 4: 'done' }} />
+</Figure>
+
+<HintLadder hints={hints.suggestions}>
+
+```java id=suggestedProducts
+static class TrieNode {
+    TrieNode[] children = new TrieNode[26];
+    List<String> top = new ArrayList<>();                    // up to 3 smallest products below this node
+}
+
+public List<List<String>> suggestedProducts(String[] products, String searchWord) {
+    String[] sorted = products.clone();
+    Arrays.sort(sorted);                                     // sorted, so the first 3 to arrive are the answer
+    TrieNode root = new TrieNode();
+    for (String p : sorted) {
+        TrieNode node = root;
+        for (char c : p.toCharArray()) {
+            int i = c - 'a';
+            if (node.children[i] == null) node.children[i] = new TrieNode();
+            node = node.children[i];
+            if (node.top.size() < 3) node.top.add(p);
+        }
+    }
+    List<List<String>> answer = new ArrayList<>();
+    TrieNode node = root;
+    for (char c : searchWord.toCharArray()) {
+        node = node == null ? null : node.children[c - 'a'];  // once fallen off, stay off
+        answer.add(node == null ? new ArrayList<>() : node.top);
+    }
+    return answer;
+}
+
+// The same answers from the sorted array alone: binary search for the first word >= the prefix.
+public List<List<String>> suggestedProductsSorted(String[] products, String searchWord) {
+    String[] sorted = products.clone();
+    Arrays.sort(sorted);
+    List<List<String>> answer = new ArrayList<>();
+    String prefix = "";
+    for (char c : searchWord.toCharArray()) {
+        prefix += c;
+        int lo = 0, hi = sorted.length;                      // first index with sorted[i] >= prefix
+        while (lo < hi) {
+            int mid = (lo + hi) >>> 1;
+            if (sorted[mid].compareTo(prefix) < 0) lo = mid + 1; else hi = mid;
+        }
+        List<String> three = new ArrayList<>();
+        for (int i = lo; i < sorted.length && three.size() < 3 && sorted[i].startsWith(prefix); i++)
+            three.add(sorted[i]);
+        answer.add(three);
+    }
+    return answer;
+}
+```
+
+**Garden:** O(n log n · L) to sort (string comparisons), O(total letters) to plant, then O(1) per keystroke. **Sorted array:** the same sort, then O(L log n) per keystroke for the binary search, with no extra memory beyond the sorted copy.
+
+</HintLadder>
+
+**Catch the bug:** planting without sorting first keeps the first three products *in input order*. On mobile, mouse, moneypot, monitor, mousepad, typing “m” shows mobile, mouse, moneypot instead of mobile, moneypot, monitor.
+
+**Transfer test:** the box must now rank by **popularity**, not alphabet, and popularity changes all day. Which version survives, and what must each node keep? (The garden — see side quest 6.) [Solve Search Suggestions System](https://leetcode.com/problems/search-suggestions-system/).
+
+<h2 id="max-xor">Side quest 5 · A garden of bits</h2>
+
+**The packet says:** no letters at all. Given non-negative integers, return the **largest `x ^ y`** over all pairs. Up to 200,000 numbers, so checking every pair (about 2 × 10¹⁰) is out.
+
+**The reasoning:** write every number as **31 bits, highest first** (values are below 2³¹), and plant them in a garden whose nodes have **two children**: bit 0 and bit 1. To find the best partner for `x`, walk down from bit 30 and at each level **prefer the child with the opposite bit** — that bit of the XOR becomes 1. If the opposite child doesn’t exist, take the same bit and that XOR bit stays 0.
+
+**Why greedy is safe here:** a 1 in bit `b` is worth 2^b, and all the lower bits together are worth at most 2^b − 1. So winning the highest bit you can is never wrong, whatever happens below. That one inequality is the whole proof.
+
+<Figure caption="[3, 10, 5, 25, 2, 8] in five bits (bit 4 on the left). For x = 5 = 00101 the walk prefers 1 at bit 4 (only 25 has it), then 1 at bit 3 (25 does), then 0 at bit 2 (25 does), then 1 at bit 1 (25 has 0, forced), then 0 at bit 0 (25 has 1, forced). Partner 25: 00101 ^ 11001 = 11100 = 28, the answer.">
+  <ArrayStrip name="5" values={[0, 0, 1, 0, 1]} indices={false} />
+  <ArrayStrip name="25" values={[1, 1, 0, 0, 1]} indices={false} />
+  <ArrayStrip name="5 ^ 25 = 28" values={[1, 1, 1, 0, 0]} indices={false} tones={{ 0: 'done', 1: 'done', 2: 'done' }} />
+</Figure>
+
+<HintLadder hints={hints.maxXor}>
+
+```java id=findMaximumXOR
+static class BitNode {
+    BitNode[] child = new BitNode[2];                // child[0] for bit 0, child[1] for bit 1
+}
+
+public int findMaximumXOR(int[] nums) {
+    BitNode root = new BitNode();
+    int best = 0;
+    for (int x : nums) {
+        BitNode node = root;                         // plant x, highest bit first
+        for (int b = 30; b >= 0; b--) {              // values are below 2^31, so bit 30 is the top
+            int bit = (x >> b) & 1;
+            if (node.child[bit] == null) node.child[bit] = new BitNode();
+            node = node.child[bit];
+        }
+        node = root;                                 // best partner for x among everything planted
+        int xor = 0;
+        for (int b = 30; b >= 0; b--) {
+            int bit = (x >> b) & 1;
+            if (node.child[bit ^ 1] != null) {       // the opposite bit exists: this XOR bit becomes 1
+                xor |= 1 << b;
+                node = node.child[bit ^ 1];
+            } else {
+                node = node.child[bit];              // forced: same bit, XOR bit stays 0
+            }
+        }
+        best = Math.max(best, xor);
+    }
+    return best;
+}
+```
+
+**O(31 · n) time, O(31 · n) nodes.** Planting `x` before querying means the garden is never empty, and every node lies on some planted number’s full 31-bit path, so when the opposite child is missing the same-bit child always exists. A single number gives `x ^ x = 0`.
+
+</HintLadder>
+
+**Catch the bug:** walking from bit 0 upwards makes the greedy choice on the *least* valuable bit first. On `[3, 10, 5, 25, 2, 8]` it returns 19 instead of 28.
+
+**Transfer test:** queries now come as `(x, limit)`: the best `x ^ y` using only numbers `y ≤ limit`. How do you make sure the garden contains exactly the allowed numbers when each query is answered? (Sort the queries by limit and the numbers ascending; plant numbers as the limit grows — an offline sweep.) The bit tricks themselves live in the <a href={`${BASE}dsa/`}>Math & Bit Manipulation</a> pattern on the roadmap. [Solve Maximum XOR of Two Numbers in an Array](https://leetcode.com/problems/maximum-xor-of-two-numbers-in-an-array/).
+
+<h2 id="top-k-autocomplete">Side quest 6 · The busiest paths</h2>
+
+**The packet says:** a search box. `record(query)` notes one more search for a query; `suggest(prefix)` must instantly return the **k most-searched** queries starting with `prefix` — most searches first, ties alphabetical.
+
+**The reasoning:** collecting every query below the prefix node and sorting it on each keystroke is fine for “zyg” and hopeless for “a”. So move the work to update time: **every node keeps its own list of its best k**, and `suggest` reads one list. When `record` bumps a query’s count, only the nodes **on that query’s path** can change, and at each of them: add the query if missing, re-sort, drop the (k + 1)-th.
+
+<Figure caption="k = 2, after recording car ×4, cat ×4, cart ×1, dog ×1. Each node shows its cached list. suggest(“ca”) reads [car, cat] (tied at 4, alphabetical); suggest(“car”) reads [car, cart]. Four more cart searches would make it 5 and put it first under c, ca and car.">
+  <Mermaid code={`flowchart TD
+  R(("root · car, cat")) -->|c| C["c · car, cat"]
+  R -->|d| D["d · dog"]
+  C -->|a| CA["ca · car, cat"]
+  CA -->|r| CAR["car · car, cart"]
+  CA -->|t| CAT["cat · cat"]
+  CAR -->|t| CART["cart · cart"]
+  D -->|o| DO["do · dog"]
+  DO -->|g| DOG["dog · dog"]`} />
+</Figure>
+
+<Reveal q="Why is a cached top-k list still correct after a count goes up — and what breaks if counts can go down?">
+
+When `q`’s count rises, every other query’s count is unchanged, and they were all ranked below the k cached ones (or are among them). So the new top k of a node is simply the top k of (the old list plus `q`) — exactly what add, re-sort, trim computes. **Decreases break this.** If a cached query’s count falls, the rightful replacement may be some query that was never cached, and the node can’t know which without walking its whole subtree. That is why production typeahead systems don’t update counts live: they **rebuild the lists offline** from search logs (say, hourly) and swap the new garden in. See the <a href={`${BASE}sd/lessons/search/`}>Search lesson’s typeahead section</a> and the Typeahead walkthrough on the <a href={`${BASE}sd/`}>System Design roadmap</a>.
+
+</Reveal>
+
+<HintLadder hints={hints.typeahead}>
+
+```java id=Typeahead
+class Typeahead {
+    private static class Node {
+        Node[] children = new Node[26];
+        List<String> top = new ArrayList<>();          // best k queries below this node, best first
+    }
+
+    private final Node root = new Node();
+    private final Map<String, Integer> count = new HashMap<>();
+    private final int k;
+    private final Comparator<String> better = (a, b) -> {
+        int ca = count.get(a), cb = count.get(b);
+        return ca != cb ? Integer.compare(cb, ca) : a.compareTo(b);   // more searches first, then a..z
+    };
+
+    public Typeahead(int k) { this.k = k; }
+
+    public void record(String query) {
+        count.merge(query, 1, Integer::sum);
+        Node node = root;
+        refresh(node.top, query);                      // the root answers the empty prefix
+        for (char c : query.toCharArray()) {
+            int i = c - 'a';
+            if (node.children[i] == null) node.children[i] = new Node();
+            node = node.children[i];
+            refresh(node.top, query);                  // only nodes on this path can change
+        }
+    }
+
+    public List<String> suggest(String prefix) {
+        Node node = root;
+        for (char c : prefix.toCharArray()) {
+            node = node.children[c - 'a'];
+            if (node == null) return new ArrayList<>();
+        }
+        return new ArrayList<>(node.top);              // a copy: callers can't disturb the cache
+    }
+
+    private void refresh(List<String> top, String query) {
+        if (!top.contains(query)) top.add(query);
+        top.sort(better);
+        if (top.size() > k) top.remove(top.size() - 1);   // drop the (k + 1)-th
+    }
+}
+```
+
+**`record`: O(L · k log k). `suggest`: O(P + k)** for a prefix of length P. **Space: O(nodes × k)** references — the price of answering every keystroke without a search.
+
+</HintLadder>
+
+**Transfer test:** Design Search Autocomplete System types characters one at a time, and `#` ends a sentence (which then counts as one more search). Which state do you keep between keystrokes so each one costs O(k) instead of re-walking the prefix? (The current node — or null once you have fallen off — plus the typed buffer to record at `#`.) [Design Search Autocomplete System](https://leetcode.com/problems/design-search-autocomplete-system/) is LeetCode Premium.
+
+<Part n="Epilogue" title="Beyond the Word Garden">
+
+When the garden is the wrong tool, who lives next door, and the exam that proves you can find your own way.
+
+</Part>
+
+<h2 id="choose-the-tool">When the garden is the wrong tool</h2>
+
+<Scene title="The spell-checker’s cart" mood="storm">
+
+A merchant wheels a cart through the gate: a spell-checker, he says, for the printers’ guild. It will ask one question a million times a day — *is this exact word in the register?* — and nothing else. He has heard about the garden, and he wants one of his own.
+
+You start sketching branches. The Keeper puts her hand over the page.
+
+*"How often will he ask about a beginning?"* she says.
+
+*"Never."*
+
+*"Then every branch you plant for him is a branch he pays for and never walks."*
+
+</Scene>
+
+A trie is the right tool when **prefixes matter**, or when **many words are tested against one input** and should share the work. It is the wrong one — or an expensive one — when:
+
+| Situation | Better tool | Why |
+|---|---|---|
+| Only exact-word lookups, never prefixes | `HashSet<String>` | One hash of the word; no per-letter nodes or 26-slot arrays to pay for |
+| A fixed dictionary, tight memory, prefix questions | **Sorted array + binary search** | Words sharing a prefix are contiguous; O(L log n) per question, memory is just the words |
+| Prefix yes/no only, small inputs | `HashSet` of all prefixes | Simple and O(L) per query — but O(L²) per insert, and it can’t list or rank words |
+| The pattern can appear **anywhere** in a word (substring) | A plain scan, or a suffix array / suffix automaton | A trie indexes beginnings only; “ear” inside “bear” is invisible to it |
+| Huge or unknown alphabet | Trie with `HashMap` children (or a radix tree) | 26-slot arrays assume a small fixed alphabet |
+
+<Reveal q="A fixed list of 2 million words, many prefix questions, and memory is tight. Garden or sorted array?">
+
+With little sharing, 2 million words of 8 letters can need up to 16 million nodes, and at 26 slots each that is 416 million references before counting the nodes themselves. A sorted array holds the 2 million strings and nothing else; binary search finds the first word ≥ the prefix in O(L log n), and the matching words follow contiguously. Choose the trie when the set changes often, when you need wildcards or lockstep walks, or when per-node data (counts, cached top-k) is the point. Compressed tries (radix trees) and automata close much of the memory gap — see *Look these up yourself*.
+
+</Reveal>
+
+<h2 id="wider-family">The neighbouring gardens · How the other roadmap patterns connect</h2>
+
+The garden isn’t the only place in the realm that walks one step at a time and backs out of dead ends. The shared idea: **let the structure of the data decide which branches are worth exploring.**
+
+| Shared idea | Where it shows up | Where it belongs |
+|---|---|---|
+| Choose, explore, un-choose on a grid | Word Search I: mark the cell, recurse, restore — Chapter 3 without the garden | <a href={`${BASE}dsa/`}>Backtracking · roadmap</a> |
+| Sorted order groups shared beginnings | First word ≥ the prefix, then read forward (side quest 4) | <a href={`${BASE}dsa/lessons/binary-search/`}>Binary Search</a> |
+| Top k of a changing collection | A heap ranks everything; the garden ranks per prefix (side quest 6) | <a href={`${BASE}dsa/lessons/heaps/`}>Heaps</a> |
+| Highest bit first, greedily | XOR, masks and the 2^b > 2^b − 1 argument (side quest 5) | <a href={`${BASE}dsa/`}>Math & Bit Manipulation · roadmap</a> |
+| Exact lookups by fingerprint | HashSet when prefixes don’t matter | <a href={`${BASE}dsa/`}>Hashing & Sets · roadmap</a> |
+| A tree walked root to leaf | Every trie operation is a root-to-node path in a tree | <a href={`${BASE}dsa/`}>Trees (DFS) · roadmap</a> |
+| Precomputed top-K per prefix at scale | Offline rebuilds, sharding the garden, caching hot prefixes | <a href={`${BASE}sd/lessons/search/`}>SD · Search & typeahead</a> |
+
+**Word Search II is Word Search I plus a garden.** The DFS, the marking and the restoring are the same; the garden replaces “the next letter of *the* word” with “the next letter of *any* word still possible”.
+
+<h2 id="exit-ticket">The gardener’s exam · Build a solution with the labels removed</h2>
+
+<Scene title="No chapter titles" mood="dawn">
+
+On the morning of the exam the Keeper hands you a slip with no chapter names and no hints — three problems, a trowel, and the three questions carved over the potting-shed door behind her.
+
+*"Pick one,"* she says. *"Before you write a line of code, tell me what each node stands for, what you check when the walk ends, and when a walk is allowed to stop early."*
+
+</Scene>
+
+Choose one. Keep the tutorial code closed. Write down what a node stores and what each walk returns before coding.
+
+1. **The listening post.** Letters arrive one at a time on a wire. After each letter, report whether some word from a fixed dictionary **ends exactly at the latest letter**. Test: a word that is a suffix of another, a one-letter word, a stream where nothing matches.
+2. **Counting blurred matches.** The smudged slips are back, but now the question is **how many** stored words match a pattern with dots. Test: no dots, all dots, a pattern longer than every word, duplicate insertions (do they count twice?).
+3. **Shortest unique prefixes.** For every word in a list (no word is a prefix of another), find the shortest prefix that no other word shares. Test: one word, two words that differ only at the last letter, a word that differs at the first letter.
+
+<Reveal q="I’ve written and tested it. What should my reasoning contain?">
+
+**The listening post:** plant the words **reversed**. After each letter, walk the garden backwards through the most recent letters (newest first); report true at the first bloom, stop at a missing branch. The walk never needs more letters than the longest word, so keep only that many. (LeetCode calls this Stream of Characters.)
+
+**Counting blurred matches:** Chapter 2’s search, but it must **not** stop at the first success — return the sum of the counts from every child at a dot, and at the end return the number of words ending here (an `end` counter if duplicates count twice).
+
+**Shortest unique prefixes:** side quest 1’s `pass` counter. Walk each word and stop at the first node whose `pass` is 1 — only this word goes through it. That prefix is the answer.
+
+Now explain why a slightly wrong version fails one of your tests — planting the words forwards for the stream, stopping at the first match while counting, using a flag where a counter was needed. That counterexample is stronger evidence of understanding than a memorised template.
+
+</Reveal>
+
+Passing this once is a useful checkpoint. Rebuild one of these on another day, with a changed input and without the headings choosing the pattern for you.
+
+<h2 id="mixed-recall">Quick recall · Keep the rule warm</h2>
+
+Close the code. Name what a node stores, what the walk checks at its end, and when it may stop early. This short round is a warm-up for the independent practice below.
+
+<Trace title="Which tool fits?" steps={mixedReview} takeaway="Now try the independent session: no pattern title, a new input, and your explanation before the rubric." />
+
+<h2 id="independent-practice">Night garden · The problem won’t name its pattern</h2>
+
+The review queue starts with due concepts, then new ones. Hints or corrected attempts bring a concept back tomorrow. Successful recall at a scheduled review stretches the interval to 3, 7, then 14 days. Your reasoning is **self-checked**; nothing here automatically marks a roadmap problem solved.
+
+<Practice pattern="tries" />
+
+<h2 id="cheat-sheet">The Keeper’s seed packets</h2>
+
+| When you see… | Start with… | The promise to keep |
+|---|---|---|
+| Add words; ask “is it a word?” and “does any word start with…?” | 26-slot nodes + `isEnd`; one shared walk | The node you stand on is the prefix you walked; only `isEnd` makes it a word |
+| A huge or unknown alphabet | The same walk with `HashMap` children | Children hold only letters that occur |
+| Search with `.` wildcards | DFS over `(i, node)`; at a dot try every child | Return true on the first success; at the end, the bloom decides |
+| Find all dictionary words in a grid | Plant all words; DFS the board carrying a node | Step only where a branch exists; consume found words; restore cells; prune empty nodes |
+| Count words / prefixes, with duplicates and erase | `pass` and `end` counters per node | Cut a branch when its `pass` reaches 0 |
+| Shortest root that begins each word | Walk the word; stop at the first bloom | The walk meets prefixes shortest first |
+| Longest word built one letter at a time | DFS a..z through blooming nodes only | Replace only on strictly longer: the first found is the smallest |
+| Top 3 alphabetical per keystroke | Sort, plant in order, keep 3 per node — or binary search a sorted array | Words sharing a prefix are contiguous in sorted order |
+| Maximum XOR of a pair | Two-child garden over bits 30..0; prefer the opposite bit | A higher bit outweighs all lower bits together |
+| Top k by popularity per prefix | Each node caches its own top k; refresh along the recorded path | Valid while counts only increase; otherwise rebuild |
+| Only exact lookups, or substrings | HashSet, or a scan / suffix structure | A trie earns its memory only when beginnings matter |
+
+The garden does **not** mean small memory. A 26-slot node is mostly empty slots; per-node lists multiply memory by k. Count what each node carries before you promise a bound.
+
+## Five bugs the Keeper keeps in her pocket
+
+1. **`search` without the bloom.** Returning “the walk finished” answers `startsWith`. After inserting “apple”, `search("app")` must be false.
+2. **The first child’s answer is final.** At a dot, `return search(child)` inside the loop gives only one branch a chance. Return true on success; return false only after the loop.
+3. **The unconsumed word, the unrestored tile.** In Word Search II, forget `node.word = null` and words repeat; forget `board[r][c] = ch` and later walks miss words.
+4. **Deleting by clearing a flag.** The branch stays, and `startsWith` keeps answering yes for a word that is gone. Unlink nodes no word needs (child counts or `pass` counters).
+5. **`c - 'a'` on anything that isn’t `a`–`z`.** An uppercase letter or a space gives a negative or too-large index and an `ArrayIndexOutOfBoundsException`. Check the alphabet the problem promises; otherwise use map children.
+
+## Coming back to the Word Garden
+
+<Scene title="The Keeper’s last word" mood="dusk">
+
+At the end of the season the Keeper walks you once more around the garden. The courtyard branches have been pruned back to bare wood; the words that hid there are written in the register now. Tally is chalking fresh counters by lantern light, and Bloom is tying a new flower on a word that was planted only this morning.
+
+*"You’ll forget the chapter names,"* the Keeper says. *"That’s fine. Remember that the joint you stand on is everything you have walked, and that a flower — not a path — makes a word. The rest is walking."*
+
+</Scene>
+
+For each chapter, aim to do three things on a fresh input: **recognise the variation, explain why the walk (and any early stop) is safe, and code it without the solution open**. If one feels shaky, that’s your next short session.
+
+A drill plan that fits this pattern: **Implement Trie** as a five-minute warm-up — say “arriving is not enough, the bloom decides” out loud — then **Word Search II** as the boss, narrating the lockstep walk, the consumed word, the restored tile and the prune as you write each line; then, once warm, an unseen transfer such as the listening post from the exam. Revisit a new idea tomorrow and again a few days later, and mix families so the chapter title doesn’t choose the method for you.
+
+All **3 problems from your Tries roadmap** are covered above, with six side quests around them. The neighbouring patterns live in their own books: <a href={`${BASE}dsa/lessons/binary-search/`}>Binary Search</a> for sorted-order prefix search and <a href={`${BASE}dsa/lessons/heaps/`}>Heaps</a> for top-k without prefixes. For the system that serves suggestions at scale, go to the <a href={`${BASE}sd/`}>System Design roadmap</a>. Use the <a href={`${BASE}dsa/`}>full DSA roadmap</a> to continue across patterns.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study** — next reps once the three above feel calm:
+
+- [Word Search](https://leetcode.com/problems/word-search/) — Chapter 3 for a single word; the backtracking half on its own.
+- [Map Sum Pairs](https://leetcode.com/problems/map-sum-pairs/) — side quest 1’s counters, carrying sums.
+- [Stream of Characters](https://leetcode.com/problems/stream-of-characters/) — exit ticket 1: a garden of reversed words.
+- [Maximum XOR With an Element From Array](https://leetcode.com/problems/maximum-xor-with-an-element-from-array/) — side quest 5 with limits, solved offline.
+- [Concatenated Words](https://leetcode.com/problems/concatenated-words/) — walk the garden, restart at the root after every bloom.
+- [Palindrome Pairs](https://leetcode.com/problems/palindrome-pairs/) — a hard one: reversed words in a garden plus palindrome checks.
+- [Trie (Wikipedia)](https://en.wikipedia.org/wiki/Trie) — history, variants and uses beyond interviews.
+- [Radix tree (Wikipedia)](https://en.wikipedia.org/wiki/Radix_tree) — the compressed garden: one edge per run of letters.
+- [Aho–Corasick (cp-algorithms)](https://cp-algorithms.com/string/aho_corasick.html) — a garden with failure links that finds every dictionary word in a text in one pass.
+
+**Look these up yourself** — real ideas this book didn’t have room for:
+
+- **Radix / Patricia trees** — merge chains of single-child nodes into one edge; the standard fix for trie memory.
+- **Aho–Corasick automaton** — many-pattern search in a text in O(text + patterns + matches); the grown-up listening post.
+- **Ternary search trees** — three children per node (less, equal, greater): trie-like prefix search with far less memory.
+- **Suffix arrays and suffix automata** — index every suffix so substring questions become prefix questions.
+- **Minimal acyclic automata / finite state transducers** — share endings as well as beginnings; search engines use them to store huge term dictionaries.
+- **Longest-prefix match in IP routing** — binary tries over address bits; side quest 2’s transfer test in real hardware.
+- **Persistent binary tries** — side quest 5 over any range of an array, by keeping every version of the garden.
+- **Double-array tries** — a compact array encoding of a trie used in tokenizers and dictionaries.

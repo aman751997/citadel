@@ -441,7 +441,7 @@ public class Check {
             eq(5, new B_lca().lowestCommonAncestor(t, by.get(6), by.get(4)).val, "lca figure p=6 q=4");
             eq(2, new B_lca().lowestCommonAncestor(t, by.get(7), by.get(4)).val, "lca 7,4");
             eq(6, lcaNoBoth(t, by.get(6), by.get(4)).val, "catch-the-bug: without the both-sides line the answer is 6");
-            eq(3, new B_lca().lowestCommonAncestor(t, by.get(5), new TreeNode(99)).val == 5 ? 3 : -1, "reveal: a missing q makes the code return p = 5");
+            eq(5, new B_lca().lowestCommonAncestor(t, by.get(5), new TreeNode(99)).val, "reveal: a missing q makes the code return p = 5");
             TreeNode s = build(1, 2);
             eq(1, new B_lca().lowestCommonAncestor(s, s, s.left).val, "lca LC 3");
             for (int k = 0; k < 3000; k++) {

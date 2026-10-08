@@ -313,6 +313,16 @@ test('mixed review numbers', () => {
   let row = [3, 1, 5, 8], total = 0;
   while (row.length) { const i = row.indexOf(Math.min(...row)); total += (row[i - 1] ?? 1) * row[i] * (row[i + 1] ?? 1); row = row.filter((_, k) => k !== i); }
   assert.equal(total, 78); assert.equal(burstBrute([3, 1, 5, 8]), 167);
+  // prose numbers: the clerk's 9 orderings, the binomial formula, greedy tolls, a pre-filled top row past a rock
+  assert.equal(sequencesBrute([1, 2, 5], 5), 9); assert.equal(combosBrute([1, 2, 5], 5), 4);
+  assert.equal(routesBrute(3, 7), 28); assert.equal(8 * 7 / 2, 28);
+  { const g = [[1, 3, 1], [1, 5, 1], [4, 2, 1]]; let r = 0, c = 0, s = g[0][0];
+    while (r < 2 || c < 2) { if (r === 2) c++; else if (c === 2) r++; else if (g[r + 1][c] <= g[r][c + 1]) r++; else c++; s += g[r][c]; }
+    assert.equal(s, 9); assert.equal(cheapestBrute(g), 7); }
+  { const g = [[0, 1, 0], [0, 0, 0]]; assert.equal(rockRoutesBrute(g), 1);
+    const dp = [[1, 1, 1], [1, 0, 0]]; for (let c = 1; c < 3; c++) dp[1][c] = (g[0][c] ? 0 : dp[0][c]) + dp[1][c - 1];
+    assert.equal(dp[1][2], 2); }
+  assert.equal(distinctBrute('babgba', 'bag'), 1); assert.equal(distinctBrute('babgba', 'ba'), 4); assert.equal(distinctBrute('babgbag', 'bag'), 5);
   // delete-only distance = n + m − 2 LCS
   for (const [a, b] of [['sea', 'eat'], ['leetcode', 'etco']]) {
     let bestKeep = 0; for (const x of subseqs(a)) if (isSubseq(x, b)) bestKeep = Math.max(bestKeep, x.length);

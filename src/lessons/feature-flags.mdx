@@ -1,63 +1,951 @@
 ---
 title: 'AI-Era: Feature Flags & Experimentation'
-description: 'Sticky bucketing, config streaming, kill switches, and enough A/B statistics to sound like you have shipped experiments.'
+description: 'The if-statement that took Kestrel’s marketplace down, and the platform that replaced it. Flag kinds, the rule walk, sticky bucketing you can prove, streaming rulesets to ten thousand listeners, kill switches, and enough A/B statistics to sound like you have shipped experiments.'
 module: 12
 order: 4
-minutes: 20
+minutes: 80
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import HintLadder from '../components/HintLadder.astro';
+import Quiz from '../components/Quiz.astro';
+import { kinds, bucketing, distribution, clientSide, failure, rollout, stats, drills } from '../data/sd/feature-flags';
+import { BASE } from '../paths';
 
-## Why this is a real interview question
+<PatternHub
+  pattern="sd-feature-flags"
+  start="prologue"
+  logline="A feature flag looks like an if-statement as a service. It is really three systems wearing one name: a rules engine that must answer in microseconds with no network, a config pipeline that must reach ten thousand processes in seconds, and a statistics machine that must not fool you. Get the first two right and the flag system can never take the product down. Get the third right and you know what your changes did."
+  cast={[
+    { name: 'You', role: 'A few months into Kestrel. You have wrapped code in if (flag) a hundred times and never asked where the flag comes from.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Asks “what happens when that box is down?” about every box, including the ones meant to keep you safe.' },
+    { name: 'Dev Okafor', role: 'SRE. Wants one lever he can pull at 3 a.m. that works in seconds without a deploy.' },
+    { name: 'Iris Tan', role: 'Product lead. Ramps features, runs experiments, and checks the dashboard more often than she should.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has removed more dead flags than anyone alive, and found a few that were not dead.' },
+    { name: 'The Interviewer', role: 'Appears in the walkthrough to show how this design is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · What a flag is', description: 'Kinds and lifetimes, the rule walk, sticky bucketing.', links: [['four-kinds', 'Four kinds of switch'], ['evaluation', 'The rule walk'], ['bucketing', 'Same user, same answer']] },
+    { name: 'Part Two · Getting rules to the code', description: 'Control plane and data plane, distribution, client-side flags.', links: [['planes', 'Two planes'], ['distribution', 'Ten thousand listeners'], ['client-side', 'The browser that knew too much']] },
+    { name: 'Part Three · When it goes wrong', description: 'Outages, propagation, and changes that should not have happened.', links: [['availability', 'The flag service is down'], ['consistency', 'Two seconds of disagreement'], ['safety', 'Friday, 5 p.m.']] },
+    { name: 'Part Four · Experiments', description: 'Assignment, exposure, the pipeline, and the statistics that bite.', links: [['experiments', 'A fair coin'], ['statistics', 'Four sentences of statistics']] },
+    { name: 'Part Five · Living with flags', description: 'Debt, cleanup, environments and tenants.', links: [['flag-debt', 'The flag nobody removed'], ['environments', 'Many environments, many tenants']] },
+    { name: 'Part Six · Out loud', description: 'The full platform design, and the ending that upgrades every other design.', links: [['walkthrough', 'A flag platform, out loud'], ['unlocks', 'The ending for every design']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'The calls interviewers probe, with feedback on every wrong answer' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="Parts One to Three are the platform; Part Four is the statistics; Part Six is the interview. Read the walkthrough aloud once before any mock."
+/>
 
-Atlassian, LaunchDarkly, and increasingly everyone asks it — because it looks small ("if-statement as a service") and is actually a distributed config + statistics problem. It's also the rare design where **read latency ~0 is a hard requirement**: flag checks sit in every request's hot path, thousands of times per second.
+<h2 id="prologue">Prologue · The if-statement that took the marketplace down</h2>
 
-## The core decision: evaluate locally, distribute config
+<Scene chapter="Prologue" title="11:42 a.m." mood="storm">
 
-A flag check must never be a network call. So the architecture inverts the naive design:
+The marketplace goes down at 11:42 on a Tuesday, and nothing about the marketplace has changed.
 
-<Mermaid code={`flowchart LR
-    A["admin UI"] --> CS["config service\n+ Postgres (truth,\nversioned, audited)"]
-    CS -->|"SSE / streaming push\n(realtime lesson)"| SDK1["app server SDK\n(full ruleset in memory)"]
-    CS -->|"..."| SDK2["app server SDK"]
-    SDK1 -->|"evaluate locally\n~microseconds"| REQ["request path"]
-    SDK1 -.->|"poll fallback +\nlast-known-good on disk"| CS`} />
+Dev reads the graphs out loud in his flattest voice. *"Checkout p99 is thirty seconds. Search, thirty seconds. Profile, thirty seconds. Every service, same shape."* Theo finds the common thread in four minutes: the config service — the little box that answers `isEnabled("new-checkout")` — is being redeployed, and every service in Kestrel calls it over HTTP, on every request, with a thirty-second timeout.
 
-- **SDKs hold the entire ruleset in memory** and evaluate locally: ~µs, zero network.
-- **Changes stream to SDKs via SSE** (server push — one-way, realtime lesson's decision rule applied) with polling as fallback; propagation in seconds.
-- **Bootstrap resilience:** SDK starts while config service is down → last-known-good ruleset from local disk + safe defaults compiled in. "The flag system must never take the product down" is the availability sentence.
-- Truth lives in Postgres — versioned, audited ("who turned this on Friday 5pm").
+Afterwards, Mara writes one line on the whiteboard: `if (flags.isEnabled("new-checkout"))`.
 
-**The kill switch is the product's whole pitch:** bad deploy behind a flag → toggle off → seconds-wide blast radius, no rollback deploy. Say that before the interviewer asks what flags are for.
+*"This is an if-statement,"* she says. *"We built it so we could turn things off safely. Today it turned everything off. Why could an if-statement do that — and what would it take to make sure it never can?"*
 
-## Sticky bucketing — deterministic, not stored
+</Scene>
 
-Users must get the *same* variant every time (flapping UIs break users AND experiments). Wrong answer: store user→variant rows (billions of rows, a lookup on the hot path — everything we just avoided). Right answer:
+Your notes name Atlassian and LaunchDarkly as companies that ask this, and increasingly everyone does — because it **looks small** ("an if-statement as a service") and is actually a distributed config problem plus a statistics problem. It is also the rare design where **read latency of about zero is a hard requirement**: flag checks sit in every request's hot path, thousands of times per second per process.
 
+The prologue's bug is the naive design: **every flag check is a network call.** That puts a remote service on the hot path of every request and makes it a single point of failure for the whole product. The real design inverts it:
+
+<Figure caption="Left: the design that failed — a network call per check. Right: push the rules, evaluate locally. The flag service leaves the request path entirely.">
+  <Mermaid code={`flowchart LR
+    subgraph Naive["Naive: ask on every check"]
+      R1["request"] --> APP1["app code"] -->|"HTTP per check\n30 s timeout"| FS1["flag service"]
+    end
+    subgraph Real["Real: push rules, evaluate locally"]
+      FS2["flag service"] -.->|"rules streamed\nin the background"| SDK["SDK in the app\nfull ruleset in memory"]
+      R2["request"] --> APP2["app code"] -->|"function call\nmicroseconds"| SDK
+    end`} />
+</Figure>
+
+**The rule. A flag platform is four promises, said out loud:**
+
+1. **Evaluation is local** — a pure function over an in-memory ruleset. No network on the hot path.
+2. **Assignment is deterministic** — `hash(flagKey + userKey)` decides, so the same user gets the same answer everywhere, with nothing stored.
+3. **Changes propagate in seconds** — streamed, versioned, with polling and last-known-good as fallbacks. The kill switch is only as good as this.
+4. **The flag system can never take the product down** — every check has a safe default, and a dead control plane only freezes the rules; it never breaks the app.
+
+Then, for experiments, a fifth: **measure honestly** — exposure logging, a fixed sample size, a sample-ratio check, and guardrail metrics.
+
+**The kill switch is the product's whole pitch:** a bad change behind a flag → toggle off → a blast radius measured in seconds, no rollback deploy. Say that before the interviewer asks what flags are for.
+
+<Part n="Part One" title="What a flag is">
+
+Before the architecture: what kinds of flags exist, how one is evaluated, and how a percentage becomes a person.
+
+</Part>
+
+<h2 id="four-kinds">Chapter 1 · Four kinds of switch</h2>
+
+<Scene chapter="Chapter 1" title="Four kinds of switch" mood="dawn">
+
+Theo exports every flag Kestrel has ever created into a spreadsheet: 2,000 rows. He sorts by creation date. The oldest, `enable_new_search_2019`, is still read on every search request. Nobody knows if it is on.
+
+*"They're not all the same thing,"* Mara says, scrolling. *"Some of these should have died in a week. Some should never die. Which is which?"*
+
+</Scene>
+
+A flag is a decision moved out of the code and into data, so it can change without a deploy. But **why** it was moved decides how long it should live, who may change it, and what its default must be. The classic four kinds (Pete Hodgson's taxonomy on martinfowler.com, linked at the end):
+
+| Kind | Purpose | Lifetime | Changes | Safe default if the flag system is unreachable |
+|---|---|---|---|---|
+| **Release toggle** | Ship unfinished code dark; release separately from deploy; ramp 1% → 100% | Days to weeks. **Delete at 100%** | Often, during the ramp | **Off** — the old, proven path |
+| **Experiment flag** | Split users into variants and measure | Weeks — until the decision | Rarely (changing weights mid-test ruins it) | **Control** — and log no exposure |
+| **Ops kill switch** | Degrade on purpose under load or failure: turn off recommendations, a costly query, a third-party call | **Long-lived, by design** | Rarely, but must land in seconds | **Normal operation** — the feature stays on |
+| **Permission / entitlement flag** | Who may use a feature: beta programme, plan tier, internal staff | Long-lived | When customers change | **Careful**: deny is safe for security, but must not take away what someone paid for |
+
+Two things in this table are worth saying in an interview:
+
+- **Defaults differ by kind.** "Default off" is right for a release toggle and *wrong* for a kill switch: if a kill switch defaults to off and a pod boots while the flag service is down, you have switched off a working feature for no reason. Name kill switches so that the code default is the healthy state.
+- **Entitlements are a smell in a flag system.** "Pro plan gets bulk listing" is a business rule that never expires and must survive a flag outage. Many teams keep plans and permissions in the billing or authorization service and use a flag only to *launch* the feature. Saying this is a senior signal; it shows you know the flag system is the wrong source of truth for money.
+
+<Trace title="Name the flag" steps={kinds} takeaway="The kind decides the lifetime, the owner and the safe default. Release toggles die young; kill switches live forever and default to healthy; entitlements may not belong here at all." />
+
+**Catch the trap:** "We'll put it behind a flag" with no kind, owner or end date. Every flag you add is a branch nobody will remember. Say the kind and the exit plan in the same breath: *"a release toggle, owned by the checkout team, deleted when it has served 100% for a week."*
+
+<h2 id="evaluation">Chapter 2 · The rule walk</h2>
+
+<Scene chapter="Chapter 2" title="The rule walk">
+
+Iris dictates the rollout plan for the new checkout while you type: *"Off for everyone by default. On for Kestrel staff. On for the beta segment. In India and Brazil, half of paying users. Everyone else — ten percent. Oh, and also: never for Dara, she's demoing the old one to investors."*
+
+Mara reads it over your shoulder. *"That's six rules. In what order does the code read them?"*
+
+</Scene>
+
+Every serious flag system evaluates a flag the same way: a **context** goes in (a stable key plus attributes), a **variation** comes out, and a fixed order of checks decides which:
+
+<Figure caption="The rule walk. Top to bottom, the first match wins. Every exit reports a reason, which is how you debug “why did Ana see the new checkout?”.">
+  <Mermaid code={`flowchart TD
+    S["evaluate(flag, context)"] --> N{"ruleset loaded and\nflag exists?"}
+    N -->|"no"| D["caller's default\nNOT_INITIALIZED / FLAG_NOT_FOUND"]
+    N -->|"yes"| O{"flag on?"}
+    O -->|"no"| OFF["off variation\nOFF: the kill switch"]
+    O -->|"yes"| T{"user individually\ntargeted?"}
+    T -->|"yes"| TG["their variation\nTARGET"]
+    T -->|"no"| RL{"rules in order:\nall clauses match?"}
+    RL -->|"rule i"| SV["serve: fixed variation\nor rollout by bucket\nRULE i"]
+    RL -->|"none"| FT["fallthrough: fixed\nor rollout\nFALLTHROUGH"]`} />
+</Figure>
+
+The vocabulary, which most vendors share with small differences (check your vendor's docs):
+
+- **Context** — who is asking: a stable **key** (user id, device id for logged-out users, or an organisation id) plus attributes (`country`, `plan`, `email`, `appVersion`). The OpenFeature standard calls this the evaluation context.
+- **Variation** — a value the flag can return: `true`/`false`, a string, a number, or a JSON blob (remote config).
+- **Clause** — one test on one attribute: `country IN [IN, BR]`, `email ENDS_WITH @kestrel.dev`. A **rule** is clauses ANDed together plus what to serve.
+- **Segment** — a named, reusable audience: an explicit list of keys, or everyone matching some clauses. "beta-testers" is defined once and used by fifty flags.
+- **Serve** — either a fixed variation or a **percentage rollout**: a split of 10,000 buckets among variations (next chapter).
+- **Fallthrough** — what everyone who matched no rule gets.
+
+Here is the model as Java. Records keep it immutable, which matters later: an evaluation reads one ruleset object that nothing will modify underneath it.
+
+```java id=model group=flags
+/** Who is asking: a stable key plus attributes that rules can target. */
+record Context(String key, Map<String, String> attributes) {
+    String get(String attribute) { return "key".equals(attribute) ? key : attributes.get(attribute); }
+}
+enum Op { IN, NOT_IN, ENDS_WITH, IN_SEGMENT }
+/** One test on one attribute: country IN [IN, BR]. For IN_SEGMENT, the values are segment keys. */
+record Clause(String attribute, Op op, List<String> values) {}
+/** A reusable audience: listed keys, or anyone matching all of its clauses. */
+record Segment(Set<String> included, List<Clause> clauses) {}
+/** One variation's share of the 10,000 buckets. */
+record Slice(String variation, int weight) {}
+/** Split by bucket. bucketBy names the attribute that is hashed: "key", or "org" to keep a company together. */
+record Rollout(String bucketBy, List<Slice> slices) {
+    Rollout {
+        int total = 0;
+        for (Slice s : slices) {
+            if (s.weight() < 0) throw new IllegalArgumentException("negative weight");
+            total += s.weight();
+        }
+        if (total != 10_000) throw new IllegalArgumentException("weights must sum to 10,000, got " + total);
+    }
+}
+/** What a rule hands out: one fixed variation, or a rollout. Exactly one of the two is non-null. */
+record Serve(String variation, Rollout rollout) {}
+record Rule(List<Clause> clauses, Serve serve) {}
+/** salt is normally the flag key; changing it re-randomises everyone (Chapter 3). */
+record Flag(String key, String salt, boolean on, String offVariation,
+            Map<String, String> targets, List<Rule> rules, Serve fallthrough) {}
+record Ruleset(long version, Map<String, Flag> flags, Map<String, Segment> segments) {}
+/** The answer, why (for debugging and exposure logs), and the bucket when a rollout decided it. */
+record Evaluation(String variation, String reason, int bucket) {}
 ```
-bucket = hash(user_id + flag_key) % 10000
-→ variant by range: [0–4999] control, [5000–9999] treatment
+
+And the walk itself — a **pure function**: no I/O, no clock, no randomness. That is what makes it microseconds, and what makes every SDK instance holding the same ruleset give the same answer:
+
+```java id=evaluate group=flags
+static Evaluation evaluate(Ruleset rs, String flagKey, Context ctx, String fallback) {
+    if (rs == null) return new Evaluation(fallback, "NOT_INITIALIZED", -1);   // no ruleset yet
+    Flag flag = rs.flags().get(flagKey);
+    if (flag == null) return new Evaluation(fallback, "FLAG_NOT_FOUND", -1);  // typo, or deleted
+    if (!flag.on()) return new Evaluation(flag.offVariation(), "OFF", -1);    // the kill switch
+    String targeted = flag.targets().get(ctx.key());
+    if (targeted != null) return new Evaluation(targeted, "TARGET", -1);       // named users first
+    for (int i = 0; i < flag.rules().size(); i++) {                           // first matching rule wins
+        Rule rule = flag.rules().get(i);
+        if (allMatch(rule.clauses(), ctx, rs, true)) return serve(flag, rule.serve(), ctx, "RULE " + i, fallback);
+    }
+    return serve(flag, flag.fallthrough(), ctx, "FALLTHROUGH", fallback);     // everyone else
+}
+
+static Evaluation serve(Flag flag, Serve serve, Context ctx, String reason, String fallback) {
+    if (serve.rollout() == null) return new Evaluation(serve.variation(), reason, -1);
+    String unit = ctx.get(serve.rollout().bucketBy());          // usually the user key; "org" for B2B
+    if (unit == null) return new Evaluation(fallback, "MISSING_ATTRIBUTE", -1);
+    int bucket = bucket(flag.salt(), unit);
+    int upper = 0;
+    for (Slice slice : serve.rollout().slices()) {             // slices own consecutive bucket ranges
+        upper += slice.weight();
+        if (bucket < upper) return new Evaluation(slice.variation(), reason, bucket);
+    }
+    throw new IllegalStateException("weights must sum to 10,000");   // Rollout's constructor prevents this
+}
+
+static boolean allMatch(List<Clause> clauses, Context ctx, Ruleset rs, boolean segmentsAllowed) {
+    for (Clause c : clauses) if (!matches(c, ctx, rs, segmentsAllowed)) return false;
+    return true;                                                // no clauses: matches everyone
+}
+
+static boolean matches(Clause c, Context ctx, Ruleset rs, boolean segmentsAllowed) {
+    if (c.op() == Op.IN_SEGMENT) {
+        if (!segmentsAllowed) return false;                     // segments don't nest here: no cycles
+        for (String key : c.values()) {
+            Segment s = rs.segments().get(key);
+            if (s == null) continue;
+            if (s.included().contains(ctx.key())) return true;
+            if (!s.clauses().isEmpty() && allMatch(s.clauses(), ctx, rs, false)) return true;
+        }
+        return false;
+    }
+    String value = ctx.get(c.attribute());
+    if (value == null) return false;                            // a missing attribute never matches, NOT_IN included
+    return switch (c.op()) {
+        case IN -> c.values().contains(value);
+        case NOT_IN -> !c.values().contains(value);
+        case ENDS_WITH -> c.values().stream().anyMatch(value::endsWith);
+        case IN_SEGMENT -> false;                               // handled above
+    };
+}
 ```
 
-Deterministic, stateless, no storage, instantly consistent everywhere. Salting by `flag_key` matters: without it, the same users land in "treatment" for *every* experiment (correlated cohorts poison all your results). Rollout 5%→50% = widen ranges; **already-bucketed users never flip** — say it.
+Iris's plan, in this model: flag `on`; Dara as an individual **target** serving `off` (targets are checked before rules, so she is safe even though she is staff); rule 0 `IN_SEGMENT staff, beta` → `on`; rule 1 `country IN [IN, BR]` AND `plan NOT_IN [free]` → 50/50 rollout; fallthrough → 10% rollout. The checker runs this exact shape case by case, then 30,000 evaluations over 3,000 random rulesets against an independently written oracle.
 
-## Enough experimentation statistics (four sentences, no more)
+**Why it works — what stays true:** the answer depends only on (ruleset version, flag key, context). Two SDKs with the same ruleset version agree on every user, which is what makes debugging, experiments and the next chapter possible.
 
-1. **Randomization is the point** — hash-bucketing gives unbiased cohorts; assignment must precede (and not correlate with) behavior.
-2. **Fix sample size / duration up front** — peeking at p-values daily and stopping when it looks good manufactures false positives.
-3. **Log exposure, not assignment** — analyze only users who actually *hit* the flagged code path; counting never-exposed users dilutes the effect.
-4. **Guardrail metrics** alongside the goal metric — the experiment that lifts clicks 2% and crashes retention should die automatically.
+<Reveal q="Why does a missing attribute make NOT_IN return false instead of true?">
 
-That's the depth interviews want. If they push deeper, it's a data-science interview wearing a costume — say you'd pull in the stats platform.
+Because "we don't know this user's plan" is not evidence that they are not on the free plan. If NOT_IN matched on missing data, a context built without the `plan` attribute (a background job, a logged-out page, a bug in one service) would sail into the "paying users" rule. Rules should fail closed on missing data and let the user fall through to the conservative default. The `reason` field makes this debuggable: you can see `FALLTHROUGH` where you expected `RULE 1` and go find the service that forgot to send `plan`.
 
-## Questions this unlocks
+</Reveal>
 
-| Bank question | How it applies |
-|---------------|----------------|
-| **Feature flag / experimentation platform** | this lesson |
-| **Any "how would you roll this out safely?"** wrap-up | percentage rollout + kill switch + guardrail metrics — a free strong ending for EVERY design |
-| **Remote config / app config systems** | same architecture minus the stats |
-| **LLM prompt/model experiments** | A/B between prompts or models via the same bucketing — the gateway lesson's routing + this lesson's stats |
+**Catch the trap:** order-dependent rules nobody can read. Rules are evaluated top to bottom and the first match wins, so moving a rule changes who gets what. A good admin UI shows the order, previews "who would this change affect?", and records the reason for each evaluation — say all three.
+
+<h2 id="bucketing">Chapter 3 · Same user, same answer</h2>
+
+<Scene chapter="Chapter 3" title="Same user, same answer" mood="dusk">
+
+The first version of Kestrel's 10% rollout was `Math.random() < 0.10`. Iris found out from a support ticket: *"The checkout keeps changing every time I refresh. Is my order going through or not?"*
+
+Mara doesn't scold anybody. She asks: *"Ten percent of what? Of requests, or of people? And when we go to twenty-five, what happens to the ten we already had?"*
+
+</Scene>
+
+A rollout percentage must mean **a fixed set of people**, not a coin flip per request. Two wrong answers first:
+
+```java fragment
+boolean on = Math.random() < 0.10;            // per request: the same user flips between variants
+```
+
+- **Random per request** — users flap between variants on every refresh. That breaks their experience and destroys any experiment: every user is in both arms.
+- **Store a row per user** ("user 42 → treatment") — sticky, but it puts a database lookup back on the hot path for every check, for billions of user × flag rows. Everything Chapter 4 avoids.
+
+**The right answer: compute it.**
+
+```text
+bucket = hash(flagKey + "." + userKey) mod 10,000          → a number in 0 … 9,999
+serve  = the variation whose bucket range contains bucket    (10% = buckets 0 … 999)
+```
+
+Deterministic, stateless, no storage, the same on every server, in every region, after every restart. Ten thousand buckets gives you rollouts in steps of 0.01%, fine enough to start at 0.1% on a huge service.
+
+**Why the flag key is in the hash.** Without it, `hash(userKey)` gives each user one bucket for *every* flag. Every flag at 10% would pick **the same 10% of users** — one unlucky cohort would receive every half-built feature at once, and every experiment's treatment group would be the same people, so the effects pile up and contaminate each other. With the flag key in the input, each flag gets its own independent shuffle. The checker measures it: two flags at 50% overlap on about 25% of users with the key, and on exactly 100% with this version, which Kestrel shipped first:
+
+```java id=unsalted group=flags
+// BUG: the flag key is ignored, so every flag gives a user the same bucket.
+static int bucketUnsalted(String flagKey, String userKey) {
+    return bucket("kestrel", userKey);
+}
+```
+
+**Why ramps are sticky.** Each variation owns a fixed, contiguous range of buckets. Going from 10% to 25% moves the boundary from 1,000 to 2,500; nobody's bucket changes. **Everyone already in stays in; the ramp only adds people.** Here are eight real buckets from the lesson's Java for `new-checkout`:
+
+<Figure caption="Eight users of new-checkout, sorted by bucket. Each ramp step only moves the boundary right; nobody inside ever leaves. (dark-mode, a different flag, puts these same eight users in a completely different order: at 10% it picks only chen, bucket 82.)">
+  <ArrayStrip name="new-checkout" indices={false} values={['farah 571', 'ana 656', 'chen 2189', 'gus 2218', 'dara 6317', 'hana 7286', 'eli 7678', 'ben 8655']} tones={{ 0: 'done', 1: 'done', 2: 'hot', 3: 'hot' }} regions={[{ from: 0, to: 1, label: 'in at 10%', tone: 'green' }, { from: 2, to: 3, label: '+ at 25%', tone: 'gold' }, { from: 4, to: 5, label: '+ at 75%', tone: 'blue' }, { from: 6, to: 7, label: '+ at 100%', tone: 'purple' }]} />
+</Figure>
+
+Notice nobody joins between 25% and 50% — with eight users that's just how the hashes fell. With 20,000 users the checker sees every ramp step land within a fraction of a percent of its target.
+
+<Trace title="Bucket the users" steps={bucketing} takeaway="Hash the flag key with the user key, reduce to 10,000 buckets, give each variation a fixed range. Ramps only add users; different flags pick independent cohorts." />
+
+<HintLadder labels={['A small nudge', 'Name the moving parts', 'The property to protect', 'Compare with the Java']} hints={[
+  'The answer must be identical on every server and every request, so it may depend only on things every server already knows: the flag and the user.',
+  'Hash the flag key and the user key together into a 64-bit number, reduce it to 0–9,999, and compare it with the rollout boundaries (weights in basis points).',
+  'Ramping 10% → 25% must only add users. If each variation owns a fixed contiguous range and a ramp only moves a boundary, nobody inside moves. Also: every SDK language must compute the same bucket, so define the hash over UTF-8 bytes, not a language built-in.',
+]}>
+
+```java id=bucket group=flags
+import java.nio.charset.StandardCharsets;
+
+/**
+ * A stable bucket in [0, 10000) for this flag and this unit (user, device, org). Same inputs, same
+ * bucket: in every process, after every restart, in every language that runs these steps on UTF-8.
+ */
+static int bucket(String salt, String unitKey) {
+    byte[] bytes = (salt + "." + unitKey).getBytes(StandardCharsets.UTF_8);
+    long h = 0xcbf29ce484222325L;              // FNV-1a, 64-bit: offset basis
+    for (byte b : bytes) {
+        h ^= (b & 0xff);
+        h *= 0x100000001b3L;                   // FNV prime; overflow is intended (arithmetic mod 2^64)
+    }
+    h ^= h >>> 33; h *= 0xff51afd7ed558ccdL;   // MurmurHash3's fmix64 finaliser, so that every input
+    h ^= h >>> 33; h *= 0xc4ceb9fe1a85ec53L;   // bit affects every output bit
+    h ^= h >>> 33;
+    return (int) Long.remainderUnsigned(h, 10_000);
+}
+```
+
+</HintLadder>
+
+**Complexity:** O(length of the keys) per evaluation, a few dozen nanoseconds of hashing; no memory, no I/O. Real vendors pick their own hash (SHA-1 and MurmurHash3 are both common; check your vendor's docs). Any well-mixed hash works **as long as every SDK in every language computes the identical function** — the checker verifies this one against an independent re-implementation on thousands of random strings, including accents, CJK and emoji.
+
+Three refinements interviewers like:
+
+- **Bucket by the right unit.** For a B2B feature, bucket by `org`, not user, so a whole company sees the same thing (`bucketBy` in the model). For logged-out traffic, bucket by a device or anonymous id — and accept that a user who logs in may switch arms.
+- **Ramps are monotonic; re-splits are not.** Moving the 10%/90% boundary keeps everyone. Changing a three-way 33/33/34 split to 50/50 moves the *middle* range, reshuffling some users between arms — fine for a release, fatal mid-experiment.
+- **Re-salting is a feature.** Change the salt and everyone gets a fresh bucket — the way to start a new experiment iteration without carrying over the last one's cohort. The checker confirms a new salt keeps only about 10% of the old 10% cohort, exactly what independence predicts.
+
+**Catch the bug.** You will see this line in real code reviews. It has three bugs:
+
+```java id=weakBucket
+// Three bugs in one line. Do not ship.
+static int weakBucket(String flagKey, String userKey) {
+    return Math.abs((flagKey + userKey).hashCode()) % 100;
+}
+```
+
+1. **`Math.abs` of `Integer.MIN_VALUE` is still negative.** `"polygenelubricants".hashCode()` is exactly `Integer.MIN_VALUE`, so flag `"polygene"` and user `"lubricants"` get bucket **−48** — no range contains it. The checker runs exactly this input.
+2. **`String.hashCode` is Java-only.** Your Node edge worker and your iOS app will put the same user in a different bucket. Bucketing must be a cross-language spec, not a library call.
+3. **`hashCode` doesn't mix.** `hash(prefix + suffix) = hash(prefix) × 31^len + hash(suffix)`, so changing the flag key just shifts every user by roughly the same offset. The flag key is *in* the input and the flags are still correlated: two 50% flags overlap on about **12%** of users instead of 25% in the checker's run. (And 100 buckets can't express 0.1%.)
+
+<Reveal q="Some platforms do store assignments. When is that the right call?">
+
+When the assignment must survive **rule changes**, not just restarts. Hashing is sticky only while the rules stay the same: if someone edits a long-running experiment's targeting, users can move. Some experimentation platforms therefore record the first assignment and honour it afterwards (often in a cache or a profile store, not on the hot path of every check). Say it as the exception — "hashing by default; persisted assignments for the few experiments that must be immune to edits" — not the design.
+
+</Reveal>
+
+<Part n="Part Two" title="Getting rules to the code">
+
+Local evaluation needs the rules to be local. This part is the pipeline that puts them there, fast and safely.
+
+</Part>
+
+<h2 id="planes">Chapter 4 · Two planes</h2>
+
+<Scene chapter="Chapter 4" title="Two planes" mood="dawn">
+
+Mara draws a horizontal line across the whiteboard. Above it she writes *people*. Below it, *requests*.
+
+*"Above the line, someone changes a flag a few times an hour, and wants an audit trail and an approval. Below the line, ten million checks a second want an answer in a microsecond. Why would those two ever be the same service?"*
+
+</Scene>
+
+Split the system the way networks do:
+
+- **Control plane** — where humans and automation **change** flags. Admin UI and API, the flag store (a relational database: versioned, transactional), the audit log, approvals, scheduling. Low volume, strongly consistent, can be down for minutes without hurting a single user request.
+- **Data plane** — where flags are **evaluated**. SDKs inside every application process holding the full ruleset in memory, fed by a distribution tier (streaming servers, relays, a CDN). Enormous volume, must never block, tolerates seconds of staleness.
+
+<Figure caption="Control plane above, data plane below. The only thing that crosses the line is a versioned ruleset. Nothing on the request path talks to the control plane.">
+  <Mermaid code={`flowchart TB
+    subgraph CP["Control plane — humans, minutes"]
+      UI["Admin UI / API"] --> FS[("Flag store\nPostgres: truth,\nversioned, audited")]
+      FS --> AU[("Audit log")]
+      FS --> PUB["Change publisher\nversion n+1"]
+    end
+    subgraph DP["Data plane — requests, microseconds"]
+      PUB -->|"delta"| ST["Streaming tier\nSSE"]
+      PUB -->|"snapshot vN"| CDN["CDN / object store\nversioned snapshots"]
+      ST --> RL["Regional relay"]
+      RL --> SDK1["App SDK\nruleset in memory"]
+      RL --> SDK2["App SDK"]
+      CDN -.->|"startup, resync"| SDK1
+      SDK1 -->|"evaluate locally"| REQ["request path"]
+      SDK1 -.->|"last-known-good"| DISK[("local disk")]
+    end`} />
+</Figure>
+
+**Worked numbers: evaluations are free.** Assume Kestrel peaks at 500,000 requests per second and each request checks about 20 flags.
+
+- Flag checks: 500,000 × 20 = **10,000,000 evaluations per second**.
+- Local cost: on the order of a microsecond each (a map lookup, a few string comparisons, one hash; benchmark your SDK). 10,000,000 × 1 µs = **10 CPU-seconds per second — about 10 cores across a fleet of 10,000 instances**, a thousandth of a core each. Free.
+- Remote alternative: even batching one call per request, that's 500,000 RPCs per second to the flag service, an extra network round trip on every request, and an availability ceiling: **if every request needs the flag service, the product can be no more available than the flag service.** (That's the prologue.)
+- Memory: 2,000 flags × about 1 KB of rules each ≈ **2 MB** of JSON; parsed into objects it's a few times that. Trivial per process.
+
+<Reveal q="When is it right for the data plane to call a server instead of evaluating locally?">
+
+When the ruleset can't or shouldn't be in the process: (1) **client devices** — browsers and phones must not hold everyone's rules (Chapter 6); (2) **huge segments** — a list of 1,000,000 user ids at about 20 bytes each is 20 MB, too big to ship to every SDK, so some platforms keep big segments in a separate store the SDK queries and caches (LaunchDarkly calls these "big segments"; check current docs); (3) **languages without an SDK**, served by a local sidecar or relay that evaluates over localhost. Even then the call is to something close and cached, never a cross-region hop on every check.
+
+</Reveal>
+
+**Catch the trap:** "The flag service is highly available, so calling it is fine." Availability multiplies: a request that depends on the flag service *and* the database *and* the cache is less available than any one of them. The design that wins removes the dependency instead of hardening it.
+
+<h2 id="distribution">Chapter 5 · Ten thousand listeners</h2>
+
+<Scene chapter="Chapter 5" title="Ten thousand listeners" mood="night">
+
+The new SDK polls for rules every thirty seconds. It works beautifully until the night the recommendation model starts timing out and Dev flips its kill switch.
+
+He watches the error graph. Ten seconds. Twenty. Twenty-eight. *"I pulled the lever,"* he says to nobody, *"and the building is still on fire."*
+
+</Scene>
+
+Getting a ruleset to 10,000 processes is a fan-out problem with three questions: **how do changes travel, how big are they, and how does an SDK know it hasn't missed one?**
+
+**How changes travel.** Same choices as any server-to-client push (<a href={`${BASE}sd/lessons/pattern-realtime/#transport`}>Realtime: which pipe?</a>):
+
+| Mechanism | Propagation | Cost at 10,000 SDKs | Fits |
+|---|---|---|---|
+| **Polling** every 30 s with `ETag` / `If-None-Match` | Up to 30 s (average about 15 s) | 10,000 ÷ 30 ≈ **333 requests/s**, almost all `304 Not Modified` | Fallback; simple environments; serverless functions that can't hold a connection |
+| **Long-polling** | About a second | One parked request per SDK, re-issued after each change | Where SSE is blocked by a proxy |
+| **Server-Sent Events (SSE)** stream | About a second | 10,000 mostly idle connections | **Default** for server SDKs: one-way, plain HTTP, auto-reconnect |
+| **WebSocket** | About a second | Same as SSE | Only if you also need client → server messages (you don't) |
+
+Flags flow one way, so the realtime lesson's rule applies: **one-way push → SSE, with polling as the fallback.** Ten thousand idle connections are a few streaming nodes, not a fleet (a node can hold tens of thousands of idle connections; benchmark yours).
+
+**How big.** Never push the whole ruleset per change:
+
+- Full snapshot to everyone: 10,000 × 2 MB = **20 GB per change**.
+- Just the changed flag (about 1 KB): 10,000 × 1 KB = **10 MB per change**.
+
+So: **deltas on the stream, snapshots only at startup and after a gap.** Snapshots are written once per version to object storage behind a CDN at a **versioned, immutable URL** (`/env/prod/ruleset/v41.json`), so they cache forever and the origin never sees the herd.
+
+**How an SDK knows it missed nothing: versions.** The control plane gives every change in an environment the next version number. An SDK holding version 41 that receives 42 applies it; receives 41 again, ignores it; receives 43, knows it **missed 42** and fetches a fresh snapshot instead of guessing. (Some vendors version each flag rather than the environment; the gap-detection idea is the same.)
+
+<Figure caption="An SDK's life: snapshot from the CDN, subscribe from that version, apply patches in order, resync on a gap.">
+  <Mermaid code={`sequenceDiagram
+    participant SDK
+    participant CDN
+    participant Stream as Streaming tier
+    SDK->>CDN: GET latest snapshot
+    CDN-->>SDK: ruleset v41
+    SDK->>Stream: subscribe from v41
+    Stream-->>SDK: patch v42, new-checkout to 25 pct
+    Note over SDK: 42 is 41 plus 1, apply
+    Stream-->>SDK: patch v42 again after a reconnect
+    Note over SDK: not newer, ignore
+    Stream-->>SDK: patch v44
+    Note over SDK: gap, v43 missing
+    SDK->>CDN: GET snapshot v44 or later
+    CDN-->>SDK: ruleset v44
+    Note over SDK: resume patches from v44`} />
+</Figure>
+
+The SDK's store, with exactly those three outcomes. Readers never lock: they read one immutable `Ruleset` through a `volatile` field, and the stream thread swaps in a new one per change (copy-on-write — a 2,000-entry map copy, a few times an hour, is nothing):
+
+```java id=store group=flags
+enum Applied { APPLIED, IGNORED_OLD, NEED_SNAPSHOT }
+
+/** The SDK's copy of the ruleset: lock-free reads of an immutable snapshot, one writer swapping it. */
+static final class FlagStore {
+    private volatile Ruleset current;                 // null until the first snapshot
+
+    Ruleset current() { return current; }
+
+    /** Startup, reconnect, or resync after a gap. Never step backwards. */
+    synchronized boolean applySnapshot(Ruleset snapshot) {
+        if (current != null && snapshot.version() <= current.version()) return false;
+        current = snapshot;
+        return true;
+    }
+
+    /** One change from the stream. The environment's version counts up by exactly one per change. */
+    synchronized Applied applyPatch(long version, String flagKey, Flag flagOrNullToDelete) {
+        Ruleset now = current;
+        if (now == null) return Applied.NEED_SNAPSHOT;
+        if (version <= now.version()) return Applied.IGNORED_OLD;            // duplicate or replay
+        if (version > now.version() + 1) return Applied.NEED_SNAPSHOT;       // we missed one: resync
+        Map<String, Flag> flags = new HashMap<>(now.flags());                // copy on write
+        if (flagOrNullToDelete == null) flags.remove(flagKey); else flags.put(flagKey, flagOrNullToDelete);
+        current = new Ruleset(version, Map.copyOf(flags), now.segments());
+        return Applied.APPLIED;
+    }
+
+    /** What application code calls. Reads the volatile once, so one evaluation sees one ruleset. */
+    String variation(String flagKey, Context ctx, String fallback) {
+        return evaluate(current, flagKey, ctx, fallback).variation();
+    }
+}
+```
+
+The checker drives random snapshot/patch sequences against a simple model, and runs a writer applying 20,000 patches while three reader threads evaluate continuously, asserting no reader ever sees a torn ruleset or a version going backwards.
+
+**Scale tricks, each one sentence in an interview:**
+
+- **Relays.** A relay per region or cluster holds one upstream stream and serves hundreds of local SDKs. 10,000 SDKs behind 50 relays is 50 upstream connections. Relays also keep serving the last ruleset if the upstream is unreachable.
+- **Jittered reconnects.** If a streaming node with 10,000 connections restarts, all 10,000 reconnect. Spread over 30 seconds with jitter, that's about 333 reconnects per second; if each pulled a 2 MB snapshot it would be about 667 MB/s — which is why snapshots come from the CDN and why a reconnecting SDK first asks for deltas since its last version.
+- **Polling stays on as a fallback**, at a slower interval, so a broken stream degrades to "slower" rather than "frozen".
+
+<Trace title="Ship the rules" steps={distribution} takeaway="Deltas on an SSE stream for speed, versioned snapshots on a CDN for startup and gaps, relays for fan-out, polling as the fallback. Versions that count up by one make gaps detectable." />
+
+<Reveal q="Why not just use Kafka to distribute flag changes to SDKs?">
+
+Kafka is a fine **internal** backbone — the control plane can publish changes to a topic that the streaming tier consumes. But SDKs live in customer processes, browsers and phones across the internet; they need HTTP-friendly, firewall-friendly, auto-reconnecting delivery and a way to bootstrap from a snapshot. A Kafka client in every app process, holding consumer-group state, is heavy machinery for a few changes an hour. Use a log behind the streaming tier if you like; give the SDKs SSE plus snapshots.
+
+</Reveal>
+
+**Catch the trap:** "We push changes over WebSocket" with no answer for the missed message. Every push channel drops messages during reconnects. The senior sentence is about **versions and resync**, not the transport.
+
+<h2 id="client-side">Chapter 6 · The browser that knew too much</h2>
+
+<Scene chapter="Chapter 6" title="The browser that knew too much">
+
+A security researcher emails Kestrel a polite note with a screenshot. In the web app's JavaScript bundle she found the complete flag ruleset: the email addresses of 312 beta testers, a segment called `acquisition-target-sellers`, and a flag named `launch-kestrel-pay-q3`.
+
+Iris reads the flag name twice. *"That,"* she says, *"was not announced."*
+
+</Scene>
+
+Server SDKs can hold the whole ruleset because the server is yours. **A browser or phone is not.** Anything sent to a client is public: targeting lists (other users' emails and ids), segment names, unreleased feature names, internal attributes. So client-side flags flip the model:
+
+- **Server-evaluated payload.** The client sends its context (or just its session) to a flag endpoint you control; the server evaluates **only the flags marked client-visible** for **that user** and returns a small map: `{ "new-header": true, "checkout-layout": "B" }`. No rules leave the server. Updates arrive on a per-user stream or poll.
+- **Edge evaluation.** The same, at a CDN edge worker holding a replica of the ruleset, so the evaluation happens close to the user without a trip to your origin. The edge still returns results, never rules.
+- **Bootstrap to avoid flicker.** If the page renders with defaults and then flips when flag values arrive, users see a flash and experiments get muddied. Evaluate during the server render and embed the values in the HTML; the client SDK only streams changes after that.
+- **Mobile:** cache the last values on the device for offline starts; re-evaluate when the context changes (a login is a new key — call the SDK's identify method).
+- **Client keys are public.** The client-side id that identifies the environment is shipped in the bundle; it must only grant "evaluate my flags", never read rules or write anything. Server SDK keys are secrets.
+
+<Figure caption="Rules stay on your side of the line. The browser only ever receives its own answers.">
+  <Mermaid code={`flowchart LR
+    B["Browser / app"] -->|"context or session"| EV["Flag endpoint\nserver or edge worker"]
+    RS[("Full ruleset\nall targeting")] --> EV
+    EV -->|"only this user's results\nclient-visible flags only"| B
+    SSR["Server render"] -->|"values embedded in HTML\nno flicker"| B`} />
+</Figure>
+
+<Trace title="Flags in the browser" steps={clientSide} takeaway="Clients get answers, not rules. Evaluate on the server or edge, send only this user's client-visible results, and bootstrap them into the first render." />
+
+**Catch the trap:** treating "client-side flag" as security. A flag that hides a button in the browser does not protect the API behind it. Any check that matters for authorization must also run on the server.
+
+<Part n="Part Three" title="When it goes wrong">
+
+The flag system exists to make failures smaller. This part makes sure it never makes them bigger.
+
+</Part>
+
+<h2 id="availability">Chapter 7 · The flag service is down</h2>
+
+<Scene chapter="Chapter 7" title="The flag service is down" mood="storm">
+
+Months after the prologue, the flag service's database fails over badly and the control plane is down for six hours. Kestrel's dashboards are… flat. Nobody outside the platform team notices.
+
+Mara is delighted. *"That's the whole point,"* she says. *"Now: what would have happened if a pod had started during those six hours?"*
+
+</Scene>
+
+Walk the failure cases one at a time, because each has a different answer:
+
+| Situation | What the SDK does | Why |
+|---|---|---|
+| **Running, stream drops** | Keep serving the in-memory ruleset; reconnect with jittered backoff; fall back to polling | The ruleset doesn't go bad because the network did |
+| **Control plane down for hours** | Keep serving last-known-good; export **ruleset age** as a metric; alert past a bound (say 10 minutes) | Stale-but-consistent beats a mass flip. The alert matters because kill switches won't land |
+| **Pod starts, service down, disk cache present** | Load the last-known-good ruleset from local disk (or a relay's copy), serve it, keep retrying | Same rules as its neighbours, minus recent changes |
+| **Pod starts, nothing available** | Wait a **bounded** time (a second or two), then serve **code defaults**; never block startup indefinitely | The flag system must never stop you from scaling or restarting |
+| **Unknown flag** (typo, deleted) | Return the code default with reason `FLAG_NOT_FOUND`; count it | A typo must not throw in the request path |
+
+**Fail-safe defaults are a design decision per flag**, which is why Chapter 1 put them in the table: release toggles default to the old path, kill switches to normal operation, experiments to control. The default lives **in the code** at the call site (`variation("new-checkout", ctx, "off")`), so it is reviewed like code.
+
+**Stale bounds.** Expose `ruleset_age_seconds` and `ruleset_version` per instance. Version skew across the fleet tells you which pods missed changes; age past a few minutes pages someone. Do *not* auto-revert to defaults when stale: that turns an outage in the flag system into a global flip of every ramped feature.
+
+<Trace title="Survive the outage" steps={failure} takeaway="Local evaluation, last-known-good on disk, bounded startup wait, then code defaults. Alert on ruleset age; never mass-revert because the control plane is down." />
+
+**Catch the trap:** "If the flag service is down, we fail closed." For which flag? Closed for a kill switch means the feature is off for everyone; closed for an entitlement means paying customers lose what they bought. The senior answer names the default per kind.
+
+<h2 id="consistency">Chapter 8 · Two seconds of disagreement</h2>
+
+<Scene chapter="Chapter 8" title="Two seconds of disagreement" mood="dusk">
+
+Iris ramps the new checkout to 25% at 14:00:00. A customer's cart page, served at 14:00:00.4, shows the new checkout button. The payment page, served by a different pod at 14:00:00.9, shows the old flow. The customer gets an error that should be impossible.
+
+*"Every pod got the change,"* Dev says. *"Just not at the same instant."*
+
+</Scene>
+
+Flag distribution is **eventually consistent with a small, bounded lag**: typically a second or two on a healthy stream, up to the polling interval on the fallback. For most flags that's fine. Three places where it is not, and what to do:
+
+- **Multi-step flows.** Evaluate once at the start (or at session creation) and **carry the decision**: in the session, a cookie, or the request context passed to downstream services. Downstream services read the decision instead of re-evaluating. The checkout flow stays on the path it started on.
+- **Many services in one request.** If the gateway, the cart service and the pricing service each evaluate the same flag, they can disagree for a second. Evaluate at the edge of the request and propagate the result (a header or context field).
+- **The kill switch.** Its value is measured in seconds-to-effect. Streaming, relays and a propagation SLO ("99% of SDKs apply a change within 5 seconds", measured by having SDKs report their version) are what make "toggle off" an incident tool rather than a hope.
+
+**What you can promise:** per-instance monotonic versions (an SDK never goes backwards — the store above enforces it), bounded propagation, and the same answer for the same ruleset version. You cannot promise that every process flips at the same instant, and you should not try: a synchronous global commit would put the control plane back on the hot path.
+
+<Reveal q="The admin who just flipped a flag refreshes the dashboard and sees the old value. How do you fix that?">
+
+That's read-your-writes in the *control* plane, not the data plane. The admin UI should read from the flag store (the source of truth) or wait for the write's version, not from an SDK or a cache. Separately, show "propagated to 9,940 of 10,000 SDKs" using the versions SDKs report — that's the honest answer to "has my change landed?".
+
+</Reveal>
+
+**Catch the trap:** promising "instant" propagation. Say "seconds, measured" and name what you do in the flows that can't tolerate a mid-flow flip.
+
+<h2 id="safety">Chapter 9 · Friday, 5 p.m.</h2>
+
+<Scene chapter="Chapter 9" title="Friday, 5 p.m." mood="night">
+
+At 17:04 on a Friday, someone sets `new-search-ranking` from 10% to 100% in production. They meant staging. By 17:11 search conversion is down by a third and nobody knows why, because nobody deployed anything.
+
+At 17:40 Theo finds it in the audit log. *"A flag change,"* he says, *"is a deploy without a deploy pipeline."*
+
+</Scene>
+
+Treat flag changes with the same care as code changes, scaled to risk:
+
+- **Audit log** — who, what (before and after), when, which environment, and a free-text reason. Immutable and queryable. It answers "who turned this on Friday at 5 p.m.?" in seconds, and it should be on the incident dashboard: "recent flag changes" is the first thing to check when nothing was deployed.
+- **Approvals** — four-eyes review for production changes to flags marked critical, like a pull request. Scheduled changes ("ramp to 50% Monday 10:00") so nobody ships at 5 p.m. on a Friday.
+- **Environment guardrails** — production visually distinct, separate permissions per environment, no copy-paste of rules between environments without a diff.
+- **Guarded (progressive) rollouts with automatic rollback** — ramp in steps (1% → 5% → 25% → 50% → 100%) with a bake time at each, comparing the **treatment's** error rate and latency against the **control's** at the same moment. If treatment is significantly worse, the platform rolls back to 0% by itself and pages the owner.
+
+<Figure caption="A guarded rollout. Each step bakes while the platform compares treatment against control; a regression anywhere rolls straight back to 0%.">
+  <Mermaid code={`flowchart LR
+    S1["1%\nbake 10 min"] -->|"healthy"| S2["5%\nbake 30 min"]
+    S2 -->|"healthy"| S3["25%\nbake 1 h"]
+    S3 -->|"healthy"| S4["50%\nbake 1 h"]
+    S4 -->|"healthy"| S5["100%\nschedule cleanup"]
+    S1 -->|"treatment worse\nthan control"| RB["Roll back to 0%\npage the owner"]
+    S2 --> RB
+    S3 --> RB
+    S4 --> RB`} />
+</Figure>
+
+**Worked numbers: why 1% is enough to catch it.** Kestrel serves 500,000 requests per second. At 1%, the treatment sees **5,000 requests per second → 300,000 per minute**. If control errors at 0.1% and the new path at 0.5%, one minute of treatment shows about **1,500 errors where control's rate predicts 300**. That is unmistakable within a minute, at a cost of 1% of users seeing an elevated error rate for that minute. On a low-traffic endpoint (50 requests per second), 1% is 30 requests per minute — the same signal takes hours, so either bake longer or start at a larger percentage.
+
+**Compare against control, not a fixed threshold.** A fixed "roll back above 1% errors" fires during an unrelated outage and misses a regression that doubles a 0.1% error rate. Comparing arms at the same time cancels out everything except the change.
+
+**Canary versus flag.** A **canary deploy** routes a slice of *requests* to new *binaries* at the load balancer (<a href={`${BASE}sd/lessons/load-balancing/#deploys`}>Load balancing: leaving quietly, arriving slowly</a>); a **flag rollout** routes a slice of *users* to a new *code path* inside the same binary. Use both: canary catches "the new build crashes"; flags catch "the new feature is wrong", with stickiness per user and a kill switch that needs no deploy.
+
+<Trace title="Make changes safe" steps={rollout} takeaway="Audit everything, approve what matters, ramp in steps, and let the platform compare treatment with control and roll back on its own." />
+
+**Catch the trap:** an automatic rollback that only watches absolute thresholds. Say "treatment versus control, at the same time, with a minimum sample before deciding".
+
+<Part n="Part Four" title="Experiments">
+
+The same bucketing that makes rollouts sticky makes randomised experiments possible. This part is about not fooling yourself with them.
+
+</Part>
+
+<h2 id="experiments">Chapter 10 · A fair coin</h2>
+
+<Scene chapter="Chapter 10" title="A fair coin" mood="dawn">
+
+Iris wants to know whether the new checkout sells more. *"Easy,"* says someone. *"Compare this week, with it, to last week, without it."*
+
+Mara shakes her head. *"Last week had a holiday. This week had a celebrity post. Every week is different. How do you build two groups that differ in exactly one thing?"*
+
+</Scene>
+
+An **A/B test** (online controlled experiment) is a flag with a purpose: split users randomly into **control** and **treatment**, change one thing, and compare a metric. Randomisation is the whole point — it makes the two groups alike in everything *except* the change, so a difference in outcome can be credited to the change.
+
+The machinery, end to end:
+
+1. **Assignment** — the experiment flag's rollout (50/50, or 90/10 to limit risk) using the same deterministic bucketing. Assignment must not depend on behaviour: decide before the user does anything, from the hash, not from what they clicked.
+2. **Exposure logging** — when the code path *actually evaluates* the flag for a user, the SDK emits an **exposure event**: `(experiment, variation, userKey, timestamp)`. Not when they were assigned — when they reached the code. Users who never reach checkout can't be affected by a checkout change; counting them dilutes the effect toward zero.
+3. **Metric events** — the product's normal analytics: purchases, clicks, latency, crashes, each with a user key and timestamp.
+4. **The join** — for each experiment, take exposed users, attach their metric events **after first exposure**, aggregate per variation.
+5. **The statistics** — per-metric difference with a confidence interval, the sample-ratio check, guardrails (next chapter).
+
+<Figure caption="The experiment pipeline. The SDK decides and records exposure; everything heavy happens off the request path.">
+  <Mermaid code={`flowchart LR
+    SDK["SDK\nassign by hash"] -->|"exposure events\ndeduped"| Q[("Event stream\nKafka")]
+    APP["Product analytics"] -->|"metric events"| Q
+    Q --> DD["Stream job\ndedupe, first exposure"]
+    DD --> WH[("Warehouse\nexposures + metrics")]
+    WH --> ST["Stats engine\nper metric, per arm,\nSRM check, guardrails"]
+    ST --> DASH["Experiment dashboard\nand auto-stop"]`} />
+</Figure>
+
+**Worked numbers: deduplicate exposures.** Say 5% of Kestrel's 10,000,000 evaluations per second are experiment flags: **500,000 exposure candidates per second** at peak. Logged raw at 200 bytes each and sustained, that would be 43 billion events and about 8.6 TB a day. But analysis only needs each user's **first** exposure per experiment. With 20 million daily users each exposed to about 10 experiments, that's **200 million events a day** (about 2,300 per second on average) and **40 GB a day**. So the SDK deduplicates in memory (a bounded set of recently logged user × flag × variation), and a stream job deduplicates across servers.
+
+The back-of-envelope: 500,000/s × 86,400 s ≈ 43.2 billion/day × 200 B ≈ 8.6 TB; 20,000,000 × 10 = 200,000,000/day × 200 B = 40 GB; 200,000,000 ÷ 86,400 ≈ 2,315/s.
+
+<Reveal q="Kestrel is a marketplace. Why might a plain user-level A/B test of a new pricing algorithm give the wrong answer?">
+
+Because buyers and sellers interact. If treatment buyers see lower prices and buy up the cheap inventory, control buyers see less of it — the arms are not independent, and the measured lift is inflated (or invented). This is **interference**. Marketplaces use cluster-randomised experiments (randomise by city or market), switchback tests (alternate the whole market between arms over time windows), or two-sided designs. You don't need the details in an interview; naming the problem is the signal.
+
+</Reveal>
+
+**Catch the trap:** "We'll log every evaluation." It's the most expensive sentence in the design. Log first exposures, deduplicated, and send aggregate counters for everything else.
+
+<h2 id="statistics">Chapter 11 · Four sentences of statistics</h2>
+
+<Scene chapter="Chapter 11" title="Four sentences of statistics" mood="dusk">
+
+Day three of the checkout experiment. Iris messages at 8 a.m., then 11, then 3 p.m.: *"p = 0.04!! Can we ship?"*
+
+Mara replies with a question: *"If I flipped two identical coins every day for twenty days and checked each evening, how often would one of them look 'significantly' better at least once?"*
+
+</Scene>
+
+Your notes say this is the depth interviews want — four sentences, no more:
+
+1. **Randomisation is the point.** Hash bucketing gives unbiased cohorts; assignment must come before (and not correlate with) behaviour.
+2. **Fix the sample size or duration up front.** Peeking at p-values daily and stopping when it looks good manufactures false positives.
+3. **Log exposure, not assignment.** Analyse only users who actually reached the flagged code path; counting never-exposed users dilutes the effect.
+4. **Guardrail metrics alongside the goal metric.** The experiment that lifts clicks 2% and hurts retention should die automatically.
+
+If they push deeper, it's a data-science interview wearing a costume — say you'd pull in the stats platform. But carry the intuition and a few numbers behind each sentence:
+
+**How big a sample?** A rule of thumb (Lehr's rule, for a two-sided test at α = 0.05 with 80% power): **n per arm ≈ 16 σ² / δ²**. For a conversion rate p, σ² = p(1 − p).
+
+- Checkout converts at 10%, so σ² = 0.1 × 0.9 = 0.09. You want to detect a lift of 0.5 percentage points (10.0% → 10.5%), so δ = 0.005.
+- n ≈ 16 × 0.09 ÷ 0.000025 = **57,600 users per arm**, about 115,000 in total. Halve the effect you want to detect and you need **four times** the users.
+- Then run whole weeks anyway, because Monday's shoppers differ from Saturday's.
+
+**Peeking.** A p-value of 0.05 means "5% false positives **if you look once**". Each additional look is another chance for noise to cross the line. A simulation of an experiment with **no real effect**, checked at 20 equally spaced points with "stop at the first p &lt; 0.05", declares a false winner **about 25% of the time** (about 14% with 5 looks, about 20% with 10). Fixes: commit to the sample size up front, or use **sequential testing** methods designed for continuous monitoring (some platforms offer "always-valid" p-values; look them up below).
+
+**Sample ratio mismatch (SRM).** If you designed a 50/50 split, the exposed counts should be close to 50/50. A significant deviation means something in assignment or logging is broken — and every metric is suspect, because whatever lost users from one arm probably lost a non-random kind of user.
+
+- Designed 50/50; observed **50,000 control, 51,500 treatment** (101,500 total, expected 50,750 each).
+- χ² = 750² ÷ 50,750 + 750² ÷ 50,750 ≈ **22.17**. The threshold for p = 0.001 at one degree of freedom is **10.83**. SRM: stop and debug.
+- Observed 50,000 vs 50,300 gives χ² ≈ 0.90: ordinary noise.
+- Typical causes: treatment logs exposure on a code path control doesn't have; the new page crashes before logging; a redirect drops users in one arm; bot filtering hits one arm harder.
+
+```java id=srm
+/** Chi-square statistic (1 degree of freedom) comparing observed arm sizes with the designed split. */
+static double srmChiSquare(long control, long treatment, double controlShare) {
+    double total = control + treatment;
+    double expectedControl = total * controlShare, expectedTreatment = total * (1 - controlShare);
+    double dc = control - expectedControl, dt = treatment - expectedTreatment;
+    return dc * dc / expectedControl + dt * dt / expectedTreatment;
+}
+
+/** 10.83 is the chi-square value for p = 0.001 at one degree of freedom: alarm only on a real mismatch. */
+static boolean sampleRatioMismatch(long control, long treatment, double controlShare) {
+    return srmChiSquare(control, treatment, controlShare) > 10.83;
+}
+```
+
+The checker verifies the numbers above, an exact 90/10 split scoring zero, 89,000/11,000 on a 90/10 design flagged, and 2,000 fair coin-flip splits almost never tripping the alarm (a strict threshold is deliberate: SRM checks run on every experiment, every day).
+
+**Guardrails.** Besides the goal metric, every experiment watches metrics it must **not** hurt: error rate, p99 latency, crash rate, revenue per user, unsubscribes. A significant guardrail regression stops the experiment automatically — the same machinery as Chapter 9's guarded rollout. Pick the guardrails before the experiment starts, for the same reason you fix the sample size.
+
+<Trace title="Read the experiment" steps={stats} takeaway="Check SRM before reading any result. Fix the sample size or use sequential tests. Analyse exposed users only. Guardrails stop what the goal metric would miss." />
+
+**Catch the trap:** "We'll A/B test it" as a complete sentence. Say what is randomised (users, by hash), what is logged (first exposure), what is measured (one goal metric, a few guardrails), for how long (a fixed sample size, whole weeks), and what would make you distrust the result (SRM).
+
+<Part n="Part Five" title="Living with flags">
+
+A flag is cheap to create and expensive to keep. This part is about the bill.
+
+</Part>
+
+<h2 id="flag-debt">Chapter 12 · The flag nobody removed</h2>
+
+<Scene chapter="Chapter 12" title="The flag nobody removed" mood="night">
+
+Theo tells the story of a trading firm, years ago, in his quiet ghost-story voice. New code went out to its order servers — all but one. A flag that used to switch on an old, retired feature had been reused for the new one. On the one server that missed the deploy, the reused flag woke the old code up.
+
+*"Forty-five minutes,"* he says. *"Hundreds of millions of dollars. Because a dead flag was not dead."*
+
+</Scene>
+
+That is the Knight Capital incident of August 2012, widely documented (and described in the SEC's 2013 order): a repurposed flag reactivated retired code on a server that hadn't received the new release, and the firm lost over $400 million in about 45 minutes. Two lessons fall straight out of it: **never reuse a flag key**, and **delete dead code paths, not just flags.**
+
+Flag debt is the everyday version. Every live flag is a branch in the code and a dimension in your test matrix: 10 independent boolean flags touching one code path give 2¹⁰ = **1,024** combinations, and nobody tests them all.
+
+<Figure caption="A flag's life. Release toggles and experiments must reach “removed”; only kill switches and entitlements may stay permanent — on purpose, with an owner.">
+  <Mermaid code={`flowchart LR
+    C["Created\nkind, owner,\nexpiry date"] --> R["Ramping\nor experimenting"]
+    R --> F["Fully on or off\n100% one variation"]
+    F -->|"stale detector:\nunchanged N days"| CL["Cleanup ticket\nremove code path"]
+    CL --> RM["Removed\nkey retired forever"]
+    C -->|"kill switch or\nentitlement"| P["Permanent\nowner, tested yearly"]`} />
+</Figure>
+
+**Hygiene that works:**
+
+- **Metadata at creation**: kind, owner team, expected removal date, linked ticket. The platform refuses a release toggle without an expiry date.
+- **Stale detection**, automatically: a flag serving one variation to 100% of traffic for N days with no rule changes; a flag with **zero evaluations** for N days (dead in production); a flag past its expiry date. Each produces a cleanup ticket for the owner, and a weekly report per team.
+- **Code references**: scan repositories for flag keys so you know where to delete, and which flags exist in code but not in the platform (or the reverse). Some vendors offer this as a CI integration.
+- **Removal is a code change first**: delete the losing branch, deploy, confirm zero evaluations, *then* archive the flag. Retire the key permanently.
+- **Budgets**: a cap on active release toggles per team turns cleanup into a habit instead of a heroic quarter.
+
+**Catch the trap:** "We clean up flags periodically." Interviewers hear "never". Say what detects a stale flag and who gets the ticket.
+
+<h2 id="environments">Chapter 13 · Many environments, many tenants</h2>
+
+<Scene chapter="Chapter 13" title="Many environments, many tenants">
+
+Kestrel opens its flag platform to sellers who build storefront plugins. Overnight, the platform has two hundred customers, each with dev, staging and production. One of them creates 40,000 flags with a script.
+
+Mara looks at the streaming graphs. *"So now the question is not 'how do we serve flags',"* she says. *"It's 'how do we serve flags to people who aren't us'."*
+
+</Scene>
+
+**Environments.** A flag's *definition* (key, variations, kind) is shared across environments; its *targeting* is per environment. Each environment has its own ruleset, its own version sequence, its own SDK keys and its own permissions. Promoting a rollout from staging to production is an explicit, reviewed copy with a diff — never shared state.
+
+**Multi-tenant (the LaunchDarkly-like platform).** Each customer organisation owns projects and environments; an environment is the unit of everything:
+
+- **Isolation**: SDK keys scoped to exactly one environment; every query in the control plane filtered by tenant (the same instinct as tenant-prefixed cache keys in <a href={`${BASE}sd/lessons/caching/#keys`}>Caching: naming things</a>, and the War Room <a href={`${BASE}sd/war/multi-tenancy/`}>multi-tenancy</a> dossier).
+- **Partition the data plane by environment**: streaming connections, change topics and CDN snapshot paths are all keyed by environment id, so a change in one tenant's environment fans out only to that environment's SDKs.
+- **Noisy neighbours**: per-tenant limits on flags, rules, segment sizes and change rate. The customer with 40,000 flags gets a ruleset 20 times bigger than average; their snapshots cost them, not everyone.
+- **Per-tenant targeting inside Kestrel's own product**: for B2B features, target and bucket by `org`, so one seller's whole team sees the same storefront editor.
+
+**Catch the trap:** forgetting that the environment, not the flag, is the unit of distribution and isolation. Say "everything is keyed by environment" early in the platform design.
+
+<Part n="Part Six" title="Out loud">
+
+The full design in the interview room, and the sixty-second ending that makes every other design stronger.
+
+</Part>
+
+<h2 id="walkthrough">Chapter 14 · A flag platform, out loud</h2>
+
+<Scene chapter="Chapter 14" title="A flag platform, out loud" mood="night">
+
+Mock Friday. Mara sets the phone face-down. *"Design a feature flag and experimentation platform. Think LaunchDarkly. I won't help."*
+
+You write four numbers in the corner of the board — 9 · 15 · 25 · 38 — and pick up the marker.
+
+</Scene>
+
+A 45-minute round, compressed to its spoken lines, following the <a href={`${BASE}sd/lessons/delivery-framework/`}>delivery framework</a>. Read it aloud once.
+
+**0:02 · Roadmap and requirements**
+
+> **You:** "I'll spend about six minutes on requirements and scale, a couple on entities and the API, build a simple design that works, then go deep on the two or three hard parts, and wrap up. Would you like numbers up front or as they matter?"
+>
+> **Interviewer:** "As they matter."
+>
+> **You:** "Functional: customers define flags with variations, targeting rules, segments and percentage rollouts, per environment. Their applications evaluate flags through SDKs — server-side and client-side. Changes reach running applications quickly, including a kill switch. And experiments: assignment, exposure tracking and results. Out of scope unless you want them: billing, the admin UI's design, a full stats engine — I'll design the pipeline that feeds it."
+
+**0:05 · Non-functionals with numbers**
+
+> **You:** "The defining requirement: **evaluation adds no network call and the platform can never take a customer's product down.** So evaluation is local, microseconds. Propagation: a change reaches 99% of SDKs within about five seconds — that's what makes a kill switch useful. The control plane needs strong consistency and an audit trail; the data plane favours availability and tolerates seconds of staleness. Privacy: client devices never see rules."
+>
+> "Scale, assumed: 2,000 customer organisations with three environments each — 6,000 environments — averaging 500 flags at about 1 KB of rules: about 500 KB of ruleset per environment, 3 GB in total, so all of it fits in memory on every streaming node. A million connected server SDK instances. About 100,000 flag changes a day, which is only about 1.2 a second. Evaluation volume is huge but it happens in customers' processes, so it costs us nothing — what reaches us is summary counts and exposure events."
+
+**0:08 · Core entities**
+
+> **You:** "Organisation has many Projects; a Project has many Environments and many Flags. A Flag's definition — key, kind, variations — is per project; its **targeting** — on/off, targets, rules, rollout, fallthrough — is per environment, so Flag-to-Environment is many-to-many through a FlagConfig. Segments are per environment. Every change creates an AuditEntry and bumps the environment's Version. Experiments reference a flag in an environment, a set of metrics and guardrails. SDK keys belong to exactly one environment."
+
+**0:10 · API**
+
+```text
+Control plane (authenticated users, audited)
+  PUT  /projects/{p}/flags/{key}                       define flag: kind, variations, owner, expiry
+  PATCH /envs/{e}/flags/{key}  { ops, comment }        change targeting → new env version, audit entry
+  POST /envs/{e}/flags/{key}/approvals                 request / approve a change
+Data plane (SDK keys)
+  GET  /sdk/envs/{e}/ruleset            → 302 to CDN  /rulesets/{e}/v{n}.json   (startup, resync)
+  GET  /sdk/envs/{e}/stream?since={n}   → SSE: patch events with versions
+  POST /sdk/events                      ← batched exposures and summary counts
+Client side (public client id, never rules)
+  POST /client/envs/{e}/evaluate  { context }  → { flagKey: variation, ... }  client-visible flags only
+```
+
+> **You:** "Changes carry a comment for the audit log. The ruleset endpoint redirects to an immutable, versioned CDN URL. The stream takes a `since` version so a reconnecting SDK gets just the deltas it missed."
+
+**0:15 · High-level design, one requirement at a time**
+
+> **You:** "Change a flag: the admin API validates the change, writes the new config and an audit entry and increments the environment's version in **one Postgres transaction**, then publishes the change — via a transactional outbox, so a committed change is never lost between the database and the bus. A publisher writes the full snapshot for that version to object storage behind the CDN, and puts the delta on the change bus."
+>
+> "Evaluate: server SDKs fetch the snapshot at startup, subscribe to the stream from that version, and evaluate every check locally from memory. Client SDKs call the evaluate endpoint, served from an edge worker or our evaluation service, and get only their own results."
+>
+> "Experiments: SDKs emit deduplicated exposure events and summary counts to an ingestion tier that writes to a log; a stream job deduplicates and lands them in a warehouse next to the customer's metric events; a stats job computes results, the SRM check and guardrails."
+
+<Figure caption="The platform. Control plane writes are transactional and audited; the data plane is snapshots plus streamed deltas; events flow back through a log to the stats engine.">
+  <Mermaid code={`flowchart LR
+    ADM["Admin UI / API"] -->|"1 · change"| API["Control API"]
+    API -->|"2 · txn: config +\naudit + version"| PG[("Postgres\nflags, audit,\noutbox")]
+    PG -->|"3 · outbox"| BUS[("Change log\nper environment")]
+    BUS --> SNAP["Snapshot writer"] --> OBJ[("Object store + CDN\nrulesets/env/vN")]
+    BUS --> STR["Streaming tier\nSSE, by environment"]
+    STR --> RLY["Relay\noptional, per region"]
+    RLY --> SDK["Server SDKs\nlocal evaluation"]
+    OBJ -.->|"startup, resync"| SDK
+    BUS --> EDGE["Edge evaluation\nclient SDKs"]
+    SDK -->|"exposures, counts"| ING["Event ingest"] --> LOG[("Event log")] --> WH[("Warehouse")] --> STATS["Stats + SRM\n+ guardrails"]`} />
+</Figure>
+
+**0:24 · Deep dive 1 — bucketing and evaluation**
+
+> **You:** "Evaluation is a pure function: flag off → off variation; individual targets; rules in order, first match wins; then the fallthrough. Percentages use `hash(salt + userKey) mod 10,000`, where the salt defaults to the flag key. The flag key is in the hash so that different flags pick independent cohorts — otherwise the same 10% of users would be in every rollout and every experiment, and the results would contaminate each other. Each variation owns a fixed range of buckets, so ramping from 10% to 25% only adds users; nobody flips. And the hash is specified over UTF-8 bytes so every SDK language computes the same bucket."
+
+**0:29 · Deep dive 2 — propagation and fan-out**
+
+> **You:** "A million SDK connections at, say, 50,000 idle connections per streaming node is 20 nodes; I'd run double for headroom. Fan-out is cheap because we push deltas: an average environment has about 170 SDKs, so a 1 KB change is about 170 KB of traffic; our largest customer's 10,000 SDKs is 10 MB. Pushing full 500 KB snapshots instead would be about 83 MB per change on average, so snapshots only serve startup and resync. Every change carries the environment's next version; an SDK applies version n+1, ignores old ones, and on a gap fetches the snapshot. If a streaming node dies, its 50,000 SDKs reconnect with jitter and ask for deltas since their version; anyone too far behind pulls a snapshot from the CDN — 50,000 × 500 KB is 25 GB, which over 30 seconds of jitter is about 833 MB/s, comfortably a CDN's job and not our origin's. I'd measure propagation by having SDKs report their version, and alert on the 99th percentile lag."
+
+**0:34 · Deep dive 3 — availability and safety**
+
+> **You:** "The platform must never take a customer down. SDKs keep the last ruleset in memory and on disk; if we're down they keep serving it and report its age. A cold start with nothing available waits a second or two, then uses the defaults in the customer's code. Client SDKs cache their last values on the device. On the safety side: every change is audited with a reason, critical production flags need an approval, and guarded rollouts compare treatment against control error rates and roll back automatically. For experiments, exposures are deduplicated first-exposure events, every experiment gets an automatic SRM check, and results use fixed horizons or sequential tests so peeking doesn't manufacture winners."
+
+**0:39 · Wrap-up**
+
+> **You:** "To recap: local evaluation, deterministic bucketing, versioned deltas over SSE with CDN snapshots, last-known-good everywhere, audited and guarded changes, and an exposure pipeline into a stats engine. At 10×, the first pressure is connection count and the event pipeline, not evaluation — relays and more streaming nodes for the first, partitioning the log by environment for the second. Big segments would move to a separate store the SDK queries and caches. I'd monitor propagation lag, ruleset age per SDK, stream connection churn, event-ingest lag and SRM alerts. With more time I'd add stale-flag detection with code references, and mutually exclusive experiment layers."
+
+**0:42.** Mara turns the phone over. Three minutes for questions.
+
+**Check the numbers yourself:** 2,000 × 3 = 6,000 environments; 500 flags × 1 KB = 500 KB each; 6,000 × 500 KB = 3 GB. 100,000 changes ÷ 86,400 s ≈ 1.16/s. 1,000,000 ÷ 6,000 ≈ 167 SDKs per environment → 167 KB per 1 KB change; 167 × 500 KB ≈ 83 MB per change as full snapshots. 1,000,000 ÷ 50,000 = 20 nodes. 50,000 × 500 KB = 25 GB; ÷ 30 s ≈ 833 MB/s.
+
+<Reveal q="Which sentence in this walkthrough would you most likely have skipped — and what would it have cost?">
+
+For most people it's the **outbox** sentence in the high-level design. Without it, the interviewer asks: "you write to Postgres and then publish — what if the process dies in between?" and you've lost a change that the database says happened but no SDK ever sees. The other common skip is "evaluation volume costs us nothing because it happens in customers' processes" — leaving it out makes the interviewer wonder whether you planned to serve ten million evaluations a second yourself.
+
+</Reveal>
+
+<h2 id="unlocks">Chapter 15 · The ending for every design</h2>
+
+<Scene chapter="Chapter 15" title="The ending for every design" mood="dawn">
+
+After the mock, Mara erases everything except the corner of the board with the rollout ladder: 1% → 5% → 25% → 100%, a kill switch, guardrails.
+
+*"You'll use this in every interview you ever do,"* she says. *"Not because they ask about flags. Because they always ask how you'd ship it."*
+
+</Scene>
+
+| Bank question | How this lesson applies |
+|---|---|
+| **Feature flag / experimentation platform** | This lesson, end to end: Chapter 14 is the answer |
+| **Any "how would you roll this out safely?"** wrap-up | Percentage rollout + kill switch + guardrail metrics — a free strong ending for **every** design |
+| **Remote config / app config systems** | Same architecture minus the statistics: variations are JSON, rules target app version and platform |
+| **LLM prompt / model experiments** | A/B between prompts or models with the same bucketing — the <a href={`${BASE}sd/lessons/llm-gateway/`}>LLM gateway</a> lesson's routing plus this lesson's statistics |
+| **Recommendation systems** | Every ranking change ships as an experiment with guardrails — see <a href={`${BASE}sd/lessons/recsys/`}>Recommendations</a> |
+
+**The 60-second rollout ending** (bolt it onto any design):
+
+> "To ship this safely, the new path goes behind a release flag, bucketed by user so it's sticky. I'd ramp 1%, 5%, 25%, 100% with a bake at each step, comparing error rate and p99 latency against control, and the platform rolls back automatically on a regression. There's a kill switch that lands in seconds without a deploy. If the goal is a product metric, it runs as an experiment with a fixed sample size and guardrails. And once it's at 100% for a week, the flag and the old path get deleted."
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The flag platform review" steps={drills} takeaway="Local evaluation, deterministic bucketing with the flag key, versioned streaming with fallbacks, safe defaults per kind, honest experiments, and an expiry date on everything temporary." />
 
 <Quiz questions={[
   {
@@ -91,10 +979,131 @@ That's the depth interviews want. If they push deeper, it's a data-science inter
       'p-values require a week minimum by convention'
     ],
     answer: 1,
-    why: 'Optional stopping is the most common real-world experimentation sin. Naming it (and the fixed-horizon or sequential-test remedy) is what "has actually shipped experiments" sounds like.'
-  }
+    why: 'Optional stopping is the most common real-world experimentation sin. Naming it (and the fixed-horizon or sequential-test remedy) is what "has actually shipped experiments" sounds like. With 20 daily looks, an experiment with no effect is declared a winner about a quarter of the time.'
+  },
+  {
+    q: 'A kill switch defaults to false in code ("recommendations disabled = false" means recommendations run). A pod boots while the flag service and its disk cache are unavailable. What do users see?',
+    options: [
+      'No recommendations — the switch fails closed',
+      'Recommendations, as normal — the code default is the healthy state, which is exactly how a kill switch should be named and defaulted',
+      'An error page until the flag service returns',
+      'A random mix, depending on bucket'
+    ],
+    answer: 1,
+    why: 'The default lives in code at the call site. For a kill switch it must be normal operation, so a flag outage never degrades the product by itself.'
+  },
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: 10-minute mini-design — flags for your actual product, then the wrap-up flex rep: take any earlier mock (rate limiter, feed) and add the "rollout: 1% → flags → guardrails → kill switch" ending in 60 seconds. That ending upgrades every design you'll ever present.
+<Scene title="The interview room" mood="night">
+
+The Interviewer leans back. *"So — feature flags. Isn't that just a database table with booleans in it?"* A year ago you might have agreed. Today you take a breath.
+
+</Scene>
+
+**The 90-second answer:**
+
+> "The table is the easy part. The hard requirement is that a flag check sits in every request's hot path, so it **can't be a network call** and the flag system **can never take the product down**. So I split it: a **control plane** — admin API, Postgres as the versioned, audited source of truth, approvals — and a **data plane**, where SDKs hold the whole ruleset in memory and evaluate locally in microseconds. Evaluation is a pure function: off switch, individual targets, rules in order, then a fallthrough. Percentages use **hash of flag key plus user key, mod 10,000**: deterministic, so it's sticky with no storage; the flag key makes different flags independent; and ramps only add users. Changes propagate as **versioned deltas over SSE** in a second or two, with snapshots on a CDN for startup and gaps, relays for fan-out, and polling as a fallback — that's what makes a **kill switch** land in seconds. SDKs keep **last-known-good** in memory and on disk and fall back to safe code defaults. Browsers get only their own evaluated results, never the rules. For experiments I log deduplicated **first exposures**, check **sample ratio mismatch**, fix the sample size so peeking doesn't fake winners, and watch **guardrail** metrics. Every change is audited, critical ones approved, rollouts guarded with automatic rollback, and every temporary flag has an expiry date."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · How do you make sure a user doesn't flip between variants?">
+
+Deterministic hashing: `bucket = hash(flagKey + "." + userKey) mod 10,000`, and each variation owns a fixed range of buckets. Same inputs, same bucket, on every server, with nothing stored. Ramping moves a boundary, so users already in stay in. The flag key keeps different flags independent. The hash is specified over UTF-8 bytes so every SDK language agrees. Users flip only if the rules or salt change — and for experiments that must survive edits, some platforms persist the first assignment.
+
+</Reveal>
+
+<Reveal q="2 · The flag service is down. What happens?">
+
+Nothing visible. SDKs evaluate from memory, so running services carry on with the last ruleset; they report its age and we alert past a few minutes, because kill switches won't land. New pods load last-known-good from disk or a relay; with nothing at all they wait a bounded second or two and then use the code defaults, which are chosen per kind — old path for release toggles, normal operation for kill switches, control for experiments. We never mass-revert to defaults because the control plane is down.
+
+</Reveal>
+
+<Reveal q="3 · How fast does a kill switch take effect, and how do you know?">
+
+Seconds: the change commits, goes out through an outbox to the streaming tier, and reaches SDKs over SSE as a versioned delta. SDKs report the version they hold, so the dashboard can say "applied by 99% of SDKs in 2.1 seconds" and we alert on the propagation percentile. Polling at 30 seconds is only the fallback; on its own it would mean up to 30 seconds of a fire still burning.
+
+</Reveal>
+
+<Reveal q="4 · How do flags work in a browser or mobile app?">
+
+Clients never get the ruleset — it contains other users' emails, segments and unreleased feature names. The server or an edge worker evaluates the client-visible flags for this user and returns just the results; the server render embeds them in the HTML so there's no flicker; mobile caches last values for offline starts and re-evaluates on login. The client-side id is public and can only fetch the user's own results. Anything security-relevant is also enforced on the server.
+
+</Reveal>
+
+<Reveal q="5 · How do you know an experiment's result is real?">
+
+Four checks. Randomisation by hash, decided before behaviour. Analysis on users with an exposure event, not everyone assigned. An SRM check first — if a designed 50/50 comes out 50,000 versus 51,500, chi-square is about 22 against a threshold of 10.83 and the pipeline is broken, so we don't read the results. A sample size fixed in advance (about 57,600 per arm to detect 10% → 10.5% conversion) or a sequential method, because daily peeking with stop-on-significance gives about a 25% false-positive rate over 20 looks. And guardrail metrics that stop the test if it hurts errors, latency or revenue.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "Design a feature flag service" | Control plane vs data plane; evaluate locally; the platform can never take the product down |
+| "Isn't it just a table of booleans?" | Hot-path latency, propagation, privacy and statistics are the design |
+| Kinds of flags | Release (delete at 100%), experiment (until decided), kill switch (permanent, defaults healthy), entitlement (maybe not a flag) |
+| Targeting | Context = key + attributes; off → targets → rules in order → fallthrough; segments are reusable audiences |
+| Percentage rollout | `hash(flagKey + userKey) mod 10,000`; fixed ranges; ramps only add; flag key ⇒ independent flags |
+| B2B rollout | Bucket by org |
+| Re-run an experiment fresh | Change the salt |
+| Getting rules to SDKs | SSE deltas + versioned CDN snapshots + relays + polling fallback |
+| Missed a change? | Versions count up by one: n+1 apply, old ignore, gap resync |
+| Browser or mobile flags | Server/edge evaluates; send results only; bootstrap into HTML |
+| Flag service down | Last-known-good in memory and on disk; bounded init; code defaults per kind; alert on ruleset age |
+| Mid-flow consistency | Evaluate once, carry the decision through the flow |
+| Risky change | Audit, approval, guarded ramp vs control, automatic rollback |
+| Canary vs flag | Canary: requests → new binaries. Flag: users → new code path |
+| A/B test | Hash assignment, first-exposure logging, fixed sample size, SRM check, guardrails |
+| "p &lt; 0.05 on day 3!" | Peeking: about 25% false positives at 20 looks; fix n or use sequential tests |
+| Lopsided arm counts | SRM: chi-square vs 10.83 (p = 0.001); debug the pipeline |
+| Hundreds of old flags | Owner + expiry at creation, stale detection, code references, never reuse a key |
+| Many customers | Everything keyed by environment; per-tenant limits; isolated SDK keys |
+
+## Five mistakes to leave behind
+
+1. **A network call per flag check.** Push rules, evaluate locally.
+2. **`Math.random()` or `hashCode()` for rollouts.** Use a specified, well-mixed hash of flag key and user key.
+3. **"Default off" for everything.** Defaults depend on the kind; a kill switch defaults to healthy.
+4. **Shipping the ruleset to the browser.** Clients get answers, not rules.
+5. **Reading an experiment before checking SRM, or stopping on the first good day.** Check the split, fix the sample size, watch guardrails.
+
+<Scene title="Mara’s last word" mood="dusk">
+
+A year after the prologue, the config service is redeployed on a Tuesday at 11:42 — on purpose, as a drill. Dev watches the graphs. Checkout, search, profile: flat. The SDKs don't notice their source of truth has vanished. At 11:47 it comes back, and every SDK quietly catches up from version 18,204.
+
+Mara doesn't say anything. She just erases the line on the whiteboard that says `if (flags.isEnabled("new-checkout"))`, and writes underneath it: *the if-statement is the easy part.*
+
+</Scene>
+
+**Keep it warm:** with the buddy, a 10-minute mini-design — flags for your actual product — then the wrap-up flex rep: take any earlier mock (rate limiter, feed) and add the "rollout: 1% → flags → guardrails → kill switch" ending in 60 seconds. That ending upgrades every design you'll ever present.
+
+Related: <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> (the walkthrough's spine) · <a href={`${BASE}sd/lessons/core-concepts/`}>Core concepts</a> (availability multiplies; consistency rungs) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (in-process copies and their staleness) · <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime</a> (SSE vs WebSocket vs polling) · <a href={`${BASE}sd/lessons/pattern-fanout/`}>Fan-out</a> (one change, many listeners) · <a href={`${BASE}sd/lessons/load-balancing/`}>Load balancing</a> (canary deploys) · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> (the transactional control plane) · <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> (outbox, the event pipeline) · <a href={`${BASE}sd/lessons/llm-gateway/`}>LLM gateway</a> (prompt and model experiments) · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a> · <a href={`${BASE}sd/war/multi-tenancy/`}>War Room: multi-tenancy</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- [Feature Toggles (aka Feature Flags)](https://martinfowler.com/articles/feature-toggles.html) by Pete Hodgson on martinfowler.com — the release / experiment / ops / permission taxonomy from Chapter 1, and how to keep toggle code clean.
+- *Trustworthy Online Controlled Experiments* (Ron Kohavi, Diane Tang, Ya Xu; Cambridge University Press, 2020) — the standard book on A/B testing at scale: SRM, guardrails, peeking, interference.
+- [How Not To Run an A/B Test](https://www.evanmiller.org/how-not-to-run-an-ab-test.html) by Evan Miller — the peeking problem from Chapter 11, short and concrete.
+- *Diagnosing Sample Ratio Mismatch in Online Controlled Experiments* (Fabijan et al., KDD 2019) — a taxonomy of what causes SRM in practice.
+- *Overlapping Experiment Infrastructure: More, Better, Faster Experimentation* (Tang et al., KDD 2010) — how Google runs many experiments on the same traffic with layers and domains.
+- *Holistic Configuration Management at Facebook* (Tang et al., SOSP 2015) — Gatekeeper and the config pipeline: config changes treated as code, canaried, and distributed to a huge fleet.
+- [OpenFeature](https://openfeature.dev/) — the vendor-neutral flag API: evaluation context, providers, hooks, and standard evaluation reasons.
+- [MDN: Server-sent events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) — the transport under most streaming flag SDKs.
+- Vendor docs, for how real products do it (details change; check current versions): [LaunchDarkly docs](https://docs.launchdarkly.com/) and [Unleash docs](https://docs.getunleash.io/).
+- [Knight Capital Group (Wikipedia)](https://en.wikipedia.org/wiki/Knight_Capital_Group) — the 2012 incident behind Chapter 12.
+
+**Look these up yourself**
+
+- **Sequential testing and always-valid p-values (e.g. mSPRT)** — how platforms let you watch results continuously without the peeking penalty.
+- **CUPED (variance reduction with pre-experiment data)** — the same experiment needs fewer users when you subtract what you could already predict.
+- **Multiple comparisons** — twenty metrics at p &lt; 0.05 will usually produce one false "win"; how platforms correct for it.
+- **Holdout groups** — a small slice kept away from all launches for months to measure the cumulative effect of a quarter's changes.
+- **Novelty and primacy effects** — why a new design's first week can over- or under-state its long-run effect.
+- **Mutually exclusive experiments and layers** — keeping two conflicting experiments from hitting the same user.
+- **Prerequisite flags and flag dependencies** — "this flag only evaluates if that one is on", and the cycles to forbid.
+- **Interference in two-sided marketplaces** — cluster randomisation and switchback experiments when users affect each other.

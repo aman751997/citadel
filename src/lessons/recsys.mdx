@@ -1,62 +1,1012 @@
 ---
-title: 'AI-Era: Recommendation Systems (Two-Tower)'
-description: 'Candidate generation → ranking — the two-stage funnel behind every feed, and just enough ML systems design to be dangerous.'
+title: 'AI-Era: Recommendation Systems — The Funnel Behind Every Feed'
+description: 'The week Kestrel’s Discover tab showed everyone the same fifty videos, and the funnel that fixed it. Candidate generation, two-tower retrieval, multi-objective ranking, re-ranking, the feature store and its skew, events and labels, cold start, exploration, feedback loops, evaluation — then TikTok’s For You feed, out loud.'
 module: 12
 order: 5
-minutes: 25
+minutes: 100
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { funnel, sources, twoTower, scoring, rerank, latency, features, skew, realtime, events, coldStart, explore, loops, evaluation, serving, safety, drills } from '../data/sd/recsys';
+import { BASE } from '../paths';
 
-## The framing that makes this an SD question
+<PatternHub
+  pattern="sd-recsys"
+  start="prologue"
+  logline="A recommender is not a box labelled MODEL. It is a funnel — find a few thousand candidates cheaply, score a few hundred carefully, shape one page by rules — fed by features that must mean the same thing in training and serving, and closed by a loop of events that will teach the model only what it chose to show, unless you make it explore."
+  cast={[
+    { name: 'You', role: 'Two months at Kestrel. You have shipped a ranked feed sorted by likes. You are about to learn why that was not a recommender.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Crosses out boxes that have no inputs, and asks where the numbers come from.' },
+    { name: 'Iris Tan', role: 'Product lead. Wants Discover to feel like it reads minds. Her “oh, and also…” is every new requirement.' },
+    { name: 'Dev Okafor', role: 'SRE. Owns the latency dashboards and narrates every regression in a calm voice.' },
+    { name: 'Theo Brandt', role: 'Data whisperer. Has seen a model look brilliant in the lab and fail in production, twice, for the same reason.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · The funnel', description: 'Why stages, where candidates come from, and two-tower retrieval.', links: [['funnel', 'A hundred million doors'], ['candidates', 'Many doors, one room'], ['two-tower', 'Two towers and a shortlist']] },
+    { name: 'Part Two · Ordering the page', description: 'Multi-objective ranking, re-ranking rules, the latency budget.', links: [['ranking', 'Guessing what a thumb will do'], ['rerank', 'A page is not a sorted list'], ['latency', 'Two hundred milliseconds']] },
+    { name: 'Part Three · What the model sees', description: 'Features, the feature store, skew, real-time signals, events and labels.', links: [['features', 'What the model gets to see'], ['skew', 'Right in the lab'], ['realtime', 'The last five minutes'], ['events', 'Every swipe is a sentence']] },
+    { name: 'Part Four · Learning without lying', description: 'Cold start, exploration, feedback loops, evaluation.', links: [['cold-start', 'Nobody knows you yet'], ['explore', 'The slot machine that learns'], ['feedback-loops', 'The rich get recommended'], ['evaluation', 'The metric that lied']] },
+    { name: 'Part Five · Running it', description: 'Precompute vs request time, serving infrastructure, safety and privacy.', links: [['serving', 'Precompute or compute'], ['safety', 'Things we never show']] },
+    { name: 'Part Six · In the room', description: 'TikTok’s For You feed in 45 minutes, and the same funnel in other skins.', links: [['walkthrough', 'For You, out loud'], ['transfer', 'Same funnel, other skins']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Make the calls interviewers probe, with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer, five follow-ups, and a full For You walkthrough' },
+  ]}
+  note="Read one part per sitting. Part Six is a full 45-minute mock; read it aloud once before any mock that might say “feed”, “TikTok” or “recommend”."
+/>
 
-"Design TikTok's feed / Netflix recommendations" is not an ML modeling interview — it's a **systems** question about serving personalized rankings over millions of items in ~200 ms. The models are boxes with latency and freshness properties. Get the funnel right and you pass; derive loss functions and you've answered the wrong question.
+<h2 id="prologue">Prologue · The same fifty videos</h2>
 
-## The two-stage funnel (the answer's skeleton)
+<Scene chapter="Prologue" title="The same fifty videos" mood="night">
 
-You cannot score 100M items per request. Every real system funnels:
+Discover launched three weeks ago: a full-screen feed of short videos, sorted by likes in the last seven days. It was your project. It took four days.
 
-<Mermaid code={`flowchart LR
-    CORPUS["100M items"] --> CG["Stage 1 — candidate generation\ncheap, recall-oriented\n~few ms → 1,000 candidates"]
-    CG --> RK["Stage 2 — ranking\nexpensive model, precision\n~50-100ms → ordered top 50"]
-    RK --> BIZ["business layer:\ndedupe seen, diversity,\nfreshness boosts, policy"]
-    BIZ --> FEED["response"]`} />
+At 11:40 p.m. Dev posts a chart in the channel with no comment. Average session length: down 31% since launch. Under it, a second chart. The top fifty Discover videos have not changed in nine days. Every user, in every country, sees the same fifty. They get likes because they are at the top, and they stay at the top because they get likes.
 
-Say the shape first, then fill stages. **Stage 1 optimizes recall cheaply** ("don't miss anything plausibly good"), **Stage 2 spends compute on precision** over a small set. The business layer after both is where product rules live (no 10 videos from the same creator, boost fresh content, policy filters) — mentioning it separates people who've shipped feeds from people who've read papers.
+In the morning Iris says the word everyone was waiting for: *"We need a real recommender."* You draw a box on the whiteboard and write ML MODEL inside it.
 
-## Two-tower — how candidate generation works
+Mara crosses it out. *"Where do the candidates come from? How are they scored, and against what? What shapes the page? What does the model see — and is it what it trained on? And how does it learn without only learning from itself?"*
 
-The bank names it, so know it properly: two neural nets — a **user tower** (history, demographics → user vector) and an **item tower** (content, stats → item vector) — trained so that engagement ≈ dot-product similarity. The serving trick that makes it a systems answer:
+</Scene>
 
-- **Item vectors precompute offline** (items change slowly) → loaded into an **ANN index** — literally the same HNSW machinery as the RAG lesson.
-- **User vector computes at request time** (one cheap forward pass — it must reflect what you did 5 minutes ago).
-- Candidate generation = ANN lookup: "1,000 nearest items to this user vector, in milliseconds."
+"Design TikTok's feed", "Design YouTube recommendations", "Design Netflix's home page" are **not ML modelling interviews**. They are systems questions about serving personalised rankings over a hundred million items in about 200 milliseconds. The models are boxes with latency, freshness and data properties. Get the funnel right and you pass; derive loss functions and you have answered the wrong question.
 
-One architecture sentence connects three lessons: *"candidate gen is an ANN search over precomputed item embeddings — the vector-search infrastructure from RAG, reused."* Multiple sources feed candidates in practice (two-tower + followed-creators + trending from the time-series pattern) — union them, let the ranker sort it out.
+Your own question bank has three of these — *Recommendation system*, *Recommendation (two-tower)* and *TikTok* — and they lean on exactly the gaps in your register: **silent skips** (cold start and feedback loops are the two things candidates forget to say), **cache hand-waves** (a feature store is a cache, and needs its four promises), and **decomposition from scratch** (the funnel is the decomposition). This lesson turns each into a sentence you will say without thinking.
 
-## The feature store — the infra piece interviewers probe
+**The rule. A recommender in your design is these five answers, spoken out loud, or it doesn't count:**
 
-The ranker wants features: user's 7-day category clicks, item's 1-hour engagement rate, user×item history. The **feature store** serves them with two paths (and one trap):
+1. **Retrieval** — which sources find a few thousand candidates out of the corpus, cheaply.
+2. **Ranking** — what the model predicts for each candidate, and how those predictions combine into one score.
+3. **Re-ranking** — which rules turn a sorted list into a good page (diversity, freshness, policy).
+4. **Features** — what the model sees, where each feature is computed, and how training sees the same values.
+5. **The loop** — which events become labels, how new users and items get a chance, how you avoid learning only from your own choices, and how you know a change helped.
 
-- **Batch path**: heavy aggregates computed offline (Spark, daily) → pushed to a low-latency KV store (Redis/Dynamo) for serving.
-- **Streaming path**: real-time counters (item's last-hour CTR) via the time-series pattern's aggregators.
-- **The trap — training/serving skew**: if training computes "7-day clicks" one way and serving another, the model silently underperforms. The feature store's whole reason to exist is *one definition, both consumers*. Name the skew; it's the senior detail.
+All of it inside a **latency budget** you state with numbers.
 
-Freshness ladder to recite: ranking model retrains daily-ish · item embeddings hours · streaming features seconds-minutes · user vector per-request. Matching each component to its natural freshness *is* the design.
+<Figure caption="The funnel. Each stage is more expensive per item and sees fewer items. Numbers are Kestrel's Discover feed per request.">
+  <Mermaid code={`flowchart LR
+    C["Corpus\n100M videos"] --> R["1 · Retrieval\nmany sources, ANN\n~2,000 candidates"]
+    R --> L["Light ranker\nsmall model\n2,000 → 400"]
+    L --> H["2 · Heavy ranker\nmulti-task model\nscores 400"]
+    H --> B["3 · Re-rank\ndiversity, freshness,\npolicy, exploration"]
+    B --> P["Page of 10"]
+    F[("4 · Feature store")] -.-> L
+    F -.-> H
+    P -.->|"5 · events become labels"| T["Training"]
+    T -.-> R
+    T -.-> H`} />
+</Figure>
 
-## Closing the loop
+<Part n="Part One" title="The funnel">
 
-Impressions and engagements flow back (event stream → the ad-aggregator pipeline) into training data and streaming features. Two one-sentence flags that earn credit: **feedback loops** (recommend clicks → clicks train recommendations → filter bubble; countered with exploration ε and diversity rules) and **cold start** (new user: onboarding interests + popularity prior; new item: content-based embedding until engagement accrues).
+Why there are stages at all, where candidates come from, and the retrieval model every interviewer names.
 
-## Questions this unlocks
+</Part>
 
-| Bank question | How it applies |
-|---------------|----------------|
-| **Recommendation system / two-tower** | this lesson |
-| **TikTok** | this + video pipeline (async-jobs) + CDN (blob lesson) |
-| **News feed ranking** | fan-out pattern builds the candidate pool; this ranks it |
-| **"Personalize X"** (search, notifications, ads) | the funnel + feature store transfer wholesale |
-| **Ad serving** | same funnel + auction in the business layer |
+<h2 id="funnel">Chapter 1 · A hundred million doors</h2>
+
+<Scene chapter="Chapter 1" title="A hundred million doors" mood="dawn">
+
+Iris has a suggestion. *"We have the best engagement model in the company from the ads team. Just run it on every video for every user and show the top ten."*
+
+Mara hands you the marker. *"Discover peaks at eighteen thousand requests a second. There are a hundred million videos. Multiply."*
+
+</Scene>
+
+Start with Kestrel's numbers, and state the assumptions out loud as you would in the room:
+
+- **50M daily users** on Discover, **12 feed requests** each per day, **10 videos** per request.
+- 50M × 12 = **600M requests/day**. A day is about 10⁵ seconds (86,400, rounded — the classic envelope shortcut, which understates by about 16%), so about **6,000 requests/s** on average and **18,000/s** at a 3× peak.
+- 600M × 10 = **6B impressions/day**.
+- **Corpus: 100M videos**, with 2M new uploads a day.
+
+**Score everything?** 18,000 requests/s × 100M videos = **1.8 × 10¹² scores per second**. Even if the heavy model cost only 10 µs per item, one request would take 100M × 10 µs = **1,000 seconds**. At a millisecond per item it is about 28 hours. Per request.
+
+So every real system **funnels**. Each stage is more expensive per item and sees fewer items:
+
+| Stage | Items in → out | Cost per item | Optimises for | Budget |
+|---|---|---|---|---|
+| **Retrieval** (candidate generation) | 100M → ~2,000 | Sub-linear: an ANN search, KV lookups, precomputed lists | **Recall** — don't miss anything plausibly good | ~25 ms |
+| **Light ranker** (pre-ranking) | ~2,000 → 400 | Small model, few dozen features | Keep the likely winners | ~15 ms |
+| **Heavy ranker** | 400 scored | Big multi-task model, hundreds of features | **Precision** — exact order at the top | ~60 ms |
+| **Re-rank / blend** | 400 → page of 10 | Rules, light models | Page quality, policy, exploration | ~10 ms |
+
+**The load the funnel leaves.** At peak, the light ranker scores 18,000 × 2,000 = **36M items/s** and the heavy ranker 18,000 × 400 = **7.2M items/s**. If one GPU server scores about 50,000 items/s with this model (an assumption — benchmark yours), the heavy ranker needs about **144 servers**. Large, but buildable. The whole corpus at 1.8 trillion a second is not.
+
+**Retrieval optimises recall cheaply; ranking spends compute on precision over a small set.** The ranker can never rank an item retrieval missed, so retrieval's job is to make sure the good items are *somewhere* in the 2,000. The re-ranking stage after both is where product rules live — and mentioning it separates people who have shipped feeds from people who have read papers.
+
+You have seen this shape before. Search retrieves with an inverted index and re-ranks the top hits (<a href={`${BASE}sd/lessons/search/#relevance`}>Search · relevance</a>); RAG retrieves with ANN and re-ranks with a cross-encoder (<a href={`${BASE}sd/lessons/rag/`}>RAG</a>); a Bloom filter answers "definitely not" before the disk is touched. **Filter cheap, then expensive** is one of the most reusable moves in system design.
+
+<Trace title="Why stages" steps={funnel} takeaway="Multiply QPS by corpus size once, out loud. The number is the reason for the funnel: recall cheaply, then precision on a few hundred." />
+
+**Catch the trap:** "We train a model that recommends videos." A model is not a design. Say the stages, the counts at each, which stage optimises recall and which precision, and the milliseconds each gets.
+
+<h2 id="candidates">Chapter 2 · Many doors, one room</h2>
+
+<Scene chapter="Chapter 2" title="Many doors, one room">
+
+Theo pulls up a week of Discover sessions. One user watched eleven bread-baking videos in a row, then a cat, then four more bread videos. Discover showed her the top fifty, which contain no bread at all.
+
+*"There isn't one right way to find candidates for her,"* Mara says. *"There are six. Which one would have found the bread?"*
+
+</Scene>
+
+Retrieval is usually **several independent sources**, each good at a different kind of "you might like this", each returning a few hundred to a thousand ids. Their union goes to the ranker.
+
+**Collaborative filtering — "people like you liked this".** Picture a giant matrix: users down the side, videos across the top, a mark where someone engaged. It is almost entirely empty. Collaborative filtering fills in the blanks from patterns: users whose marks overlap with yours probably like what they liked. **Matrix factorisation** learns a short vector for every user and every item so that their dot product approximates the mark. That one idea — affinity as a dot product of learned vectors — is the seed of two-tower retrieval in the next chapter.
+
+**Item-to-item co-occurrence — "people who watched this also watched".** Offline, count how often two videos are engaged with in the same session. Normalise by popularity, or every video's top neighbour becomes the most popular video on the platform: a common choice is `co(i, j) / sqrt(n(i) × n(j))`, a cosine similarity. Store the top 200 neighbours per video in a key-value store under `i2i:v3:{videoId}`. At request time, take the user's **last 20 interactions**, fetch their neighbour lists (20 × 200 = **4,000** raw ids), sum the similarity scores per id, keep the top 500.
+
+The lists are precomputed, but *which* lists you read is decided per request — so this source reacts to the last two minutes instantly. That is what finds the bread. Size: lists for the 10M videos with enough engagement to have neighbours × 200 × 12 bytes (8-byte id, 4-byte score) = **24 GB** — a small sharded KV store, refreshed daily.
+
+**Content-based — "this looks like what you watched".** Embed each video from its frames, audio, caption and hashtags; retrieve videos near the user's recent ones in that space. It needs **no engagement history**, which makes it the main door for new videos.
+
+**Trending and popular — "everyone is watching this".** Windowed counters per region and language (the <a href={`${BASE}sd/lessons/pattern-timeseries/`}>time-series pattern</a>), ranked by **velocity** (growth rate) rather than raw count, so yesterday's hit doesn't sit there for nine days. This is the honest version of what Discover shipped — useful as one source among six, terrible as the only one.
+
+**Social graph — "from people you follow".** New posts from followed creators, and what friends engaged with. The in-network candidates come from exactly the push/pull machinery of <a href={`${BASE}sd/lessons/pattern-fanout/#ranking`}>Fan-out · the feed that thinks</a>, which treats ranking as its final stage; this lesson goes deeper on that stage.
+
+**Fresh and under-exposed — "give this a chance".** A pool of recent uploads that have not yet had enough impressions to be judged. It exists for cold start and exploration (Chapters 11 and 12).
+
+<Figure caption="Retrieval is a union of sources. Each is cheap and partial. The merge dedupes, tags each id with the sources that found it, applies quotas, and drops anything the user must not see.">
+  <Mermaid code={`flowchart LR
+    U["Request\nuser + session"] --> TT["Two-tower ANN\n~1,000"]
+    U --> II["Item-to-item\nfrom last 20 watched\n~500"]
+    U --> CB["Content-based\n~300"]
+    U --> TR["Trending\nregion + language\n~200"]
+    U --> SG["Following\n~200"]
+    U --> FR["Fresh pool\n~200"]
+    TT --> M["Merge\ndedupe, quotas,\nsource tags"]
+    II --> M
+    CB --> M
+    TR --> M
+    SG --> M
+    FR --> M
+    M --> FL["Filter\nseen, blocked,\nremoved"]
+    FL --> O["~2,000 candidates"]`} />
+</Figure>
+
+| Source | Finds | Needs | Computed | Works for a new user? | For a new video? |
+|---|---|---|---|---|---|
+| Two-tower ANN | Personal taste, broadly | User history (plus context) | Item vectors offline, user vector per request | Weakly, from context | Yes, if the item tower uses content features |
+| Item-to-item | "More like what I just did" | Recent interactions | Lists offline, lookup per request | After a few swipes | No — needs co-engagement |
+| Content-based | Similar topic, sound, look | Content embeddings | Offline per item | From onboarding interests | **Yes** |
+| Trending | What is hot here, now | Nothing personal | Streaming counters | **Yes** | Only once it's hot |
+| Social graph | Creators and friends you chose | Follows | Fan-out / pull | No follows yet | Yes, for followers |
+| Fresh pool | Under-exposed new uploads | Nothing | Streaming index of recent uploads | Yes | **Yes** — its purpose |
+
+**The merge.** Union and dedupe; keep a **source tag** per id (a video found by three sources is a strong ranking feature); apply a **quota** per source so a noisy one can't flood the pool; then filter. The **seen filter** is usually a per-user Bloom filter of recently shown ids — a false positive merely hides one video the user hasn't seen, which is harmless; the alternative, a set per user, costs more memory.
+
+<Trace title="Pick the source" steps={sources} takeaway="Several cheap, partial sources; each covers a weakness of another. Union, dedupe, tag, quota, filter." />
+
+<Reveal q="Why normalise co-occurrence counts by popularity?">
+
+Because raw co-occurrence is dominated by popular items. If 30% of sessions include the week's biggest video, it co-occurs with everything, and it becomes everyone's top neighbour — the same fifty videos again, through a side door. Dividing by `sqrt(n(i) × n(j))` asks "do these two appear together *more than their popularity predicts*?", which is the signal you wanted.
+
+</Reveal>
+
+**Catch the trap:** naming one source. "We use two-tower retrieval" leaves new users, new videos and in-session intent uncovered. Name at least three sources and say what each one covers that the others miss.
+
+<h2 id="two-tower">Chapter 3 · Two towers and a shortlist</h2>
+
+<Scene chapter="Chapter 3" title="Two towers and a shortlist" mood="dusk">
+
+Iris read a blog post. *"Everyone uses two towers."* Theo nods slowly. *"Everyone also deploys the user tower on a Tuesday and forgets the item index was built on Monday."* He says it like a man remembering a specific Wednesday.
+
+Mara draws two columns on the board and a line between them. *"One side changes every swipe. The other has a hundred million rows. Which side do you compute in advance?"*
+
+</Scene>
+
+**Two-tower** is the retrieval model interviewers name most. Two neural networks:
+
+- A **user tower**: user id embedding, the sequence of recently watched videos, onboarding interests, context (country, language, device, hour) → a **user vector**, say 128 numbers.
+- An **item tower**: video id embedding, content embeddings (frames, audio, caption), creator, duration, language, age → an **item vector** of the same size.
+
+They are trained so that **engagement ≈ the dot product** of the two vectors: positives are impressions the user engaged with; negatives are commonly the *other* items in the same training batch (in-batch negatives). Because popular items appear in many batches, they get punished as negatives too often; published work corrects for this sampling bias (the "logQ correction" from Google's 2019 two-tower paper, in Further study). You need the name, not the derivation.
+
+**The serving trick that makes it a systems answer:**
+
+- **Item vectors precompute offline** — items change slowly, and there are 100M of them — and load into an **ANN index**: the same HNSW machinery as <a href={`${BASE}sd/lessons/rag/`}>RAG</a>.
+- **The user vector computes at request time** — one cheap forward pass, so it reflects what the user did five minutes ago.
+- **Candidate generation = ANN lookup**: "the 1,000 items nearest this user vector, in a few milliseconds."
+
+One sentence connects three lessons: *"Candidate generation is an ANN search over precomputed item embeddings — the vector-search infrastructure from RAG, reused."*
+
+<Figure caption="Two-tower serving: the item side is computed offline and indexed; the user side is computed per request. The model version ties them together.">
+  <Mermaid code={`flowchart LR
+    subgraph OFF["Offline, per model version"]
+      IT["Item tower"] --> IV["100M item vectors"] --> IDX[("ANN index\nHNSW, version v42")]
+    end
+    subgraph ON["Per request"]
+      RQ["User id, recent watches,\ncontext"] --> UT["User tower v42"] --> UV["User vector"]
+    end
+    UV -->|"top 1,000 by dot product"| IDX
+    IDX --> CAND["Candidate ids"]`} />
+</Figure>
+
+**Why a dot product, of all things?** Because it is what makes ANN possible: the item vectors can be indexed once and searched for any user vector. The price is that **the user and item never meet inside the model** — no "this user × this creator" cross features. That is why two-tower is a *retrieval* model and not the final ranker. The ranker sees the pair and can use everything.
+
+**Worked numbers — the index.**
+
+- Raw vectors: 100M × 128 dimensions × 4 bytes (float32) = **51.2 GB**. Quantised to int8: **12.8 GB**.
+- HNSW graph links: with `M = 16`, the bottom layer keeps up to 32 neighbours per node × 4 bytes ≈ 128 bytes per vector ≈ **12.8 GB**, a little more for the upper layers.
+- So about **64 GB** float32 with graph, or about 26 GB quantised: one large machine holds a full replica. **Replicate for throughput** rather than shard: if a replica serves about 2,000 queries/s at your recall target (assumption — benchmark it), 18,000/s at peak needs **9 replicas**, plus headroom. Shard only when a replica no longer fits in memory, and then pay a scatter-gather per query.
+- ANN is approximate: a search knob (`efSearch` in HNSW) trades recall against latency. Measure recall against exact search offline, and pick the knob from the latency budget.
+
+**Keeping the index fresh.** New videos must be retrievable within minutes, not tomorrow. HNSW supports **incremental inserts**: embed a new upload from its content features as soon as they are extracted, insert it into the live index. Deletions are usually tombstones plus a filter, cleaned up by periodic rebuilds. A **full rebuild** happens whenever the model is retrained, because a new model means a new embedding space.
+
+<Trace title="Two towers, one version" steps={twoTower} takeaway="Many-and-slow goes offline into an index; one-and-fast goes online. User tower and item index must come from the same model version." />
+
+<Reveal q="Why not use the two-tower score as the final ranking?">
+
+It was built to be cheap, not precise. The dot product can't model interactions between user and item features (this user's history *with this creator*), it is usually trained for one objective (engagement), and it is optimised to find good items among 100M, not to order the top 400 perfectly. The ranker is a different, slower model that sees cross features and predicts several outcomes. Using the retrieval score as a feature *in* the ranker is common and fine.
+
+</Reveal>
+
+**Catch the trap:** retraining the towers without rebuilding the index. Two training runs put "cooking" in different directions; new user vectors searched against old item vectors return noise, with no error anywhere. **The user tower and the item index move together, by model version** — build the new index beside the old one and switch both at once.
+
+<Part n="Part Two" title="Ordering the page">
+
+Two thousand candidates in, ten videos out, two hundred milliseconds on the clock.
+
+</Part>
+
+<h2 id="ranking">Chapter 4 · Guessing what a thumb will do</h2>
+
+<Scene chapter="Chapter 4" title="Guessing what a thumb will do">
+
+The first ranker goes live, trained to maximise watch time. Within a week the feed is full of eleven-minute compilations and videos that say *wait for the end* in the first second. Watch time is up 9%. Hides are up 40%. Iris looks at both numbers for a long time.
+
+*"We told it what we wanted,"* Mara says. *"It did exactly that. So what do we actually want?"*
+
+</Scene>
+
+**The ranker predicts what the user will do with each candidate.** Not one number — several, from one **multi-task** model with a shared body and one output head per outcome:
+
+- `p(start)` or `p(click)` — will they engage at all (matters more where the user chooses, like a grid of thumbnails)
+- `E[watch time]`, or `p(finish)` — how much of it will they watch
+- `p(like)`, `p(share)`, `p(comment)`, `p(follow)` — explicit positive signals
+- `p(skip fast)`, `p(hide)`, `p(report)` — explicit and implicit negative signals
+
+Then a **value model** combines them into one score. The simplest form is a weighted sum:
+
+`score = 0.1 × E[watch seconds] + 10 × p(like) + 30 × p(share) − 50 × p(hide)`
+
+**Worked numbers.** Three candidates, same user:
+
+| Video | E[watch] | p(like) | p(share) | p(hide) | Watch term | Like | Share | Hide | **Score** |
+|---|---|---|---|---|---|---|---|---|---|
+| A · cooking, 60 s | 40 s | 0.02 | 0.002 | 0.01 | 4.0 | 0.2 | 0.06 | −0.5 | **3.76** |
+| B · funny clip, 15 s | 12 s | 0.10 | 0.03 | 0.005 | 1.2 | 1.0 | 0.9 | −0.25 | **2.85** |
+| C · "wait for the end" | 25 s | 0.01 | 0.001 | 0.06 | 2.5 | 0.1 | 0.03 | −3.0 | **−0.37** |
+
+Ranked by watch time alone: A, **C**, B — the bait is second. Ranked by the combined score: A, B, **C** — the bait is last. The only thing that changed is that the product said what "good" means.
+
+**Where the weights come from.** Not from the training loss. They encode product judgement ("a share is worth three likes"), and they are tuned by **online experiments**: try a weight change on 1% of users, measure retention and guardrails (Chapter 14). Two details that sound like production experience:
+
+- **Normalise watch time**, or long videos win by being long. Predicting completion rate, or watch time relative to duration, is a common fix.
+- **Calibrate every head.** A weighted sum of probabilities only means what the weights say if each probability is honest. If `p(like)` predicts 0.10 for videos liked 5% of the time, the like term silently counts double. Monitor predicted vs observed rates per head.
+
+**Model families**, one sentence each: gradient-boosted trees are strong on tabular features and simple to serve; deep models add learned embeddings for ids and explicit feature crosses (Google's Wide & Deep and Meta's DLRM are published examples); sequence models read the user's recent history directly. In an interview, the family matters far less than the inputs, outputs and latency.
+
+**The light ranker** is a smaller model, often distilled from the heavy one, with a few dozen cheap features. Its job is to cut 2,000 to 400 without dropping the items the heavy ranker would have put on top.
+
+**Serving it:** the heavy ranker scores all 400 candidates for a request as **one batch** on a GPU or a vectorised CPU path — per-item calls would never fit 60 ms.
+
+<Figure caption="One shared model body, several heads, one value model. The weights are product decisions, tuned by experiment.">
+  <Mermaid code={`flowchart LR
+    X["Features for\nuser × candidate"] --> S["Shared layers"]
+    S --> H1["E watch time"]
+    S --> H2["p like"]
+    S --> H3["p share"]
+    S --> H4["p hide"]
+    H1 --> V["Value model\nweighted sum"]
+    H2 --> V
+    H3 --> V
+    H4 --> V
+    V --> O["One score\nper candidate"]`} />
+</Figure>
+
+<Trace title="Score three videos" steps={scoring} takeaway="Predict several outcomes, combine them with product weights, and keep every head calibrated so the weights mean what they say." />
+
+<Reveal q="Why not just optimise watch time? It's the closest thing to “the user enjoyed it”.">
+
+Because any single proxy gets gamed — by the model and by creators. Watch time rewards long videos and cliffhanger bait; clicks reward misleading thumbnails; likes miss passive enjoyment. Combining several signals, including **negative** ones (hides, fast skips, reports), makes it much harder to win one metric while losing the user. And the true goal — people coming back next week — is measured online, where the weights are tuned.
+
+</Reveal>
+
+**Catch the trap:** "The model ranks by engagement." Which engagement? Say the heads, the formula, who sets the weights, and that negative signals carry negative weight.
+
+<h2 id="rerank">Chapter 5 · A page is not a sorted list</h2>
+
+<Scene chapter="Chapter 5" title="A page is not a sorted list" mood="dawn">
+
+The new ranker is better. It is also very sure that you love one creator. Theo opens Discover and gets five videos in a row from the same baker, then two more. Each one, alone, is a great recommendation. Together, they are a channel he did not subscribe to.
+
+*"The ranker scores items one at a time,"* Mara says. *"Who looks at the page?"*
+
+</Scene>
+
+The ranker scores each candidate **independently**. But "is this a good page?" is a property of the **set**: variety, freshness, rules. Re-ranking (also called blending, or the policy layer) turns the scored list into the page:
+
+| Rule | Example | Why |
+|---|---|---|
+| **Diversity** | No two adjacent videos from one creator; at most 2 per creator per page; mix topics and formats | Independent scores cluster; sameness kills sessions |
+| **Freshness** | Boost videos under 24 hours old | The ranker's features favour items with history |
+| **Dedupe** | Drop already-seen ids; drop near-duplicate re-uploads (perceptual hashes of frames) | Re-uploads of one viral clip look like ten different videos |
+| **Exploration and fairness** | Reserve slots for new uploads and new creators (Chapters 11–12) | Otherwise new items never get data |
+| **Business** | Ads every N slots, promoted or live content | Product commitments |
+| **Policy** | Demote borderline content; enforce age and region rules (Chapter 16) | Hard limits that no score overrides |
+
+**How it is applied** — usually a **greedy walk**: for each slot, take the highest-scored remaining candidate that breaks no rule. Softer diversity is often done with **MMR** (maximal marginal relevance): pick the next item maximising `λ × score − (1 − λ) × (its highest similarity to anything already on the page)`, so a near-copy of what is already there loses points.
+
+**Worked example.** Ranked order a1, a2, b1, a3, c1, b2 (letters are creators). Rules: no adjacent same creator, at most 2 per creator, page of 5.
+
+- Slot 1: **a1**. Slot 2: a2 is blocked (adjacent a) → **b1**. Slot 3: **a2** (a's second). Slot 4: a3 is blocked twice (adjacent a, and a already has 2) → **c1**. Slot 5: **b2**.
+- Page: a1, b1, a2, c1, b2.
+
+<Trace title="Walk the rules" steps={rerank} takeaway="Re-ranking is a greedy walk down the scored list, taking the best candidate that breaks no page rule." />
+
+**Paging an infinite feed.** A ranked feed for followed accounts needs a per-session snapshot so pages don't repeat or skip (<a href={`${BASE}sd/lessons/pattern-fanout/#ranking`}>Fan-out, Chapter 8</a>). A For You feed is different: there is no fixed list to page through. Each request ranks afresh, **excluding everything already shown this session**, so it can use the session's newest signals. To keep the next page instant, the server can keep a short backlog of the next ranked items in a session cache with a TTL of minutes, and the client fetches the next page while the user is still watching.
+
+**Catch the trap:** rules scattered through the code. Keep re-ranking rules as **configuration** behind flags, so product can tune "max 2 per creator" through an experiment instead of a deploy (<a href={`${BASE}sd/lessons/feature-flags/`}>Feature flags & experimentation</a>).
+
+<h2 id="latency">Chapter 6 · Two hundred milliseconds</h2>
+
+<Scene chapter="Chapter 6" title="Two hundred milliseconds" mood="storm">
+
+Thursday, 9:12 p.m. Dev posts the feed latency graph: p99 went from 180 ms to 900 ms at 9:04. *"Ranker is fine,"* he writes. *"Feature store is fine. The 'friends liked' source is waiting on a graph service that's having a bad night — and the feed waits with it."*
+
+*"How many of our six sources does a request need,"* Mara asks, *"to show a good page?"*
+
+</Scene>
+
+**Spend the budget out loud, stage by stage.** Server-side p99 budget: **200 ms** for the first page.
+
+| Stage | Budget | Notes |
+|---|---|---|
+| Fetch user context and session features | 10 ms | One read from the online feature store |
+| Candidate sources, **in parallel** | 25 ms | Each source has its own 25 ms timeout |
+| Merge, dedupe, filter | 5 ms | Bloom filter, blocklists in memory |
+| Feature hydration for ~2,000 candidates | 20 ms | Batched multi-gets; hot item features cached in-process |
+| Light ranker 2,000 → 400 | 15 ms | |
+| Heavy ranker, 400 in one batch | 60 ms | The biggest line, and the biggest cost |
+| Re-rank | 10 ms | |
+| Hydrate metadata, build response | 15 ms | Titles, creator names, playback URLs |
+| **Subtotal** | **160 ms** | |
+| Headroom | 40 ms | Network jitter, GC pauses, a retry |
+
+**The tail of a fan-out.** Six sources in parallel, each independently slow (over 25 ms) 1% of the time: the chance at least one is slow is 1 − 0.99⁶ ≈ **5.9%** — about one request in seventeen. If the feed waits for all six, the slowest source sets everyone's latency. So **every source has a timeout, and the feed ranks whatever arrived in time.** A missing source makes the page slightly less personal; a missing page loses the session.
+
+<Figure caption="One feed request. Sources run in parallel under a timeout. A late source is dropped for this request, not waited for.">
+  <Mermaid code={`sequenceDiagram
+    participant C as Client
+    participant F as Feed service
+    participant S as Candidate sources
+    participant FS as Feature store
+    participant M as Model server
+    C->>F: GET feed (count 10)
+    F->>FS: user and session features
+    F->>S: fan out to six sources, 25 ms timeout
+    S-->>F: five answered, one timed out
+    F->>F: merge, dedupe, filter
+    F->>FS: batch features for 2,000 candidates
+    F->>M: light rank, then heavy rank 400
+    M-->>F: scores per head
+    F->>F: value model, re-rank, safety filter
+    F-->>C: 10 videos plus impression ids`} />
+</Figure>
+
+**Every stage needs a way to be skipped:**
+
+| If this fails… | Serve… |
+|---|---|
+| One candidate source | The others (timeout) |
+| Feature store, partially | Default values the model was trained with for missing features, and an alert on the fill rate |
+| Heavy ranker | Light-ranker order |
+| All ranking | A cached popular list for the user's region and language |
+| Everything personal | That same cached list — a worse feed is better than an error screen |
+
+**The latency the user feels is mostly the first page.** After that, the client asks for the next page when about three videos remain, while the current one plays, so the server's 200 ms is hidden behind video playback. That is why the first-page p99 is the number to defend.
+
+<Trace title="Spend the budget" steps={latency} takeaway="Allocate the budget per stage, run sources in parallel with timeouts, and give every stage a fallback that skips it." />
+
+**Catch the trap:** adding up averages. Stages that each hit their *average* can still blow the *p99*, because the slowest of several parallel calls is what you wait for. Budget p99 per stage, keep headroom, and cut stragglers with timeouts.
+
+<Part n="Part Three" title="What the model sees">
+
+A ranker is only as good as its inputs — and only if the inputs at serving time are the ones it learned from.
+
+</Part>
+
+<h2 id="features">Chapter 7 · What the model gets to see</h2>
+
+<Scene chapter="Chapter 7" title="What the model gets to see">
+
+Theo has a spreadsheet with four hundred rows. Each row is a feature the ranker uses, and next to each is the name of the job that computes it. Eleven rows have no name. *"Nobody knows who computes these,"* he says. *"The model loves them."*
+
+</Scene>
+
+**Four families of features**, and you should be able to name two of each:
+
+| Family | Examples | Changes |
+|---|---|---|
+| **User** | Language, country, account age, topic affinities over 7 and 30 days, average watch-through rate | Hours to days (plus session features — Chapter 9) |
+| **Item** | Duration, topic, creator, upload age, like rate in the last hour, completion rate, content embedding | Minutes (counters) to never (duration) |
+| **Context** | Hour of day, day of week, device, network type, position on the page | Per request |
+| **Cross** (user × item) | Times this user finished this creator's videos in 30 days; similarity of the item to the user's last 10 watches; the two-tower score | Per pair, often the strongest signals |
+
+**Where each feature is computed** decides its freshness and cost:
+
+- **Batch** (daily or hourly jobs over the warehouse): heavy aggregates such as 30-day topic affinities. Cheap per value, hours stale.
+- **Streaming** (a stream processor over the event log): windowed counters such as "likes in the last 10 minutes" — the <a href={`${BASE}sd/lessons/pattern-timeseries/`}>time-series pattern</a>. Seconds stale.
+- **Request time**: context, and cross features computed from values already fetched. Always fresh, but they cost latency on every request.
+
+**The feature store** is the infrastructure piece interviewers probe. It holds:
+
+- a **registry** — one definition per feature (name, entity, computation, owner, version);
+- an **offline store** — the full history of each feature's values with timestamps, in the warehouse, used to build training sets;
+- an **online store** — only the latest value per key, in a low-latency KV store (Redis, DynamoDB, Cassandra…), used at serving;
+- **materialisation** — batch and streaming jobs that compute each feature once and write both stores.
+
+<Figure caption="The feature store: one definition, two consumers. Batch and streaming jobs write both the online store (latest value, for serving) and the offline store (history, for training).">
+  <Mermaid code={`flowchart LR
+    EV[["Event log"]] --> SP["Stream jobs\nwindowed counters"]
+    WH[("Warehouse")] --> BJ["Batch jobs\ndaily aggregates"]
+    REG["Feature registry\none definition each"] -.-> SP
+    REG -.-> BJ
+    SP --> ON[("Online store\nlatest value, KV")]
+    BJ --> ON
+    SP --> OFF[("Offline store\nhistory with timestamps")]
+    BJ --> OFF
+    ON --> RK["Ranker at serving"]
+    OFF --> TR["Training sets\npoint-in-time joins"]`} />
+</Figure>
+
+**The online store is a cache, so give it the four promises** from <a href={`${BASE}sd/lessons/caching/`}>Caching</a> — your logged gap, in a new costume:
+
+1. **Key**: `f:item:v3:{videoId}` → a packed blob of that item's features; `f:user:v3:{userId}` likewise. Version in the key, so a schema change is a new key space.
+2. **TTL**: batch features about 48 hours — long enough that one failed daily job doesn't empty the store; streaming counters are overwritten continuously.
+3. **Invalidation**: by overwrite — the pipeline is the only writer.
+4. **Failure plan**: a missing feature gets the **same default value training used**, the request continues, and a fill-rate alert fires.
+
+**Worked numbers — why feature traffic is a design problem.** The heavy ranker sees 400 candidates × 200 features × 4 bytes = **320 KB per request**. At 18,000 requests/s that is **5.76 GB/s** of feature data moving into the rankers. Two consequences: fetch the user's features **once** per request, not once per candidate; and cache **item** features in-process on the ranker hosts, because the same popular items appear in thousands of requests per second.
+
+<Trace title="Place the feature" steps={features} takeaway="User, item, context, cross. Batch for heavy and slow, streaming for windows, request time for context. One definition, two consumers." />
+
+**Catch the trap:** "the ranker queries the database for features." For 2,000 candidates per request at 18,000 requests per second, that is 36M lookups per second against a system of record. Features are **precomputed** into an online store built for this.
+
+<h2 id="skew">Chapter 8 · Right in the lab</h2>
+
+<Scene chapter="Chapter 8" title="Right in the lab" mood="night">
+
+The new model's offline AUC beats the old one by a margin nobody has seen in a year. The A/B test runs for two weeks. Nothing moves. Theo doesn't look surprised. He opens two files side by side: the SQL that computes "user 7-day clicks" for training, and the service code that computes it for serving. One counts clicks on ads. The other doesn't.
+
+*"Same name,"* he says. *"Different feature. The model learned one and is being fed the other."*
+
+</Scene>
+
+**Training/serving skew**: the model sees one distribution of inputs in training and a different one in production, and silently underperforms. No error, no crash — only a gap between offline and online results. It comes in four flavours:
+
+| Flavour | Example |
+|---|---|
+| **Two implementations** | Training computes a feature in SQL, serving in service code; they disagree on edge cases |
+| **Different freshness** | Training uses the nightly value; serving uses a value updated a minute ago |
+| **Different defaults** | Missing values are 0 in training and −1 in serving |
+| **Leakage** (the worst) | Training joins feature values from *after* the impression |
+
+**Point-in-time correctness.** A training example is "this impression, at this moment, with these features, and this outcome". The features must be the values **as of the moment the impression was served**. If an impression from Monday at 10:00 is joined on Friday to the video's *current* like count, the feature includes likes that came *because of* impressions like this one. The model learns to lean on information it will never have at serving time. Offline metrics glow; online, nothing.
+
+<Figure caption="Two ways to get point-in-time training data. Log-and-wait makes skew impossible by construction; point-in-time joins let you backfill new features.">
+  <Mermaid code={`flowchart TB
+    subgraph A["Log and wait"]
+      S1["Serve impression"] --> L1["Log the exact feature\nvector used, with impression id"]
+      L1 --> J1["Join to labels\nthat arrive later"]
+    end
+    subgraph B["Point-in-time join"]
+      I2["Impression at time t"] --> J2["For each feature, the latest\nvalue with timestamp before t"]
+      O2[("Offline store\nhistory")] --> J2
+    end`} />
+</Figure>
+
+- **Log and wait**: log the feature vector the ranker actually used, keyed by impression id, and join the labels to it when they arrive. Training sees exactly what serving saw. The cost: storage, and a new feature has no history until you have logged it for a while.
+- **Point-in-time joins**: the offline store keeps every feature value with a timestamp, and the training job takes, for each impression, the latest value *before* the impression time. It lets you backfill a new feature over old impressions — but only if the backfill computes it exactly as serving will.
+
+Most mature systems use both: logged features for what is in production, point-in-time joins to experiment with new features. Either way, **one definition in the registry** feeds both paths — the feature store's reason to exist. Then **monitor**: compare the distribution of each feature at serving with its distribution in training, and alert on drift.
+
+<Trace title="Find the leak" steps={skew} takeaway="Features as of the impression time, from one definition. Log what you served; join labels later." />
+
+<Reveal q="Offline AUC improved, online metrics are flat. What are your first three suspects?">
+
+**Skew** (a feature computed differently, or fresher, at serving), **leakage** (the offline evaluation used information from after the impression, so the offline gain was never real), and **a metric mismatch** (the model got better at ordering logged impressions, but the online metric measures something else, such as retention, or the gain is in parts of the list nobody sees). Check served-vs-training feature distributions first: it is the cheapest to rule out.
+
+</Reveal>
+
+**Catch the trap:** "We'll compute the features the same way in both places." Two implementations always drift. Say: one definition, materialised once, consumed by both — or log the served values.
+
+<h2 id="realtime">Chapter 9 · The last five minutes</h2>
+
+<Scene chapter="Chapter 9" title="The last five minutes" mood="dawn">
+
+Iris runs her own test. She opens Discover, skips three dog videos in under two seconds each, and swipes again. A dog. *"It's like talking to someone who isn't listening,"* she says.
+
+Mara asks Theo when the model will learn that Iris doesn't want dogs right now. *"Tonight,"* Theo says. *"At the retrain."* Mara waits. *"Wrong layer,"* she says. *"What has to change before her next swipe?"*
+
+</Scene>
+
+In a short-video feed, the **session** is the strongest signal there is. Someone who skipped three dog videos in ten seconds is telling you something that no 30-day aggregate can.
+
+**The model doesn't need to change for the feed to react. Its inputs do.**
+
+- **Session features**: the last N watched video ids (with watch-through and skips), topics engaged and skipped this session, time since session start. Written to the online store **per event**, read at the next request.
+- **The user vector reads them.** The user tower takes the recent watch sequence as input and runs per request, so retrieval shifts after a single swipe. The ranker gets cross features such as "similarity of this candidate to the videos skipped this session".
+- **Streaming item counters**: likes, completions and hides per video in sliding windows, so a video that is suddenly working gets noticed in minutes — and one that suddenly gets reported gets demoted.
+
+**The freshness ladder** — match each component to its natural rate. Matching them *is* the design:
+
+| Component | Refresh | Why that rate |
+|---|---|---|
+| Ranking model weights | Daily-ish (faster with care) | Training is heavy; behaviour patterns shift slowly |
+| Item embeddings and ANN index | Hours, plus incremental inserts for new items | 100M items; new ones must appear in minutes |
+| Batch features | Daily or hourly | Long-window aggregates |
+| Streaming features | Seconds to minutes | Windows over the event log |
+| Session features | Per event | The last swipe matters |
+| User vector | **Per request** | Must reflect the last few minutes |
+
+**Online learning** — updating model weights continuously from the event stream instead of in daily batches — is the next rung. It adapts to new trends and new items faster. It also learns from bad data faster: a bot wave or a logging bug reaches production in minutes. It needs validation gates, automatic rollback, and monitoring per model update. ByteDance has published a paper describing real-time training for recommendations (Monolith, in Further study); treat it as one company's published approach, not as how every feed works.
+
+<Trace title="React to the session" steps={realtime} takeaway="The model can stay the same; its inputs change per event. The user vector is computed per request so retrieval follows the session." />
+
+**Catch the trap:** answering "how does the feed react in-session?" with "we retrain in real time". The cheap, standard answer is **session features plus a per-request user vector**. Online learning is an addition, with its own risks.
+
+<h2 id="events">Chapter 10 · Every swipe is a sentence</h2>
+
+<Scene chapter="Chapter 10" title="Every swipe is a sentence" mood="dusk">
+
+The first training job fails a sanity check: 100% of the examples are positive. The client only logged taps. Nothing was ever logged about videos that scrolled past. *"So as far as the model knows,"* Theo says, *"everyone loves everything they were shown."*
+
+</Scene>
+
+**The event pipeline is the recommender's memory.** Everything the model will ever learn comes through it.
+
+| Event | Meaning | Use |
+|---|---|---|
+| **Impression** | The video was actually on screen (for example, at least half visible for at least a moment), with **position** and request id | The denominator; the source of negatives |
+| Play start | Playback began | Engagement |
+| Watch progress / complete | Seconds watched, completion | Watch-time labels |
+| Like, share, comment, follow | Explicit positive | Labels and features |
+| **Skip** | Swiped away within, say, 2 seconds | Implicit negative |
+| **Hide / not interested / report** | Explicit negative | Strong negative labels; safety signals |
+
+**Impressions are the non-negotiable event.** Without them you can't tell "seen and ignored" from "never shown", so you have no negatives. Log what was *on screen*, not what the server sent — ten videos sent are not ten videos seen.
+
+<Figure caption="The event pipeline. One log feeds three consumers: streaming features, the label joiner, and the warehouse.">
+  <Mermaid code={`flowchart LR
+    APP["Client\nbatches events"] --> COL["Collector\ndedupe by event id"]
+    COL --> LOG[["Event log\nkeyed by user id"]]
+    LOG --> SF["Stream jobs\nsession + item counters"]
+    SF --> ON[("Online feature store")]
+    LOG --> LJ["Label joiner\nimpression + outcomes"]
+    LOG --> LAKE[("Warehouse / lake")]
+    LJ --> TD[("Training data\nfeatures as served + labels")]
+    TD --> TRAIN["Daily training"]`} />
+</Figure>
+
+**Plumbing details that earn credit** (all from <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a>):
+
+- The client batches events and retries; every event carries an **event id**, and the collector dedupes, so at-least-once delivery doesn't double-count a like.
+- The log is **keyed by user id**, so one user's events stay in order in one partition — session features depend on order.
+- Every event carries the **impression id** issued by the feed response, which is how outcomes join back to the exact features that were served.
+
+**Defining the label is a product decision.** "Positive" might be *watched at least 50%, or at least 10 seconds, or any explicit positive action*; "negative" might be *shown and skipped within 2 seconds*. Each head of the ranker gets its own label. Labels also need a **window**: watch outcomes are known within the session; a follow might be credited if it happens within 24 hours. A label window that is too short misses outcomes; too long delays training.
+
+**Position bias.** The video in slot 1 gets more engagement than slot 5 regardless of content. If training ignores this, the model credits content for what the position did — and keeps reinforcing whatever it already put first. A common fix: **log position, use it as a feature in training, and set it to one fixed value at serving**, so every candidate is scored as if it were in the same slot. Exploration traffic (Chapter 12) also helps measure it.
+
+**Worked numbers.** 6B impressions/day × about 3 events per impression = **18B events/day**. At about 200 bytes each: **3.6 TB/day**. Per second: 18B ÷ 10⁵ = **180,000 events/s** average, **540,000/s** at 3× peak — about **108 MB/s** into the log at peak. Ninety days of raw events for training is about **324 TB** before compression. Bots and test accounts are filtered before any of it becomes a label.
+
+<Trace title="Label the swipe" steps={events} takeaway="Log impressions with position, or you have no negatives. Define labels on purpose, and correct for position bias." />
+
+**Catch the trap:** "we log clicks." Say impressions (with position and request id), positive and negative outcomes, idempotent event ids, and how a label is defined.
+
+<Part n="Part Four" title="Learning without lying">
+
+New users, new videos, and a model that only learns from what it chose to show. The chapters candidates skip — and interviewers wait for.
+
+</Part>
+
+<h2 id="cold-start">Chapter 11 · Nobody knows you yet</h2>
+
+<Scene chapter="Chapter 11" title="Nobody knows you yet">
+
+Two complaints arrive on the same day. A new user writes: *"Every video is the same three pop songs."* A creator writes: *"I've uploaded twelve videos. None has more than four views. Is Discover broken?"*
+
+*"Same problem twice,"* Mara says. *"The model has never met either of them. What does it do with a stranger?"*
+
+</Scene>
+
+**A new user** has no history, so the personal sources return nothing useful. The first session has to learn fast:
+
+- **Onboarding**: ask for a few interests (topics, creators). They seed content-based retrieval immediately.
+- **Context priors**: popular *for their region, language, device and time of day* — far better than global popular.
+- **Learn in the session**: session features (Chapter 9) make the second page already different from the first.
+- **A bandit framing**: treat the first pages as choosing among broad categories, given the context. A **contextual bandit** picks the category it expects to do best for users like this one, sometimes tries another, and updates after each response. It learns which categories land with this user in a handful of swipes — the next chapter's machinery, applied to a stranger.
+
+**A new video** has no engagement, so the collaborative sources can't see it:
+
+- **Content embeddings**: the item tower uses content features (frames, audio, caption, creator), so a new video gets a vector as soon as its content is processed, and is inserted into the index within minutes. A tower built only on item id embeddings would leave new items invisible — say this.
+- **An exploration budget**: reserve a share of impressions for under-exposed videos. At Discover's scale: 6B impressions/day × 5% = **300M exploration impressions**, ÷ 2M uploads/day = **about 150 impressions per upload** — enough for a first read on whether it lands.
+- **Staged exposure** (a common approach): show the new video to a small, well-matched audience; if completion and likes beat a threshold, widen the audience; repeat. Each stage costs little, and good videos climb quickly.
+
+**A new creator** gets the same treatment, plus — if product decides — a small boost, because creators who get zero views stop uploading. That is a product choice about the health of the catalogue; say so.
+
+<Trace title="Meet a stranger" steps={coldStart} takeaway="New users: onboarding, context priors, session learning, bandits. New items: content features in the item tower and a budget of exploration impressions." />
+
+**Catch the trap:** "cold start is handled by the popularity fallback." That covers new users weakly and new videos not at all. Name both sides — users and items — and the exploration budget with a number.
+
+<h2 id="explore">Chapter 12 · The slot machine that learns</h2>
+
+<Scene chapter="Chapter 12" title="The slot machine that learns" mood="dusk">
+
+Theo puts two numbers on the board. Video X: 3 likes in 10 views. Video Y: 300 likes in 1,000 views. *"The ranker shows Y. Always. X has a better rate. Is X better?"*
+
+*"Nobody knows,"* you say. *"Ten views is nothing."* Mara nods. *"So how do we find out without wasting a thousand views on every unknown?"*
+
+</Scene>
+
+**Exploitation** shows what the model believes is best. **Exploration** shows something less certain to learn whether it is better. A system that only exploits never learns about anything it has not already shown.
+
+**ε-greedy** — the simplest: with probability ε, fill a slot with an item from an exploration pool; otherwise exploit. With ε = 0.05 and pages of 10, that is 0.5 exploration slots per page on average — the same 5% exploration budget as Chapter 11, seen from the other side. Simple, easy to reason about, and it explores blindly: a known-bad item is as likely as a promising one.
+
+**Thompson sampling** — explore where it is *uncertain*. Keep a belief about each item's like rate as a Beta distribution, `Beta(likes + 1, non-likes + 1)`. Each time, draw a random sample from each candidate's distribution and show the highest draw.
+
+| Video | Evidence | Belief | Mean | Spread |
+|---|---|---|---|---|
+| X | 3 likes / 10 views | Beta(4, 8) | 0.333 | Wide (std ≈ 0.13) |
+| Y | 300 likes / 1,000 views | Beta(301, 701) | 0.300 | Narrow (std ≈ 0.014) |
+
+Head to head, X's draw beats Y's about **57%** of the time (a quick simulation confirms it). So X gets shown, its evidence grows, and its distribution narrows. If its true rate is lower than Y's, it soon stops winning. **Exploration fades on its own as evidence accumulates.** That property is why bandits are attractive.
+
+**UCB** (upper confidence bound) is the deterministic cousin: score = estimated rate + a bonus that shrinks with more views. Same intuition, no randomness.
+
+In real feeds, exploration is rarely a textbook bandit over every item. It is usually a mix: an exploration budget for new items, uncertainty bonuses in ranking, and randomised slots — each tuned and measured. Present it that way.
+
+**Log the propensity.** For every shown item, log the probability that the policy would show it (1 for a pure exploit slot, small for a random explore slot). Later, training and offline evaluation can **reweight** examples by the inverse of that probability (inverse propensity scoring), which corrects for the fact that the logged data came from your own choices.
+
+<Trace title="Explore on purpose" steps={explore} takeaway="ε-greedy explores at a fixed rate; Thompson sampling explores where it is uncertain, and fades as evidence grows. Log the propensity of every impression." />
+
+<Reveal q="Exploration costs engagement — some explore slots will be worse. How do you justify it to product?">
+
+Measure it. Run the exploration budget as an experiment: users with and without it, over weeks. Typically the short-term cost is small and the long-term gain is a catalogue that stays fresh, creators who keep uploading, and a model with data about more than the head. Without exploration, the feed slowly converges to fewer and fewer items — the prologue's fifty videos, at scale.
+
+</Reveal>
+
+**Catch the trap:** treating exploration as randomness for its own sake. Say what is explored (new items, uncertain items), how much (a budget with a number), and how it is measured.
+
+<h2 id="feedback-loops">Chapter 13 · The rich get recommended</h2>
+
+<Scene chapter="Chapter 13" title="The rich get recommended" mood="storm">
+
+A year later, the dashboard Iris asked for after the prologue shows a familiar shape. The top 1% of creators now get 70% of Discover impressions. Sessions are fine. Engagement per impression is fine. New creators' uploads reach a median of 40 views.
+
+*"We fixed the same fifty videos,"* Dev says. *"We didn't fix why it happened."*
+
+</Scene>
+
+**The feedback loop:** the model chooses what to show → users can only engage with what they were shown → engagement becomes the next training data → the model learns that what it showed is what people like.
+
+<Figure caption="The loop. Every arrow is reasonable. Together they concentrate impressions on whatever the model already favoured.">
+  <Mermaid code={`flowchart LR
+    M["Model favours item set S"] --> SH["Shows mostly S"]
+    SH --> EN["Engagement only\non what was shown"]
+    EN --> TD["Training data\nall about S"]
+    TD --> M
+    X["Never shown items\nno labels, ever"] -.->|"invisible"| TD`} />
+</Figure>
+
+Its symptoms have names:
+
+- **Popularity bias** — popular items get more impressions, so more engagement, so more impressions (the Matthew effect).
+- **Filter bubbles** — a user's feed narrows to what they engaged with first.
+- **Position bias** — top slots get engagement that the model attributes to content (Chapter 10).
+- **Degenerate feedback** — in the extreme, the model's "knowledge" is only about its own past choices.
+
+**Mitigations change the data, not just the model:**
+
+| Mitigation | What it does |
+|---|---|
+| **Exploration** (Chapters 11–12) | Produces labels for items the model would not have chosen |
+| **Propensity logging and inverse propensity weighting** | Corrects for which items were likely to be shown |
+| **Popularity correction** in retrieval training | Stops popular items dominating as positives and negatives |
+| **Diversity rules** in re-ranking | Caps concentration on any page |
+| **A small random holdout** (say 1% of traffic, or a fraction of slots) | Unbiased data for evaluating models and measuring the loop |
+| **Long-term metrics** | Retention and catalogue health over weeks, not clicks today |
+
+**Watch the vital signs**: the share of impressions going to the top 1% of creators, and the fraction of new uploads that reach some minimum number of views (say 100). Both should be on the dashboard, with their trends.
+
+<Trace title="Break the loop" steps={loops} takeaway="A model trained only on its own choices reinforces them. Explore, log propensities, hold out random traffic, and watch concentration." />
+
+**Catch the trap:** never mentioning the loop. It is one of the two "silent skips" interviewers wait for on recommendation questions (cold start is the other). One sentence covers it: *"The model only learns from what it shows, so I'd reserve an exploration budget, log propensities, and track impression concentration."*
+
+<h2 id="evaluation">Chapter 14 · The metric that lied</h2>
+
+<Scene chapter="Chapter 14" title="The metric that lied">
+
+The new ranker beats the old one offline on every metric the team tracks. Online, watch time is flat and next-day retention is down a hair. Iris wants to ship anyway; the offline numbers are "so clearly better". Theo shakes his head. *"Offline tells you what's worth testing,"* he says. *"Online tells you what's true."*
+
+</Scene>
+
+**Offline metrics** run on logged data before anything ships. Each measures a different stage:
+
+**AUC** (ranking heads) — the probability that a random positive scores above a random negative. Positives scoring 0.9 and 0.4; negatives 0.7, 0.3, 0.2. Of the 2 × 3 = 6 pairs, 0.9 beats all three negatives and 0.4 beats two: **AUC = 5/6 ≈ 0.83**. It ignores calibration, so pair it with **log loss** and a calibration check per head.
+
+**Recall@k** (retrieval) — of the items the user actually engaged with next (held out), what fraction made it into the top k candidates? A user's next 5 watches; 4 of them are in the 2,000 retrieved: **recall@2000 = 0.8**. Retrieval's job is recall, so this is its metric.
+
+**NDCG@k** (the order of a list) — rewards putting the most relevant items at the top. `DCG = Σ rel(i) / log₂(i + 1)` over positions i = 1..k; NDCG divides by the DCG of the ideal order. Relevance 2, 0, 3, 1 in ranked order:
+
+- DCG = 2/1 + 0/1.585 + 3/2 + 1/2.322 = 2 + 0 + 1.5 + 0.431 = **3.931**
+- Ideal order 3, 2, 1, 0: 3/1 + 2/1.585 + 1/2 + 0 = 3 + 1.262 + 0.5 = **4.762**
+- **NDCG@4 = 3.931 / 4.762 ≈ 0.83**
+
+(Another common form uses `2^rel − 1` as the gain. Say which one you mean.)
+
+**Why offline can lie.** Logged data comes from the *old* policy: it only contains outcomes for items the old model chose to show. A new model that would surface different items gets no credit for them. Offline metrics also can't see novelty, diversity, or whether people come back. Propensity-weighted offline evaluation narrows the gap; it doesn't close it.
+
+**Online — the A/B test decides.** Randomise users into control and treatment (deterministic bucketing by user id — <a href={`${BASE}sd/lessons/feature-flags/`}>Feature flags & experimentation</a>), and compare:
+
+| Kind | Examples |
+|---|---|
+| **Primary** | Watch time per daily user, sessions per user, next-day and 7-day retention |
+| **Guardrails** — must not get worse | p99 latency, error rate, hides and reports per impression, share of impressions to the top 1% of creators, new-upload reach, creator retention |
+| **Diagnostics** | Per-head calibration, per-source contribution, coverage of the catalogue |
+
+Run tests long enough to outlast **novelty effects** (a new feed feels interesting for a few days), typically at least one or two full weeks. Keep a **long-term holdout** — a small group on an older model for months — to measure effects that accumulate. **Interleaving** (mixing two rankers' results in one list and seeing which one's items get engaged) is a more sensitive way to compare rankers quickly; it complements A/B tests, it does not replace them.
+
+<Trace title="Read the metrics" steps={evaluation} takeaway="AUC for heads, recall@k for retrieval, NDCG for list order — then the A/B test decides, with guardrails." />
+
+**Catch the trap:** "We'll measure CTR." CTR alone rewards clickbait and hides the feedback loop. Say the offline metric per stage, the online primary metric (retention or watch time per user), and the guardrails.
+
+<Part n="Part Five" title="Running it">
+
+What to compute ahead of time, what to compute per request, and what must never be served from a cache.
+
+</Part>
+
+<h2 id="serving">Chapter 15 · Precompute or compute</h2>
+
+<Scene chapter="Chapter 15" title="Precompute or compute" mood="dawn">
+
+The infrastructure bill arrives. Iris circles one line: GPU servers for the ranker. *"Why don't we just compute everyone's recommendations overnight,"* she asks, *"and serve them from a cache?"*
+
+Mara writes two numbers on the board. *"Eighty million monthly users. Fifty million come back on a given day. Start there."*
+
+</Scene>
+
+**Batch (precompute) vs request time** is a question about every piece, not the whole system:
+
+| Piece | Precompute? | Why |
+|---|---|---|
+| Item embeddings, ANN index | **Yes**, per model version | 100M items, slow-changing |
+| Item-to-item neighbour lists | **Yes**, daily | Expensive joins; the lookup is per request |
+| Collaborative-filtering candidates per user | Sometimes, for likely-active users | Expensive; but a day stale |
+| User vector | **No** — per request | Must follow the session |
+| Ranking | **No** — per request | Needs fresh features and the session |
+| Safety filtering | **Never only in advance** | Removals happen any minute (Chapter 16) |
+
+**Worked numbers.** Precomputing 500 candidate ids (8 bytes each) for all 80M monthly users is 80M × 500 × 8 B = **320 GB** every night — and 80M − 50M = **30M lists go unread** on a typical day. For the 50M daily users alone it is 200 GB. The storage is affordable; the problem is that the lists are a day stale and ignore the session. **Precompute what is expensive and slow-changing; compute what depends on the session.**
+
+**Batch scoring still has a home**: recommendations that are *not* read in an interactive session — the "videos you might like" email, a push notification, a weekly digest — are scored nightly in bulk, where throughput matters and latency doesn't.
+
+<Figure caption="Serving infrastructure. The offline side builds models, indexes and lists; the online side serves requests within the budget. Model versions tie them together.">
+  <Mermaid code={`flowchart TB
+    subgraph OFF["Offline"]
+      TD[("Training data")] --> TR["Training jobs"] --> REG[("Model registry\nversions")]
+      REG --> EMB["Embed all items"] --> BLD["Build ANN index\nper version"]
+      WH[("Warehouse")] --> I2I["Item-to-item jobs"]
+    end
+    subgraph ONL["Online"]
+      FD["Feed service"] --> RET["Retrieval services\nANN replicas, i2i KV,\ntrending, follows"]
+      FD --> FS[("Online feature store")]
+      FD --> MS["Model servers\nlight + heavy ranker"]
+      FD --> RR["Re-rank + safety filter"]
+    end
+    BLD --> RET
+    I2I --> RET
+    REG --> MS`} />
+</Figure>
+
+**Model servers.** The heavy ranker runs on a dedicated fleet (GPU, or optimised CPU) behind the feed service. It batches all candidates of a request, and often batches across requests too. At Kestrel's peak, 7.2M scores/s at an assumed 50,000 scores/s per server is about **144 servers** — the largest cost line, which is why the candidate count and the light ranker are the cost levers. New model versions roll out like any risky deploy: **shadow** (score live traffic, discard the result, compare), then **canary** (1% of users), then ramp — all behind flags.
+
+**ANN index refresh.** New items: incremental inserts within minutes. New model version: build the full index offline, load it beside the old one on fresh replicas, warm it, then switch traffic **by model version** together with the matching user tower; keep the old index for rollback.
+
+**What to cache, with the four promises:**
+
+| Cache | Key | TTL | Invalidation | If it fails |
+|---|---|---|---|---|
+| Item features (in-process on rankers) | `f:item:v3:{videoId}` | ~1 minute | TTL; streaming counters arrive fresh in the online store | Read the online store |
+| Item-to-item lists | `i2i:v3:{videoId}` | ~48 hours | Overwritten daily | Skip the source |
+| Popular per region | `pop:{region}:{lang}` | ~5 minutes | Recomputed by the stream job | Last good copy |
+| Session backlog | `sess:{sessionId}:next` | ~10 minutes | Replaced on each request | Rank afresh |
+
+<Trace title="Choose what to precompute" steps={serving} takeaway="Precompute the item side and expensive lists; compute the user vector and ranking per request; swap indexes by model version." />
+
+**Catch the trap:** "We precompute everyone's feed nightly and cache it." Say what that costs (staleness, wasted lists, no session), and what you would precompute instead.
+
+<h2 id="safety">Chapter 16 · Things we never show</h2>
+
+<Scene chapter="Chapter 16" title="Things we never show" mood="night">
+
+At 2:00 p.m. trust and safety removes a video. At 2:40 p.m. a user reports seeing it — in Discover. Dev traces it in five minutes: it was in a precomputed candidate list from 1:00 p.m., and the only removal check ran when the list was built.
+
+*"Caches are allowed to be wrong about what you'd like,"* Mara says. *"They are never allowed to be wrong about this."*
+
+</Scene>
+
+**Safety filters come in two strengths:**
+
+- **Hard filters** — removed videos, blocked or muted creators, age-restricted content for younger users, content not licensed in the user's region. Applied **early** (at retrieval, to save ranking compute) *and* **at the very end**, after anything read from a cache, against a fast and fresh blocklist. A score can't be trusted to remove something; a filter can.
+- **Soft demotions** — borderline content scored by integrity classifiers gets a lower score or fewer slots, and is excluded from exploration. These are features and re-ranking rules, and they are tuned and measured like any other.
+
+**Privacy belongs in the design, not in a footnote:**
+
+- **Consent and controls.** Users can reset or turn off personalisation; some jurisdictions require large platforms to offer a feed option not based on profiling (the EU's Digital Services Act is the usual example — check current rules before citing specifics).
+- **Sensitive attributes.** Don't infer or target on health, religion, sexuality and similar categories, and don't let models learn them as proxies where policy forbids it.
+- **Minimisation and retention.** Keep raw events only as long as needed; aggregate older data.
+- **Deletion has to reach every derived copy**: the online feature store, cached candidate lists, the event lake, training snapshots and, over time, models retrained without that data. A deleted user's events must not keep training tomorrow's model.
+- **Access control** on event logs — they reveal what people watch, which is personal.
+
+<Trace title="Never serve it" steps={safety} takeaway="Hard rules are filters, not features, and the last one runs after every cache. Deletion must reach every derived store." />
+
+**Catch the trap:** a design where removals only take effect when lists are rebuilt. The final filter always runs at serving time.
+
+<Part n="Part Six" title="In the room">
+
+The whole lesson, on the delivery framework's clock — and the same funnel under other names.
+
+</Part>
+
+<h2 id="walkthrough">Chapter 17 · For You, out loud</h2>
+
+<Scene chapter="Chapter 17" title="For You, out loud" mood="night">
+
+Final Friday. Mara sets the phone face-down. *"Design TikTok's For You feed,"* she says. *"Forty-five minutes. I'll be the interviewer. I won't say 'cold start' and I won't say 'feedback loop'. Let's see if you do."*
+
+You write four numbers in the corner of the board — 9 · 15 · 25 · 38 — and pick up the marker.
+
+</Scene>
+
+A 45-minute round on <a href={`${BASE}sd/lessons/delivery-framework/`}>the delivery framework's</a> clock: intros to 0:03, requirements to **0:09**, entities and API to **0:15**, high-level design to **0:25**, deep dives to **0:38**, wrap-up to 0:41, then your questions. Nothing here describes any real company's internals; it is a common design for this kind of feed. Read the lines aloud once.
+
+**0:03 · Roadmap and requirements**
+
+> **You:** "Here's how I'd like to use our time: about six minutes on requirements and scale, a couple on entities and the API, a simple design that works end to end, then two or three deep dives, and a short wrap-up. Stop me any time."
+>
+> "Functional: a user opens a feed of short videos personalised to them and scrolls it endlessly; the feed reacts to what they do within the session; and new videos get a fair chance to be seen. Out of scope unless you want them: upload and transcoding, search, comments, ads, live, and the creator analytics side — I'll say where they plug in."
+>
+> **Interviewer:** "Upload is out. Focus on the feed."
+
+**0:05 · Non-functionals with numbers**
+
+> **You:** "Scale: 200 million daily users watching about 100 videos a day — 20 billion impressions a day. Ten videos per request is 2 billion feed requests a day, about 20,000 a second, 60,000 at a 3× peak. The corpus is about a billion videos with 20 million uploads a day, but I'd only retrieve from the eligible pool — recent, policy-checked, playable — say 200 million."
+>
+> "Latency: first page under 200 milliseconds p99 on the server; later pages are prefetched while a video plays, so the user never waits. Freshness: the feed reacts to the last swipe within seconds, and new uploads become eligible within minutes. Availability over consistency — a slightly worse feed beats an error screen. And events: about three per impression is 60 billion a day — 600,000 a second, 1.8 million at peak, roughly 12 terabytes a day."
+
+**0:08 · The bridge**
+
+> **You:** "So: a personalised infinite feed at 60,000 requests a second over a 200-million-item pool, inside 200 milliseconds, with a large event stream closing the loop. The numbers say: a funnel — cheap retrieval, then ranking on a few hundred — precompute the item side, compute the user side per request. Does that match what you had in mind?"
+>
+> **Interviewer:** "Yes. Go on."
+
+**0:09 · Core entities**
+
+> **You:** "**User**, **Video**, **Creator**. **Event** — impression, watch progress, like, share, skip, hide — an append-only log, the source of every label. Then derived things, not sources of truth: **item embeddings** and **features**, per model version, and the **model version** itself, which ties the user tower, the item index and the ranker together."
+
+**0:11 · API**
+
+```text
+GET  /feed?count=10&session=<token>                          → 200 { items[ {videoId, playbackUrl, creator, impressionId} ], session }
+POST /events  [ { eventId, impressionId, videoId, type, watchMs, position, ts } ]   → 202
+```
+
+> **You:** "The user comes from the auth token. The session token lets the server exclude what this session has already shown. Every item carries an impression id, so every later event joins back to exactly what was served and with which features. Events are batched by the client, each with an event id so retries are deduped, and the endpoint returns 202 — they're processed asynchronously."
+
+**0:15 · High-level design, one requirement at a time**
+
+> **You:** "Serving the feed. The feed service reads the user's context and session features from the online feature store, then fans out in parallel, with a 25-millisecond timeout each, to candidate sources: two-tower ANN retrieval, item-to-item neighbours of the last 20 videos watched, followed creators, trending for the region and language, and a fresh-upload pool. It merges about 2,000 ids, dedupes, filters seen, blocked and removed, hydrates features in batch, runs a light ranker down to 500, then the heavy multi-task ranker on a model-server fleet. A re-ranker applies diversity, freshness and exploration slots; a final safety filter runs; it returns 10 and keeps the next few in a session cache."
+>
+> "Learning. The client sends events to a collector, which dedupes and appends to a log keyed by user. Stream jobs update session features and item counters in the online store within seconds. A label joiner matches outcomes to the logged features of each impression. Training runs daily; new models go to a registry, an embedding job rebuilds the item index for that version, and both deploy together."
+
+<Figure caption="TikTok-style For You feed, high level. Numbers on the arrows are the peaks the design must carry.">
+  <Mermaid code={`flowchart LR
+    C["Client"] -->|"60K req/s"| FD["Feed service"]
+    FD --> FS[("Online feature store")]
+    FD --> ANN["Two-tower ANN\n30 replicas"]
+    FD --> I2I[("Item-to-item KV")]
+    FD --> TRD["Trending + follows\n+ fresh pool"]
+    FD -->|"30M scores/s"| MS["Model servers\nlight + heavy"]
+    FD --> RR["Re-rank + safety"]
+    C -->|"1.8M events/s"| COL["Collector"]
+    COL --> LOG[["Event log"]]
+    LOG --> SJ["Stream jobs"] --> FS
+    LOG --> LJ["Label joiner"] --> TRN["Daily training"]
+    TRN --> REG[("Model registry")]
+    REG --> MS
+    REG --> IDX["Index build\nper version"] --> ANN`} />
+</Figure>
+
+> **You:** "That serves all three requirements. Now the parts that decide whether it's any good."
+
+**0:25 · Deep dive 1 — retrieval**
+
+> **You:** "Two-tower. The item tower uses content features — frames, audio, caption, creator — not only an id, so a video has a vector minutes after upload. Item vectors are computed offline per model version into an HNSW index; the user tower runs per request on the recent watch sequence, so retrieval follows the session."
+>
+> "Size: 200 million items at 128 dimensions in int8 is 25.6 gigabytes, about double with the graph — one machine holds a replica, so I'd replicate, not shard. If a replica does about 2,000 queries a second at our recall target — I'd benchmark that — 60,000 at peak is 30 replicas. New uploads are inserted incrementally. When the model is retrained, the new index is built beside the old one and switched together with the new user tower, because the two embedding spaces aren't compatible. Offline, I'd track recall at k against exact search and against next watches."
+
+**0:30 · Deep dive 2 — ranking and features**
+
+> **You:** "The heavy ranker is a multi-task model: expected watch time normalised by duration, probability of like, share, follow, and of a fast skip or hide. The score is a weighted sum with negative weight on the negative heads; product owns the weights and tunes them by experiment, and each head is calibrated so the weights mean what they say."
+>
+> "Cost: 60,000 requests times 500 candidates is 30 million scores a second. At an assumed 50,000 per GPU server, that's about 600 servers — the biggest line in the bill, so candidate count and the light ranker are the levers."
+>
+> "Features come from a feature store with one definition per feature: batch jobs for long windows, stream jobs for counters and session features, both writing an online KV store for serving and an offline store with timestamps for training. To make training/serving skew impossible, I log the exact feature vector used for each impression and train on that, joined to labels later — features as of the impression, never as of today."
+
+**0:34 · Deep dive 3 — cold start, exploration and the loop**
+
+> **You:** "Two things this design would get wrong by default. First, cold start. New users: onboarding interests, priors by region and language, session features from the first swipe, and a contextual bandit over broad categories. New videos: content embeddings, plus an exploration budget — 5% of 20 billion impressions is a billion a day, about 50 per new upload — with staged exposure: a small matched audience first, wider if completion and likes beat a threshold."
+>
+> "Second, the feedback loop: the model only learns from what it shows. So exploration slots, propensities logged on every impression, a 1% random holdout for unbiased evaluation, diversity rules in re-ranking, and dashboards for impression concentration and new-upload reach."
+
+**0:38 · Wrap-up**
+
+> **You:** "To recap: a funnel — five retrieval sources into 2,000 candidates, a light and a heavy ranker, re-ranking with rules and exploration — inside 200 milliseconds, fed by a feature store and an event log that closes the loop. Success is measured online: watch time per user and 7-day retention, with guardrails on latency, hides and reports, creator concentration and new-upload reach."
+>
+> "Failure modes: a slow source is dropped by its timeout; a feature-store miss uses training defaults; if the heavy ranker is down we serve light-ranker order, and if everything personal is down, a cached regional popular list. Safety: removals are filtered at the end of every request, after any cache. Privacy: personalisation controls, and deletion that reaches features, caches, the lake and training snapshots. At 10×, the first pressure is ranker compute — 300 million scores a second — so I'd cut candidates with a better light ranker, distil the heavy model, and cache item-side computation. With more time: the upload pipeline and CDN that deliver the video bytes."
+
+**0:41.** Mara turns the phone over. *"At minute three you promised new videos a fair chance,"* she says. *"That was cold start, and you put it in the requirements. I was going to ask at minute thirty."*
+
+**Check the numbers yourself:** 200M × 100 = 20B impressions/day; ÷ 10 = 2B requests ÷ 10⁵ = 20,000/s, × 3 = 60,000/s. 20B × 3 = 60B events ÷ 10⁵ = 600,000/s, × 3 = 1.8M/s; × 200 B = 12 TB/day. 200M × 128 B = 25.6 GB (int8), ≈ 51 GB with graph. 60,000 ÷ 2,000 = 30 replicas. 60,000 × 500 = 30M scores/s ÷ 50,000 = 600 servers; at 10×, 300M scores/s. 20B × 5% = 1B ÷ 20M = 50 impressions per upload.
+
+<Reveal q="Where in this walkthrough would you most likely have skipped silently — and what would it have cost?">
+
+Three skips cost the most here. **Cold start for new videos** — without content features in the item tower and an exploration budget, new uploads are invisible, and "new videos get a fair chance" was a stated requirement. **The feedback loop** — without it, the design is a machine for showing the same fifty videos, and interviewers wait to see if you notice. **Model-version pairing** between the user tower and the item index — one sentence, and it sounds like production experience. Each takes one sentence. Saying them is the difference between "knows the funnel" and "has run one".
+
+</Reveal>
+
+**Variations the interviewer may choose instead.** *YouTube home and "up next"*: the same funnel, but longer videos make normalised watch time and satisfaction surveys more important, and "up next" adds the current video as a strong context feature (item-to-item shines). *Netflix home page*: a much smaller catalogue (thousands, not hundreds of millions), so retrieval is easy and the hard part is page layout — rows, artwork, and ranking rows as well as items. *Instagram Explore*: the same funnel over photos and short videos, with the social graph as a stronger source.
+
+<h2 id="transfer">Chapter 18 · Same funnel, other skins</h2>
+
+<Scene chapter="Chapter 18" title="Same funnel, other skins" mood="dusk">
+
+Iris has three new projects on her list: ads in Discover, ranked notifications, and "people you may know". She asks how many new systems that is. Mara counts the boxes on the board. *"None,"* she says. *"Same funnel. Different candidates, different labels, different rules."*
+
+</Scene>
+
+| Bank question | How the funnel applies |
+|---|---|
+| **Recommendation system / two-tower** | This lesson, end to end |
+| **TikTok** | This lesson + the upload and transcode pipeline (<a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs</a>) + video delivery (<a href={`${BASE}sd/lessons/blob-cdn/`}>Blob storage & CDN</a>) |
+| **News feed ranking** | <a href={`${BASE}sd/lessons/pattern-fanout/`}>Fan-out</a> builds the in-network candidate pool; this lesson ranks it |
+| **"Personalise X"** (search, notifications) | Retrieval becomes the query or the event; the funnel and feature store transfer wholesale |
+| **Ad serving** | The same funnel, with an auction in the re-ranking stage: bid × predicted engagement, budgets and pacing |
+| **People you may know** | Candidates from friends-of-friends (graph walks) and contact signals; ranker predicts accept probability |
+| **Search ranking** | Retrieval is the inverted index plus ANN (<a href={`${BASE}sd/lessons/search/`}>Search</a>); the ranker adds personal features |
+
+**The transfer test:** for any "rank things for a user" question, name the candidate sources, the label, the objective with its negative signals, the page rules, and the loop. If you can, you have designed it.
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The recommender review" steps={drills} takeaway="Funnel with numbers; precompute the item side, compute the user side; one feature definition; recall for retrieval; timeouts per source; cache what is slow-changing." />
 
 <Quiz questions={[
   {
@@ -91,9 +1041,141 @@ Impressions and engagements flow back (event stream → the ad-aggregator pipeli
     ],
     answer: 1,
     why: 'Silent, no-error degradation — the nastiest failure class. The feature store as "single definition, two consumers" is its architectural fix, and the detail that sounds like production experience.'
-  }
+  },
+  {
+    q: 'A new video was uploaded a minute ago and nobody has watched it. Which design lets it be recommended at all?',
+    options: [
+      'Item-to-item co-occurrence lists',
+      'An item tower that uses content features, so the video gets an embedding immediately, plus an exploration budget that guarantees it some impressions',
+      'Collaborative filtering retrained nightly',
+      'Sorting the corpus by upload time'
+    ],
+    answer: 1,
+    why: 'Co-occurrence and collaborative filtering need engagement the video does not have. Content features give it a vector; the exploration budget gives it the impressions that produce its first labels.'
+  },
+  {
+    q: 'Your ranked feed shows 70% of impressions going to the top 1% of creators. The model is retrained daily. Why doesn’t retraining fix it?',
+    options: [
+      'The model is too small',
+      'It is a feedback loop: the model trains on engagement with what it chose to show, so unshown items never get labels. Exploration, propensity logging and a random holdout change the data',
+      'Users only like those creators',
+      'Daily is not frequent enough'
+    ],
+    answer: 1,
+    why: 'Retraining on self-generated data reinforces the bias. The fix has to produce labels the model would not have produced on its own.'
+  },
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: 15-minute mini-mock — "recommend videos on a TikTok clone, 100M videos, 200ms budget." Funnel shape → two-tower serving split → feature store with the skew sentence → cold start + feedback-loop flags. This completes Module 12 — every ✨ AI-era bank question now has teaching content behind it.
+<Scene title="The interview room" mood="night">
+
+The Interviewer slides a phone across the table with a short-video app open. *"Design the feed that decides what comes next,"* she says. Two years ago you would have drawn a box called "ML". Today you take a breath and draw a funnel.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "This is a funnel, because we can't score a hundred million videos per request — at 18,000 requests a second that's 1.8 trillion scores. **Retrieval**: several cheap sources in parallel with timeouts — two-tower ANN over precomputed item embeddings with the user vector computed per request, item-to-item neighbours of recent watches, follows, trending for the region, and a fresh-upload pool — about 2,000 candidates, deduped and filtered. **Ranking**: a light model down to 400, then a multi-task model predicting watch time, like, share and hide, combined by product-owned weights with negative weight on hides. **Re-ranking**: diversity, freshness, exploration slots and policy, then a final safety filter. Budget: 200 ms p99, the heavy ranker taking 60. **Features** come from a feature store — one definition, batch and streaming paths, an online KV for serving — and I log served features to train on, which rules out skew. **The loop**: impressions with position, outcomes and negatives flow through a log into streaming features and daily training. **Cold start**: content features in the item tower and a 5% exploration budget for new videos; onboarding and context priors for new users. And because the model only learns from what it shows, exploration, propensity logging and a random holdout keep it honest. Success is retention and watch time per user in an A/B test, with guardrails on latency, reports and creator concentration."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · How does a video uploaded a minute ago ever get recommended?">
+
+The item tower uses content features (frames, audio, caption, creator), so the video gets an embedding as soon as its content is processed and is inserted into the ANN index incrementally. A fresh-upload source and an exploration budget guarantee it some impressions — at Discover's scale, 5% of 6B is 300M a day, about 150 per upload — and staged exposure widens its audience if it performs.
+
+</Reveal>
+
+<Reveal q="2 · How do you know the new model is better?">
+
+Offline first, as a filter: recall@k for retrieval, AUC and calibration per head, NDCG for list order. Then an A/B test on randomised users for at least a week or two: primary metrics are watch time per daily user and retention; guardrails are latency, hides and reports, creator concentration and new-upload reach. Offline gains that don't show up online don't ship; check skew and leakage first.
+
+</Reveal>
+
+<Reveal q="3 · What is training/serving skew, and how do you prevent it?">
+
+The model sees different feature values in production than in training — two implementations, different freshness, different defaults, or leakage from joining features as of today instead of as of the impression. Prevent it with one definition per feature in a feature store that writes both online and offline stores, point-in-time joins, and ideally by logging the exact served feature vector with each impression and training on that. Monitor served vs training distributions.
+
+</Reveal>
+
+<Reveal q="4 · A user skips three videos about dogs. How fast does the feed adapt?">
+
+On the next request. Each event updates session features in the online store within seconds; the user tower runs per request on the recent watch sequence, so retrieval shifts; the ranker gets cross features like similarity to skipped videos. The model weights don't change — retraining is daily — but its inputs do.
+
+</Reveal>
+
+<Reveal q="5 · How do you stop the feed collapsing into the same popular videos?">
+
+Name it as a feedback loop: the model only learns from what it shows. Reserve an exploration budget (ε-greedy slots or Thompson-style uncertainty bonuses), log the propensity of every impression for reweighting, keep a small random holdout, apply diversity rules in re-ranking, correct for popularity in retrieval training, and track impression concentration and new-upload reach as guardrails.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "Recommend / personalise / For You" | The funnel: retrieval → light rank → heavy rank → re-rank, with counts and milliseconds |
+| "Why not score everything?" | QPS × corpus, out loud: 18,000 × 100M = 1.8 × 10¹² |
+| Where candidates come from | Two-tower ANN, item-to-item, content, trending, follows, fresh pool — union, dedupe, quota, filter |
+| Two-tower serving | Item vectors offline into ANN; user vector per request; same model version for both |
+| "Rank by engagement" | Multi-task heads + product-weighted value model; negative weight on hides; calibrate each head |
+| Five videos from one creator | Re-ranking: greedy walk with diversity rules, MMR |
+| A slow dependency blows p99 | Per-stage budget, per-source timeouts, a fallback for every stage |
+| Feature freshness | Batch for long windows, streaming for counters, request time for context |
+| Feature store | One definition, online + offline stores — and the four cache promises for the online one |
+| Offline great, online flat | Skew or leakage: point-in-time joins, log served features |
+| "React within the session" | Session features + per-request user vector; online learning only as an addition |
+| Events and labels | Impressions with position, positives and negatives, event ids, a defined label and window |
+| New user / new video | Onboarding, context priors, bandits / content features in item tower, exploration budget with a number |
+| Explore vs exploit | ε-greedy for a fixed budget; Thompson sampling explores where uncertain; log propensities |
+| Same items everywhere | Feedback loop: exploration, IPS, random holdout, diversity, concentration metrics |
+| "How do you measure it?" | Recall@k, AUC, NDCG offline → A/B test on retention and watch time, with guardrails |
+| "Precompute it nightly?" | Precompute the item side and expensive lists; rank per request; batch-score only emails and pushes |
+| Removed content | Hard filters early and again after every cache; deletion reaches every derived store |
+
+## Five mistakes to leave behind
+
+1. **"A model recommends videos."** Without the funnel, the counts and the milliseconds, it isn't a design.
+2. **Optimising one metric.** Watch time alone breeds bait; CTR alone breeds clickbait. Several heads, negative weights, and retention online.
+3. **Two definitions of a feature, or features joined as of today.** One definition, features as of the impression, or log what you served.
+4. **Logging clicks instead of impressions.** No impressions, no negatives, no position — and no honest training data.
+5. **No cold start, no exploration.** New videos stay invisible and the feed collapses into its own favourites. Say both, with numbers.
+
+<Scene title="Mara’s last word" mood="dusk">
+
+On your last day of the quarter, Discover's dashboard shows a number nobody tracked at launch: 61% of new uploads now reach a hundred views within a day. Mara looks at it for a while. Then she erases the whiteboard except for one corner, where the funnel is still drawn in your handwriting, with five numbers on its arrows.
+
+*"Leave that,"* she says. *"And next time someone draws a box that says MODEL, you know what to ask."*
+
+</Scene>
+
+**Keep it warm:** with the buddy, run a 15-minute mini-mock — "recommend videos on a TikTok clone, 100M videos, 200 ms budget." Funnel shape with numbers → two-tower serving split and version pairing → ranking heads and the value model → feature store with the skew sentence → cold start and feedback-loop flags. Then once more with a different skin: ranked notifications, or ads. This lesson completes Module 12 — every AI-era bank question now has teaching content behind it.
+
+Related: <a href={`${BASE}sd/lessons/pattern-fanout/#ranking`}>Fan-out · ranked feeds</a> (in-network candidates and session snapshots) · <a href={`${BASE}sd/lessons/search/`}>Search</a> (retrieval, BM25, vectors) · <a href={`${BASE}sd/lessons/rag/`}>RAG & vector search</a> (embeddings and ANN) · <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> (the event log) · <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series</a> (windowed counters, trending) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (the four promises) · <a href={`${BASE}sd/lessons/feature-flags/`}>Feature flags & experimentation</a> (A/B tests) · <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> · <a href={`${BASE}sd/war/event-driven-ai-pipeline/`}>War Room: event-driven AI pipeline</a> · <a href={`${BASE}sd/war/rag-retrieval-design/`}>War Room: retrieval design</a> · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- [Deep Neural Networks for YouTube Recommendations](https://research.google/pubs/deep-neural-networks-for-youtube-recommendations/) (Covington, Adams, Sargin — RecSys 2016) — the paper that made "candidate generation, then ranking" the standard vocabulary; also discusses watch-time objectives and example age.
+- [Sampling-Bias-Corrected Neural Modeling for Large Corpus Item Recommendations](https://research.google/pubs/sampling-bias-corrected-neural-modeling-for-large-corpus-item-recommendations/) (RecSys 2019) — two-tower retrieval with in-batch negatives and the popularity (logQ) correction from Chapter 3.
+- [Wide & Deep Learning for Recommender Systems](https://arxiv.org/abs/1606.07792) and [DLRM](https://arxiv.org/abs/1906.00091) — two published ranking-model architectures from Chapter 4.
+- [Monolith: Real Time Recommendation System With Collisionless Embedding Table](https://arxiv.org/abs/2209.07663) — ByteDance's published description of real-time training (Chapter 9).
+- [Efficient and robust approximate nearest neighbor search using HNSW graphs](https://arxiv.org/abs/1603.09320) — the index behind most ANN retrieval.
+- [A Tutorial on Thompson Sampling](https://arxiv.org/abs/1707.02038) (Russo et al.) — the full story behind Chapter 12.
+- [Google: Rules of Machine Learning](https://developers.google.com/machine-learning/guides/rules-of-ml) — training/serving skew, logging features at serving time, and many of this lesson's traps, from practitioners. Also the [Google recommendation systems course](https://developers.google.com/machine-learning/recommendation).
+- [Hidden Technical Debt in Machine Learning Systems](https://papers.nips.cc/paper/5656-hidden-technical-debt-in-machine-learning-systems) (NeurIPS 2015) — feedback loops, entanglement, and why the model is the small box.
+- [Feast documentation](https://docs.feast.dev/) — an open-source feature store; read its point-in-time join docs.
+- [twitter/the-algorithm](https://github.com/twitter/the-algorithm) — published source for a large production feed's candidate sources, rankers and filters.
+- [Discounted cumulative gain (Wikipedia)](https://en.wikipedia.org/wiki/Discounted_cumulative_gain) and [Multi-armed bandit (Wikipedia)](https://en.wikipedia.org/wiki/Multi-armed_bandit) — the definitions behind Chapters 12 and 14.
+
+**Look these up yourself**
+
+- **Matrix factorisation and ALS** (Koren, Bell & Volinsky, 2009) — the collaborative-filtering method behind the Netflix Prize era, and the ancestor of two-tower.
+- **Item-to-item collaborative filtering** (Linden, Smith & York, 2003) — the classic "people who bought this also bought" paper.
+- **Sequence models for recommendation** (SASRec, BERT4Rec, and transformer-based user models) — how the recent watch sequence becomes a user vector.
+- **Counterfactual evaluation and off-policy estimators** (inverse propensity scoring, doubly robust) — evaluating a new policy on data logged by an old one.
+- **Product quantisation (IVF-PQ)** — the other main ANN family, trading recall for much smaller memory.
+- **Embedding tables at scale** — hashing tricks and sharded parameter servers for billions of ids.
+- **Interleaving experiments** — faster, more sensitive ranker comparisons than A/B tests.
+- **Multi-stakeholder and fairness-aware ranking** — balancing users, creators and the platform in the re-ranking stage.

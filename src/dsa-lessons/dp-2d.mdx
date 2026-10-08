@@ -1,0 +1,1303 @@
+---
+title: '2-D Dynamic Programming'
+description: 'A novel in eight chapters and six side quests. Take a stool in the Chartroom at Latticeford, where two surveyors’ maps are laid along two edges of one table, and learn to read every square as a smaller question: routes on a grid, two words aligned, crates and coins, three trading lanterns, a climb with no way back, and the balloon that bursts last.'
+order: 15
+minutes: 120
+sessionMinutes: 8
+---
+import PatternHub from '../components/PatternHub.astro';
+import Playground from '../components/Playground.astro';
+import Practice from '../components/Practice.astro';
+import Trace from '../components/Trace.astro';
+import HintLadder from '../components/HintLadder.astro';
+import Reveal from '../components/Reveal.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Mermaid from '../components/Mermaid.astro';
+import { hints } from '../data/dp-2d/hints';
+import { figures, paths, lcs, edit, partition, coins, cooldown, climb, balloons, mixedReview } from '../data/dp-2d/traces';
+import { BASE } from '../paths';
+
+export const GRID_TONES = { gold: '#e3b341', blue: '#58a6ff', green: '#3fb950', purple: '#bc8cff', red: '#f85149', dim: '#8b949e' };
+export const DpGrid = ({ rows, cols, cells, tones = {}, arrows = [], rowHead, colHead }) => {
+  const H = 40, gap = 10, pad = 8;
+  const text = v => (v === null || v === undefined ? '' : String(v));
+  const colW = Math.max(40, ...cols.map(c => c.length * 7.5 + 12), ...cells.flat().map(v => text(v).length * 9.5 + 14));
+  const labelW = Math.max(26, ...rows.map(r => r.length * 7.5 + 10));
+  const axisW = rowHead ? 22 : 0, axisH = colHead ? 18 : 0;
+  const x0 = pad + axisW + labelW + 6, y0 = pad + axisH + 22;
+  const cx = c => x0 + c * (colW + gap) + colW / 2;
+  const cy = r => y0 + r * (H + gap) + H / 2;
+  const width = x0 + cols.length * (colW + gap) + 56, height = y0 + rows.length * (H + gap) + pad + 4;
+  const uid = `dpg-${Math.random().toString(36).slice(2, 8)}`;
+  const edge = (ux, uy) => Math.min(ux ? colW / 2 / Math.abs(ux) : Infinity, uy ? H / 2 / Math.abs(uy) : Infinity);
+  const path = a => {
+    const x1 = cx(a.from[1]), y1 = cy(a.from[0]), x2 = cx(a.to[1]), y2 = cy(a.to[0]);
+    const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy);
+    const near = Math.abs(a.to[0] - a.from[0]) <= 1 && Math.abs(a.to[1] - a.from[1]) <= 1;
+    let qx = (x1 + x2) / 2, qy = (y1 + y2) / 2;
+    if (!near) {
+      let nx = -dy / len, ny = dx / len;
+      if (Math.abs(dx) >= Math.abs(dy) ? ny > 0 : nx < 0) { nx = -nx; ny = -ny; }
+      qx += nx * len * 0.5; qy += ny * len * 0.5;
+    }
+    const s1 = Math.hypot(qx - x1, qy - y1), s2 = Math.hypot(x2 - qx, y2 - qy);
+    const u1x = (qx - x1) / s1, u1y = (qy - y1) / s1, u2x = (x2 - qx) / s2, u2y = (y2 - qy) / s2;
+    const t1 = edge(u1x, u1y) * 0.55, t2 = edge(u2x, u2y) + 1;
+    return `M ${x1 + u1x * t1} ${y1 + u1y * t1} Q ${qx} ${qy} ${x2 - u2x * t2} ${y2 - u2y * t2}`;
+  };
+  return <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img" aria-label={`${rowHead ?? 'rows'} by ${colHead ?? 'columns'}: ${cells.map((r, i) => `${rows[i]}: ${r.map(text).join(' ')}`).join('; ')}`} style="display:block;margin:0 auto;overflow:visible;font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace">
+    <defs>{Object.entries(GRID_TONES).map(([k, col]) => <marker id={`${uid}-${k}`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill={col} /></marker>)}</defs>
+    {colHead && <text x={x0 + (cols.length * (colW + gap) - gap) / 2} y={pad + 11} text-anchor="middle" font-size="11" fill="#9198a1">{colHead}</text>}
+    {rowHead && <text transform={`translate(${pad + 11}, ${y0 + (rows.length * (H + gap) - gap) / 2}) rotate(-90)`} text-anchor="middle" font-size="11" fill="#9198a1">{rowHead}</text>}
+    {cols.map((c, j) => <text x={cx(j)} y={y0 - 8} text-anchor="middle" font-size="12" font-weight="700" fill="#c9d1d9">{c}</text>)}
+    {rows.map((r, i) => <text x={x0 - 8} y={cy(i) + 4} text-anchor="end" font-size="12" font-weight="700" fill="#c9d1d9">{r}</text>)}
+    {cells.map((row, i) => row.map((v, j) => {
+      if (v === null) return null;
+      const t = tones[`${i},${j}`], col = t && t !== 'ghost' ? GRID_TONES[t] : null;
+      return <g>
+        <rect x={cx(j) - colW / 2} y={cy(i) - H / 2} width={colW} height={H} rx="7" fill={col ?? '#161b22'} fill-opacity={col ? '0.22' : '1'} stroke={col ?? '#30363d'} stroke-width={col ? '1.6' : '1'} stroke-dasharray={t === 'ghost' ? '4 3' : undefined} />
+        <text x={cx(j)} y={cy(i) + 5} text-anchor="middle" font-size="14" font-weight="600" fill={t === 'ghost' ? '#6e7681' : '#e6edf3'}>{text(v)}</text>
+      </g>;
+    }))}
+    {arrows.map(a => <path d={path(a)} fill="none" stroke={GRID_TONES[a.tone ?? 'gold']} stroke-width="2" stroke-linecap="round" marker-end={`url(#${uid}-${a.tone ?? 'gold'})`} />)}
+  </svg>;
+};
+
+<PatternHub
+  pattern="dp-2d"
+  start="prologue"
+  logline="In the Chartroom at Latticeford, nobody compares two maps line by line. The maps are laid along two edges of one table, every square answers a smaller question, and by the time the last square is inked the whole question has answered itself."
+  cast={[
+    { name: 'You', role: 'The newest apprentice in the Chartroom. Like any loop, you ink one square at a time.' },
+    { name: 'The Keeper', role: 'Runs the Chartroom. Never inks a square for you; asks three questions instead.' },
+    { name: 'Row and Col', role: 'Twin surveyors, i and j. Row has read the first i landmarks of one map, Col the first j of the other. Every square is a meeting between them.' },
+    { name: 'Up, Left and Diag', role: 'The three neighbours a square may consult: the square above, the square to the left, and the one up-and-left. Which of them a square reads decides the order you ink.' },
+    { name: 'The Archivist', role: 'Keeps a drawer for every square of the height map. Asked twice, she answers from the drawer. She is the memo.' },
+    { name: 'Hold, Sold and Rest', role: 'Three lanterns in the trading-house window. Each night exactly one of them describes you.' },
+    { name: 'Last', role: 'The balloon master. Asked how to burst a row of balloons, she always asks first which one goes last.' },
+  ]}
+  parts={[
+    { name: 'Part One · The grid itself', description: 'The table is the map. Each square is fed by the squares you could have come from.', links: [['unique-paths', 'The courier’s routes']] },
+    { name: 'Part Two · Two maps, one table', description: 'One sequence down the side, one across the top, and an empty row and column for “nothing read yet”.', links: [['lcs', 'Two maps of one coast'], ['edit-distance', 'The engraver’s plate']] },
+    { name: 'Part Three · The crate room', description: 'Items down the side, totals across the top. Whether a square reads the row above or its own row decides “once” or “as often as you like”.', links: [['partition', 'Two equal wagons'], ['coin-change-ii', 'The toll in coins']] },
+    { name: 'Part Four · Tables that aren’t grids', description: 'Days and states; squares ordered by height; ranges ordered by length.', links: [['cooldown', 'Three lanterns'], ['increasing-path', 'The climb with no way back'], ['burst-balloons', 'The last balloon']] },
+  ]}
+  extensions={[['obstacles', 'Rocks on the map'], ['min-path-sum', 'The toll road'], ['palindrome-subsequence', 'The mirror inscription'], ['distinct-subsequences', 'Counting the copies'], ['target-sum', 'Plus or minus'], ['k-transactions', 'At most k trades']]}
+  extras={[['choose-the-tool', 'When the table lies'], ['wider-family', 'The neighbouring houses'], ['exit-ticket', 'The cartographer’s exam'], ['cheat-sheet', 'The Keeper’s map notes']]}
+  note="All 8 roadmap problems, plus six side quests. Every chapter draws its table and the arrows between squares. Read one chapter per sitting; the story keeps your place."
+/>
+
+<h2 id="prologue">Prologue · Two maps, one table</h2>
+
+<Scene chapter="Prologue" title="The two surveyors" mood="dawn">
+
+Latticeford is a town of mapmakers. Its Chartroom has one long window, one long table, and a rule painted above the door: *no square is inked twice.*
+
+On your first morning two surveyors come back from the same stretch of coast. Each has a list of the landmarks she passed, in order. The lists disagree. One saw the lighthouse before the bay; the other the bay before the lighthouse. A junior clerk starts lining the lists up every way he can think of, and by noon he has a stack of tries taller than his inkpot.
+
+The Keeper takes the stack away. She lays the first list down the left edge of a fresh sheet, the second along the top, and rules a grid between them — with one extra row and one extra column, left blank.
+
+*"Every square is a smaller question,"* she says. *"Tell me what this one means. Then tell me which squares must be inked before it."*
+
+</Scene>
+
+In the <a href={`${BASE}dsa/lessons/dp-1d/`}>1-D book</a> every answer lived on one scroll in a rack: `dp[i]`, one number per position. Some questions need **two numbers to describe where you are**: how much of the first word and how much of the second; which row and which column; which items you have considered and what total you are aiming for; which day it is and what you are holding; which stretch `i..j` is left. Two numbers make a table. That is all “2-D” means.
+
+The method is the same **five-step recipe** you learnt at Highcairn, asked about a square instead of a scroll:
+
+1. **The state, in words.** Finish the sentence “`dp[i][j]` = the number of ways / the cheapest cost / the longest / whether it is possible … for the first `i` of this and the first `j` of that.” If you can’t say it in one sentence, you can’t build it.
+2. **The recurrence, from the last decision.** Look at the *final* move of any solution — the last step, the last letters, the last item, today’s action, the last balloon. Each possibility leaves a smaller question: **a neighbouring square**.
+3. **Base cases.** The squares the recurrence can’t build. Usually row 0 and column 0: “nothing read yet”.
+4. **Evaluation order.** Draw an arrow from every square a square reads to the square itself. Ink in any order that never reads a blank: row by row, by increasing length, by decreasing height.
+5. **Where the answer lives.** Usually the far corner. Say which square before you code.
+
+Then, and only then, **shrink the space**: if each row reads only the row above, keep one or two rows of paper.
+
+<Figure caption="The table as a map. Green squares are settled. The gold square is being inked; it reads three blue neighbours — Diag (purple arrow), Up (blue) and Left (green). Dashed squares are still blank. Inking row by row, left to right, every arrow points from a settled square: that is what makes the order safe.">
+  <DpGrid {...figures.map} />
+</Figure>
+
+The Keeper asks her three questions here, as in every town of the realm:
+
+1. **What is settled?** Every square already inked. It is final; nothing inked later can change it.
+2. **Why is this move safe?** The last decision splits every possible solution into cases, each one a smaller question whose square is already settled, and together the cases miss nothing.
+3. **When do I stop?** When the square named in step 5 is inked.
+
+You’ve logged it as a gap before: say the time and space cost and the invariant *before* you code. In a table, the invariant **is** the sentence from step 1. Say it out loud.
+
+### When this pattern fires
+
+The brute force tries every combination of choices, and **the same smaller question keeps coming back** with the same two numbers attached. Those two numbers are your table’s axes:
+
+| You see… | The two axes | Typical square reads | Brute force → table |
+|---|---|---|---|
+| A grid, moves only right/down | row, column | up, left | every route → O(rows × cols) |
+| Two strings or sequences | prefix of one, prefix of the other | up, left, diag | every alignment → O(n × m) |
+| Items, each used once, hitting a total | items considered, total | the row above, twice | 2ⁿ subsets → O(n × total) |
+| Unlimited items, counting combinations | item types, total | the row above, and its own row | every multiset → O(n × total) |
+| Days and a few situations (holding, cooling down) | day, state | yesterday’s states | 3ⁿ action plans → O(n × states) |
+| A grid where moves go any direction but always “uphill” | row, column (ordered by height) | strictly higher neighbours | every walk → O(rows × cols) |
+| Removing from a range changes the neighbours | left end, right end | shorter ranges | n! orders → O(n³) |
+
+<h2 id="playground">The drafting tables · You ink every square</h2>
+
+<Scene title="The drafting tables">
+
+Along the Chartroom wall stand three slanted drafting tables, chalked with empty grids. Apprentices practise there before they touch vellum. Nobody inks a square for you. When you reach for the wrong rule, the Keeper doesn’t take the chalk; she reads you the numbers in the neighbouring squares and tells you what your square would have claimed.
+
+</Scene>
+
+Three drills. **Two maps:** ink an LCS table square by square — match or no match — then walk back from the corner and read the route. **The engraver:** for every square of an edit-distance table, choose the move behind it: free match, replace, delete or insert. **The crate room:** check the total, then sweep one row of paper for each crate, in the only direction that uses a crate at most once. Say your reason **before** you press the button.
+
+<Playground lab="dp-2d" />
+
+<Part n="Part One" title="The grid itself">
+
+The table is the map. Each square is fed by the squares you could have come from.
+
+</Part>
+
+<h2 id="unique-paths">Chapter 1 · The courier’s routes</h2>
+
+<Scene chapter="Chapter 1" title="The courier’s routes" mood="dawn">
+
+Latticeford’s old quarter is a perfect grid of blocks, and every street in it runs downhill toward the harbour: south, or east, never back. The couriers’ guild wants to print the number of different routes from the Chartroom, in the top-left corner, to the harbour office in the bottom-right.
+
+An apprentice is laying string along every route. She has used four balls of string on a little 3 × 4 corner of the quarter and lost count twice.
+
+The Keeper picks up the harbour office’s square on the map and turns it over in her fingers. *"Every route that ends here,"* she says, *"took one last step to get here. Where from?"*
+
+</Scene>
+
+**Problem: Unique Paths · grid paths (counting)**
+
+Run the recipe.
+
+1. **State:** `dp[r][c]` = the number of routes from the start to square `(r, c)`.
+2. **Last decision:** the last step into `(r, c)` came from **above** or from **the left**. Those two groups of routes never overlap (their last steps differ) and miss nothing (there is no third way in). Counting questions combine cases with a **sum**: `dp[r][c] = dp[r − 1][c] + dp[r][c − 1]`.
+3. **Base cases:** the top row and the left column. There is exactly one route to each of them — a straight line — so they are all 1.
+4. **Evaluation order:** both arrows come from above or from the left, so **row by row, left to right** never reads a blank square.
+5. **Answer:** `dp[m − 1][n − 1]`, the bottom-right corner.
+
+<Figure caption="A 3 × 4 grid. The corner square holds 10: the 4 routes that arrive from above plus the 6 that arrive from the left. Every square is the sum of its two arrows; the top row and left column are all 1.">
+  <DpGrid {...figures.paths} />
+</Figure>
+
+<Trace title="Where did the last step come from?" steps={paths} takeaway="Remember: square = up + left, because the last step came from exactly one of them. In one row of paper, sweep left to right so row[c − 1] is already this row’s." />
+
+**Why it works:** every route to `(r, c)` with `r, c > 0` ends with exactly one step, down or right. Remove it and you have a route to `(r − 1, c)` or to `(r, c − 1)`; every such route extends in exactly one way. So the two counts add with nothing double-counted and nothing lost.
+
+**What stays true:** when you ink `(r, c)`, every square above it and every square to its left on its row already holds its final count.
+
+<Reveal q="Is there a formula? Then why bother with the table?">
+
+There is. Every route is `m − 1` downs and `n − 1` rights in some order, so the count is the binomial coefficient C(m + n − 2, m − 1): for 3 × 7 that is C(8, 2) = 28. Know it, and say it in the interview. But change one rule — a rock on the map (side quest 1), a toll on each square (side quest 2) — and the formula is gone, while the table still works with one changed line.
+
+</Reveal>
+
+<Reveal q="Why can one row of paper replace the whole table?">
+
+Each square reads only its own row and the row directly above. Keep one array `row`. Before you update `row[c]`, it still holds the square **above**; `row[c − 1]`, already updated in this sweep, is the square to the **left**. So `row[c] += row[c − 1]` is exactly up + left — **provided you sweep left to right**. Keep that direction in mind: in Part Three, the opposite direction is the whole point.
+
+</Reveal>
+
+<HintLadder hints={hints.uniquePaths}>
+
+```java id=uniquePaths
+public int uniquePaths(int m, int n) {
+    int[][] dp = new int[m][n];                      // dp[r][c] = routes from the start to square (r, c)
+    for (int r = 0; r < m; r++)
+        for (int c = 0; c < n; c++) {
+            if (r == 0 || c == 0) dp[r][c] = 1;      // top row, left column: one straight route
+            else dp[r][c] = dp[r - 1][c] + dp[r][c - 1];   // last step came from above, or from the left
+        }
+    return dp[m - 1][n - 1];
+}
+
+// The same map, one row of paper: row[c] still holds the row above until it is overwritten.
+public int uniquePathsRolling(int m, int n) {
+    int[] row = new int[n];
+    Arrays.fill(row, 1);                             // the top row
+    for (int r = 1; r < m; r++)
+        for (int c = 1; c < n; c++)                  // left to right: row[c - 1] is already this row's
+            row[c] += row[c - 1];                    // old row[c] = up, new row[c - 1] = left
+    return row[n - 1];
+}
+```
+
+**O(m × n) time; O(m × n) space for the table, O(n) for one row.** LeetCode guarantees the answer is at most 2 × 10⁹, and counts only grow toward the corner, so every square fits in an `int`.
+
+</HintLadder>
+
+**Catch the bug:** sweeping the one-row version right to left.
+
+```java fragment
+for (int c = n - 1; c >= 1; c--) row[c] += row[c - 1];   // BUG: row[c - 1] is still LAST row's: up-left, not left
+```
+
+On a 3 × 3 grid that returns 4 instead of 6. [Solve Unique Paths](https://leetcode.com/problems/unique-paths/).
+
+<Part n="Part Two" title="Two maps, one table">
+
+One sequence down the side, one across the top, and an empty row and column for “nothing read yet”.
+
+</Part>
+
+<h2 id="lcs">Chapter 2 · Two maps of one coast</h2>
+
+<Scene chapter="Chapter 2" title="Two maps of one coast" mood="dawn">
+
+The two surveyors’ lists are pinned to the table. The first reads *Lighthouse, Bay, Reef, Cove, Tower*: **L B R C T**. The second reads *Bay, Lighthouse, Cove, Reef, Tower*: **B L C R T**.
+
+The guild will only engrave landmarks both surveyors agree on, and in the order both of them saw them. Skipping is allowed; reordering isn’t. How long can the agreed list be?
+
+Row takes the first list and walks down the left edge. Col takes the second and walks along the top. The Keeper taps the blank row and column she ruled that morning.
+
+*"Before Row has read anything,"* she says, *"how many landmarks can he agree on?"*
+
+</Scene>
+
+**Problem: Longest Common Subsequence · two-sequence alignment**
+
+A **subsequence** keeps letters in order but may skip some (L R T is a subsequence of L B R C T); a substring may not skip. You want the longest sequence that is a subsequence of both.
+
+1. **State:** `dp[i][j]` = the length of the longest common subsequence of the **first `i` letters** of map A and the **first `j` letters** of map B.
+2. **Last decision:** look only at the two last letters, `A[i − 1]` and `B[j − 1]`.
+   - **They match.** Pair them: `dp[i][j] = dp[i − 1][j − 1] + 1` (**Diag**). This is always safe: a longest common subsequence of these prefixes must end with this letter (otherwise you could append it and get a longer one), and its final pairing can be re-pinned to these two last positions.
+   - **They differ.** They can’t pair with each other, and they can’t both be used (one would have to pair with something *before* the other, and the pairs would cross). So at least one is left out: `dp[i][j] = max(dp[i − 1][j], dp[i][j − 1])` — drop A’s last letter (**Up**) or B’s (**Left**), whichever leaves more.
+3. **Base cases: the empty-prefix row and column.** `dp[0][j] = 0` and `dp[i][0] = 0`: a list with nothing read agrees on nothing. This is why the Keeper ruled an extra row and column. With them, **every real square has all three neighbours** and the code needs no `if` for the first letter — the same trick as the zero line on top of a prefix-sum ledger.
+4. **Order:** Up, Left and Diag are all above or to the left: row by row, left to right.
+5. **Answer:** `dp[n][m]`, all of one list against all of the other.
+
+<Figure caption="L B R C T down the side, B L C R T across the top. The ghost row and column are the empty prefixes. Gold: R meets R at (3, 4), so it takes the diagonal 1 + 1 = 2. Blue: C meets R at (4, 4), no match, so it takes max(up 2, left 2) = 2. The corner says the agreed list has 3 landmarks.">
+  <DpGrid {...figures.lcs} />
+</Figure>
+
+<Trace title="Match, or drop a letter?" steps={lcs} takeaway="Remember: match → diagonal + 1; no match → max(up, left). Never up + 1, and never up + left." />
+
+**Why it works:** the two cases cover every common subsequence of the two prefixes — either both last letters are used (and then they pair with each other) or at least one is unused — and each case is a smaller pair of prefixes whose square is already inked.
+
+**What stays true:** after square `(i, j)` is inked, it holds the exact LCS length of `A[0..i)` and `B[0..j)`, and every square above and to its left does too.
+
+<Reveal q="On a mismatch, why max(up, left) and not up + left?">
+
+Up and Left describe **overlapping** sets of routes. In the figure, at (4, 4) both neighbours hold 2, and both of their best routes can use L and R. Adding them claims 4 landmarks from two lists that only agree on 3 in total. A longest-something question **chooses** between cases (max); only counting questions **add** them.
+
+</Reveal>
+
+<HintLadder hints={hints.lcs}>
+
+```java id=longestCommonSubsequence
+public int longestCommonSubsequence(String text1, String text2) {
+    int n = text1.length(), m = text2.length();
+    int[][] dp = new int[n + 1][m + 1];              // row 0, column 0: an empty prefix shares nothing
+    for (int i = 1; i <= n; i++)
+        for (int j = 1; j <= m; j++) {
+            if (text1.charAt(i - 1) == text2.charAt(j - 1))
+                dp[i][j] = dp[i - 1][j - 1] + 1;     // both last letters join the agreed route
+            else
+                dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);   // drop one map's last letter
+        }
+    return dp[n][m];
+}
+```
+
+**O(n × m) time and space.** If you only need the length, two rows are enough — but you need the old diagonal, so save it before you overwrite it.
+
+</HintLadder>
+
+### Reading the route back
+
+The corner gives the length. To print the agreed landmarks themselves, **walk back from the corner** and ask, at each square, which arrow inked it:
+
+- the letters match → it came from the diagonal: **keep the letter**, step up-left;
+- they don’t → it came from the larger of Up and Left: step there, keeping nothing.
+
+You collect the letters back to front, so reverse at the end.
+
+<Figure caption="The walk back from the corner (ties step up). Gold squares are matches whose letter is kept: T, then R, then L. Read in order, the agreed list is L R T. At (4, 4) Up and Left both hold 2; stepping left instead finds L C T, just as long — the longest common subsequence need not be unique.">
+  <DpGrid {...figures.lcsRoute} />
+</Figure>
+
+```java id=lcsString
+public String lcsString(String a, String b) {
+    int n = a.length(), m = b.length();
+    int[][] dp = new int[n + 1][m + 1];
+    for (int i = 1; i <= n; i++)
+        for (int j = 1; j <= m; j++)
+            dp[i][j] = a.charAt(i - 1) == b.charAt(j - 1) ? dp[i - 1][j - 1] + 1
+                                                         : Math.max(dp[i - 1][j], dp[i][j - 1]);
+    StringBuilder route = new StringBuilder();
+    int i = n, j = m;
+    while (i > 0 && j > 0) {                         // walk back from the answer square
+        if (a.charAt(i - 1) == b.charAt(j - 1)) {    // this square came from the diagonal: keep the letter
+            route.append(a.charAt(i - 1));
+            i--; j--;
+        } else if (dp[i - 1][j] >= dp[i][j - 1]) i--;   // came from above (ties: either is fine)
+        else j--;                                    // came from the left
+    }
+    return route.reverse().toString();               // collected back to front
+}
+```
+
+The walk needs the **whole** table — a rolling two-row version has thrown the map away. That is the price of reconstruction: O(n × m) space. (Hirschberg’s algorithm recovers the string in linear space; see *Look these up yourself*.)
+
+**Catch the bug:** on a match, writing `max(up, left) + 1` instead of `diagonal + 1`.
+
+```java fragment
+dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]) + 1;   // BUG on a match: Up may already have used B's last letter
+```
+
+“aa” against “a” returns 2: map B’s single A gets paired twice. The answer is 1. [Solve Longest Common Subsequence](https://leetcode.com/problems/longest-common-subsequence/).
+
+<h2 id="edit-distance">Chapter 3 · The engraver’s plate</h2>
+
+<Scene chapter="Chapter 3" title="The engraver’s plate" mood="dusk">
+
+The copper plate for the headland reads **HORSE**, the name an old surveyor misheard. The new survey says the fishermen call it **ROS**.
+
+The engraver charges one coin per stroke, and she has exactly three strokes. She can **punch** a new letter in, **scrape** a letter out, or **hammer** one letter into another. She would like to know the cheapest job before she lifts her hammer.
+
+Row reads the old name down the side; Col reads the new one along the top. The extra row and column are back — but this time the Keeper doesn’t fill them with zeros.
+
+*"Turning three letters into nothing,"* she asks. *"What does that cost?"*
+
+</Scene>
+
+**Problem: Edit Distance · alignment with three moves**
+
+1. **State:** `dp[i][j]` = the fewest moves that turn the **first `i` letters of word1** into the **first `j` letters of word2**.
+2. **Last decision:** look at the last letters, `word1[i − 1]` and `word2[j − 1]`.
+   - **They agree** → they cost nothing: `dp[i][j] = dp[i − 1][j − 1]`.
+   - **They differ** → the cheapest script ends with one of the three strokes, and **each stroke is one neighbour**:
+
+| Stroke | What it does to the last letters | What is left to do | Neighbour |
+|---|---|---|---|
+| **Replace** (hammer) | word1’s last letter becomes word2’s last letter | first `i − 1` → first `j − 1` | **Diag** + 1 |
+| **Delete** (scrape) | word1’s last letter is removed | first `i − 1` → first `j` | **Up** + 1 |
+| **Insert** (punch) | word2’s last letter is appended | first `i` → first `j − 1` | **Left** + 1 |
+
+   So `dp[i][j] = 1 + min(diag, up, left)`.
+3. **Base cases:** `dp[i][0] = i` (scrape all `i` letters) and `dp[0][j] = j` (punch all `j`). **The empty-prefix row and column cost something here**; zeros would claim that “hors” already equals nothing.
+4. **Order:** row by row, left to right.
+5. **Answer:** `dp[n][m]`.
+
+<Figure caption="horse → ros. Gold squares trace the cheapest script back from the corner: replace h → r (0 → 1), keep o free, delete r (1 → 2), keep s free, delete e (2 → 3). At the corner, e meets s: Diag (purple, 3), Up (red, 2) and Left (green, 4) each cost one more; Up wins, so the last stroke deletes the e.">
+  <DpGrid {...figures.edit} />
+</Figure>
+
+<Trace title="Which stroke made this square?" steps={edit} takeaway="Remember: match → copy the diagonal for free; otherwise 1 + min(diagonal = replace, up = delete, left = insert). The base row and column count up from 0." />
+
+**Why it works:** look at how any script treats the two last letters. Either word1’s last letter ends up as word2’s last letter (free if equal, one replace if not), or it gets deleted, or word2’s last letter was inserted. Those cases cover every script, and each leaves a smaller pair of prefixes whose square is already settled.
+
+**Why a free match is never worse than paying:** neighbouring squares differ by at most 1 (one insert or delete turns one prefix pair into the other), so `diag ≤ up + 1` and `diag ≤ left + 1`. When the letters agree, copying the diagonal is always the minimum.
+
+**What stays true:** every inked square holds the exact distance between its two prefixes.
+
+<Reveal q="Does it matter in which order the engraver makes the strokes?">
+
+Not for the count. An optimal script can always be done as all scrapes first, then hammers, then punches; the table only counts strokes. That is also why this table can be filled from small prefixes up: it describes *which* letters are touched, not *when*.
+
+</Reveal>
+
+<HintLadder hints={hints.edit}>
+
+```java id=minDistance
+public int minDistance(String word1, String word2) {
+    int n = word1.length(), m = word2.length();
+    int[][] dp = new int[n + 1][m + 1];              // dp[i][j]: first i letters of word1 -> first j of word2
+    for (int i = 0; i <= n; i++) dp[i][0] = i;       // to the empty word: delete all i letters
+    for (int j = 0; j <= m; j++) dp[0][j] = j;       // from the empty word: insert all j letters
+    for (int i = 1; i <= n; i++)
+        for (int j = 1; j <= m; j++) {
+            if (word1.charAt(i - 1) == word2.charAt(j - 1))
+                dp[i][j] = dp[i - 1][j - 1];         // last letters agree: free
+            else
+                dp[i][j] = 1 + Math.min(dp[i - 1][j - 1],              // replace word1's last letter
+                               Math.min(dp[i - 1][j],                  // delete word1's last letter
+                                        dp[i][j - 1]));                // insert word2's last letter
+        }
+    return dp[n][m];
+}
+```
+
+**O(n × m) time and space; O(m) with two rows.** LeetCode’s second example, intention → execution, costs 5.
+
+</HintLadder>
+
+**Catch the bug:** forgetting the base row and column (leaving them 0).
+
+```java fragment
+int[][] dp = new int[n + 1][m + 1];   // BUG: no dp[i][0] = i, dp[0][j] = j — "nothing to do" is not free
+```
+
+Then “ab” → “b” returns 0 (the matching b copies a diagonal that claims “a” already equals nothing). The answer is 1. [Solve Edit Distance](https://leetcode.com/problems/edit-distance/).
+
+<Part n="Part Three" title="The crate room">
+
+Items down the side, totals across the top. Whether a square reads the row above or its own row decides “once” or “as often as you like”.
+
+</Part>
+
+<h2 id="partition">Chapter 4 · Two equal wagons</h2>
+
+<Scene chapter="Chapter 4" title="Two equal wagons" mood="dawn">
+
+The new survey instruments arrive in crates of different weights, and they must cross the river on two wagons. The ferryman is firm: the wagons must weigh **exactly** the same, or the raft tips.
+
+A porter starts trying groups — this crate and that one, no, this one instead. With twenty crates there are over a million groups to try.
+
+The Keeper rules a new kind of table. Down the side: the crates, one row each, plus a row for “no crates yet”. Along the top: every total from 0 up to half the load.
+
+*"Each crate gets one row,"* she says. *"And each crate goes on a wagon once. Which squares may its row look at?"*
+
+</Scene>
+
+**Problem: Partition Equal Subset Sum · 0/1 knapsack**
+
+First, shrink the question. Two equal wagons each weigh `total / 2`. **If the total is odd, the answer is no** without any table. Otherwise: **can some of the crates weigh exactly `T = total / 2`?** (The rest weigh the other `T`.)
+
+1. **State:** `dp[i][s]` = true if **some of the first `i` crates** weigh exactly `s`.
+2. **Last decision:** crate `i` (weight `w`) is either **skipped** — then the first `i − 1` crates must make `s`: `dp[i − 1][s]` — or **taken** — then they must make `s − w`: `dp[i − 1][s − w]`. Is-it-possible questions combine cases with **or**.
+3. **Base cases:** row 0, no crates: only total 0 is possible. `dp[0][0] = true`, every other `dp[0][s] = false`.
+4. **Order:** each row reads only **the row above**. Row by row.
+5. **Answer:** `dp[n][T]`.
+
+<Figure caption="Crates [2, 3, 5], target 5. Row “+3” at total 5 reads two squares in the row above: skip (blue, up: ·) and take (green, three columns left: total 2 is ✓). Either is enough, so it is ✓ — the group {2, 3}. Both arrows come from the row ABOVE: that is what “each crate once” looks like on the map.">
+  <DpGrid {...figures.partition} />
+</Figure>
+
+<Trace title="Each crate, once" steps={partition} takeaway="Remember: odd total → no. Otherwise ask for half. In one row of paper, each crate sweeps DOWNWARDS, so dp[s − w] still describes the crates before it." />
+
+### One row of paper, swept downwards
+
+Row `i` reads only row `i − 1`, so keep **one** array and overwrite it in place for each crate. But careful: you are now reading and writing the same paper.
+
+- Sweep **upwards** (`s = w … T`): when you reach `s`, the square `s − w` *below* it has **already been rewritten for this crate**. Reading it means “this crate, plus a group that may already contain this crate”: **the same crate twice.**
+- Sweep **downwards** (`s = T … w`): `s − w` is smaller than `s`, so it hasn’t been touched in this sweep. It still holds **the row above**. Each crate counts at most once.
+
+<Figure caption="Crates [1, 2, 5], half = 4 (the true answer is no: no group weighs 4). After crate 1: the upward sweep marks every total, because dp[2] reads the dp[1] it just set, dp[3] reads dp[2], and so on — one crate of weight 1 used four times. The downward sweep marks only 0 and 1, which is the truth.">
+  <ArrayStrip name="before crate 1" values={['✓', '·', '·', '·', '·']} />
+  <ArrayStrip name="sweep UP (bug)" values={['✓', '✓', '✓', '✓', '✓']} tones={{ 2: 'out', 3: 'out', 4: 'out' }} />
+  <ArrayStrip name="sweep DOWN" values={['✓', '✓', '·', '·', '·']} tones={{ 0: 'done', 1: 'done' }} />
+</Figure>
+
+**Why it works:** every group of the first `i` crates either contains crate `i` or doesn’t. Without it, it is a group of the first `i − 1` crates with the same total; with it, a group of the first `i − 1` crates weighing `w` less. Both are settled squares in the row above.
+
+**What stays true:** during crate `w`’s downward sweep, squares above the current `s` already describe the first `i` crates; squares at `s` and below still describe the first `i − 1`.
+
+<Reveal q="This is O(n × T). Isn’t subset sum supposed to be hard?">
+
+It is NP-hard in general, and this doesn’t contradict that: the table’s width is the **value** `T`, not the number of crates. That is called **pseudo-polynomial** time. LeetCode keeps at most 200 crates of weight at most 100, so `T ≤ 10,000` and the table has at most about 2 million squares. With weights up to 10⁹ the table is impossible; with few items, split them in half and enumerate both halves (meet in the middle).
+
+</Reveal>
+
+<HintLadder hints={hints.partition}>
+
+```java id=canPartition
+// The full map: one row per item considered, one column per total.
+public boolean canPartitionTable(int[] nums) {
+    int total = 0;
+    for (int x : nums) total += x;
+    if (total % 2 == 1) return false;                // an odd total can't split evenly
+    int target = total / 2, n = nums.length;
+    boolean[][] dp = new boolean[n + 1][target + 1]; // dp[i][s]: some of the first i items total exactly s
+    dp[0][0] = true;                                 // no items: only the empty group, total 0
+    for (int i = 1; i <= n; i++) {
+        int w = nums[i - 1];
+        for (int s = 0; s <= target; s++)
+            dp[i][s] = dp[i - 1][s] || (s >= w && dp[i - 1][s - w]);   // skip item i, or take it once
+    }
+    return dp[n][target];
+}
+
+// One row of paper, swept from the top so dp[s - w] still holds the previous row.
+public boolean canPartition(int[] nums) {
+    int total = 0;
+    for (int x : nums) total += x;
+    if (total % 2 == 1) return false;
+    int target = total / 2;
+    boolean[] dp = new boolean[target + 1];
+    dp[0] = true;
+    for (int w : nums)
+        for (int s = target; s >= w; s--)            // BACKWARDS: each item joins a group at most once
+            dp[s] = dp[s] || dp[s - w];
+    return dp[target];
+}
+```
+
+**O(n × T) time; O(n × T) space for the table, O(T) for one row.**
+
+</HintLadder>
+
+**Catch the bug:** the upward sweep.
+
+```java fragment
+for (int s = w; s <= target; s++) dp[s] = dp[s] || dp[s - w];   // BUG: reads squares this crate already set
+```
+
+On `[1, 2, 5]` it returns true; nothing weighs 4. [Solve Partition Equal Subset Sum](https://leetcode.com/problems/partition-equal-subset-sum/).
+
+<h2 id="coin-change-ii">Chapter 5 · The toll in coins</h2>
+
+<Scene chapter="Chapter 5" title="The toll in coins" mood="dusk">
+
+The toll at the north bridge is exactly 5 pennies, and the town mints coins of 1, 2 and 5. The toll-keeper wants to print, on a little card, how many different handfuls of coins pay it exactly.
+
+His clerk counts and writes 9. The Keeper reads the clerk’s working: *1 then 2 then 2*, and further down, *2 then 1 then 2*, and *2 then 2 then 1*.
+
+*"The toll-keeper doesn’t care which coin you hand over first,"* she says. *"A handful is a handful. How do you count each handful once?"*
+
+</Scene>
+
+**Problem: Coin Change II · unbounded knapsack (count combinations)**
+
+The trick is to build each handful **in a fixed order of coin types**: first decide how many 1s, then how many 2s, then how many 5s. Every handful has exactly one such build.
+
+1. **State:** `dp[i][a]` = the number of handfuls using only the **first `i` coin types** that make exactly `a`.
+2. **Last decision:** how many of coin type `i` (value `c`)? **None** — then `dp[i − 1][a]` — or **at least one**: take one off, and what is left is a handful of the first `i` types (more of coin `i` still allowed) making `a − c`: `dp[i][a − c]`, **the same row**. Counting: add them.
+3. **Base cases:** `dp[0][0] = 1` (one way to pay 0: no coins); `dp[0][a] = 0` for `a > 0`.
+4. **Order:** row by row, and left to right within a row (it reads its own row further left).
+5. **Answer:** `dp[n][amount]`.
+
+<Figure caption="Coins [1, 2, 5]. Row {1,2} at amount 4: no 2s (blue, up: 1 way, 1+1+1+1) plus at least one 2 (green, same row two columns left: 2 ways to make 2, each with one more 2 → 2+2 and 1+1+2). 3 ways. The corner holds 4 for amount 5: 1+1+1+1+1, 1+1+1+2, 1+2+2, 5.">
+  <DpGrid {...figures.coins} />
+</Figure>
+
+**Put the two crate-room tables side by side.** In Chapter 4 the “take” arrow came from **the row above** (that item is now used up). Here it comes from **the same row** (that coin may be used again). That one arrow is the entire difference between 0/1 and unbounded. And in one row of paper it becomes the sweep direction: **downwards** keeps reading the old row (0/1); **upwards** reads squares this coin has already updated (unbounded).
+
+### Combinations versus orders: the loop nesting
+
+In one row of paper there are two ways to nest the loops, and they count different things:
+
+- **Coin types outside, amounts inside.** By the time coin 2 is processed, every handful built so far uses only 1s. Each handful is built once, in coin order: **combinations**.
+- **Amounts outside, coins inside.** `dp[a] = sum over coins of dp[a − c]`: that is “what was the **last** coin handed over?” — and 1 + 2 and 2 + 1 have different last coins. That counts **ordered sequences** (LeetCode’s Combination Sum IV).
+
+<Figure caption="Coins [1, 2], amount 3. Coins outside: after coin 1, every amount has one way (all 1s); after coin 2, amount 3 has 2: {1,1,1} and {1,2}. Amounts outside: 3 — it counts 1+1+1, 1+2 and 2+1 separately.">
+  <ArrayStrip name="coins outside, after 1" values={[1, 1, 1, 1]} />
+  <ArrayStrip name="coins outside, after 2" values={[1, 1, 2, 2]} tones={{ 3: 'done' }} />
+  <ArrayStrip name="amounts outside" values={[1, 1, 2, 3]} tones={{ 3: 'out' }} />
+</Figure>
+
+<Trace title="Which row does the take arrow read?" steps={coins} takeaway="Remember: unbounded reads its own row (sweep up); 0/1 reads the row above (sweep down). Coins on the outside loop count combinations; amounts outside count orders." />
+
+**Why it works:** every handful making `a` from the first `i` types contains either no coin `i` or at least one; removing one coin `i` from the latter is a one-to-one match with the handfuls making `a − c` from the same types. The two groups are disjoint and complete, so they add.
+
+**What stays true:** after coin type `i` has swept the row, `dp[a]` is the number of combinations of the first `i` types making `a`, for every `a`.
+
+<Reveal q="And for the FEWEST coins (Coin Change I), does the loop order matter?">
+
+No. `dp[a] = min over coins of dp[a − c] + 1` asks only for the best value, and both nestings consider every last coin with the final values of smaller amounts. Order matters for **counting**, because counting must not see the same handful twice. The <a href={`${BASE}dsa/lessons/dp-1d/`}>1-D book</a> solves Coin Change I.
+
+</Reveal>
+
+<HintLadder hints={hints.coins}>
+
+```java id=change
+// The full map: dp[i][a] = combinations of the first i coin types that make a.
+public int changeTable(int amount, int[] coins) {
+    int n = coins.length;
+    int[][] dp = new int[n + 1][amount + 1];
+    dp[0][0] = 1;                                    // no coin types: only 0 can be made, one way
+    for (int i = 1; i <= n; i++) {
+        int coin = coins[i - 1];
+        for (int a = 0; a <= amount; a++)
+            dp[i][a] = dp[i - 1][a] + (a >= coin ? dp[i][a - coin] : 0);   // none of this coin, or one more of it
+    }
+    return dp[n][amount];
+}
+
+// One row: coins OUTSIDE, amounts inside, swept FORWARDS so a coin can be used again.
+public int change(int amount, int[] coins) {
+    int[] dp = new int[amount + 1];
+    dp[0] = 1;                                       // one way to make 0: take nothing
+    for (int coin : coins)
+        for (int a = coin; a <= amount; a++)
+            dp[a] += dp[a - coin];
+    return dp[amount];
+}
+```
+
+**O(n × amount) time; O(amount) space for one row.** LeetCode guarantees the final answer fits in a 32-bit `int`. A middle square can grow larger than that, but Java `int`s wrap around and the table only ever adds, so the final square still comes out exact whenever the true answer fits.
+
+</HintLadder>
+
+**Catch the bug:** swapping the loops.
+
+```java fragment
+for (int a = 1; a <= amount; a++)
+    for (int coin : coins) if (a >= coin) dp[a] += dp[a - coin];   // BUG: counts orders, not handfuls
+```
+
+Coins `[1, 2]`, amount 3 returns 3 (1+1+1, 1+2, 2+1); the answer is 2. [Solve Coin Change II](https://leetcode.com/problems/coin-change-ii/).
+
+<Part n="Part Four" title="Tables that aren’t grids">
+
+Days and states; squares ordered by height; ranges ordered by length. The axes change. The recipe doesn’t.
+
+</Part>
+
+<h2 id="cooldown">Chapter 6 · Three lanterns</h2>
+
+<Scene chapter="Chapter 6" title="Three lanterns" mood="night">
+
+Across the square from the Chartroom is the trading house, where shares in next season’s survey are bought and sold, one at a time. The house has one odd rule: whoever sells must sit out the following day before buying again.
+
+Every evening a clerk hangs a lantern in the window to show each trader where they stand. There are only three: **Hold** (you own a share), **Sold** (you sold today) and **Rest** (empty-handed, and free to buy tomorrow).
+
+A merchant tries to plan a whole season of trades by trying every pattern of buy, sell and wait. *"Forget the season,"* the Keeper tells him. *"Tonight you are under one lantern. Which lanterns could you have been under last night?"*
+
+</Scene>
+
+**Problem: Best Time to Buy and Sell Stock with Cooldown · state machine**
+
+The table is **days × states**: three rows, one column per day.
+
+1. **State:** for each day `d`, the best cash you can have at the end of day `d` if you are under each lantern:
+   - `hold[d]`: you own a share;
+   - `sold[d]`: you sold today;
+   - `rest[d]`: you own nothing and didn’t sell today (so you may buy tomorrow).
+2. **Last decision:** today’s action. Draw the arrows between the lanterns:
+
+<Mermaid code={`stateDiagram-v2
+  direction LR
+  [*] --> Rest
+  Rest --> Rest: wait
+  Rest --> Hold: buy (pay price)
+  Hold --> Hold: wait
+  Hold --> Sold: sell (earn price)
+  Sold --> Rest: cooldown (forced)`} />
+
+   Read each lantern’s formula off the arrows **into** it, from yesterday’s values:
+   - `hold[d] = max(hold[d − 1], rest[d − 1] − price)` — keep holding, or buy, **only out of Rest**;
+   - `sold[d] = hold[d − 1] + price` — sell what you held;
+   - `rest[d] = max(rest[d − 1], sold[d − 1])` — keep resting, or finish yesterday’s cooldown.
+3. **Base cases:** day 0: `hold = −price[0]`, `sold` is impossible (nothing to sell; use a very negative number), `rest = 0`.
+4. **Order:** day by day; each column reads only the previous one.
+5. **Answer:** `max(sold, rest)` on the last day. Ending under Hold means owning a share you paid for and never sold.
+
+<Figure caption="Prices [1, 2, 3, 0, 2]. Day 3 (price 0): Hold becomes max(−1, rest 1 − 0) = 1 — bought out of Rest (blue arrow), not out of Sold, whose 2 came from a sale the day before. Day 4: Sold = hold 1 + 2 = 3 (green arrow). The answer is max(sold 3, rest 2) = 3: buy 1, sell 2, cool down, buy 0, sell 2.">
+  <DpGrid {...figures.cooldown} />
+</Figure>
+
+<Trace title="Which lantern were you under yesterday?" steps={cooldown} takeaway="Remember: only Rest has an arrow into Hold; Sold must pass through Rest. End empty-handed: max(sold, rest)." />
+
+**Why it works:** every legal plan is a walk through the diagram, one arrow per day. Each lantern keeps the best cash among all walks that end under it today, and **what you may do tomorrow depends only on which lantern you are under, not on how you got there.** That is what makes three numbers per day enough.
+
+**What stays true:** after day `d`, each of the three numbers is the best cash over every legal plan for days `0..d` that ends in that state.
+
+<Reveal q="Why Integer.MIN_VALUE / 2 for “impossible”, and not MIN_VALUE?">
+
+“Impossible” must lose every `max`. Here `sold` is only ever compared, never added to, so plain `MIN_VALUE` would survive. But in a variant where you add a price or subtract a fee from an impossible state, `MIN_VALUE − 1` wraps around to the largest positive `int` and wins every `max`. Halving leaves room. It is a habit that keeps “impossible” safe in every variant you write.
+
+</Reveal>
+
+<HintLadder hints={hints.cooldown}>
+
+```java id=maxProfit
+public int maxProfit(int[] prices) {
+    int n = prices.length;
+    int[] hold = new int[n], sold = new int[n], rest = new int[n];
+    hold[0] = -prices[0];                            // bought on day 0
+    sold[0] = Integer.MIN_VALUE / 2;                 // impossible: nothing to sell yet (and no overflow)
+    rest[0] = 0;                                     // did nothing
+    for (int d = 1; d < n; d++) {
+        hold[d] = Math.max(hold[d - 1], rest[d - 1] - prices[d]);   // keep holding, or buy (only out of Rest)
+        sold[d] = hold[d - 1] + prices[d];                          // sell what you held yesterday
+        rest[d] = Math.max(rest[d - 1], sold[d - 1]);               // keep resting, or cool down after a sale
+    }
+    return Math.max(sold[n - 1], rest[n - 1]);       // end empty-handed
+}
+
+// Each day reads only yesterday, so three numbers are enough.
+public int maxProfitRolling(int[] prices) {
+    int hold = -prices[0], sold = Integer.MIN_VALUE / 2, rest = 0;
+    for (int d = 1; d < prices.length; d++) {
+        int h = hold, s = sold, r = rest;            // yesterday's three lanterns, saved before any change
+        hold = Math.max(h, r - prices[d]);
+        sold = h + prices[d];
+        rest = Math.max(r, s);
+    }
+    return Math.max(sold, rest);
+}
+```
+
+**O(n) time; O(n) space for the table, O(1) with three numbers.** Save yesterday’s three values before you overwrite any of them; updating `hold` first and then reading it for `sold` would let you buy and sell on the same day.
+
+</HintLadder>
+
+**Catch the bug:** buying out of Sold.
+
+```java fragment
+hold[d] = Math.max(hold[d - 1], Math.max(rest[d - 1], sold[d - 1]) - prices[d]);   // BUG: skips the cooldown
+```
+
+On `[1, 2, 3, 0, 2]` it returns 4 — the profit with **no** cooldown (sell at 3 on day 2, buy at 0 on day 3). The answer is 3. [Solve Best Time to Buy and Sell Stock with Cooldown](https://leetcode.com/problems/best-time-to-buy-and-sell-stock-with-cooldown/).
+
+<h2 id="increasing-path">Chapter 7 · The climb with no way back</h2>
+
+<Scene chapter="Chapter 7" title="The climb with no way back" mood="storm">
+
+In the back room hangs the relief map: a grid of carved squares, each painted with its height. A mountaineer wants the longest walk she can make on it, square to square — up, down, left or right — where **every step climbs strictly higher**.
+
+You start inking a table row by row and stop at once. The best walk from a square might go left, or up, to squares you haven’t inked. There is no row order.
+
+The Archivist opens a cabinet with one drawer per square. *"Ask me about any square,"* she says. *"If I’ve answered before, it’s in the drawer. If not, I’ll ask about the squares above it — and they’re all higher, so nobody ever asks me about this square while I’m still working on it."*
+
+</Scene>
+
+**Problem: Longest Increasing Path in a Matrix · DFS + memo on a DAG**
+
+The squares’ dependencies don’t point in a fixed direction on the grid — but they **always point uphill**. That is an order too: ink the highest squares first. You don’t even need to sort; **recursion with a memo** discovers the order on its own.
+
+1. **State:** `climb(r, c)` = the number of squares on the longest strictly increasing walk that **starts** at `(r, c)`.
+2. **Last decision** (here, the first step): to a strictly higher neighbour, or nowhere. `climb(r, c) = 1 + max(climb(neighbour))` over higher neighbours, or 1 if there are none.
+3. **Base case:** a peak — no higher neighbour — has `climb = 1`.
+4. **Order:** recursion asks about higher squares first; the memo makes each square’s answer get computed once.
+5. **Answer:** the maximum of `climb` over every square.
+
+**Why no visited set?** A visited set protects a search from going round in circles. Here every step is **strictly** higher, so a walk can never come back to a square it left: the moves form a **directed acyclic graph**. The first time the Archivist finishes a square, its answer is final.
+
+<Figure caption="Heights [[9, 9, 4], [6, 6, 8], [2, 1, 1]]. The longest climb is 1 → 2 → 6 → 9: four squares (gold). Equal neighbours, like the two 6s, are not steps.">
+  <DpGrid {...figures.heights} />
+</Figure>
+
+<Figure caption="What the Archivist writes in each drawer: the longest climb starting there. The 9s are peaks (1). The 1 at (2, 1) reads its higher neighbours, the 2 (drawer 3) and the 6 above it (drawer 2): 1 + 3 = 4.">
+  <DpGrid {...figures.climbs} />
+</Figure>
+
+<Trace title="Uphill only" steps={climb} takeaway="Remember: strictly higher only. That rules out cycles, so a memo is all you need — no visited set." />
+
+**Why it works:** the longest climb from a square starts with one step to some higher neighbour and continues with the longest climb from there; climbs from different neighbours can’t interfere, because no climb can return downhill. Each square is solved once, from answers that are already final.
+
+**What stays true:** every filled drawer holds the exact longest climb from its square; the recursion only ever opens drawers of strictly higher squares.
+
+<Reveal q="What if a step could go to an EQUAL height?">
+
+Then two equal neighbours point at each other: a cycle. “Longest climb from here” would depend on itself, the memo would read 0 while the square is still being computed, and the recursion would bounce between them forever. With cycles, “longest path” is a different (and in general NP-hard) problem. **Strictly increasing is what makes this a DP.**
+
+</Reveal>
+
+<Reveal q="Can you do it without recursion?">
+
+Yes: sort the squares by height, highest first, and fill each from its higher neighbours — every square it reads is already done. Or peel the grid like a topological sort: start from squares with no higher neighbour and work downhill layer by layer; the number of layers is the answer. Both avoid deep recursion, which matters because a snake-shaped climb can be `rows × cols` steps long. LeetCode’s limits (200 × 200) pass with recursion in Java; in production, prefer the iterative version.
+
+</Reveal>
+
+<HintLadder hints={hints.climb}>
+
+```java id=longestIncreasingPath
+private static final int[][] DIRS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+
+public int longestIncreasingPath(int[][] matrix) {
+    int rows = matrix.length, cols = matrix[0].length;
+    int[][] memo = new int[rows][cols];              // 0 = never asked; else the longest climb starting here
+    int best = 0;
+    for (int r = 0; r < rows; r++)
+        for (int c = 0; c < cols; c++)
+            best = Math.max(best, climb(matrix, memo, r, c));
+    return best;
+}
+
+private int climb(int[][] m, int[][] memo, int r, int c) {
+    if (memo[r][c] != 0) return memo[r][c];          // asked before: answer from the archive
+    int best = 1;                                    // the climb that is just this square
+    for (int[] d : DIRS) {
+        int nr = r + d[0], nc = c + d[1];
+        if (nr >= 0 && nr < m.length && nc >= 0 && nc < m[0].length && m[nr][nc] > m[r][c])
+            best = Math.max(best, 1 + climb(m, memo, nr, nc));   // strictly higher only: no way back
+    }
+    return memo[r][c] = best;
+}
+```
+
+**O(rows × cols) time and space:** each square is solved once and looks at four neighbours. Memo value 0 can mean “not asked” because every real answer is at least 1.
+
+</HintLadder>
+
+**Catch the bug:** a non-strict comparison.
+
+```java fragment
+if (inside && m[nr][nc] >= m[r][c])   // BUG: equal neighbours form a cycle
+```
+
+On `[[1, 1]]` the two squares call each other until the stack overflows. [Solve Longest Increasing Path in a Matrix](https://leetcode.com/problems/longest-increasing-path-in-a-matrix/).
+
+<h2 id="burst-balloons">Chapter 8 · The last balloon</h2>
+
+<Scene chapter="Chapter 8" title="The last balloon" mood="dusk">
+
+At the end of the survey season Latticeford flies its survey balloons in a row above the square, each painted with a number: **3, 1, 5, 8**. At the festival they are burst one by one. Bursting a balloon pays out its number times its two neighbours’ numbers, and the row closes up behind it. A balloon at the end has an empty sky beside it, which counts as 1.
+
+The children argue about which balloon to burst first. Every choice changes everyone’s neighbours, and the argument goes in circles.
+
+Last, the balloon master, doesn’t join in. *"Don’t ask which goes first,"* she says. *"Ask which goes last. When the last balloon bursts, who are its neighbours?"*
+
+</Scene>
+
+**Problem: Burst Balloons · interval DP**
+
+**Why “first” fails:** burst balloon `k` first and its left and right neighbours become neighbours of each other. Now the coins on the left side depend on what is left on the right side. The two halves are tangled; there is no smaller copy of the problem.
+
+**Why “last” works:** fix two **walls**, `i` and `j`, that stay standing. Let `k` be the **last** balloon to burst strictly between them. Until `k` bursts, it stands between the two halves like a wall itself: balloons between `i` and `k` only ever see `i`, `k` and each other, and the same for `k` and `j`. When `k` finally bursts, everything else between the walls is gone, so its neighbours are exactly `i` and `j`. Two independent smaller copies of the same question.
+
+**Pad the row** with a 1 at each end, `v = [1, 3, 1, 5, 8, 1]`. The “empty sky counts as 1” rule becomes two walls that never burst, and no `if` is needed at the ends.
+
+1. **State:** `dp[i][j]` = the most coins from bursting **every balloon strictly between walls `i` and `j`** (the walls themselves stay).
+2. **Last decision:** which balloon `k` bursts last: `dp[i][j] = max over i < k < j of dp[i][k] + v[i] × v[k] × v[j] + dp[k][j]`.
+3. **Base cases:** `dp[i][i + 1] = 0`: no balloons between adjacent walls.
+4. **Order:** every square reads **shorter ranges**, so fill by increasing gap `j − i`: all gaps of 2, then 3, up to `n + 1`.
+5. **Answer:** `dp[0][n + 1]`.
+
+<Figure caption="dp[i][j] for the padded row [1, 3, 1, 5, 8, 1] (labels show index · value). Only squares right of the diagonal mean anything; the dashed gap-1 squares are the zero base. The corner dp[0][5] = 167 comes from bursting the 8 last: dp[0][4] = 159 (the 3, 1, 5 between walls 1 and 8) + 1·8·1 + dp[4][5] = 0.">
+  <DpGrid {...figures.burst} />
+</Figure>
+
+<Trace title="Choose the last balloon" steps={balloons} takeaway="Remember: choose the LAST balloon in (i, j) — its neighbours are the walls. Pad with 1s. Fill by increasing range length." />
+
+**Why it works:** every burst order of the balloons between `i` and `j` has some last balloon `k`; given `k`, the coins split exactly into the left range’s coins, the right range’s coins and `v[i]·v[k]·v[j]`, and the two ranges’ orders can be chosen independently. Taking the best `k` covers every order.
+
+**What stays true:** when `dp[i][j]` is inked, every shorter range is final.
+
+<Reveal q="Isn’t a greedy rule enough — burst the smallest balloon first?">
+
+On `[3, 1, 5, 8]` smallest-first bursts 1, 3, 5, 8 and earns 15 + 15 + 40 + 8 = 78. The best order (1, 5, 3, 8) earns 15 + 120 + 24 + 8 = 167. No local rule knows what the neighbours will be later; the range table considers every possible last balloon.
+
+</Reveal>
+
+<HintLadder hints={hints.balloons}>
+
+```java id=maxCoins
+public int maxCoins(int[] nums) {
+    int n = nums.length;
+    int[] v = new int[n + 2];                        // pad: a wall worth 1 at each end, never burst
+    v[0] = 1;
+    v[n + 1] = 1;
+    for (int i = 0; i < n; i++) v[i + 1] = nums[i];
+    int[][] dp = new int[n + 2][n + 2];              // dp[i][j]: best for the balloons strictly between i and j
+    for (int len = 2; len <= n + 1; len++)           // short gaps first
+        for (int i = 0; i + len <= n + 1; i++) {
+            int j = i + len;
+            for (int k = i + 1; k < j; k++)          // k bursts LAST between walls i and j
+                dp[i][j] = Math.max(dp[i][j], dp[i][k] + v[i] * v[k] * v[j] + dp[k][j]);
+        }
+    return dp[0][n + 1];
+}
+```
+
+**O(n³) time, O(n²) space:** about n²/2 ranges, each trying up to n last balloons. LeetCode’s limits (n ≤ 300, values ≤ 100) keep every total under 300 × 10⁶, inside `int`.
+
+</HintLadder>
+
+**Catch the bug:** filling `i` from left to right.
+
+```java fragment
+for (int i = 0; i <= n + 1; i++)
+    for (int j = i + 2; j <= n + 1; j++) ...   // BUG: dp[k][j] has k > i — a row not filled yet
+```
+
+On `[3, 1, 5, 8]` it reads zeros and returns 63 instead of 167. Fill by length (or `i` from right to left). [Solve Burst Balloons](https://leetcode.com/problems/burst-balloons/).
+
+<Part n="Part Five" title="The Keeper changes one rule">
+
+Side quests. Same tables, one rule different. This is where memorised templates break and understanding doesn’t.
+
+</Part>
+
+<Scene title="Maps with one line crossed out" mood="night">
+
+The evening you finish the balloon festival, there is a stack of old maps on your stool. Each is a problem you have already solved, with one rule struck through in red and a new one written above it in the Keeper’s small, tidy hand.
+
+*"Anyone can copy a table,"* says the note on top. *"Show me you know what each square means."*
+
+</Scene>
+
+<h2 id="obstacles">Side quest 1 · Rocks on the map</h2>
+
+**The map says:** some squares of the courier’s grid hold rocks. Count the routes that never touch one.
+
+**The reasoning:** “routes that end on a rock” is 0, so a rock square holds 0, and every other square is still up + left. The trap is the base case. In Chapter 1 you set the whole top row to 1. Now a rock in the top row **cuts off every square to its right** — there is no other way to reach them. So compute the edges too: start with `dp[0][0] = 1` (unless the start itself is a rock) and treat off-grid neighbours as 0.
+
+<Figure caption="A rock at (1, 1) (red, 0). The goal still gets 2 routes: 1 from above (around the right) plus 1 from the left (around the bottom). LeetCode’s first example.">
+  <DpGrid {...figures.rocks} />
+</Figure>
+
+<Reveal q="Rocks at (0, 1) of a 2 × 3 grid. What does pre-filling the top row with 1s return?">
+
+It sets (0, 2) to 1, though nothing can reach it — the rock blocks the only way. Then the goal gets 1 (from above, a phantom) + 1 (from the left) = 2. The true answer is 1: down, right, right.
+
+</Reveal>
+
+<HintLadder hints={hints.rocks}>
+
+```java id=uniquePathsWithObstacles
+public int uniquePathsWithObstacles(int[][] obstacleGrid) {
+    int m = obstacleGrid.length, n = obstacleGrid[0].length;
+    int[][] dp = new int[m][n];
+    for (int r = 0; r < m; r++)
+        for (int c = 0; c < n; c++) {
+            if (obstacleGrid[r][c] == 1) dp[r][c] = 0;              // a rock: no route ends here
+            else if (r == 0 && c == 0) dp[r][c] = 1;               // the start, if it is open
+            else dp[r][c] = (r > 0 ? dp[r - 1][c] : 0) + (c > 0 ? dp[r][c - 1] : 0);
+        }
+    return dp[m - 1][n - 1];
+}
+```
+
+**O(m × n) time and space** (one row works, as in Chapter 1).
+
+</HintLadder>
+
+**Transfer test:** count the routes that **pass through** a given square X. (Routes from the start to X, times routes from X to the goal: every route through X is one of each, glued together.) [Solve Unique Paths II](https://leetcode.com/problems/unique-paths-ii/).
+
+<h2 id="min-path-sum">Side quest 2 · The toll road</h2>
+
+**The map says:** every square charges a toll. Find the cheapest route, right and down only, paying both ends.
+
+**The reasoning:** counting became minimising, so the combine changes from **sum** to **min**, and the square adds its own toll: `dp[r][c] = grid[r][c] + min(up, left)`. The top row has only a left neighbour and the left column only an up neighbour — they are running sums.
+
+<Figure caption="Tolls [[1, 3, 1], [1, 5, 1], [4, 2, 1]] and the cheapest cost to each square. The corner is 7 along the gold route 1 → 3 → 1 → 1 → 1. At the corner, min(up 6, left 8) + 1 = 7.">
+  <DpGrid {...figures.tolls} />
+</Figure>
+
+<Reveal q="Why not just step to the cheaper neighbour each time?">
+
+Greedy looks one square ahead. From the top-left it steps down (1 beats 3), then down again (4 beats 5), then right twice: 1 + 1 + 4 + 2 + 1 = 9. The table knows the 3 at the top leads to a road of 1s and finds 7.
+
+</Reveal>
+
+<HintLadder hints={hints.tolls}>
+
+```java id=minPathSum
+public int minPathSum(int[][] grid) {
+    int m = grid.length, n = grid[0].length;
+    int[][] dp = new int[m][n];                      // dp[r][c]: cheapest tolls from the start to (r, c), both ends paid
+    for (int r = 0; r < m; r++)
+        for (int c = 0; c < n; c++) {
+            if (r == 0 && c == 0) dp[r][c] = grid[0][0];
+            else if (r == 0) dp[r][c] = dp[r][c - 1] + grid[r][c];  // top row: only from the left
+            else if (c == 0) dp[r][c] = dp[r - 1][c] + grid[r][c];  // left column: only from above
+            else dp[r][c] = Math.min(dp[r - 1][c], dp[r][c - 1]) + grid[r][c];
+        }
+    return dp[m - 1][n - 1];
+}
+```
+
+**O(m × n) time; O(m × n) space, or O(1) if you may overwrite the grid.**
+
+</HintLadder>
+
+**Transfer test:** in Dungeon Game the knight’s health must stay above 0 the whole way, and you want the smallest starting health. Why must that table be filled from the **bottom-right backwards**? (What you need at a square depends on the road *ahead*, not the road behind; the answer lives at the start.) [Solve Minimum Path Sum](https://leetcode.com/problems/minimum-path-sum/).
+
+<h2 id="palindrome-subsequence">Side quest 3 · The mirror inscription</h2>
+
+**The map says:** one word, not two. Delete letters (keeping order) so that what is left reads the same both ways. How long can it be?
+
+**The reasoning:** a palindrome is decided by its **two ends**, so the state is a range: `dp[i][j]` = the longest palindrome you can keep from `s[i..j]`. If the ends match, they wrap the best palindrome inside: `dp[i + 1][j − 1] + 2`. If not, one end goes: `max(dp[i + 1][j], dp[i][j − 1])`. A single letter is a palindrome: `dp[i][i] = 1`.
+
+The **evaluation order** is the part to get right. A square reads the row **below** it (`i + 1`) and the square to its left (`j − 1`). So loop `i` from the end **down**, and `j` from `i + 1` **up**.
+
+<Figure caption="“bbbab”. The diagonal (green) is all 1s. The corner dp[0][4] = 4: the ends are b and b, wrapping dp[1][3] = 2 (“bb” kept from “bba”) — “bbbb”. Squares left of the diagonal mean nothing.">
+  <DpGrid {...figures.palindrome} />
+</Figure>
+
+<Reveal q="Can you solve this with the LCS code from Chapter 2?">
+
+Yes, for the length: the longest palindromic subsequence of `s` has the same length as the LCS of `s` and its reverse. (The checker tests both on thousands of strings.) The range table is still worth knowing: its fill order — `i` downwards — is the shape of every interval DP, including Burst Balloons.
+
+</Reveal>
+
+<HintLadder hints={hints.palindrome}>
+
+```java id=longestPalindromeSubseq
+public int longestPalindromeSubseq(String s) {
+    int n = s.length();
+    int[][] dp = new int[n][n];                      // dp[i][j]: longest palindrome kept from s[i..j]
+    for (int i = n - 1; i >= 0; i--) {               // i from the right, so row i + 1 is finished
+        dp[i][i] = 1;                                // one letter reads the same both ways
+        for (int j = i + 1; j < n; j++) {
+            if (s.charAt(i) == s.charAt(j)) dp[i][j] = dp[i + 1][j - 1] + 2;   // the ends wrap the middle
+            else dp[i][j] = Math.max(dp[i + 1][j], dp[i][j - 1]);            // drop one end
+        }
+    }
+    return dp[0][n - 1];
+}
+```
+
+**O(n²) time and space.** When `j = i + 1` and the ends match, `dp[i + 1][i]` is a square left of the diagonal: still 0, which is exactly right (nothing between them).
+
+</HintLadder>
+
+**Transfer test:** the fewest letters to **insert** so that a word becomes a palindrome. (Keep the longest palindromic subsequence; every other letter needs a mirror partner inserted: `n − LPS`.) [Solve Longest Palindromic Subsequence](https://leetcode.com/problems/longest-palindromic-subsequence/).
+
+<h2 id="distinct-subsequences">Side quest 4 · Counting the copies</h2>
+
+**The map says:** the old chart’s legend reads “rabbbit”; the guild’s official name is “rabbit”. In how many different ways can the engraver scrape letters off the legend and leave exactly the official name?
+
+**The reasoning:** two words again, but now you **count**. `dp[i][j]` = the number of ways to keep exactly `t[0..j)` from `s[0..i)`. Look at `s`’s last letter: it is either **scraped off** (`dp[i − 1][j]`) or, if it equals `t`’s last letter, **used for it** (`dp[i − 1][j − 1]`). Different ways — so add. Base cases: keeping nothing is one way (column 0 is all 1s); keeping something from nothing is impossible (row 0 is 0 after column 0).
+
+<Reveal q="“babgbag” and “bag”. How many ways, and which squares does the corner read?">
+
+5. The corner compares g with g: it adds “scrape this g” (the ways to keep “bag” from “babgba”: 1, using the earlier g) and “use this g” (the ways to keep “ba” from “babgba”: 4). 1 + 4 = 5. Notice the arrows: Up and Diag only — never Left. `t` is never edited.
+
+</Reveal>
+
+<HintLadder hints={hints.distinct}>
+
+```java id=numDistinct
+public int numDistinct(String s, String t) {
+    int n = s.length(), m = t.length();
+    int[][] dp = new int[n + 1][m + 1];              // dp[i][j]: ways to keep exactly t[0..j) from s[0..i)
+    for (int i = 0; i <= n; i++) dp[i][0] = 1;       // keep nothing: one way (delete everything)
+    for (int i = 1; i <= n; i++)
+        for (int j = 1; j <= m; j++) {
+            dp[i][j] = dp[i - 1][j];                 // s's last letter is deleted
+            if (s.charAt(i - 1) == t.charAt(j - 1))
+                dp[i][j] += dp[i - 1][j - 1];        // ...or it supplies t's last letter
+        }
+    return dp[n][m];
+}
+```
+
+**O(n × m) time and space.** Middle squares can overflow an `int` (40 a’s contain C(40, 20) ≈ 1.4 × 10¹¹ ways to keep 20 a’s), but the table only adds, Java wraps, and LeetCode guarantees the final answer fits — so the corner is exact. The checker includes such a case.
+
+</HintLadder>
+
+**Transfer test:** compare with LCS. Both read Diag on a match; LCS also reads Left, and takes a max. Why does counting copies never read Left? (Left would skip a letter of `t`, and every letter of `t` must be kept.) [Solve Distinct Subsequences](https://leetcode.com/problems/distinct-subsequences/).
+
+<h2 id="target-sum">Side quest 5 · Plus or minus</h2>
+
+**The map says:** put a + or a − in front of each number and add them up. Count the sign choices that hit `target`.
+
+**The reasoning:** call the + numbers `P` and the − numbers `N`. Then `P − N = target` and `P + N = total`, so **`P = (total + target) / 2`**. Every sign choice is one subset (the + group) that weighs `P`. This is Chapter 4 with **counting** instead of yes/no: `ways[s] += ways[s − x]`, swept **downwards** because each number is used once.
+
+Three traps before the table:
+
+- **Parity.** If `total + target` is odd, `P` isn’t a whole number: answer 0.
+- **Out of reach.** If `|target| > total`, no signs can reach it — and for a very negative target, `P` would be negative: answer 0.
+- **Zeros.** A 0 can be +0 or −0: two different choices. The subset count handles it: a zero doubles every square (`ways[s] += ways[s]`).
+
+<Reveal q="[1, 1, 1, 1, 1]: targets 3, 2, −3, 6?">
+
+Total 5. Target 3: P = 4, choose which four 1s are positive: **5**. Target 2: 5 + 2 = 7 is odd: **0**. Target −3: P = 1: **5** (the mirror of target 3). Target 6: out of reach: **0**.
+
+</Reveal>
+
+<HintLadder hints={hints.targetSum}>
+
+```java id=findTargetSumWays
+public int findTargetSumWays(int[] nums, int target) {
+    int total = 0;
+    for (int x : nums) total += x;
+    if (Math.abs(target) > total || (total + target) % 2 != 0) return 0;   // out of reach, or an odd split
+    int plus = (total + target) / 2;                 // the numbers that get a + must total this
+    int[] ways = new int[plus + 1];
+    ways[0] = 1;
+    for (int x : nums)
+        for (int s = plus; s >= x; s--)              // backwards: each number joins the + group at most once
+            ways[s] += ways[s - x];
+    return ways[plus];
+}
+```
+
+**O(n × P) time, O(P) space.** The `abs` check comes first, so `total + target` is never negative when `%` runs.
+
+</HintLadder>
+
+**Transfer test:** Last Stone Weight II smashes stones together; the final weight is |P − N| for some split. Which square of the same subset table holds the answer? (The largest reachable `s ≤ total / 2`; the answer is `total − 2s`.) [Solve Target Sum](https://leetcode.com/problems/target-sum/).
+
+<h2 id="k-transactions">Side quest 6 · At most k trades</h2>
+
+**The map says:** no cooldown now — but you may complete **at most `k`** trades (a buy followed by a sell).
+
+**The reasoning:** “holding or not” is no longer the whole story; the future also depends on **how many trades you have opened**. Add that to the state. For each trade count `t = 1..k`: `buy[t]` = best cash while holding during trade `t`; `sell[t]` = best cash after closing `t` trades. Each day: `buy[t] = max(buy[t], sell[t − 1] − price)` (open trade `t`), `sell[t] = max(sell[t], buy[t] + price)` (close it). The table is days × trades × holding, rolled down to two arrays.
+
+<Reveal q="Prices [3, 2, 6, 5, 0, 3] with k = 2, and with k = 1?">
+
+k = 2: buy 2, sell 6 (+4); buy 0, sell 3 (+3): **7**. k = 1: the single best trade is 2 → 6: **4**. And once `k ≥ n / 2`, the limit can never bind (a trade needs two days), so the answer is just the sum of every rise.
+
+</Reveal>
+
+<HintLadder hints={hints.stockK}>
+
+```java id=stockK
+public int maxProfit(int k, int[] prices) {
+    int[] buy = new int[k + 1];                      // buy[t]: best cash while holding during trade t
+    int[] sell = new int[k + 1];                     // sell[t]: best cash with at most t trades closed
+    Arrays.fill(buy, Integer.MIN_VALUE / 2);         // nobody holds before the first day
+    for (int p : prices)
+        for (int t = 1; t <= k; t++) {
+            buy[t] = Math.max(buy[t], sell[t - 1] - p);   // open trade t
+            sell[t] = Math.max(sell[t], buy[t] + p);      // close trade t
+        }
+    return sell[k];
+}
+```
+
+**O(n × k) time, O(k) space.** Updating within the same day can let you buy and sell on one day — which earns 0 and never helps — so the in-place update is safe.
+
+</HintLadder>
+
+**Transfer test:** with a **fee** on every sale and no limit on trades, which two states do you need, and where does the fee go? (Holding and free; subtract the fee on the sell arrow.) [Solve Best Time to Buy and Sell Stock IV](https://leetcode.com/problems/best-time-to-buy-and-sell-stock-iv/).
+
+<Part n="Epilogue" title="Beyond the Chartroom">
+
+When the table is the wrong map, who lives next door, and the exam that proves you can draw your own.
+
+</Part>
+
+<h2 id="choose-the-tool">When the table lies</h2>
+
+<Scene title="The maze in the cellar" mood="storm">
+
+Under the Chartroom is a cellar of storage racks, laid out like a maze. The porter wants the shortest walk from the stairs to the far corner, and you rule a table at once: each square, the shortest walk from the start, fed from above and from the left.
+
+The porter follows your answer and walks into a wall. The real shortest walk goes right, down, and then **back left** around a rack.
+
+The Keeper looks at your arrows. *"Every table needs an order,"* she says. *"Your squares can be reached from below and from the right. Which one did you ink first?"*
+
+</Scene>
+
+A 2-D table is the right tool when **the state is two small numbers, the last decision leads to already-settled squares, and an order exists that never reads a blank.** It is the wrong tool when:
+
+- **The moves form cycles.** Four-way moves in a maze, a graph with loops: there is no fill order. Use **breadth-first search** (unweighted) or **Dijkstra** (weighted). The increasing-path chapter worked only because “strictly higher” forbids cycles.
+- **A greedy choice is provably enough.** Unlimited trades with no fee or cooldown: sum every rise. No states needed.
+- **The numbers are huge.** A subset-sum table is as wide as the target. Weights up to 10⁹ make it impossible; with few items, meet in the middle.
+- **The state doesn’t capture what the future depends on.** If two situations with the same `(i, j)` can have different futures (the cooldown before you added the Sold lantern; trades used before you added `t`), add a dimension or the answers will be wrong.
+- **You need contiguous runs, not subsequences.** Longest common *substring* is still a table, but a mismatch resets the square to 0 and the answer is the largest square anywhere, not the corner. Read the problem for “contiguous”.
+
+<Reveal q="The same cellar, but the porter may only walk right or down. Table or BFS?">
+
+Table. With right/down moves only there are no cycles, and row-by-row order is safe: `dp[r][c] = 1 + min(up, left)` over open squares — though every route then has the same length, rows + cols − 2, so the only real question is whether one exists. The moment one move goes up or left, switch to BFS.
+
+</Reveal>
+
+<h2 id="wider-family">The neighbouring houses · How the other roadmap patterns connect</h2>
+
+The Chartroom isn’t the only house that writes answers down so nobody works them out twice. The shared idea: **name the smaller question, prove the cases cover everything, and answer each smaller question once.**
+
+| Shared idea | Where it shows up | Where it belongs |
+|---|---|---|
+| One index instead of two | Climbing stairs, house robber, coin change I, LIS | <a href={`${BASE}dsa/lessons/dp-1d/`}>1-D Dynamic Programming</a> |
+| The brute force a table replaces | Enumerate every subset or every path with choose / explore / un-choose | <a href={`${BASE}dsa/lessons/backtracking/`}>Backtracking</a> |
+| An empty row and column so edges need no `if` | The zero line on top of a ledger; the 2-D summed-area table | <a href={`${BASE}dsa/lessons/prefix-sum/`}>Prefix Sum</a> |
+| Moves with cycles | Shortest walk in a maze: breadth-first search | <a href={`${BASE}dsa/lessons/graphs/`}>Graphs</a> |
+| An order that follows dependencies | Highest-first in the increasing path is a topological order | <a href={`${BASE}dsa/lessons/advanced-graphs/`}>Advanced Graphs</a> |
+| When one local choice is provably enough | Stock with unlimited trades, jump game | <a href={`${BASE}dsa/lessons/greedy/`}>Greedy</a> |
+
+**Memo versus table is a choice of direction, not of idea.** Chapter 7 had to recurse, because the order (by height) wasn’t visible in the grid. Every other chapter could be written either way; the table wins when the order is easy to see, because it has no recursion depth and lets you roll rows away.
+
+<h2 id="exit-ticket">The cartographer’s exam · Build a solution with the labels removed</h2>
+
+<Scene title="No chapter titles" mood="dawn">
+
+On the morning of the exam the Keeper hands you three problems with no headings and a blank sheet of squared paper.
+
+*"Pick one,"* she says. *"Before you write a line of code, tell me what one square means, which squares it reads, and where the answer lives."*
+
+</Scene>
+
+Choose one. Keep the tutorial code closed. Write the five recipe steps first.
+
+1. **The shortest shared map.** Two landmark lists. Find the length of the shortest list that contains **both** as subsequences. Test: identical lists, lists with nothing in common, one list empty.
+2. **The supply sacks.** Each sack is a string of 0s and 1s (0 = a water jar, 1 = a lamp). You can carry at most Z jars and O lamps in total. What is the most sacks you can take? Test: Z = O = 0, a sack too big to ever take, all sacks taken.
+3. **The cheapest cuts.** A rope of length L must be cut at given positions. Each cut costs the length of the piece being cut. In what order should you cut to pay the least? Test: one cut, cuts already sorted, cuts out of order.
+
+<Reveal q="I’ve written and tested it. What should my reasoning contain?">
+
+**The shortest shared map:** the shared landmarks need writing once, everything else once each: `n + m − LCS`. Chapter 2’s table, read differently. (To print it, walk back as in Chapter 2, emitting the letters you skip too.)
+
+**The supply sacks:** each sack is used at most once, and there are **two** capacities: a 0/1 knapsack with a 2-D row, `dp[z][o]` = the most sacks within z jars and o lamps. For each sack, sweep **both** `z` and `o` downwards — Chapter 4, one more axis.
+
+**The cheapest cuts:** sort the cut positions and add the two ends as walls. `dp[i][j]` = the cheapest way to make every cut strictly between walls `i` and `j`. Here you choose the **first** cut `k` in the piece: it costs `pos[j] − pos[i]` (the whole piece), and splits it into two pieces that never interact again. Contrast with Burst Balloons, where the *last* choice was the safe one — ask which choice makes the two halves independent, and the cost known.
+
+Now explain why a slightly wrong version fails one of your tests — the wrong sweep direction, a missing base row, a range filled in the wrong order. That counterexample is stronger evidence of understanding than a memorised template.
+
+</Reveal>
+
+Passing this once is a useful checkpoint. Rebuild one of these on another day, with a changed input and without the headings choosing the pattern for you.
+
+<h2 id="mixed-recall">Quick recall · Keep the rule warm</h2>
+
+Close the code. Name the state, the squares it reads and the fill order, and say what each move preserves. This short round is a warm-up for the independent practice below.
+
+<Trace title="Which table, which order?" steps={mixedReview} takeaway="Now try the independent session: no pattern title, a new input, and your explanation before the rubric." />
+
+<h2 id="independent-practice">Night charts · The problem won’t name its pattern</h2>
+
+The review queue starts with due concepts, then new ones. Hints or corrected attempts bring a concept back tomorrow. Successful recall at a scheduled review stretches the interval to 3, 7, then 14 days. Your reasoning is **self-checked**; nothing here automatically marks a roadmap problem solved.
+
+<Practice pattern="dp-2d" />
+
+<h2 id="cheat-sheet">The Keeper’s map notes</h2>
+
+| When you see… | The square means… | It reads | Order · answer |
+|---|---|---|---|
+| Routes on a grid, right/down only | routes from the start to (r, c) | up + left | rows · bottom-right |
+| Rocks on the grid | same; a rock holds 0 | up + left, off-grid = 0 | rows · bottom-right; don’t pre-fill edges |
+| Cheapest route, right/down | cheapest cost to (r, c), both ends paid | min(up, left) + toll | rows · bottom-right |
+| Longest shared subsequence of two strings | LCS of the first i and first j | match: diag + 1; else max(up, left) | rows, with an empty row/column · `dp[n][m]` |
+| Fewest edits between two words | edits for first i → first j | match: diag; else 1 + min(diag, up, left) | rows; base row/column 0, 1, 2… · `dp[n][m]` |
+| Count ways to keep t inside s | ways to keep t[0..j) from s[0..i) | up, + diag on a match | rows; column 0 = 1 · `dp[n][m]` |
+| Split into two equal groups | some of the first i items total s | row above at s and s − w | odd total → no; one row swept DOWN · `dp[T]` |
+| Signs that hit a target | subsets totalling P = (total + target) / 2 | as above, counting | parity and reach checks first · `ways[P]` |
+| Unlimited coins, count combinations | combinations of the first i types making a | row above + own row at a − c | coins outside, amounts UP · `dp[amount]` |
+| Trading with cooldown / limits / fees | best cash per (day, state) | yesterday’s states via the arrows | day by day · best empty-handed state |
+| Longest strictly increasing walk, any direction | longest climb starting here | strictly higher neighbours | memo DFS, no visited set · max over squares |
+| Ends of one string (palindromes) | best for s[i..j] | below-left, below, left | i DOWN, j UP · `dp[0][n − 1]` |
+| Removals change the neighbours | best for everything strictly between walls i and j | shorter ranges, choosing the LAST k | by length · `dp[0][n + 1]` |
+
+**The table is not automatically the space cost.** LCS and edit distance roll to two rows (but reconstruction needs them all); the knapsacks roll to one; the trading lanterns to a handful of numbers; the interval tables stay O(n²). Count every structure you keep.
+
+## Five bugs the Keeper keeps in her pocket
+
+1. **The missing empty row and column.** Without them the first letter needs special cases — and in edit distance they must count 0, 1, 2…, not zeros.
+2. **The wrong sweep direction in one row of paper.** 0/1 items: downwards. Unbounded items: upwards. A grid’s up + left: left to right. The direction decides whether a square reads this row or the row above.
+3. **The wrong loop nesting when counting.** Coins outside counts combinations; amounts outside counts orders.
+4. **A fill order that reads blank squares.** Ranges fill by length; `s[i..j]` tables fill `i` downwards. Draw the arrows before you write the loops.
+5. **Cases that overlap or loop.** `max(up, left) + 1` on a match pairs a letter twice; `up + left` in a max-question double-counts; `>=` in a climb makes a cycle. Each case must be disjoint (for counting) and every arrow must point to a settled square.
+
+## Coming back to the Chartroom
+
+<Scene title="The Keeper’s last word" mood="dusk">
+
+At the end of the season the Keeper walks you past the long table one last time. Row and Col are ruling a fresh sheet, an empty row and column first, the way they do every morning. The Archivist is dusting her drawers.
+
+*"You’ll forget the chapter names,"* the Keeper says. *"That’s fine. Remember to say what one square means, to draw its arrows, and to ink in an order that never reads a blank. The rest is arithmetic."*
+
+</Scene>
+
+For each chapter, aim to do three things on a fresh input: **recognise the variation, say the square’s meaning and its arrows, and code it without the solution open.** Before coding, narrate the loop’s exit too: when the loops end, which square holds the answer, and what does every other square hold? That narration is the habit your gap register asks for.
+
+A drill plan that works: **Unique Paths** as a five-minute warm-up (say the recipe out loud), then **Edit Distance** as the boss — name each stroke’s neighbour before you write the `min` — then, once warm, an unseen transfer such as Delete Operation for Two Strings or Ones and Zeroes. Revisit a new idea tomorrow and again a few days later, and mix families so the chapter title doesn’t choose the method for you.
+
+All **8 problems from your 2-D Dynamic Programming roadmap** are covered above, with six side quests around them. The neighbouring patterns live in their own books: <a href={`${BASE}dsa/lessons/dp-1d/`}>1-D Dynamic Programming</a> for one-index scrolls, <a href={`${BASE}dsa/lessons/backtracking/`}>Backtracking</a> for the brute force a table replaces, and <a href={`${BASE}dsa/lessons/graphs/`}>Graphs</a> for when the moves have cycles. Use the <a href={`${BASE}dsa/`}>full DSA roadmap</a> to continue across patterns.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study** — next reps once the eight above feel calm:
+
+- [Delete Operation for Two Strings](https://leetcode.com/problems/delete-operation-for-two-strings/) — LCS read as a cost: `n + m − 2 × LCS`.
+- [Shortest Common Supersequence](https://leetcode.com/problems/shortest-common-supersequence/) — exit ticket 1, with the walk back printing the answer.
+- [Interleaving String](https://leetcode.com/problems/interleaving-string/) — two prefixes again, with a third string as the judge.
+- [Maximal Square](https://leetcode.com/problems/maximal-square/) — a grid square that means “ending exactly here”; the answer is the largest square anywhere.
+- [Ones and Zeroes](https://leetcode.com/problems/ones-and-zeroes/) — exit ticket 2: a 0/1 knapsack with two capacities.
+- [Minimum Cost to Cut a Stick](https://leetcode.com/problems/minimum-cost-to-cut-a-stick/) — exit ticket 3: interval DP choosing the first cut.
+- [Combination Sum IV](https://leetcode.com/problems/combination-sum-iv/) — the “wrong” loop order of Chapter 5, when orders really are what you want.
+- [Regular Expression Matching](https://leetcode.com/problems/regular-expression-matching/) — two-string alignment where one string has wildcards.
+- [Longest common subsequence (Wikipedia)](https://en.wikipedia.org/wiki/Longest_common_subsequence) — history, and why diff tools care.
+- [Knapsack problem (Wikipedia)](https://en.wikipedia.org/wiki/Knapsack_problem) — 0/1, bounded and unbounded, and why the table is pseudo-polynomial.
+
+**Look these up yourself** — real ideas this book didn’t have room for:
+
+- **Hirschberg’s algorithm** — recovers an LCS (or an optimal alignment) in linear space by splitting the table in half.
+- **Levenshtein, Damerau–Levenshtein** — edit distance by name, and the variant that also allows swapping two adjacent letters.
+- **Needleman–Wunsch and Smith–Waterman** — the same table aligning DNA, with scores instead of unit costs; global versus local alignment.
+- **Myers’ diff algorithm** — how `git diff` finds a shortest edit script faster than filling the whole table.
+- **Knuth’s optimisation** — for some interval DPs (optimal binary search trees), cuts O(n³) to O(n²).
+- **Meet in the middle** — subset sum when the weights are too large for a table but there are at most about 40 items.
+- **Bitmask DP** — when the second dimension is “which items are already used” (travelling salesman over small n).
+- **Bitset subset sum** — the 0/1 knapsack row as one big bitset, updated with a shift and an OR.

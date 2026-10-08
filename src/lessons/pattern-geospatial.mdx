@@ -1,73 +1,908 @@
 ---
 title: 'Pattern: Geospatial Indexing'
-description: 'Why "find nearby X" breaks normal indexes, and the three structures — geohash, quadtree, H3 — that fix it.'
+description: 'The lunch hour Kestrel Nearby melted its database, and the one move that fixes every “near me” question: filter by cell, refine by distance, then decide whether the things move. Geohash, quadtrees, S2 and H3, PostGIS and Redis GEO, then Yelp and Uber out loud.'
 module: 7
 order: 1
-minutes: 25
+minutes: 90
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { naiveIndex, distance, geohash, edges, quadtree, chooseIndex, moving, matching, hotCells, serving, drills } from '../data/sd/pattern-geospatial';
+import { BASE } from '../paths';
 
-## The pattern in one sentence
+<PatternHub
+  pattern="sd-pattern-geospatial"
+  start="prologue"
+  logline="A database index sorts things along one line. The world has two dimensions. Every “near me” design is the same three moves: turn the map into cells so nearness becomes a lookup, read the cell and its neighbours and check the real distance, and then ask whether the things you are indexing sit still or move every four seconds."
+  cast={[
+    { name: 'You', role: 'Two months at Kestrel. You can write a B-tree query in your sleep. You have never had to ask what “near” means to one.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Draws a map on the whiteboard, cuts it into squares, and asks what is inside each one.' },
+    { name: 'Dev Okafor', role: 'SRE. Was paged at 12:31 on launch day. Describes the graph in a very level voice.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Knows which index Postgres will pick before the planner does.' },
+    { name: 'Iris Tan', role: 'Product lead. First “restaurants near me”. Then, “oh, and also… couriers”.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · Why nearness is hard', description: 'The index that reads a strip around the planet, and the arithmetic of distance.', links: [['naive-index', 'The strip around the planet'], ['distance', 'As the crow flies']] },
+    { name: 'Part Two · Cutting the world into cells', description: 'Geohash, its edges, quadtrees, S2 and H3, and the tools you can just use.', links: [['geohash', 'Halving the world'], ['edges', 'Twenty-two metres apart'], ['quadtree', 'The map that splits where it’s crowded'], ['s2-h3', 'Cubes and honeycombs'], ['off-the-shelf', 'Don’t build what Postgres already has']] },
+    { name: 'Part Three · Things that move', description: 'Driver locations, matching with holds, ETAs, and the stadium.', links: [['moving', 'A quarter of a million writes a second'], ['matching', 'One driver, two riders'], ['eta-routing', 'The river between'], ['hot-cells', 'The stadium lets out']] },
+    { name: 'Part Four · Serving the answer', description: 'Caching by cell, and ranking that isn’t just distance.', links: [['cell-cache', 'Everyone downtown asks the same question'], ['ranking', 'Closest isn’t best']] },
+    { name: 'Part Five · The whole round, twice', description: 'Yelp in 45 minutes, Uber in 60, and the same pattern in other clothes.', links: [['yelp', 'Yelp, out loud'], ['uber', 'Uber, out loud'], ['transfer', 'Same pattern, other faces']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Cells, edges, moving objects and matching — make the calls' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="Parts One and Two are the theory every geo question needs. Part Three is Uber’s half. Part Five is two full rounds — read one per sitting, out loud."
+/>
 
-"Find things near me" cannot be answered by B-tree indexes on lat/lon — you need a structure that makes **2D proximity into 1D adjacency**, and there are three standard ones.
+<h2 id="prologue">Prologue · Lunch hour</h2>
 
-**Trigger words:** "nearby", "within X km", "closest drivers", "in this map area", "location-based".
+<Scene chapter="Prologue" title="12:31" mood="storm">
 
-## Why the naive query dies
+Kestrel Nearby launches on a Tuesday. By 12:31, Dev's message is in the incident channel: *"Places DB primary at 100% CPU. One query. It's the nearby search."*
+
+You wrote that query. It looked so reasonable: `WHERE lat BETWEEN … AND lng BETWEEN …`, an index on `lat`, a box four kilometres wide around the user. It passed every test. The tests had a thousand places in them. Production has a hundred million, and at lunch everyone is hungry at the same time.
+
+The next morning Mara draws a rectangle on the whiteboard for the planet and a dot for the user. *"Your index sorts places by latitude,"* she says. *"Show me which rows it reads for this dot."*
+
+You draw a box around the dot. She hands the marker back. *"Not the box. What the index actually reads."*
+
+</Scene>
+
+This pattern exists because **an ordinary index sorts along one line, and "near" is a two-dimensional idea**. Almost every geospatial design, from "restaurants near me" to "match this rider with a driver", answers it with the same three moves:
+
+1. **Turn the map into cells**, so "near this point" becomes "in this cell or the cells next to it", which is a key lookup.
+2. **Filter by cell, refine by distance.** Cells are a cheap, coarse filter. The exact distance is computed only on the few hundred candidates the cells return.
+3. **Ask whether the things move.** Restaurants sit still: index them once, cache freely. Drivers move every few seconds: keep only their latest position, in memory, and expire it.
+
+**Trigger words:** "nearby", "within X km", "closest drivers", "in this map area", "location-based", "match riders to drivers", "show cars on the map".
+
+**Why it matters to you.** Module 7 unlocks four bank questions: **Yelp / nearby search** and **Uber / Lyft** (both hot, both have full walkthroughs here), plus **DoorDash** and **Tinder**, and the bank's **Google Maps routing** entry points at this lesson's routing section. Your old notes on this pattern carry three habits you should keep: *say why the naive index fails before you fix it*, *always say the edge caveat*, and *compute the driver estimate out loud, because the number is what licenses the in-memory answer.* Each gets its own chapter.
+
+<Figure caption="The shape of every “near me” query. The left half is cheap and approximate; the right half is exact and runs on a small set.">
+  <Mermaid code={`flowchart LR
+    P["User's point\nlat, lng"] --> C["Cell id\ne.g. geohash tdr1v9"]
+    C --> N["Cells to read\ncell + 8 neighbours"]
+    N --> K["Candidates\na few hundred"]
+    K --> D["Exact distance\ndrop those outside radius"]
+    D --> R["Rank\ndistance, rating, open now"]`} />
+</Figure>
+
+<Part n="Part One" title="Why nearness is hard">
+
+Say the failure first. The fix lands harder after it.
+
+</Part>
+
+<h2 id="naive-index">Chapter 1 · The strip around the planet</h2>
+
+<Scene chapter="Chapter 1" title="The strip around the planet" mood="dawn">
+
+You redraw it. The index on `lat` doesn't know what longitude is. It finds the first row with latitude above the box's south edge and walks until the north edge. Every row in between — on every continent — comes back.
+
+Your box is four kilometres tall. So is the strip. The strip goes all the way around the Earth.
+
+Theo leans in. *"Now tell me the composite index fixes it."*
+
+</Scene>
+
+The query that melted Kestrel:
 
 ```sql
-WHERE lat BETWEEN 12.9 AND 13.1 AND lon BETWEEN 77.5 AND 77.7
+SELECT id, name FROM places
+WHERE lat BETWEEN 12.9536 AND 12.9896      -- 4 km tall
+  AND lng BETWEEN 77.5762 AND 77.6130;     -- 4 km wide
 ```
 
-An index on `lat` narrows to a horizontal band of the whole planet — every restaurant between those latitudes, on every continent. The `lon` filter then scans that band. Two separate 1D indexes can't answer a 2D question efficiently. Say this failure first in interviews; the fix lands harder after it.
+**An index on `lat` answers a one-dimensional range.** It returns a horizontal band of the entire planet, and the `lng` condition is then checked row by row. Two separate one-dimensional indexes cannot answer a two-dimensional question efficiently.
 
-## Geohash — the workhorse
+**Worked numbers.** At latitude 13°, the circumference along that latitude is 40,075 km × cos 13° ≈ **39,000 km**. The band the index reads is 4 km tall and 39,000 km long; the box you wanted is 4 km wide. If places were spread evenly along the band, the index reads about 39,000 ÷ 4 ≈ **9,800 times** more rows than the answer area. Places are not spread evenly — oceans are empty, cities are dense — but every city at the same latitude lands in your strip. At 100 million places and a few thousand searches a second, that is the 12:31 graph.
 
-Recursively halve the world, interleaving longitude/latitude bits; encode as a string. The magic property: **shared prefix ≈ nearby** — `tdr1w`, `tdr1x` are neighboring ~5km cells.
+**"Then index (lat, lng) together."** That is what Theo was waiting for. A composite B-tree sorts by `lat` first and by `lng` only among rows with the *same* `lat`. A range on the first column makes the second column useless for seeking — the phone-book rule from <a href={`${BASE}sd/lessons/databases/#composite-indexes`}>Databases · composite indexes</a>. The engine still walks the whole strip; it just checks `lng` from the index entry instead of the row. Cheaper, still planet-wide.
 
-Now proximity is a **string prefix query** — plain B-trees and Redis handle it:
+| Approach | What the index can seek | Rows examined for a 4 km box |
+|---|---|---|
+| Index on `lat` | One latitude band | The whole planet-wide strip |
+| Index on `lat` and one on `lng` | One band each; intersect with a bitmap | Two planet-wide strips |
+| Composite `(lat, lng)` | The `lat` range only | The strip, filtered in the index |
+| **Cell id** (geohash, S2, H3) or a **spatial index** (R-tree, quadtree) | Both dimensions together | Roughly the box |
+
+<Trace title="What the index really reads" steps={naiveIndex} takeaway="A B-tree orders along one line. A range on lat gives a strip around the planet, with or without lng in the index." />
+
+<Reveal q="Why does the query look fine in testing?">
+
+Because the cost scales with the number of rows in the strip, not with the size of the answer. With a thousand test places, the strip holds a handful of rows and the query takes a millisecond. With a hundred million places it holds hundreds of thousands. The query plan is the same; only the data changed. That's why a geo design should name the row count the index touches, not just which index it uses.
+
+</Reveal>
+
+**Catch the trap:** jumping straight to "use geohash". The interviewer wants to hear *why* the obvious index fails, in one sentence: *"A B-tree on latitude returns a band around the whole planet, and longitude can't narrow it — so I need an index that keeps both dimensions together."* You've noted this before: say the failure first; the fix lands harder after it.
+
+<h2 id="distance">Chapter 2 · As the crow flies</h2>
+
+<Scene chapter="Chapter 2" title="As the crow flies">
+
+Iris asks a fair question: *"Why not just compute how far every place is from the user and sort?"* Mara writes 100,000,000 on the board and, under it, *"× how long?"*
+
+</Scene>
+
+**Distance on a sphere.** Latitude and longitude are angles, not metres. One degree of latitude is about 111 km everywhere. One degree of longitude is about 111 km × cos(latitude): 111 km at the equator, about 108 km at 13°, about 56 km at 60°, zero at the poles. Treating degrees as a flat grid is the first geo bug.
+
+**Haversine** gives the great-circle distance between two points (R ≈ 6,371 km, angles in radians):
+
+```text
+a = sin²(Δφ / 2) + cos φ1 · cos φ2 · sin²(Δλ / 2)
+d = 2R · asin(√a)                 φ = latitude, λ = longitude
+```
+
+**The flat (equirectangular) approximation** is good inside a city:
+
+```text
+x = Δλ · cos(mean φ)
+y = Δφ
+d = R · √(x² + y²)
+```
+
+**Worked numbers.** From (12.9716, 77.5946) to (12.9800, 77.6100): haversine gives **1.912 km**, and the flat formula gives **1.912 km** too, equal to the metre. The approximation drifts over hundreds of kilometres and near the poles, which "near me" rarely needs. (Haversine itself assumes a sphere; the Earth is slightly flattened, so it can be off by up to about half a percent. Nobody choosing a restaurant notices.)
+
+**Why not compute every distance?** A haversine costs tens of nanoseconds. Call it 50 ns: 100,000,000 × 50 ns = **5 seconds of CPU per search**. Distance is the right answer to "how far?" and the wrong tool for "which ones?".
+
+**The rule this lesson is built on: filter by cell, then refine by exact distance.** Cells cut 100 million places down to a few hundred candidates; distance on a few hundred costs microseconds. Cells are *approximate on purpose* — they will include some places outside the radius (refine them away) and, if you're careless, miss some just inside it (next part).
+
+<Trace title="Distance, and when not to compute it" steps={distance} takeaway="Inside a city the flat formula equals haversine. Exact distance is the refine step, never the search." />
+
+**Catch the trap:** latitude and longitude in the wrong order. Most user interfaces say "lat, lng"; GeoJSON, PostGIS's `ST_MakePoint(x, y)` and Redis `GEOADD` all take **longitude first**. A swapped pair often still looks valid and lands your user in the ocean or another continent. Say the order out loud when you write an API or a query.
+
+<Part n="Part Two" title="Cutting the world into cells">
+
+Make two-dimensional nearness into one-dimensional adjacency. Then deal honestly with the edges.
+
+</Part>
+
+<h2 id="geohash">Chapter 3 · Halving the world</h2>
+
+<Scene chapter="Chapter 3" title="Halving the world" mood="dawn">
+
+Mara draws the planet again and splits it down the middle. *"East or west of Greenwich? Write a 1 or a 0."* She splits it across the equator. *"North or south?"* Another bit. East half again, north half again. After ten bits, she points at a rectangle the size of a small country. *"Every place in there,"* she says, *"starts with the same ten bits."*
+
+</Scene>
+
+**Geohash** turns a point into a string by halving the world over and over, alternating between longitude and latitude:
+
+1. Start with longitude in [−180, 180] and latitude in [−90, 90].
+2. **Odd-numbered bits (1st, 3rd, 5th…) cut longitude; even-numbered bits cut latitude.** If the value is at or above the midpoint, write 1 and keep the upper half; otherwise write 0 and keep the lower half.
+3. Every 5 bits become one **base32** character from `0123456789bcdefghjkmnpqrstuvwxyz` (no a, i, l or o, so it reads unambiguously).
+
+**Worked encoding** for latitude 12.9716, longitude 77.5946:
+
+| Bit | Cuts | Range before | Midpoint | Value ≥ mid? | Bit |
+|---|---|---|---|---|---|
+| 1 | lng | −180 … 180 | 0 | 77.59 ≥ 0 | 1 |
+| 2 | lat | −90 … 90 | 0 | 12.97 ≥ 0 | 1 |
+| 3 | lng | 0 … 180 | 90 | no | 0 |
+| 4 | lat | 0 … 90 | 45 | no | 0 |
+| 5 | lng | 0 … 90 | 45 | yes | 1 |
+| 6 | lat | 0 … 45 | 22.5 | no | 0 |
+| 7 | lng | 45 … 90 | 67.5 | yes | 1 |
+| 8 | lat | 0 … 22.5 | 11.25 | yes | 1 |
+| 9 | lng | 67.5 … 90 | 78.75 | no | 0 |
+| 10 | lat | 11.25 … 22.5 | 16.875 | no | 0 |
+
+<Figure caption="Ten interleaved bits, two characters. Blue bits cut longitude, purple bits cut latitude. 11001 is 25, the 26th base32 symbol, “t”; 01100 is 12, “d”. Continue to seven characters and this point is tdr1v9q.">
+  <ArrayStrip name="Bits" values={['1', '1', '0', '0', '1', '0', '1', '1', '0', '0']} indices={false} tones={{ 0: 'blue', 1: 'purple', 2: 'blue', 3: 'purple', 4: 'blue', 5: 'purple', 6: 'blue', 7: 'purple', 8: 'blue', 9: 'purple' }} regions={[{ from: 0, to: 4, label: '11001 → t', tone: 'gold' }, { from: 5, to: 9, label: '01100 → d', tone: 'green' }]} />
+</Figure>
+
+After those ten bits the point is somewhere in longitude 67.5–78.75 and latitude 11.25–16.875: the cell `td`, about 1,200 km wide. Keep going and the same point is `tdr1v9q`.
+
+**The property that makes it useful: a shared prefix means the same cell.** Every point inside cell `tdr1v` has a geohash starting with `tdr1v`. So "everything in this cell" is a **string prefix range** — which an ordinary B-tree, a sorted set or a key-value store already answers:
 
 ```sql
-WHERE geohash LIKE 'tdr1%'   -- everything in this ~5km cell
+SELECT id FROM places WHERE geohash LIKE 'tdr1v%';   -- a range scan on a plain index
 ```
 
-Precision by prefix length: 4 chars ≈ 39 km cell · 5 ≈ 5 km · 6 ≈ 1.2 km · 7 ≈ 150 m.
+Two dimensions became one ordered line. (The line is a **Z-order curve**: it visits the four quarters of every cell in a Z shape, then the quarters of those, and so on.)
 
-**The edge caveat (always say it):** two points can be meters apart across a cell boundary with different prefixes. Standard fix: query the cell **plus its 8 neighbors**, then exact-distance filter the candidates. Nine prefix queries, cheap, correct.
+**Precision: how big is a cell?** Each character adds 5 bits, alternating which axis gets 3 and which gets 2, so cells alternate between roughly square and 2:1 rectangles. Widths below are at the equator; **multiply width by cos(latitude)** elsewhere — at 60° north, a cell is half as wide.
 
-## Quadtree and H3 — when to name them
+| Length | Cell size at the equator (width × height) | Feels like |
+|---|---|---|
+| 1 | ≈ 5,000 × 5,000 km | A continent |
+| 2 | ≈ 1,250 × 620 km | A large country |
+| 3 | ≈ 156 × 156 km | A region |
+| 4 | ≈ 39 × 19.5 km | A metro area |
+| 5 | ≈ 4.9 × 4.9 km | A district |
+| 6 | ≈ 1.2 × 0.61 km | A neighbourhood |
+| 7 | ≈ 153 × 152 m | A few blocks |
+| 8 | ≈ 38 × 19 m | A building |
+| 9 | ≈ 4.8 × 4.8 m | A parking space |
 
-<Mermaid code={`flowchart TD
-    W["world cell"] --> A["sparse area:\nstop subdividing\n(big cell, few points)"]
-    W --> B["dense city cell:\nsubdivide again"]
-    B --> B1["…"] 
-    B --> B2["dense downtown:\nsubdivide deeper"]`} />
+(Computed from 360° and 180° halved by the bit counts, times about 111 km per degree. Your old note said "4 chars ≈ 39 km, 5 ≈ 5 km, 6 ≈ 1.2 km, 7 ≈ 150 m"; those are the widths. Precision 6 is only about 0.6 km tall, and that matters in the next chapter.)
 
-- **Quadtree** — subdivide cells *only where data is dense*: adaptive resolution. NYC gets deep small cells, Nevada stays one big cell. In-memory structure; right answer when density varies wildly and you're building the index service yourself (Yelp at scale).
-- **H3 (Uber's hexagons)** — fixed hierarchical hex grid. Hexagons have uniform neighbor distances (squares' diagonal neighbors are √2 farther) — better for coverage/supply-demand math like surge pricing. Name it in any Uber-flavored question; it's literally their library.
-- **Geohash** — default otherwise: dead simple, works in Redis (`GEOSEARCH` uses it internally) or any DB with a string index.
+**Store it like this:** a `geohash` column (say 9–12 characters) with a B-tree index, or the cell at your chosen precision as a key: `places:cell:tdr1v9`. A coarser cell is just a shorter prefix of the same string, so one column serves every precision.
 
-One more honest option: **PostGIS** — "for moderate scale, Postgres with a GiST spatial index just answers this; custom infra starts when we outgrow it." Knowing when NOT to build is senior signal.
+<Trace title="Read the geohash" steps={geohash} takeaway="Interleave bits, longitude first; 5 bits per character. A shared prefix proves the same cell — and nothing else." />
 
-## Static vs moving objects — the real design split
+<Reveal q="Why interleave the bits instead of writing all the longitude bits, then all the latitude bits?">
 
-**Static (restaurants, stores):** index rows in DB/ES by geohash; standard read path; cache popular cells (caching lesson: key = `geo:{cell}:restaurants`, TTL minutes, delete-on-write when a listing changes).
+Because then the prefix would be pure longitude: every place with the same first 15 bits would lie in a thin north-south strip around the whole planet — the B-tree failure from Chapter 1, turned sideways. Interleaving means each extra pair of bits shrinks the cell in **both** directions, so a prefix describes a compact rectangle.
 
-**Moving (drivers, couriers):** updates every ~4 seconds. Writing 1M drivers × every 4s into a disk index = 250K writes/s of churn — wrong tool. Instead: **in-memory grid** — Redis geo sets (or an in-process map) keyed by cell, driver moves = remove from old cell set, add to new. Estimation reflex: 1M drivers × ~50 B ≈ 50 MB — trivially in-memory (capacity), cluster for throughput/availability (the distinction from the caching lesson, reused).
+</Reveal>
 
-Matching (Uber): rider requests → query rider's cell + neighbors for candidate drivers → rank by ETA → offer with a **short hold + TTL** so two riders don't get the same driver — which is the contention pattern meeting this one. Cross-pattern joints like this are where senior answers live.
+**Catch the trap:** "A shared prefix means nearby, so different prefixes mean far apart." The first half is true. The second is false, and the next chapter is entirely about why.
 
-## Questions this pattern unlocks
+<h2 id="edges">Chapter 4 · Twenty-two metres apart</h2>
 
-| Bank question | How the pattern applies |
-|---------------|------------------------|
-| **Yelp / nearby search** (walkthrough) | static objects: geohash/PostGIS index + cell caching + ratings join |
-| **Uber** (walkthrough) | moving objects: in-memory geo grid + realtime location stream (WS) + match-with-hold (contention) |
-| **DoorDash** | Uber's shape + restaurant prep-time in the ranking |
-| **Tinder** | geo filter first, then preference filter, swipe state separate |
-| **Google Maps routing** | different problem (graph shortest-path, A*, contraction hierarchies) — know to SAY it's not a proximity index question |
-| **Strava heatmaps** | geo + time-series aggregation (next patterns) |
+<Scene chapter="Chapter 4" title="Twenty-two metres apart" mood="night">
+
+The bug report has a photo attached: a user standing in a doorway, phone in hand, the café's sign visible across the street. *"App says no cafés near me,"* it reads. *"I can SEE one."*
+
+You check. The user is in cell `tdr1v9`. The café is in `tdr1vc`. They are twenty-two metres apart, and they don't share a sixth character.
+
+</Scene>
+
+**The edge problem.** Cells have borders, and two points can sit metres apart on either side of one. Their geohashes then differ at the character where the border was drawn — sometimes the last one, sometimes much earlier:
+
+- The user and the café: `tdr1v9…` and `tdr1vc…`, **22 m** apart, different at precision 6.
+- Cell `tdr1v`'s northern neighbours are `tdr4h`, `tdr4j` and `tdr4n` — different at precision **4**.
+- Two points **11 m** apart, one just north and one just south of the equator: `s0p058` and `kpzpgx`. Different from the **first** character, because the equator is the second cut of all.
+
+**A shared prefix proves closeness; a different prefix proves nothing.** So "query my cell" is wrong near every edge, and every user is near some edge at some precision.
+
+**The fix — always say it with geohash: query the cell plus its 8 neighbours, then filter by exact distance.** Computing a neighbour's geohash is cheap (decode the cell's box, step one cell width or height, encode again; libraries do it for you). Nine prefix lookups, then haversine on the candidates.
+
+<Figure caption="The 3 × 3 block around tdr1v9 at precision 6 (cells about 1.2 km wide, 0.6 km tall). The user stands just inside the east edge; the café is 22 m away in tdr1vc. Querying only the centre cell misses it. The dashed circle is the search radius: the block is guaranteed to cover it whenever the radius is no larger than the cell’s shorter side.">
+  <svg viewBox="0 0 520 290" role="img" aria-label="A three by three grid of geohash cells. Top row tdr1v6, tdr1vd, tdr1vf. Middle row tdr1v3, tdr1v9, tdr1vc. Bottom row tdr1v2, tdr1v8, tdr1vb. A user dot sits just inside the east edge of the centre cell, and a café dot sits just across that edge in tdr1vc.">
+    <g fill="none" stroke="#3b4656" stroke-width="1.5">
+      <rect x="50" y="30" width="140" height="70" /><rect x="190" y="30" width="140" height="70" /><rect x="330" y="30" width="140" height="70" />
+      <rect x="50" y="100" width="140" height="70" /><rect x="330" y="100" width="140" height="70" />
+      <rect x="50" y="170" width="140" height="70" /><rect x="190" y="170" width="140" height="70" /><rect x="330" y="170" width="140" height="70" />
+    </g>
+    <rect x="190" y="100" width="140" height="70" fill="#2a2414" stroke="#d4a72c" stroke-width="2" />
+    <g fill="#8b949e" font-size="13" text-anchor="middle" font-family="ui-monospace, monospace">
+      <text x="120" y="70">tdr1v6</text><text x="260" y="70">tdr1vd</text><text x="400" y="70">tdr1vf</text>
+      <text x="120" y="140">tdr1v3</text><text x="400" y="122">tdr1vc</text>
+      <text x="120" y="210">tdr1v2</text><text x="260" y="210">tdr1v8</text><text x="400" y="210">tdr1vb</text>
+    </g>
+    <text x="250" y="122" fill="#d4a72c" font-size="13" text-anchor="middle" font-family="ui-monospace, monospace" font-weight="700">tdr1v9</text>
+    <circle cx="322" cy="140" r="55" fill="none" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="5 4" />
+    <circle cx="322" cy="140" r="6" fill="#58a6ff" />
+    <circle cx="340" cy="143" r="6" fill="#3fb950" />
+    <text x="300" y="160" fill="#58a6ff" font-size="11" text-anchor="end">user</text>
+    <text x="350" y="160" fill="#3fb950" font-size="11">café, 22 m</text>
+    <text x="260" y="270" fill="#8b949e" font-size="12" text-anchor="middle">Only the gold cell shares the user’s prefix. The café is one character away.</text>
+  </svg>
+</Figure>
+
+**Choosing the precision for a radius.** The user is somewhere inside the centre cell. The 3 × 3 block extends at least one full cell beyond the user in every direction. So **the block covers a circle of radius r whenever the cell's shorter side is at least r**.
+
+**Worked numbers: a 2 km search at latitude 13°.**
+
+- Precision 6 cells are about 1.19 × 0.61 km. 0.61 km is less than 2 km, so the 3 × 3 block can fall short to the north and south. **Too fine** for "cell + 8".
+- Precision 5 cells are about 4.77 × 4.86 km. Both sides exceed 2 km. **Covers.**
+- Cost of that safety: the block is about 9 × 4.77 × 4.86 ≈ **210 km²**; the circle is π × 2² ≈ **12.6 km²**. If places were spread evenly, about 1 candidate in 17 is inside the radius, and **94%** are thrown away by the distance check.
+
+**The alternative: cover the circle with smaller cells.** Instead of "cell + 8 at a coarse precision", take every precision-6 cell that touches the circle's bounding box. For the same 2 km search that is **28 cells** covering about **20 km²** — only 1.6 times the circle. More lookups (though adjacent cells often share contiguous prefix ranges), far fewer wasted candidates. Libraries call this a **covering**; S2 and H3 have functions for it.
+
+| Strategy | Lookups | Area scanned (2 km radius) | Use when |
+|---|---|---|---|
+| Own cell only | 1 | One cell | Never for a radius search — misses edges |
+| Cell + 8 neighbours, cell side ≥ r | 9 | ≈ 17× the circle | The default: simple, always correct |
+| Covering with finer cells | ≈ 28 | ≈ 1.6× the circle | Dense areas where candidates are expensive |
+
+<Trace title="Edges, neighbours, refine" steps={edges} takeaway="Read the cell and its 8 neighbours at a precision whose shorter side is at least the radius. Then compute the exact distance. Always." />
+
+<Reveal q="What about the antimeridian (±180° longitude) and the poles?">
+
+At ±180° the "east neighbour" wraps around to −180°; a correct neighbour function handles it, a naive one returns nothing. Near the poles, longitude cells become thin slivers, so "cell + 8" covers far less ground east-west than the table suggests. Most consumer products can mention these and move on (few restaurants at the poles); a global logistics or aviation system can't, and that's one reason S2 exists.
+
+</Reveal>
+
+**Catch the trap:** a geohash answer without "+ 8 neighbours, then exact distance". It is the follow-up interviewers ask most, and your notes say so: *the edge caveat — always say it.* Attach it to the word "geohash" in your head as one unit.
+
+<h2 id="quadtree">Chapter 5 · The map that splits where it’s crowded</h2>
+
+<Scene chapter="Chapter 5" title="The map that splits where it’s crowded" mood="dusk">
+
+Dev pulls the candidate counts per query. A search downtown returns twelve thousand candidates to refine. The same search on the edge of the desert returns four. *"Same radius,"* he says. *"Three thousand times the work. Why are our cells all the same size when the world isn't?"*
+
+</Scene>
+
+Geohash is a **fixed grid**: at precision 6, every cell on Earth is the same size, whether it holds 5,000 cafés or nothing. A **quadtree** sizes cells to the data:
+
+- Start with one node covering the whole map.
+- **When a node holds more than a capacity (say 100 points), split it into four quadrants** and push its points down.
+- Repeat. Dense areas get deep, small cells; empty areas stay as one big leaf.
+
+<Figure caption="A quadtree after inserting places. The empty quadrants are single leaves; the crowded corner split twice. Every leaf holds at most the capacity, so a query does a similar amount of work anywhere.">
+  <svg viewBox="0 0 520 280" role="img" aria-label="A square divided into four quadrants. The top-right quadrant is divided into four again, and its bottom-left child is divided into four once more. Dots cluster densely in the most-divided area and sparsely elsewhere.">
+    <rect x="140" y="20" width="240" height="240" fill="none" stroke="#3b4656" stroke-width="2" />
+    <line x1="260" y1="20" x2="260" y2="260" stroke="#3b4656" stroke-width="2" />
+    <line x1="140" y1="140" x2="380" y2="140" stroke="#3b4656" stroke-width="2" />
+    <line x1="320" y1="20" x2="320" y2="140" stroke="#d4a72c" stroke-width="1.5" />
+    <line x1="260" y1="80" x2="380" y2="80" stroke="#d4a72c" stroke-width="1.5" />
+    <line x1="290" y1="80" x2="290" y2="140" stroke="#3fb950" stroke-width="1.2" />
+    <line x1="260" y1="110" x2="320" y2="110" stroke="#3fb950" stroke-width="1.2" />
+    <g fill="#58a6ff">
+      <circle cx="270" cy="90" r="2.5" /><circle cx="278" cy="98" r="2.5" /><circle cx="284" cy="88" r="2.5" /><circle cx="275" cy="104" r="2.5" />
+      <circle cx="298" cy="90" r="2.5" /><circle cx="306" cy="100" r="2.5" /><circle cx="312" cy="86" r="2.5" /><circle cx="300" cy="104" r="2.5" />
+      <circle cx="268" cy="118" r="2.5" /><circle cx="280" cy="126" r="2.5" /><circle cx="285" cy="134" r="2.5" /><circle cx="272" cy="132" r="2.5" />
+      <circle cx="298" cy="120" r="2.5" /><circle cx="310" cy="130" r="2.5" /><circle cx="304" cy="114" r="2.5" />
+      <circle cx="340" cy="50" r="2.5" /><circle cx="355" cy="110" r="2.5" /><circle cx="290" cy="50" r="2.5" /><circle cx="345" cy="100" r="2.5" />
+      <circle cx="200" cy="200" r="2.5" /><circle cx="180" cy="70" r="2.5" /><circle cx="330" cy="220" r="2.5" />
+    </g>
+    <text x="200" y="240" fill="#8b949e" font-size="12" text-anchor="middle">desert: one leaf</text>
+    <text x="450" y="110" fill="#3fb950" font-size="12" text-anchor="middle">downtown:</text>
+    <text x="450" y="126" fill="#3fb950" font-size="12" text-anchor="middle">split twice</text>
+  </svg>
+</Figure>
+
+**Queries.** For a radius search, descend from the root into every node whose box intersects the circle's bounding box, collect points from the leaves, then refine by distance. For "the k nearest", walk leaves best-first: a priority queue ordered by the distance from the point to each node's box, popping nodes until k points are closer than the next box.
+
+**It lives in memory.** A quadtree is a pointer structure built for one machine's RAM, not a database index. That is fine, because the data is small:
+
+**Worked numbers for Kestrel Nearby (100 million places).**
+
+- Each entry: an 8-byte id plus two 8-byte coordinates = 24 bytes. 100,000,000 × 24 B = **2.4 GB**.
+- With a capacity of 100 per leaf, at least 100,000,000 ÷ 100 = **1 million leaves**. A perfectly balanced tree would be log₄(1,000,000) ≈ **10 levels** deep; dense cities go deeper, deserts shallower.
+- Nodes add a few million × tens of bytes — hundreds of MB at most. The whole index fits comfortably on one server, so you **replicate** it for throughput and availability rather than shard it for size. (Capacity versus throughput: the same distinction as sizing a cache, reused.)
+
+**Rebuild cost and updates.** Building from scratch means inserting 100 million points — minutes of CPU, not milliseconds (benchmark it). Places change slowly (Kestrel sees about a million edits a day, roughly 10 a second), so apply edits in place, rebuild periodically from the source-of-truth database to repair drift, and take a replica out of rotation while it rebuilds. Quadtrees are much less comfortable with **moving** points: every move is a delete and an insert, and points crossing in and out of busy leaves cause splits and merges. That's one reason moving objects get a different design (Part Three).
+
+| | Geohash (fixed grid) | Quadtree (adaptive) |
+|---|---|---|
+| Cell size | Same everywhere at a precision | Shrinks where data is dense |
+| Lives in | Any store with a sorted index or key lookup | Memory of a service you build |
+| Updates | Change one string | Delete + insert, sometimes split/merge |
+| Work per query | Varies wildly with density | Roughly even |
+| Pick when | You want a database or Redis to do it | Density varies wildly and you own the index service |
+
+<Trace title="Grow the tree" steps={quadtree} takeaway="Quadtrees split where it’s crowded, live in memory, and want slowly changing data: apply rare edits, rebuild periodically, replicate." />
+
+<Reveal q="Is geohash a kind of quadtree?">
+
+Close to it. Each geohash character picks one of 32 children (5 bits) of the previous cell, so a geohash is a path down a fixed-depth tree of cells, flattened into a string. What a quadtree adds is **adaptivity**: it stops splitting where there is nothing to split. What geohash adds is **portability**: the tree becomes strings any database can sort.
+
+</Reveal>
+
+**Catch the trap:** "We'll put the quadtree in the database." There isn't a quadtree column type in most databases, and a service you hand-roll needs a build, a refresh path and replicas. Say where it lives and how it is rebuilt.
+
+<h2 id="s2-h3">Chapter 6 · Cubes and honeycombs</h2>
+
+<Scene chapter="Chapter 6" title="Cubes and honeycombs">
+
+Iris has a new screen in mind: a map of the city tinted by how hard it is to get a courier right now. Theo draws it in squares. Mara redraws it in hexagons and says nothing. After a minute, you see it: in the hexagon drawing every tile touches six others, and all six are the same distance away.
+
+</Scene>
+
+Two production cell systems deserve one paragraph each in an interview. Both are **hierarchical** (cells contain smaller cells, each with a compact integer id) and both fix things geohash does badly. Treat the specifics below as intuition and check the projects' docs before quoting exact numbers.
+
+**Google S2.** Project the sphere onto the six faces of a cube, cut each face as a quadtree, and number the cells along a **Hilbert curve** — a space-filling curve whose consecutive cells are always physically adjacent, unlike the Z-order curve, which jumps. Cell ids are 64-bit integers with 31 levels (0 to 30); the finest cells are around a square centimetre. Cells at a level are *roughly* equal in area anywhere on Earth, which the latitude/longitude grid of geohash is not. S2's **region coverer** describes any shape — a circle, a delivery zone — as a small set of cells at mixed levels, which turns "points inside this shape" into a handful of integer range scans. Good when the shapes are irregular or the coverage is global.
+
+**Uber H3.** A grid of **hexagons** (plus exactly 12 pentagons per resolution, which a sphere forces) with 16 resolutions, 0 to 15; each finer resolution has about 7 times as many cells. The property worth saying out loud: **every hexagon has six neighbours, all with centres the same distance away.** A square has four edge neighbours and four corner neighbours √2 ≈ 1.41 times farther. So "this cell and its ring" means the same thing everywhere, which makes smoothing, flow and supply-and-demand maths (surge pricing, demand heatmaps) cleaner. The tradeoff: hexagons don't nest perfectly — a parent's seven children only approximately cover it — so H3 is better for analysis and aggregation than for exact containment. Uber open-sourced it and wrote about why (see Beyond this page). Your old note stands: name it in any Uber-flavoured question; it's literally their library.
+
+| | Geohash | S2 | H3 |
+|---|---|---|---|
+| Cell shape | Lat/lng rectangles | Quadrilaterals on a cube | Hexagons (+12 pentagons) |
+| Id | Base32 string | 64-bit integer | 64-bit integer |
+| Neighbours | 8, two different distances | 8, varied | 6, one distance |
+| Equal-area-ish | No — shrink toward the poles | Roughly | Roughly |
+| Strength | Simple; any sorted store | Coverings of arbitrary shapes; global | Rings, smoothing, aggregation |
+| Say it for | Yelp, most "near me" | Region coverage, geofences at scale | Uber, surge, demand heatmaps |
+
+<Reveal q="With S2’s Hilbert curve, do you still need to check neighbours?">
+
+Yes. The Hilbert curve guarantees that consecutive cells *on the curve* are adjacent in space; it does not guarantee the reverse. Two adjacent cells can still be far apart on the curve. Any cell system has edges, so every radius query still reads a covering (or a cell and its ring) and refines by exact distance.
+
+</Reveal>
+
+**Catch the trap:** reciting "H3 has 16 resolutions" without a reason to use it. The reason is the uniform ring of neighbours; say that, and the details are optional.
+
+<h2 id="off-the-shelf">Chapter 7 · Don’t build what Postgres already has</h2>
+
+<Scene chapter="Chapter 7" title="Don’t build what Postgres already has" mood="dawn">
+
+You arrive at the review with a design for a quadtree service: three replicas, a CDC feed, a rebuild job. Theo reads it, then types four lines into a terminal against a copy of the places table. The query comes back in nine milliseconds. *"Tell me what your service does,"* he says, *"that this doesn't."*
+
+</Scene>
+
+Before building an index, name the ones you can use.
+
+**PostGIS (Postgres) — R-tree over GiST.** An **R-tree** groups nearby objects into bounding rectangles, groups those rectangles into bigger ones, and so on; a query descends only into rectangles that intersect the search area. It indexes **shapes**, not only points — delivery zones, building footprints, routes. PostGIS builds R-tree-style indexes on Postgres's GiST framework:
+
+```sql
+CREATE INDEX places_location_gix ON places USING GIST (location);   -- location geography(Point, 4326)
+
+-- everything within 2 km, nearest first
+SELECT id, name,
+       ST_Distance(location, ST_SetSRID(ST_MakePoint(77.5946, 12.9716), 4326)::geography) AS metres
+FROM places
+WHERE ST_DWithin(location, ST_SetSRID(ST_MakePoint(77.5946, 12.9716), 4326)::geography, 2000)
+ORDER BY metres
+LIMIT 20;
+```
+
+`ST_DWithin` uses the index to filter by bounding box and then checks exact distance — the filter-then-refine move, done for you. For "the 10 nearest" with no radius, PostGIS supports index-assisted k-nearest-neighbour ordering with the `<->` operator. (Longitude first in `ST_MakePoint`. Check the current PostGIS docs for exact function behaviour on your version.)
+
+**Redis GEO.** Redis stores geo points in a **sorted set** whose score is a 52-bit interleaved geohash. A radius search computes the cell and its neighbours at a suitable precision, range-scans them, and filters by distance — this lesson, in a command:
+
+```text
+GEOADD drivers:blr 77.5946 12.9716 driver:42                         # longitude first
+GEOSEARCH drivers:blr FROMLONLAT 77.5946 12.9716 BYRADIUS 2 km ASC COUNT 20 WITHDIST
+ZREM drivers:blr driver:42                                            # it's a sorted set
+```
+
+`GEOSEARCH` arrived in Redis 6.2 and supersedes the older `GEORADIUS` (check current docs). Two consequences to say: it is **in memory** (fast, great for moving points), and **members of a sorted set have no TTL of their own** — only whole keys expire, which shapes the driver design in Chapter 8.
+
+**Search engines.** Elasticsearch and OpenSearch index `geo_point` fields (Lucene uses multi-dimensional point trees) and combine a distance filter with full-text relevance and facets in one query. Right when "near me" is part of a search with text ("vegan ramen near me"). The text side is in <a href={`${BASE}sd/lessons/search/#geo-vector`}>Search · near me</a>.
+
+**Worked numbers: when Postgres is enough.** A city-guide feature with 3 million places at 200 searches a second: the GiST index on 3 million points is small and hot in memory, each search touches a few hundred index entries, and 200/s is well within what a primary plus a read replica serves (benchmark your queries). Nothing custom is justified. Kestrel Nearby at 100 million places and 7,500 searches a second at peak is a different conversation (Chapter 14) — and even then the database stays the source of truth.
+
+| Option | Strength | Weakness | Pick when |
+|---|---|---|---|
+| **PostGIS** (R-tree via GiST) | Points and shapes, SQL, transactions | One primary for writes; read scaling via replicas | Moderate scale, already on Postgres — the default |
+| **Geohash column + B-tree** | Works in any database or KV store | You own neighbours and refine | No spatial extension available |
+| **Redis GEO** | In memory, very fast writes | Memory-bound; no per-member TTL | Moving objects, hot read paths |
+| **Elasticsearch geo** | Geo + text + facets together | Near-real-time refresh; ops weight | Search with a location filter |
+| **Custom quadtree / S2 / H3 service** | Tuned to your data and access pattern | You build, sync and run it | Very large scale or special maths (matching, surge) |
+
+<Trace title="Choose the index" steps={chooseIndex} takeaway="Postgres with PostGIS until the numbers say otherwise; R-trees for shapes; Redis for things that move; H3 for neighbour maths." />
+
+**Catch the trap:** building custom infrastructure before saying what the off-the-shelf option can't do. Your note on this one: *"For moderate scale, Postgres with a GiST spatial index just answers this; custom infra starts when we outgrow it." Knowing when not to build is senior signal.*
+
+<Part n="Part Three" title="Things that move">
+
+Restaurants sit still. Drivers report their position every four seconds. That one fact changes where the data lives.
+
+</Part>
+
+<h2 id="moving">Chapter 8 · A quarter of a million writes a second</h2>
+
+<Scene chapter="Chapter 8" title="A quarter of a million writes a second" mood="night">
+
+Iris's "oh, and also" arrives on a Thursday: Kestrel Go, couriers on scooters. *"Same nearby search,"* she says, *"just for couriers."*
+
+Theo asks one question. *"How often does a courier move?"* Constantly, she says; the app reports every four seconds. Theo puts down his coffee. *"Then it is not the same search."*
+
+</Scene>
+
+**Static versus moving objects is the real design split.**
+
+| | Static (restaurants, stores, chargers) | Moving (drivers, couriers, friends) |
+|---|---|---|
+| Writes | Rare edits | Every few seconds, per object |
+| What matters | The current row | Only the **latest** position |
+| Staleness | Minutes are fine | Seconds matter; silence means gone |
+| Lives in | Database (+ geo index), cached per cell | Memory: Redis GEO or a location service |
+| History | Is the data | Goes to a stream for analytics and billing, not the hot index |
+
+**Worked numbers (say these out loud — the estimate is what licenses the design).**
+
+- **Writes:** 1,000,000 online drivers ÷ an update every 4 s = **250,000 writes per second**, all day at peak, each overwriting the last.
+- **Memory:** each latest position — id, lat, lng, heading, timestamp — is about 100 bytes of raw data. 1,000,000 × 100 B = **100 MB**. Even with several hundred bytes per entry of Redis overhead, it is **under 1 GB**. Capacity is trivial; you cluster for **throughput and availability**.
+- **Ingress bandwidth:** 250,000 × 100 B = **25 MB/s**, about 200 Mbit/s. Real, not scary.
+- **History, if you kept every point:** 25 MB/s × 86,400 s ≈ **2.16 TB per day.** That belongs in a log and cold storage, not in the index you query to find a driver.
+
+**Why not the primary database?** Every update rewrites a row, its index entries (and the geohash index entry whenever the driver crosses a cell), appends to the write-ahead log and replicates — 250,000 times a second, to preserve history nobody queries from there. That is far beyond the comfortable write rate of a single primary, and it buys nothing: a position four seconds old is worthless.
+
+**The design: an in-memory geo grid, sharded by region, keyed by cell, with TTLs.**
+
+<Figure caption="Location ingestion. The hot path keeps only the latest position in memory; the full history flows to a log for trips, billing and models.">
+  <Mermaid code={`flowchart LR
+    D["Driver app\nevery 4 s"] -->|"WebSocket"| G["Location gateway\nstateful connections"]
+    G --> L["Location service"]
+    L -->|"GEOADD to cell key\nTTL 90 s"| R[("Redis GEO\nsharded by city")]
+    L -->|"HSET driver:id\nlat, lng, ts, status"| R
+    L -->|"append"| K[("Kafka\nlocation stream")]
+    K --> H[("Cold storage\ntrip history, ETA models")]`} />
+</Figure>
+
+- **Shard by region** (city or metro). A "drivers near this point" query almost always stays inside one region, so it hits one shard. (Sharding by driver id would make every nearby query ask every shard.)
+- **Key by cell and time bucket**, because Redis can expire keys but not members of a sorted set: write each update into `drivers:{city}:{geohash5}:{bucket}`, where the bucket is the current 30-second window, and set the key's TTL to 90 seconds. A driver who goes silent simply stops appearing in new buckets, and old buckets expire on their own. A query reads the current and previous bucket for the 9 cells around the rider (18 keys in one pipeline).
+- **Keep one authoritative record per driver:** `driver:{id}` → latest lat, lng, timestamp and status (AVAILABLE, OFFERED, ON_TRIP). Cell keys may briefly hold a stale copy — a driver who crossed into a new cell still sits in the old cell's bucket until it expires — so the matcher **dedupes candidates by id and re-checks each one against this record**: fresh timestamp (say under 15 s), status AVAILABLE, real distance from the latest position.
+- **The simpler alternative:** one geo key per city plus a `lastseen:{city}` sorted set scored by timestamp, and a sweeper every few seconds that removes drivers older than 30 s from both. Fewer keys, a moving part (the sweeper) to monitor.
+- **Throttle at the source.** The driver app can skip an update when it hasn't moved more than a few metres, which cuts writes from parked cars for free.
+
+**Per-shard check:** the largest city has, say, 60,000 drivers online. 60,000 ÷ 4 = **15,000 writes/s** on that shard — comfortable for one in-memory node (Redis-class nodes handle very roughly 100,000 simple operations a second; benchmark). If a region grows past one node, split it by cell, and remember a query near the split reads both sides.
+
+<Trace title="Where moving things live" steps={moving} takeaway="250,000 overwrites a second of latest-only data belongs in memory, sharded by region, keyed by cell, expired by silence — with history in a log." />
+
+<Reveal q="The rider is watching the assigned driver crawl toward them on the map. Where does that come from?">
+
+From the same location stream, pushed — not from the geo index. When a ride is assigned, the location service publishes that driver's updates to a channel for the trip, and the rider's WebSocket connection is subscribed to it. That is the realtime pattern: persistent connections, a pub/sub layer between the server that receives the update and the server holding the rider's socket. See <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime</a>.
+
+</Reveal>
+
+**Catch the trap:** "Store driver locations in the database with a spatial index." The interviewer will ask for the write rate. Compute it first — 250,000/s, 100 MB — and the in-memory answer follows from the numbers instead of from taste.
+
+<h2 id="matching">Chapter 9 · One driver, two riders</h2>
+
+<Scene chapter="Chapter 9" title="One driver, two riders" mood="storm">
+
+Saturday, 11:58 p.m. Two riders outside the same bar tap "Request" within the same second. Both requests find courier 4417, sixty metres away. Both send him an offer. He accepts the first; the second rider watches a car icon approach, then turn away.
+
+Dev's post-mortem is one line: *"Two matchers read AVAILABLE before either wrote OFFERED."*
+
+</Scene>
+
+**Matching is a pipeline: candidates → shortlist → ETA → claim → offer.**
+
+1. **Candidates** from the geo grid: the rider's cell and its neighbours, deduped, each re-checked against `driver:{id}` (fresh, AVAILABLE, right vehicle type). Typically dozens.
+2. **Shortlist** the ~10 nearest by straight-line distance. Cheap.
+3. **ETA** for the shortlist from the routing service (next chapter). Road time, not crow-flies distance, decides who is actually closest.
+4. **Claim** the best driver atomically, with an expiry.
+5. **Offer** it to the driver's app; on accept, the ride and driver both move to ASSIGNED. On decline or timeout, release and go to the next candidate.
+
+**The race and the claim.** "Check status, then set OFFERED" is two steps, and two matchers can both pass the check. The fix is the contention pattern: **one atomic conditional write**.
+
+```text
+SET hold:driver:4417 ride:R1 NX PX 15000      # succeeds for exactly one ride
+# the other matcher gets nil → tries its next candidate
+
+# on accept: promote only if the hold is still ours (a small Lua script makes this one atomic step)
+if GET hold:driver:4417 == "ride:R1" then set driver status ASSIGNED, record on the ride, DEL the hold
+```
+
+- **Holds expire.** If the driver ignores the offer, or the matcher crashes mid-offer, the key expires after 15 s and the driver is available again. A hold without an expiry is a leak.
+- **The durable record.** The ride's assignment is committed in the rides database (a conditional update such as `UPDATE rides SET driver_id = 4417, status = 'ASSIGNED' WHERE id = R1 AND status = 'MATCHING'`), so a retried accept is idempotent and a rider never gets two cars.
+- **Idempotent requests.** A rider double-tapping "Request" sends the same idempotency key, so one ride is created, not two.
+
+<Figure caption="Two matchers race for the same driver. The atomic hold lets exactly one through; the other moves on immediately instead of waiting.">
+  <Mermaid code={`sequenceDiagram
+    participant M1 as Matcher (ride R1)
+    participant M2 as Matcher (ride R2)
+    participant R as Redis
+    participant D as Driver 4417
+    M1->>R: SET hold:driver:4417 R1 NX PX 15000
+    M2->>R: SET hold:driver:4417 R2 NX PX 15000
+    R-->>M1: OK
+    R-->>M2: nil
+    M2->>R: SET hold:driver:5120 R2 NX PX 15000
+    M1->>D: offer R1 (15 s)
+    D-->>M1: accept
+    M1->>R: promote hold to ASSIGNED (if still R1)`} />
+</Figure>
+
+**Worked numbers.** 20 million rides a day ÷ 100,000 (≈ seconds in a day) = **200 requests/s**, about **600/s** at a 3× peak. Each request: one pipelined read of 18 cell keys, ~10 ETA calls, one or two `SET NX`. So the routing service sees about 600 × 10 = **6,000 ETA calls/s**. Calling it for all 40 candidates instead would be 24,000/s — cheap filter first, expensive refine second, the same move as cells then haversine.
+
+<Trace title="Match without double-booking" steps={matching} takeaway="Shortlist by distance, decide by ETA, claim with one atomic hold that expires. The loser moves to its next candidate." />
+
+<Reveal q="Should a matcher grab the nearest driver for each request as it arrives, or wait and match several at once?">
+
+Greedy, request by request, is simple and fast, and right most of the time. Its weakness shows in dense, busy areas: giving the nearest driver to the first request may leave the second request with a driver ten minutes away, when swapping would have given both four-minute pickups. **Batch matching** collects requests and available drivers in an area for a second or two and solves a small assignment problem minimising total ETA. It costs a little latency for better global outcomes. Say greedy first, and offer batching for hot areas (Chapter 11).
+
+</Reveal>
+
+**Catch the trap:** a matching answer with no claim step. Your old note named this exactly: *the contention pattern meeting this one — cross-pattern joints like this are where senior answers live.* The full toolkit (conditional writes, locks with leases, idempotency) is in <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a>.
+
+<h2 id="eta-routing">Chapter 10 · The river between</h2>
+
+<Scene chapter="Chapter 10" title="The river between" mood="dusk">
+
+The nearest courier is 400 metres away. The app promises him in two minutes. He arrives in nineteen. There is a river between them, and the nearest bridge is three kilometres north.
+
+</Scene>
+
+**Straight-line distance is a filter, not an answer.** Roads bend, rivers need bridges, one-way streets loop, and traffic changes speed by the hour. The decision "which driver?" must use **ETA**: estimated travel time over the road network.
+
+**Intuition for how ETA is computed:**
+
+- **The road graph.** Intersections are nodes, road segments are edges, each edge's weight is its expected travel time *now* (length ÷ live speed from recent GPS traces on that segment).
+- **Snap to the graph.** GPS points are noisy; "map matching" snaps the driver and the pickup to the most likely road segment. (A spatial index helps here — finding the road segments near a point is a geo query.)
+- **Shortest path.** Dijkstra's algorithm is correct but explores in every direction. **A\*** steers the search toward the goal with a distance-based heuristic. At continental scale, systems precompute shortcuts — **contraction hierarchies** are the classic technique — so a query explores a tiny fraction of the graph and answers in milliseconds. Live traffic complicates the precomputation; variants exist that re-weight quickly (look these up).
+- **Correct it with data.** Real ETAs blend the route time with learned corrections (time of day, pickup difficulty, how long drivers really take to turn around).
+
+**This is also the answer to "Design Google Maps directions".** That question is mainly a **graph shortest-path** problem — road graph, A*, contraction hierarchies, traffic ingestion — and not a proximity-index question. Say so explicitly, then use spatial indexing only for snapping points to roads and for "what's near this route".
+
+**Catch the trap:** ranking drivers by straight-line distance and calling it ETA. Say: *"Distance shortlists ten; the routing service's ETA picks one."*
+
+<h2 id="hot-cells">Chapter 11 · The stadium lets out</h2>
+
+<Scene chapter="Chapter 11" title="The stadium lets out" mood="storm">
+
+The final whistle blows at 10:04 p.m. By 10:06, the matching dashboard for one cell has turned red: hold conflicts climbing, offers timing out, riders cancelling. Dev checks request rate. It is *three a second.*
+
+*"Three,"* he says. *"We handle six hundred. What is on fire?"*
+
+</Scene>
+
+**A hot cell is a concentration problem, and you have to say which kind.**
+
+**1 · Demand piles onto too little supply (the stadium).** 60,000 fans; 10% want a ride within 30 minutes: 6,000 ÷ 1,800 s ≈ **3.3 requests/s**. Throughput is trivial. The problem is that every request sees the same few hundred drivers, they all race for the same holds, most claims fail and retry, and pickups get worse. Fixes:
+
+- **Batch matching** for that area every second or two (Chapter 9's Reveal): fewer conflicts, better total ETA.
+- **Widen the ring** when the shortlist is exhausted — the next ring of cells, then the next.
+- **Surge pricing**, intuitively: per cell per minute, compare demand (requests, app opens) with supply (available drivers); when the ratio climbs, raise the price multiplier along a curve, smoothed over the cell's neighbours (H3 rings make this uniform), capped by policy. Higher prices dampen demand and pull drivers in from nearby cells. The real models are richer; the shape is ratio → multiplier → smooth → cap.
+- **Pickup zones and queues** at venues: a physical design fix that turns chaos into a line.
+
+**2 · Too many reads on one cell (downtown at lunch, the "cars on the map" view).** Here throughput is the problem. Fixes: cache per cell (next chapter), finer cells or a covering so each query reads fewer candidates, `COUNT` limits on geo searches, read replicas of the hot shard.
+
+**3 · One region outgrows its shard (New Year's Eve in one city).** Location writes for a city land on one shard. 60,000 drivers → 15,000 writes/s is fine; if one region outgrows a node, **split it by cell** across shards. Queries near the split read both; a cell-to-shard map (like a quadtree, it can be finer where it's dense) routes them.
+
+| Hot cell | Symptom | First fix |
+|---|---|---|
+| Stadium, airport rank | Hold conflicts, timeouts, cancels — low QPS | Batch matching, wider ring, surge, pickup zones |
+| Downtown lunch searches | One cell's keys take most reads | Per-cell cache, finer cells, replicas |
+| One giant city | One location shard near its write limit | Split the region by cell |
+
+<Trace title="Which hot cell is this?" steps={hotCells} takeaway="Ask whether the hot cell is short of supply, heavy on reads, or heavy on writes. Each has a different fix." />
+
+<Reveal q="2 million riders have the app open, each refreshing the cars-on-the-map view every 5 seconds. What is the load, and how do you serve it?">
+
+2,000,000 ÷ 5 = **400,000 reads/s** — far more than ride requests. But the map is cosmetic: positions a few seconds old are fine, and every rider in the same neighbourhood sees the same cars. So build a **per-cell snapshot** (a coarse list of car positions in that cell) every 2–3 seconds and serve it from a short-TTL cache, or push it over the rider's existing connection. Hundreds of thousands of personalised radius queries become a few thousand cheap cell reads. The precise geo query only runs when someone actually requests a ride.
+
+</Reveal>
+
+**Catch the trap:** "Hot cell? Add shards." A stadium is three requests a second; shards don't create drivers. Name the kind of hot first.
+
+<Part n="Part Four" title="Serving the answer">
+
+Static places get the full caching treatment, and the best result is not always the closest.
+
+</Part>
+
+<h2 id="cell-cache">Chapter 12 · Everyone downtown asks the same question</h2>
+
+<Scene chapter="Chapter 12" title="Everyone downtown asks the same question" mood="dawn">
+
+Dev's top-keys report for the cache has an odd shape. The proposed key was `nearby:{lat}:{lng}`. It has eleven million distinct keys and a hit ratio of 0.3%. *"Every user stands somewhere slightly different,"* he says. *"So every key is unique. We built a very expensive write-only cache."*
+
+</Scene>
+
+**Cache by cell, not by coordinates.** Exact coordinates are unbounded user input — the key-cardinality trap from <a href={`${BASE}sd/lessons/caching/#keys`}>Caching · naming things</a>. Snap to a cell and the keys become bounded and shared by everyone nearby. Two layers, with all four caching promises each:
+
+**Layer 1 — cell contents (makes the index cheap).**
+
+- **Key:** `cell:v1:{geohash6}:{category}` → the compact candidate list for that cell: id, lat, lng, rating, review count, opening hours (~40 bytes each).
+- **TTL:** 30 minutes with jitter — places change rarely.
+- **Invalidation:** a place edit deletes **exactly one key**, the cell containing it (both cells if it moved), driven by CDC from the places table, with the TTL as backstop. Searches read the cells they need and merge, so a neighbour's search sees the change too.
+- **Failure:** the database index can serve misses at the miss rate; check it can survive the full load before calling the cache optional.
+
+**Layer 2 — first-page results (absorbs repeated popular queries).**
+
+- **Key:** `nearby:v1:{geohash7}:{category}:{filtersHash}` → the ranked top 20 ids. Precision 7 is about 150 m, so every user standing in those few blocks shares one key. Normalise filters (sorted, lowercase) before hashing.
+- **TTL:** 5 minutes with jitter, because ranking includes "open now" and ratings drift. Better: cache the hours and evaluate "open now" at read time, so the TTL can stay long without serving closed restaurants.
+- **Invalidation:** TTL only. A precise delete would have to find every result that contains the edited place; a short TTL is the honest answer.
+- **Accuracy cost, said out loud:** ranking is computed from the cell's centre, so the distances shown can be off by up to about 110 m (half the cell's diagonal). Fine for "near me"; recompute exact distances from the cached ids if the UI shows metres.
+
+**Worked numbers: why layer 1 lives in process at Kestrel's scale.** Say a dense downtown has 100 restaurants per km². A precision-6 cell (≈ 0.72 km² at 13°) holds about 72 × 40 B ≈ **2.9 KB**. A 1 km search reads about 12–16 cells — call it 14 × 2.9 KB ≈ **40 KB per search**. At 7,500 searches/s that is about **300 MB/s** out of a Redis cluster. Possible, wasteful — and the entire index is only 2.4 GB, so at this scale the index service keeps every cell's list **in its own memory** (refreshed from CDC) and Redis keeps only layer 2. At moderate scale, Redis for both is fine.
+
+<Reveal q="Should the Uber driver grid be cached the same way?">
+
+No. Driver positions change every 4 seconds; the grid *is* the in-memory store, and a cache in front of it would only add staleness. The exception is the cosmetic cars-on-the-map view, which tolerates a few seconds and is cached per cell (Chapter 11). Matching always reads the live grid and re-checks the driver's record.
+
+</Reveal>
+
+**Catch the trap:** "Cache nearby results in Redis." Your #1 gap, in geo clothing. Say the key (cell, not coordinates), the TTL and why, the invalidation (one cell per edit), and the failure plan.
+
+<h2 id="ranking">Chapter 13 · Closest isn’t best</h2>
+
+<Scene chapter="Chapter 13" title="Closest isn’t best">
+
+User research comes back with a sentence Iris underlines twice: *"The app keeps showing me the closest place, which is a petrol station with a sandwich fridge."*
+
+</Scene>
+
+Sorting by distance alone is wrong for discovery. A usable ranking combines a few signals, after the hard filters:
+
+1. **Hard filters first:** category, **open now**, price, within the radius.
+2. **Distance, with decay:** a smooth function such as e^(−d / 1 km), so 300 m and 400 m barely differ but 300 m and 3 km do.
+3. **Quality, smoothed:** a 4.8 with 12 reviews is weaker evidence than a 4.2 with 800. A **Bayesian average** pulls thin ratings toward a prior: (C × m + Σ ratings) ÷ (C + n), with m = 3.8 (the typical rating) worth C = 50 reviews.
+4. **Relevance and personal signals** (text match, the user's history) if the product has them — see <a href={`${BASE}sd/lessons/search/#relevance`}>Search · relevance</a>.
+
+**Worked numbers.** Score = 0.5 × (smoothed rating ÷ 5) + 0.5 × e^(−distance in km).
+
+| | Raw | Smoothed rating | Distance term | Score |
+|---|---|---|---|---|
+| A | 4.2★, 800 reviews, 300 m | (190 + 3,360) ÷ 850 ≈ 4.18 | e^−0.3 ≈ 0.74 | 0.5 × 0.835 + 0.5 × 0.741 ≈ **0.79** |
+| B | 4.8★, 12 reviews, 1.5 km | (190 + 57.6) ÷ 62 ≈ 3.99 | e^−1.5 ≈ 0.22 | 0.5 × 0.799 + 0.5 × 0.223 ≈ **0.51** |
+
+A wins: well-established, and five times closer. The weights (0.5 and 0.5) are a product decision you'd tune with experiments; say that.
+
+**Open now is harder than it looks.** Hours are in the *place's* local time zone, some spans cross midnight (18:00–02:00), holidays override them, and daylight-saving changes shift them. Store hours as structured intervals per weekday in local time plus a time-zone id, and evaluate at query time against the current instant.
+
+<Trace title="Cache and rank" steps={serving} takeaway="Key caches by cell, not coordinates. Rank by filters, then a blend of smoothed rating and decayed distance." />
+
+**Catch the trap:** "Sort by distance, then by rating." A lexicographic sort means rating only breaks exact distance ties, which never happen. Blend them into one score.
+
+<Part n="Part Five" title="The whole round, twice">
+
+Two full rounds with the clock from <a href={`${BASE}sd/lessons/delivery-framework/`}>the delivery framework</a>: Yelp in 45 minutes (checkpoints 9 · 15 · 25 · 38), Uber in 60 (12 · 20 · 32 · 52).
+
+</Part>
+
+<h2 id="yelp">Chapter 14 · Yelp, out loud</h2>
+
+<Scene chapter="Chapter 14" title="Yelp, out loud" mood="night">
+
+Friday mock. Mara sets the phone face-down. *"Design Yelp. Nearby search is the core. Forty-five minutes."* You write 9 · 15 · 25 · 38 in the corner and pick up the marker.
+
+</Scene>
+
+**0:03 · Roadmap and requirements**
+
+> **You:** "Six minutes on requirements and scale, a couple on entities and the API, a working design, then two or three deep dives and a wrap-up. Functional: users search for places near a location, filtered by category and open-now; they see a place's details; they can post a review and rating. Out of scope: reservations, photos, ads, the business-owner portal, personalised recommendations. Places are added and edited by an internal service I'll treat as a writer."
+
+**0:05 · Non-functionals with numbers**
+
+> **You:** "Scale: 100 million places. 50 million daily users, five searches each — 250 million searches a day, about 2,500 a second, 7,500 at a 3× peak. Place edits, about a million a day — roughly 10 a second. So reads outnumber writes by hundreds to one. Search p99 under 200 milliseconds. Search favours availability; a new or edited place should be visible within minutes, not instantly. Storage: a place row about 1 KB, so 100 GB — and the geo part, id plus two coordinates, 24 bytes each, is only 2.4 GB. That number will matter."
+
+**0:08 · The bridge**
+
+> **You:** "So: read-heavy radius search over 100 million mostly static places, 7,500 per second at peak, minutes of staleness allowed, and a geo index small enough to hold in memory. Good?"
+
+**0:09 · Core entities**
+
+> **You:** "Place — id, name, location, category, hours with a time zone, rating aggregate. Review — belongs to one place and one user. User. Place to Review is one-to-many; the rating aggregate on Place is derived from reviews."
+
+**0:11 · API**
+
+```text
+GET  /places/search?lat=&lng=&radius=1000&category=&openNow=true&cursor=
+       → 200 { places: [{ id, name, distanceM, rating, reviewCount, openNow }], nextCursor }
+GET  /places/{id}                      → 200 { place details }
+POST /places/{id}/reviews  { rating, text }   (Idempotency-Key header) → 201
+```
+
+> **You:** "Radius capped at, say, 25 km, defaulting to 1 km. The cursor encodes the last item's score and id so pages are stable. Reviews take an idempotency key because a double-tap shouldn't post twice."
+
+**0:15 · High-level design**
+
+> **You:** "Search: client → load balancer → stateless search service. The search service asks a geo index for candidates near the point, ranks them, hydrates the top 20 from a place cache, and returns. The source of truth is Postgres: places and reviews. Writes: the place service writes Postgres; a CDC stream carries changes to the geo index and deletes affected cache keys. Reviews write Postgres and update the place's rating aggregate asynchronously."
+
+<Figure caption="Yelp’s high-level design. Postgres is the truth; the geo index and caches are built from its change stream.">
+  <Mermaid code={`flowchart LR
+    C["Client"] --> LB["Load balancer"] --> S["Search service\nstateless"]
+    S -->|"1 · result cache\nnearby:geohash7"| RC[("Redis\nresult cache")]
+    S -->|"2 · candidates\ncells + neighbours"| GI["Geo index service\nall cells in memory\nreplicas × 4"]
+    S -->|"3 · hydrate top 20"| PC[("Place cache\nplace:id")]
+    PC -.->|"miss"| DB[("Postgres\nplaces, reviews")]
+    W["Place / review service"] --> DB
+    DB -->|"CDC"| GI
+    DB -->|"CDC: delete keys"| RC`} />
+</Figure>
+
+**0:25 · Deep dive 1 — finding candidates**
+
+> **You:** "The hardest part is the radius query. A B-tree on latitude would read a strip around the planet, so I need a cell index. Options: PostGIS on read replicas, a geohash column, or an in-memory index. At 7,500 searches a second and a 2.4 GB geo dataset, I'll hold the whole index in memory in a small service: a hash map from precision-6 geohash cell to a compact list of places. A 1 km search reads every precision-6 cell touching the 2-by-2-km box around the user — about 12 to 16 cells, because precision-6 cells are only 0.6 km tall — then computes exact distance and drops anything beyond 1 km. That covering handles cell edges; a café 20 metres across a boundary is still found. For larger radii I switch to precision 5 with the cell plus 8 neighbours. Four replicas give throughput and let one rebuild from Postgres while three serve; CDC applies the ten edits a second in between. If the index service were ever down, PostGIS on a replica is the slow fallback."
+
+**0:31 · Deep dive 2 — caching and hot cells**
+
+> **You:** "Downtown at lunch, the same queries repeat. I cache the first page per precision-7 cell — about 150 metres: key `nearby:v1:{geohash7}:{category}:{filtersHash}`, top 20 ids, five-minute TTL with jitter, because ratings drift and minutes of staleness were allowed. Open-now is evaluated at read time from cached hours, so a closed place never shows. Invalidation is TTL-only for results — finding every result containing an edited place isn't worth it. Place details are cache-aside on `place:{id}` with delete-on-write from CDC. If Redis is down, the index service handles full load — it's in memory — so the cache isn't load-bearing. Distances in cached results are from the cell centre, off by at most about 110 metres; I recompute them for display."
+
+**0:35 · Deep dive 3 — ranking**
+
+> **You:** "Filter by category, open-now and radius; then score with a blend of smoothed rating and distance decay — a Bayesian average so a 4.8 with twelve reviews doesn't beat a 4.2 with eight hundred, and e to the minus distance so 300 and 400 metres barely differ. Weights tuned by experiment. Hours are stored per weekday in the place's local time with a time-zone id; spans past midnight handled explicitly."
+
+**0:38 · Wrap-up**
+
+> **You:** "Recap: radius search via an in-memory cell index with neighbour covering and exact refine, cached per cell, ranked by rating and distance; Postgres is the truth and feeds everything through CDC. At 10× searches, the index service scales by adding replicas — it's read-only and 2.4 GB. At 10× places, 24 GB still fits in memory, but I'd shard the index by region. If the Postgres primary fails, edits pause for failover; search keeps working. I'd monitor search p99, candidates-per-query by cell to spot dense areas needing finer cells, cache hit ratio, and CDC lag. With more time: text search with Elasticsearch, and photos."
+
+**0:41.** Mara turns the phone over. *"You said 'edges' before I asked. Good."*
+
+**Check the numbers yourself:** 50M × 5 = 250M searches/day ÷ 10⁵ = 2,500/s; × 3 = 7,500/s. 1M edits ÷ 10⁵ = 10/s. 100M × 1 KB = 100 GB; 100M × 24 B = 2.4 GB. A precision-6 cell is about 1.19 × 0.61 km at 13°, so a 1 km radius needs more than the 3 × 3 block; covering the 2 × 2 km box takes 12–16 such cells depending on latitude and where the user stands. Precision 7 is about 150 m square, half-diagonal ≈ 106 m.
+
+<h2 id="uber">Chapter 15 · Uber, out loud</h2>
+
+<Scene chapter="Chapter 15" title="Uber, out loud" mood="storm">
+
+Same room, a week later, a 60-minute slot. *"Design Uber,"* Mara says. *"Riders request, drivers get matched. I care about the hard parts."* You write 12 · 20 · 32 · 52 in the corner.
+
+</Scene>
+
+**0:05 · Roadmap and requirements**
+
+> **You:** "Seven minutes on requirements, then entities, API, a working design by minute 32, and twenty minutes of deep dives. Functional: drivers share their location while online; a rider requests a ride from a pickup to a drop-off and is matched with a nearby driver, who can accept or decline; both see each other's live location until the trip ends. Out of scope: payments, ratings, scheduled rides, pooling — I'll mention where surge would sit."
+
+**0:08 · Non-functionals with numbers**
+
+> **You:** "1 million drivers online at peak, each reporting every 4 seconds: that's 250,000 location writes a second. 20 million rides a day is about 200 requests a second, 600 at peak. Matching should produce an offer within a few seconds. Locations should be fresh to within about 5 seconds. Assignment must be strongly consistent — never two riders on one driver, never two drivers for one ride. Location ingest favours availability: losing one update is fine, the next arrives in 4 seconds."
+
+**0:11 · The bridge**
+
+> **You:** "So the shape is: a huge stream of ephemeral writes, a modest rate of matches that need a strong claim, and live updates both ways. OK?"
+
+**0:12 · Core entities**
+
+> **You:** "Rider, Driver, Ride — the durable trip record with status and the assigned driver. DriverLocation — ephemeral, latest only. Offer — a time-limited hold of one driver for one ride."
+
+**0:15 · API**
+
+```text
+WS   /driver/connect                    driver → { lat, lng, heading, ts } every 4 s
+                                        server → offer { rideId, pickup, expiresAt }
+POST /rides  { pickup, dropoff, product }   (Idempotency-Key) → 202 { rideId, status: MATCHING }
+POST /offers/{rideId}/accept | /decline     → 200 | 409 if the offer expired
+WS   /rides/{id}/live                   rider ← status changes, driver location
+```
+
+> **You:** "Locations ride a persistent connection — at 250,000 a second, per-request HTTP overhead adds up, and the same socket delivers offers. Ride creation is idempotent so a double-tap makes one ride. Accept returns 409 if the hold already expired."
+
+**0:20 · High-level design**
+
+> **You:** "Location path: driver app → WebSocket gateways → location service → Redis GEO sharded by city, and a Kafka stream for history. Ride path: rider app → ride service, which writes the ride to Postgres as MATCHING and hands it to the matching service. Matching reads candidates from the geo grid, gets ETAs from a routing service, claims a driver with a hold, and pushes the offer through the gateway holding that driver's socket. On accept, the ride service records the assignment and subscribes the rider's connection to the driver's location channel."
+
+<Figure caption="Uber’s high-level design. Locations live in memory and expire by silence; the ride record and the assignment are durable and strongly consistent.">
+  <Mermaid code={`flowchart LR
+    DA["Driver app"] <-->|"WS: location in,\noffers out"| GW["WS gateways"]
+    GW --> LS["Location service"]
+    LS --> GEO[("Redis GEO\nby city · cell · bucket")]
+    LS --> K[("Kafka\nlocation history")]
+    RA["Rider app"] -->|"POST /rides"| RS["Ride service"]
+    RS --> DB[("Postgres\nrides")]
+    RS --> MS["Matching service"]
+    MS -->|"candidates"| GEO
+    MS -->|"ETA top 10"| ETA["Routing / ETA"]
+    MS -->|"SET hold NX PX"| H[("Redis holds")]
+    MS -->|"offer"| GW
+    LS -.->|"pub/sub per trip"| RG["Rider WS"]
+    RG --> RA`} />
+</Figure>
+
+**0:32 · Deep dive 1 — storing locations**
+
+> **You:** "250,000 writes a second of latest-only data. A database primary would rewrite rows, indexes and WAL for history nobody queries there, so it's memory. Size: 1 million drivers times about 100 bytes is 100 MB — trivial — so the cluster is for throughput and availability. Shard by city, since a nearby query stays in one city; the biggest city at 60,000 drivers is 15,000 writes a second on its shard, fine. Redis can't expire members of a sorted set, so each update goes into a key per precision-5 cell per 30-second bucket with a 90-second TTL — silent drivers vanish on their own. Each driver also has one hash with latest position, timestamp and status, and the matcher re-checks every candidate against it. Every update also goes to Kafka — about 25 MB a second, two terabytes a day — for trip history and ETA models, compressed into cold storage."
+
+**0:39 · Deep dive 2 — matching without double assignment**
+
+> **You:** "Matching reads the rider's cell and 8 neighbours from the current and previous buckets — 18 keys in one pipeline — dedupes, keeps fresh AVAILABLE drivers, shortlists ten by straight-line distance, and asks the routing service for road ETAs: 600 requests a second times ten is 6,000 ETA calls. Then the claim: SET NX on the driver's hold key with a 15-second expiry. Exactly one matcher wins; a loser moves to its next candidate immediately. Accept is a compare-and-set — only if the hold is still this ride's — and the assignment commits in Postgres with a conditional update on status MATCHING, so retries are harmless. Decline or timeout: the hold expires and we offer the next candidate. If the shortlist runs out, widen the ring."
+
+**0:46 · Deep dive 3 — hot cells and surge**
+
+> **You:** "A stadium emptying is only about 3 requests a second — the problem is supply. All those requests see the same few hundred drivers and race for holds. For areas like that I'd batch: every couple of seconds, match the waiting riders and free drivers in that area jointly to minimise total ETA. Surge sits here too: per H3 cell per minute, demand over supply, mapped to a capped multiplier and smoothed over the neighbouring ring — hexagons make that ring uniform. Separately, the cars-on-the-map view is the biggest read load — 2 million open apps every 5 seconds is 400,000 reads a second — so I serve it from per-cell snapshots refreshed every few seconds, never from the matching path."
+
+**0:52 · Wrap-up**
+
+> **You:** "Recap: locations in memory, sharded by city, expired by silence; matching by distance then ETA, with an atomic expiring hold and a conditional commit; live updates over WebSockets with per-trip pub/sub. At 10× drivers, 2.5 million writes a second: split big cities by cell across shards and add gateways. If a city's Redis shard fails, a replica takes over; we lose a few seconds of positions and drivers refill it within 4 seconds. If the routing service is slow, match on straight-line distance with a wider safety margin. I'd monitor offer acceptance rate, time-to-match p99, hold conflict rate per cell, location freshness lag, and gateway connection counts. With more time: payments and pooling."
+
+**0:55.** Mara turns the phone over. *"Three questions answered before I asked them,"* she says. *"The write rate, the double booking, and the stadium."*
+
+**Check the numbers yourself:** 1,000,000 ÷ 4 = 250,000/s. 1M × 100 B = 100 MB. 250,000 × 100 B = 25 MB/s × 86,400 ≈ 2.16 TB/day. 20M ÷ 10⁵ = 200/s; × 3 = 600/s; × 10 ETAs = 6,000/s. 60,000 ÷ 4 = 15,000/s. 2M ÷ 5 = 400,000/s. Stadium: 6,000 ÷ 1,800 s ≈ 3.3/s.
+
+<Reveal q="Which sentence in either walkthrough would you most likely have left out, and what would it have cost?">
+
+For most people it is "silent drivers vanish on their own" — the staleness plan for moving objects. Without it, the interviewer asks what happens when a phone dies mid-shift, and the honest answer becomes "we match a ghost". In the Yelp round it is the covering sentence: "precision-6 cells are only 0.6 km tall, so a 1 km search reads 12 to 16 cells." Leaving it out invites the boundary follow-up you could have answered in passing.
+
+</Reveal>
+
+<h2 id="transfer">Chapter 16 · Same pattern, other faces</h2>
+
+<Scene chapter="Chapter 16" title="Same pattern, other faces" mood="dusk">
+
+Mara spreads index cards on the table: a food-delivery app, a dating app, a find-my-friends feature, a maps app, a running heatmap. *"Same three questions for each,"* she says. *"What are the cells? What gets refined? What moves?"*
+
+</Scene>
+
+| Bank question | Static or moving? | How the pattern applies |
+|---|---|---|
+| **Yelp / nearby search** (walkthrough) | Static | Cell index (geohash, PostGIS or in-memory) + neighbours + refine; per-cell caching; rating × distance ranking |
+| **Uber / Lyft** (walkthrough) | Moving | In-memory geo grid by city/cell/bucket; WebSocket location stream; match with an expiring hold (contention); H3 for surge |
+| **DoorDash** | Both | Restaurants are Yelp's half, couriers are Uber's half. Dispatch adds **food prep time**: courier arrival should meet food-ready time, so ETA to the restaurant is weighed against prep, and a courier may carry several orders. The order is a state machine with async steps (<a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs</a>) |
+| **Tinder** | Slowly moving | Location updates when the app opens, so a database or search index with a geo filter is enough. Radius is large (10–50 km) → coarse cells (precision 4–5). **Geo filter first, then preference filters** (age, gender), then exclude already-swiped profiles (a per-user set or Bloom filter). Swipes and matches are a separate store; a match notification is fan-out (<a href={`${BASE}sd/lessons/pattern-fanout/`}>Fan-out</a>) |
+| **Find my friends** | Moving, small fan-in | "Where are my friends?" is **not** a spatial query: look up each friend's latest position by user id (a key-value read for ~100 friends) and compute distances directly. A geo index only appears for "friends near me" at large friend counts. Privacy: share a coarser cell (truncate the geohash) when the user asks for approximate location; expire positions |
+| **Google Maps routing** | — | A graph shortest-path problem (road graph, A*, contraction hierarchies, traffic ingest). Say that it is not a proximity-index question; spatial indexes only snap points to roads |
+| **Strava-style heatmaps** | Historic tracks | Aggregate GPS points into cells (H3 or geohash) per time window; a geo + time-series aggregation (<a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series</a>) |
+| **EV chargers with live availability** | Static places, moving status | Static geo index for chargers; availability is a fast-changing field updated by charger events and cached briefly per cell |
+
+<Reveal q="Tinder: why not keep profiles in Redis GEO like drivers?">
+
+Because they don't move like drivers. A profile's location changes when the user opens the app — a few times a day, not every 4 seconds — so the write rate is modest and the data must persist with the profile. The real cost is in the filters and the exclusion of already-seen profiles, not the geo lookup. A database or search index with a geo filter, plus a per-user "already swiped" structure, fits. Choose the store from the write rate, not from the word "location".
+
+</Reveal>
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The geo review" steps={drills} takeaway="Say why B-trees fail; cells + 8 neighbours + exact distance; static to an index, moving to memory with TTLs; claim with an expiring hold; cache by cell; routing is a graph problem." />
 
 <Quiz questions={[
   {
@@ -96,15 +931,119 @@ Matching (Uber): rider requests → query rider's cell + neighbors for candidate
     q: '1M drivers send locations every 4s. Where does this data live?',
     options: [
       'Postgres with a geohash column, indexed',
-      'An in-memory geo grid (e.g. Redis geo sets per cell) — 250K updates/s of pure churn with only the LATEST position mattering is wrong for disk indexes; ~50MB fits memory trivially',
+      'An in-memory geo grid (e.g. Redis geo sets per cell) — 250K updates/s of pure churn with only the LATEST position mattering is wrong for disk indexes; about 50–100 MB of raw data fits memory trivially',
       'Elasticsearch with geo_point mapping',
       'Kafka, queried by consumers'
     ],
     answer: 1,
-    why: 'Ephemeral, hot, latest-only data = memory. The estimation (50MB!) is what licenses the answer — compute it out loud. Disk indexes (1, 3) burn IO maintaining history nobody reads; Kafka (4) is a pipe, not a queryable index.'
+    why: 'Ephemeral, hot, latest-only data = memory. The estimation (1M × 50–100 bytes) is what licenses the answer — compute it out loud. Disk indexes burn IO maintaining history nobody reads from there; Kafka is a pipe, not a queryable index.'
   }
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: 12-minute mini-design — "find nearby EV charging stations, with live availability." Static geo index + a moving-ish availability layer + cell caching: three lessons in one rep. Then weekend mock: **Yelp** or **Uber**.
+<Scene title="The interview room" mood="night">
+
+The Interviewer draws a dot on a map and asks, almost lazily: *"How would you find the ten closest things to this?"* A year ago you would have said "an index on latitude and longitude". Today you say what that index actually reads.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "A B-tree on latitude returns a band around the whole planet, and adding longitude to the index doesn't narrow the seek, so I need an index that keeps both dimensions together. I'd map each point to a cell — geohash, where a shared prefix means the same cell — and store the cell id with a normal index. A query reads the user's cell **plus its eight neighbours**, at a precision whose cell side is at least the radius, because points metres apart can sit on either side of a cell edge; then it computes the exact distance on those candidates and drops the rest. At moderate scale, PostGIS with a GiST index does exactly this for me. If density varies a lot and I own the index, a quadtree adapts cell size to density in memory. The next question is whether the things move. Static places go in the database and are cached per cell — key by cell, never by raw coordinates. Moving things like drivers — a million every 4 seconds is 250,000 writes a second but only about 100 MB — go in an in-memory grid sharded by region, with TTLs so silent drivers disappear. Matching shortlists by distance, decides by road ETA, and claims a driver with an atomic, expiring hold so two riders never get the same car."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · What if the closest result is just across a cell boundary?">
+
+Two points metres apart can have different prefixes — a shared prefix proves closeness, a different one proves nothing. So I always read the cell and its 8 neighbours (or a covering of the circle), at a precision whose shorter cell side is at least the radius, then filter by exact distance.
+
+</Reveal>
+
+<Reveal q="2 · Downtown has thousands of places per cell; the suburbs have three. Does that matter?">
+
+Yes: candidate counts, and so latency, vary wildly with a fixed grid. Options: finer cells or a covering in dense areas, a `COUNT` limit with distance ordering, or a quadtree that splits only where it's crowded, so each leaf holds at most about 100 points. At Kestrel's scale the whole index is 2.4 GB, so an in-memory quadtree with replicas is reasonable.
+
+</Reveal>
+
+<Reveal q="3 · Why not store driver locations in the database?">
+
+250,000 writes a second, each rewriting a row, an index entry and the log, for history nobody queries there. Only the latest position matters and it's about 100 MB in total, so it lives in memory — Redis GEO sharded by city, keyed by cell and time bucket with TTLs — and the history goes to Kafka.
+
+</Reveal>
+
+<Reveal q="4 · Two riders get matched to the same driver. How do you prevent it?">
+
+The claim is one atomic conditional write: `SET hold:driver:{id} {rideId} NX PX 15000`. Exactly one succeeds; the other moves to its next candidate. The hold expires if the driver doesn't respond or the matcher crashes, and the accept commits with a conditional update on the ride's status, so retries are harmless.
+
+</Reveal>
+
+<Reveal q="5 · How would you cache nearby search?">
+
+By cell, never by raw coordinates (unbounded keys, near-zero hits). Cell contents keyed `cell:v1:{geohash6}:{category}`, invalidated by deleting the one cell an edited place sits in; first-page results keyed by a ~150 m precision-7 cell plus normalised filters, with a 5-minute jittered TTL, and open-now evaluated at read time. The index can carry the load without the cache, so it isn't load-bearing.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "Near me", "within X km" | B-tree on lat returns a planet-wide strip → a cell index |
+| Geohash | Interleaved bits, base32; shared prefix = same cell; **+ 8 neighbours, then exact distance** |
+| Choosing precision | Cell's shorter side ≥ radius for "cell + 8"; precision 5 ≈ 4.9 km, 6 ≈ 1.2 × 0.6 km, 7 ≈ 150 m |
+| Many wasted candidates | A covering of finer cells, or a quadtree |
+| Density varies wildly, you own the index | Quadtree in memory; replicas; rebuild periodically |
+| Shapes (zones, geofences) | R-tree (PostGIS GiST); filter by box, refine with exact geometry |
+| Global coverage, irregular regions | S2 cells and coverings |
+| Surge, heatmaps, neighbour smoothing | H3 hexagons: six equidistant neighbours |
+| Moderate scale, on Postgres | PostGIS `ST_DWithin` — don't build |
+| Things move every few seconds | Compute writes/s and MB; in-memory grid by region and cell; TTL by silence; history to Kafka |
+| Assign one driver | Shortlist by distance → ETA → atomic hold with expiry → conditional commit |
+| "Which driver is closest?" | ETA over the road graph, not crow-flies distance |
+| Stadium, airport | Supply problem: batch matching, wider ring, surge, pickup zones |
+| Hot read cell | Per-cell cache, finer cells, replicas |
+| Cache nearby | Key by cell, never by coordinates; one-cell invalidation |
+| Ranking | Filters, then smoothed rating × distance decay; open-now in local time |
+| Directions | Graph shortest path (A*, contraction hierarchies) — not a geo index |
+
+## Five mistakes to leave behind
+
+1. **"Index lat and lng."** Say what it reads: a strip around the planet.
+2. **Geohash without neighbours.** The café 22 m away is behind the edge. Cell + 8, then exact distance.
+3. **Moving objects in the primary database.** Compute 250,000 writes/s and 100 MB first; the answer is memory with TTLs.
+4. **Matching without an atomic, expiring claim.** Check-then-set double-books; a hold without expiry leaks drivers.
+5. **Caching by raw coordinates.** Unbounded keys, a hit ratio near zero. Cache by cell.
+
+<Scene title="Mara’s map" mood="dusk">
+
+A month after the lunch-hour incident, Nearby's p99 is 41 milliseconds and the database graph is a flat line. Mara has left her whiteboard map up: the planet, cut into squares, one square cut finer, a dot near the edge of one cell and a dashed circle that crosses into its neighbours. Someone has written *"don't forget the eight"* underneath in green marker. It isn't her handwriting. It's yours.
+
+</Scene>
+
+**Keep it warm:** with the buddy, a 12-minute mini-design — *"find nearby EV charging stations, with live availability."* A static geo index, a moving-ish availability layer, and cell caching: three lessons in one rep. Then a weekend mock: **Yelp** or **Uber**, on the clock, using Chapters 14 and 15 as the answer key afterwards — not before.
+
+Related: <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> (the clock both walkthroughs use) · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> (composite indexes, sharding) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (the four promises behind every cell cache) · <a href={`${BASE}sd/lessons/search/`}>Search</a> (geo filters inside text search) · <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime</a> (location streams and live trip updates) · <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a> (the hold that prevents double assignment) · <a href={`${BASE}sd/lessons/pattern-partitioning/`}>Partitioning</a> (sharding by region) · <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a> · <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and races</a> · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- [Geohash (Wikipedia)](https://en.wikipedia.org/wiki/Geohash) — the encoding, the base32 alphabet, and the cell-size table; check this chapter's numbers against it.
+- [Quadtree (Wikipedia)](https://en.wikipedia.org/wiki/Quadtree) and [R-tree (Wikipedia)](https://en.wikipedia.org/wiki/R-tree) — the two classic spatial trees, with query algorithms.
+- [S2 Geometry](https://s2geometry.io/) — cells, the Hilbert curve, and region coverers, from the project itself.
+- [H3 documentation](https://h3geo.org/) and Uber's engineering post [H3: Uber's Hexagonal Hierarchical Spatial Index](https://www.uber.com/blog/h3/) — resolutions, the pentagons, and why hexagons.
+- [PostGIS documentation](https://postgis.net/documentation/) — `ST_DWithin`, geography versus geometry, GiST indexes and KNN ordering.
+- [Redis GEOSEARCH](https://redis.io/docs/latest/commands/geosearch/) — the command, its options, and the geohash-in-a-sorted-set design.
+- [Haversine formula (Wikipedia)](https://en.wikipedia.org/wiki/Haversine_formula) — derivation and accuracy.
+- [Contraction hierarchies (Wikipedia)](https://en.wikipedia.org/wiki/Contraction_hierarchies) and [A-star search (Wikipedia)](https://en.wikipedia.org/wiki/A%2A_search_algorithm) — the routing half of "Google Maps".
+- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 3 mentions multi-dimensional indexes (R-trees) and why concatenated indexes can't serve them; chapter 6 for partitioning by key range.
+
+**Look these up yourself**
+
+- **Hilbert versus Z-order curves** — locality of space-filling curves, and why S2 chose Hilbert.
+- **Map matching** — snapping noisy GPS traces to roads, often with hidden Markov models.
+- **Customizable route planning / customizable contraction hierarchies** — how routing engines absorb live traffic without full re-precomputation.
+- **Geofencing at scale** — detecting when millions of moving points enter or leave polygons (S2/H3 coverings plus exact checks).
+- **Batched dispatch as an assignment problem** — the Hungarian algorithm and min-cost flow for matching riders and drivers in a window.
+- **Bayesian average and Wilson score** — ranking with uncertain ratings.
+- **Location privacy** — coarsening (geohash truncation), k-anonymity and why "approximate location" is harder than it sounds.

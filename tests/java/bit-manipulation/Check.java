@@ -356,6 +356,23 @@ public class Check {
         }
         eq(1056389759, reverseCheckAfter(1534236469), "catch-the-bug: checking after the multiply returns 1056389759");
 
+        // ---------- extra claims made in the prose ----------
+        eq(-8, Math.abs(MIN) % 10, "Math.abs(MIN) % 10 is a negative bucket");
+        { int[] a = {4, 1, 2, 1, 2}; int acc = a[0]; for (int x : a) acc ^= x; eq(0, acc, "catch-the-bug: acc = nums[0] then fold all returns 0"); }
+        eq(0, missingForgetN(new int[]{0, 1, 2}), "catch-the-bug: acc from 0 on [0,1,2] returns 0");
+        { int n = 3, c = 0; for (int mask = 0; mask <= (1 << n); mask++) c++; eq(9, c, "mask <= (1 << n) gives 2^n + 1 subsets"); }
+        eq(1162261467, (int) Math.pow(3, 19), "3^19"); ok(Math.pow(3, 20) > MAX, "3^20 exceeds int");
+        for (int n = 1; n <= MAX && n > 0; n *= 3) { ok(1162261467 % n == 0, "power of three divides 3^19"); if (n > MAX / 3) break; }
+        { int[] bits = {0, 1}; eq(2, bits[1] + 1, "bits[i-1]+1 wrong at i = 2"); eq(1, Integer.bitCount(2), "2 has one lit lantern"); }
+        eq(4, 5 & 6 & 7, "AND of 5..7");
+        { int num = MAX, highest = Integer.highestOneBit(num); eq(0, num ^ ((highest << 1) - 1), "complement of MAX via wrap"); eq(2, 5 ^ ((Integer.highestOneBit(5) << 1) - 1), "complement of 5"); }
+        eq(MIN, 0x40000000 << 1, "0x40000000 << 1"); eq(MIN, 0x40000000 * 2, "0x40000000 * 2");
+        eq(1 << 8, 1 << 40, "1 << 40 is 1 << 8");
+        eq(144, 48 / new B_gcd().gcd(48, 18) * 18, "lcm(48, 18)");
+        eq(-1073741825, Integer.reverse(-3), "Integer.reverse(-3)");
+        eq(31, Integer.bitCount(-3), "-3 has 31 lit lanterns");
+        { int a = 999_999_999, b = 999_999_998; long M = 1_000_000_007L; ok((long) (a * b) % M != (long) a * b % M, "(long)(a*b) still wrong"); }
+
         System.out.println("OK bit-manipulation: " + cases + " checks passed");
     }
 }

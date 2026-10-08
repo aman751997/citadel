@@ -263,6 +263,7 @@ function basketReject(s: TreeLabState, action: string) {
   if (action === 'pop') return s.basket.length
     ? `cur = ${val(s, s.cur)} hasn’t been explored. Its subtree holds ${fmt(smallestIn(s, s.cur))}, smaller than the basket’s top ${top}, so popping now would visit out of order. Push cur and keep going left.`
     : `The basket is empty. cur = ${val(s, s.cur)} still has to be pushed before anything can be popped.`;
+  if (s.cur === -1) return `cur is an empty spot: there is nothing to visit. The top of the basket, ${top}, is the smallest value not yet visited. Pop it.`;
   // visit with a left side
   return `Visiting ${val(s, s.cur)} now puts it before its left side, which holds the smaller ${fmt(smallestIn(s, s.cur))}. That is root-first order, not sorted order. Push it and go left.`;
 }

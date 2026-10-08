@@ -1,69 +1,1198 @@
 ---
 title: 'Pattern: Sync & Collaboration — Conflicts, OT, CRDTs'
-description: 'Two people changed the same thing while offline — from Dropbox file conflicts to Google Docs live editing, the escalation ladder of answers.'
+description: 'Two laptops landed with two versions of the same file, and Kestrel had to decide what “the same” means. Chunking and sync cursors to conflicted copies, operational transformation to CRDTs — then Dropbox and Google Docs on the clock.'
 module: 11
 order: 1
-minutes: 30
+minutes: 120
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { ladder, lww, chunking, commit, protocol, conflicts, deletes, ot, sequencer, crdt, choose, presence, history, drills } from '../data/sd/pattern-sync-collab';
+import { BASE } from '../paths';
 
-## The pattern in one sentence
+<PatternHub
+  pattern="sd-pattern-sync-collab"
+  start="prologue"
+  logline="Every device that can work offline is a replica that can disagree. Sync is the art of deciding, per kind of data, what happens when two copies come home different: keep both, keep the newest, or merge — and of moving only the bytes that changed while you decide."
+  cast={[
+    { name: 'You', role: 'Four months at Kestrel. You just inherited Kestrel Drive and, by accident, the new Kestrel Docs editor.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Draws two laptops and an arrow, and asks what the arrow means.' },
+    { name: 'Dev Okafor', role: 'SRE. Was paged because a deleted folder came back from the dead. Twice.' },
+    { name: 'Iris Tan', role: 'Product lead. “Oh, and also — it should work on the subway.”' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has opinions about clocks, all of them negative.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · The sync problem', description: 'Replicas that disagree, the escalation ladder, and the lie of last-writer-wins.', links: [['replicas', 'Every device is a leader'], ['lww', 'The edit that vanished']] },
+    { name: 'Part Two · File sync', description: 'Chunks, manifests, cursors, conflicted copies and tombstones — Kestrel Drive.', links: [['chunking', 'One byte at the front'], ['metadata', 'A file is a list'], ['sync-protocol', 'The cursor'], ['conflicts', 'Two laptops on a plane'], ['deletes', 'The file that came back'], ['extras', 'Faster than the cloud'], ['drive-numbers', 'The whiteboard sweep']] },
+    { name: 'Part Three · Real-time collaboration', description: 'OT, the sequencer, CRDTs, presence, history, undo, local-first — Kestrel Docs.', links: [['why-merge', 'Two cursors, one paragraph'], ['ot', 'Shifting the index'], ['sequencer', 'One clerk per document'], ['crdt', 'Names that never move'], ['ot-vs-crdt', 'Choosing between them'], ['presence', 'Fifty cursors'], ['history', 'Snapshots, the log and undo'], ['local-first', 'The subway']] },
+    { name: 'Part Four · On the clock', description: 'Both showcase questions, six steps, out loud.', links: [['dropbox', 'Design Dropbox'], ['google-docs', 'Design Google Docs']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Which rung, which order, which tie-break' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="Parts One and Two are one sitting; Part Three is another. The two walkthroughs in Part Four are mocks: read the requirements, close the page, run the clock yourself, then compare."
+/>
 
-Multiple devices hold **copies** of shared state, edit them independently (offline, concurrently), and the system must reconcile divergent copies — the answer escalates from "detect and punt" to "merge automatically," and knowing *which rung the product needs* is the whole game.
+<h2 id="prologue">Prologue · Two laptops, one file</h2>
 
-**Trigger words:** "sync across devices", "offline edits", "collaborative", "both users edited", "conflict".
+<Scene chapter="Prologue" title="Two laptops, one file" mood="storm">
 
-## Rung 1 — Detect and punt (Dropbox files)
+The ticket is short and furious. *"I edited the Q3 deck on the flight home. My co-founder edited it on hers. We both landed. Mine is gone."*
 
-For opaque files, don't be clever. Use **version vectors** (or a simple per-file version counter): client says "I'm editing version 7"; if the server is already on 8, that's a **conflict** — and Dropbox's famously right answer is to *punt*: keep both, name one `file (conflicted copy)`, let the human decide. Merging binary files automatically destroys data. **Saying "I will not auto-merge here" is a senior answer**, not a cop-out.
+Dev pulls the logs. Both laptops uploaded `q3-deck.key` within forty seconds of each other. Kestrel Drive took the second upload, stamped it version 9, and moved on. Version 8 — the first laptop's three hours of slides — still exists in cold storage, unreferenced. Nobody's screen ever said there was a conflict.
 
-The sync machinery around it (blob lesson does the details): chunk + hash files, upload changed chunks, notify other devices (realtime lesson — long-poll/WS), they pull the delta.
+Mara draws two laptops on the whiteboard and one arrow between them labelled *sync*.
 
-## Rung 2 — Last-writer-wins and its lie
+*"Everyone draws this arrow,"* she says. *"Tell me what it does when the two sides disagree."*
 
-LWW = timestamp each write, latest wins. Cheap, built into Dynamo-style stores, and **silently loses data** — the "loser" write vanishes without anyone deciding that. Acceptable for: presence, cursor position, a settings toggle — data where the newest value genuinely supersedes. Unacceptable for: documents, carts, counters. Also: distributed clocks skew, so "last" is partly fiction. Use the phrase "LWW is acceptable here *because losing the older write is the correct product behavior*" — or don't use LWW.
+</Scene>
 
-## Rung 3 — OT: transform concurrent edits (Google Docs classic)
+This pattern is about **copies**. A phone, a laptop, a browser tab and a server all hold the same shared state. Each can change it while the others aren't looking — offline on a plane, or simply in the same second as someone else. Later the copies meet, and the system must **reconcile** them. Every sync design answers three questions:
 
-Live text editing can't punt (conflicts every second) and can't LWW (loses keystrokes). **Operational Transformation**: represent edits as operations (`insert("x", pos 5)`), and when two ops race, **transform** one against the other so both converge:
+1. **What changed?** Detect edits cheaply, and move only the changed bytes.
+2. **What did the editor start from?** Without the *base version*, "different" can't be split into "newer" and "concurrent".
+3. **When two changes are concurrent, what happens?** This is the ladder below, and choosing the right rung per kind of data is the whole game.
 
-<Mermaid code={`sequenceDiagram
+<Figure caption="The escalation ladder. Climb only as high as the data needs; each rung costs more machinery than the one below.">
+  <Mermaid code={`flowchart TB
+    R1["Rung 1 · Detect and punt\nkeep both: conflicted copy\nopaque files"] --> R2["Rung 2 · Last-writer-wins\nnewest replaces older\ncursors, toggles, presence"]
+    R2 --> R3["Rung 3 · Transform (OT)\nreorder edits through a server\nlive text, Google Docs style"]
+    R3 --> R4["Rung 4 · Merge by construction (CRDT)\nany order converges\noffline-first, peer-to-peer"]`} />
+</Figure>
+
+**Where it shows up.** Two classic interview questions live here — **Dropbox / Google Drive** and **Google Docs** — and they sit on opposite ends of the ladder. Calendars, Figma-style canvases, shared carts, note apps and every "works offline" mobile app sit in between.
+
+**Your stakes.** This module is the "hard differentiator" in your plan: interviewers use Google Docs to separate people who've heard of OT from people who can say why the server exists. Your old notes hold the senior line to keep: **"I will not auto-merge here" is a senior answer, not a cop-out** — when the data is opaque.
+
+<Trace title="Pick the rung" steps={ladder} takeaway="Opaque bytes → keep both. Superseding values → newest wins, said out loud. Meaningful edits at speed → merge automatically." />
+
+<Part n="Part One" title="The sync problem">
+
+Before any chunk or transform: what it means for two copies to disagree, and why the cheapest answer lies.
+
+</Part>
+
+<h2 id="replicas">Chapter 1 · Every device is a leader</h2>
+
+<Scene chapter="Chapter 1" title="Every device is a leader">
+
+Theo looks at Mara's two laptops and adds a third box: the server. Then he draws arrows from every box to every other box.
+
+*"The minute a laptop can save while it's offline,"* he says, *"it's a database that accepts writes. You don't have one leader. You have one leader per device."*
+
+Mara nods. *"So what do two leaders need to know about each other's writes?"*
+
+</Scene>
+
+In replication terms, an offline-capable client is **multi-leader replication** (the general theory is in <a href={`${BASE}sd/lessons/databases/#multi-leader`}>Databases · More than one leader</a>). Each device accepts writes locally and ships them later. When two writes to the same thing arrive, the system must decide whether one **happened after** the other or whether they are **concurrent**:
+
+- **Sequential.** Laptop B downloaded version 8, then edited it. B's edit *knows about* version 8, so B's version simply replaces it. No conflict.
+- **Concurrent.** A and B both edited version 8 without seeing each other's change. Neither knows about the other. *That* is a conflict.
+
+**The base version is the whole trick.** Every write carries "I started from version N". If N is still current, apply it. If not, someone got there first and you have concurrent edits.
+
+- With **one authority** (Kestrel Drive's server orders every commit), a single per-file version number plus "parent = current?" detects every conflict.
+- With **no authority** (phones syncing peer-to-peer, or a leaderless store), each replica tracks a **version vector** — a counter per replica — and two versions conflict when neither vector dominates the other. That machinery lives in <a href={`${BASE}sd/lessons/pattern-partitioning/`}>Partitioning</a> and Dynamo-style stores; for a client-server sync product, the server's version counter is enough.
+
+<Figure caption="Same starting point, different knowledge. B’s first edit is sequential (it saw v8); A and B editing v8 independently is concurrent.">
+  <Mermaid code={`sequenceDiagram
+    participant A as Laptop A
+    participant S as Server
+    participant B as Laptop B
+    S->>A: v8
+    S->>B: v8
+    Note over A,B: both go offline
+    A->>A: edit (parent v8)
+    B->>B: edit (parent v8)
+    A->>S: commit parent=v8
+    S-->>A: ok, now v9
+    B->>S: commit parent=v8
+    S-->>B: conflict: current is v9`} />
+</Figure>
+
+**Worked numbers: how often does this happen?** Kestrel Drive sees about 40 million commits a day (Chapter 9). If even 0.1% are concurrent with another device's edit, that is **40,000 conflicts a day**. Every one of them is either visible to a person or silently resolved. The design decides which.
+
+**Catch the trap:** "We sync the latest version to every device." *Latest by what?* Wall-clock time is not an order (next chapter). Say "each commit names its parent version; the server accepts it only if the parent is current".
+
+<h2 id="lww">Chapter 2 · The edit that vanished</h2>
+
+<Scene chapter="Chapter 2" title="The edit that vanished" mood="night">
+
+The Q3-deck post-mortem has a single slide. Kestrel Drive resolved concurrent uploads by **last-writer-wins**: keep the one with the newest timestamp.
+
+Theo reads it twice. *"Newest by whose clock?"*
+
+Dev checks. The laptop that "won" had a clock four seconds slow. It actually saved second. The other laptop's afternoon was discarded because one machine's battery-backed clock drifted.
+
+</Scene>
+
+**Last-writer-wins (LWW)**: stamp every write with a timestamp; on conflict keep the highest. It is cheap, needs no coordination, and is built into many Dynamo-style stores. It also **silently loses data**: the "loser" vanishes without anyone deciding that it should.
+
+Two separate problems hide in it:
+
+1. **The policy problem.** Even with perfect clocks, LWW drops one of two concurrent writes. For a document, a cart, or a counter, both writes mattered.
+2. **The clock problem.** Device clocks skew by seconds (or worse); NTP narrows server skew to milliseconds, not zero. "Last" is partly fiction, so the winner is sometimes the *earlier* write.
+
+<Trace title="Who wins?" steps={lww} takeaway="LWW is a product decision: newest replaces older. It is honest only when the older value is genuinely worthless once a newer one exists." />
+
+| Data | LWW honest? | Why |
+|---|---|---|
+| Cursor position, presence ("online"), typing indicator | **Yes** | Only the newest value has meaning |
+| A settings toggle, a profile photo | **Yes**, usually | Newest intent supersedes; say it out loud |
+| A document, a file's contents | **No** | Both edits were work |
+| A shopping cart, RSVP list | **No** | It's a set — merge with union (an add-wins set) |
+| A like counter | **No** | Two +1s must become +2 — per-replica counts summed (a G-counter CRDT) |
+
+**The sentence to use:** *"LWW is acceptable here because losing the older write is the correct product behaviour."* If you can't finish that sentence truthfully, don't use LWW.
+
+<Reveal q="Can you fix LWW by using a better clock — say, a hybrid logical clock or the server’s receive time?">
+
+A better clock fixes the **clock** problem, not the **policy** problem. Server receive time gives a consistent order (whichever upload arrived later wins), so skew no longer picks the winner — but two concurrent edits still produce one survivor and one silent loss. For data where both writes matter, you need conflict *detection* (parent versions) and then a rung that keeps or merges both.
+
+</Reveal>
+
+**Catch the trap:** reaching for LWW because the store you named (Cassandra, DynamoDB) does it by default. Defaults are not designs. Say which data uses it and why losing the older write is fine for that data.
+
+<Part n="Part Two" title="File sync">
+
+Kestrel Drive: folders on every device, kept identical. The hard parts are moving only what changed, learning what changed, and never losing either side of a conflict.
+
+</Part>
+
+<h2 id="chunking">Chapter 3 · One byte at the front</h2>
+
+<Scene chapter="Chapter 3" title="One byte at the front" mood="dawn">
+
+A video editor at a Kestrel customer complains that saving a 200 MB project file takes five minutes on hotel wifi. Every save. She changed a title card.
+
+Dev reads the client logs. *"We split files into 4 MB blocks and only upload blocks whose hash changed. That should be one block."*
+
+Theo opens the file in a hex viewer and points at the very first bytes. *"Her app writes a header with the edit count. It grew by one byte. Now count how many of your blocks changed."*
+
+</Scene>
+
+The first two ideas come from <a href={`${BASE}sd/lessons/blob-cdn/#dedup`}>Blob storage · The same file twice</a>, and Dropbox-style sync is built on them:
+
+- **Split a file into chunks and name each chunk by its content hash** (SHA-256). A file becomes an ordered list of hashes.
+- **Only upload chunks the server doesn't already have.** Unchanged chunks cost nothing to re-sync.
+
+The question is **where the boundaries go**.
+
+**Fixed-size chunking** cuts every 4 MB. Edit bytes in place and only the chunk holding them changes. But **insert** one byte and every following byte shifts one place right — and since the boundaries stay at multiples of 4 MB, *every* chunk after the insertion now holds different bytes. A 200 MB file is 50 chunks; one byte at the front means **50 new chunks, 200 MB of upload**.
+
+**Content-defined chunking (CDC)** cuts where the **content** says so. Slide a window over the bytes and compute a **rolling hash** of the last few dozen bytes at every position — "rolling" because each step updates the hash in constant time as one byte enters and the oldest leaves. Declare a boundary wherever that hash happens to match a pattern (say, its top 22 bits are all zero: about once every 4 million bytes, so chunks average about 4 MB).
+
+**Why CDC survives insertions.** A boundary depends only on the bytes just before it. Insert a byte: the chunk containing it changes. But the next boundary after the edit sits on the same content as before, so it is found again, and from there every boundary — and every chunk — is identical to the old version. **The chunking re-synchronises itself.** One insertion changes about one chunk.
+
+<Figure caption="Insert one byte (red) near the start. Fixed boundaries stay at the same offsets, so every chunk’s contents shift and all hashes change. Content-defined boundaries move with the content, so only the edited chunk is new.">
+  <ArrayStrip name="fixed, before" values={['h1', 'h2', 'h3', 'h4', 'h5']} indices={false} />
+  <ArrayStrip name="fixed, after" values={['h1′', 'h2′', 'h3′', 'h4′', 'h5′', 'tail']} indices={false} tones={{ 0: 'hot', 1: 'hot', 2: 'hot', 3: 'hot', 4: 'hot', 5: 'hot' }} />
+  <ArrayStrip name="CDC, before" values={['c1', 'c2', 'c3', 'c4', 'c5']} indices={false} />
+  <ArrayStrip name="CDC, after" values={['c1′', 'c2', 'c3', 'c4', 'c5']} indices={false} tones={{ 0: 'hot', 1: 'done', 2: 'done', 3: 'done', 4: 'done' }} />
+</Figure>
+
+Here is a compact CDC chunker using a **gear hash** — the rolling hash behind the FastCDC family. Each step shifts the hash left one bit and adds a random 64-bit value for the incoming byte. After 64 shifts a byte's contribution has fallen off the top, so the hash at any position depends **only on the last 64 bytes**. That's the "window", with no explicit window bookkeeping. (Testing the *top* bits matters: the low bits of a gear hash only see the last few bytes.)
+
+```java id=chunker group=chunking
+/** Splits bytes into chunks. Each method returns the end offset (exclusive) of every chunk. */
+static final class Chunker {
+    static final long[] GEAR = new long[256];     // one random 64-bit value per byte value
+    static {
+        Random random = new Random(2026);         // any fixed table works — but every client must share it
+        for (int i = 0; i < 256; i++) GEAR[i] = random.nextLong();
+    }
+
+    /** Fixed-size chunking: a boundary every `size` bytes, wherever it falls. */
+    static List<Integer> fixed(byte[] data, int size) {
+        List<Integer> ends = new ArrayList<>();
+        for (int end = size; end < data.length; end += size) ends.add(end);
+        if (data.length > 0) ends.add(data.length);
+        return ends;
+    }
+
+    /**
+     * Content-defined chunking: cut where a rolling hash of the last 64 bytes has its top
+     * `bits` bits all zero (probability 1 in 2^bits per byte), never before `min` bytes and
+     * always by `max` bytes. Average chunk ≈ min + 2^bits.
+     */
+    static List<Integer> contentDefined(byte[] data, int min, int bits, int max) {
+        long mask = -1L << (64 - bits);           // the top `bits` bits
+        List<Integer> ends = new ArrayList<>();
+        int start = 0;
+        long hash = 0;
+        for (int i = 0; i < data.length; i++) {
+            hash = (hash << 1) + GEAR[data[i] & 0xff];   // gear hash: a byte's influence shifts out after 64 steps
+            int length = i - start + 1;
+            if ((length >= min && (hash & mask) == 0) || length >= max) {
+                ends.add(i + 1);
+                start = i + 1;
+            }
+        }
+        if (start < data.length) ends.add(data.length);
+        return ends;
+    }
+}
+```
+
+**Why the min and max.** Without a minimum, unlucky content produces tiny chunks (more metadata per byte); without a maximum, content that never matches the pattern — a file of zeros — produces one giant chunk. Clamping both keeps chunk sizes predictable.
+
+The checker for this page runs exactly the scaled-down experiment: a file of about 50 average-sized chunks, one byte inserted at the front or in the middle. Across 120 random edits, fixed chunking re-uploaded **every chunk from the edit onwards**, while CDC never produced more than **two** new chunks (almost always one). An in-place overwrite changed one fixed chunk and at most two CDC chunks.
+
+<Trace title="Count the chunks" steps={chunking} takeaway="Fixed boundaries stay put while content slides under them. Content-defined boundaries move with the content and re-synchronise after the edit." />
+
+**Worked numbers.** The video editor's 200 MB file at 4 MB chunks:
+
+| Edit | Fixed 4 MB chunks | CDC, ~4 MB average | Whole-file upload |
+|---|---|---|---|
+| Overwrite a title card in place | 1 chunk · 4 MB | 1–2 chunks · 4–8 MB | 200 MB |
+| Insert one byte at the front | **50 chunks · 200 MB** | 1–2 chunks · 4–8 MB | 200 MB |
+| Rename the file | 0 bytes | 0 bytes | 0 bytes (metadata only) |
+
+On 5 Mbit/s hotel wifi, 200 MB takes 200 × 8 / 5 = 320 seconds, about five minutes, and 4 MB takes about 6.4 seconds. CDC turns a front-of-file edit from a 25–50× penalty into a non-event.
+
+**Chunk size is a dial.** Smaller chunks dedup better and re-upload less per edit, but mean more hashes to store, more round trips and more metadata rows. Megabyte-scale chunks are a common choice for sync products; backup tools often use kilobyte-scale chunks because they care more about dedup ratio than metadata size.
+
+<Reveal q="If CDC is strictly better at insertions, why would anyone still use fixed-size chunks?">
+
+Fixed chunks are trivial to compute, need no per-byte hashing pass, align with how many apps write files (in place, same length — databases, VM images), and let you seek to "chunk k" by arithmetic. CDC costs a full hashing pass and gives variable sizes. If your files are mostly edited in place or replaced wholesale, fixed chunks lose little. If they are documents, archives or anything that shifts on insert, CDC wins. Say which kind of files you expect.
+
+</Reveal>
+
+**Catch the trap:** "We'll only upload the diff." Diff against what, computed where? The concrete answer is *"content-defined chunks hashed on the client; the server tells us which hashes it lacks; we upload only those"*.
+
+<h2 id="metadata">Chapter 4 · A file is a list</h2>
+
+<Scene chapter="Chapter 4" title="A file is a list">
+
+Mara erases the two laptops and writes one line:
+
+`q3-deck.key  v9  →  [ a71f…, 03c2…, e9d0… ]`
+
+*"That's the file,"* she says. *"Not the bytes. The bytes live somewhere else, named by their hashes. So what does 'saving a file' actually write — and in what order?"*
+
+</Scene>
+
+Kestrel Drive is two stores with very different shapes:
+
+| Store | Holds | Size, Chapter 9 numbers | Access |
+|---|---|---|---|
+| **Block store** (object storage) | Chunks, keyed by SHA-256 | ~32 PB after dedup | Write once, read many; never updated in place |
+| **Metadata service** (a relational DB, sharded) | Namespaces, file entries, versions, chunk lists, the journal | ~10 TB | Small rows, transactions, "everything after position N" |
+
+**The metadata model** (names, not full DDL):
+
+- **Namespace** — a sync root: one user's Drive, or one shared folder. Everything is sharded by `namespace_id`, because every sync query is "what changed in *this* namespace".
+- **FileEntry** — `(namespace_id, path)` → current revision, or a deleted marker (Chapter 7).
+- **FileVersion** — `(namespace_id, path, rev)` → parent rev, size, **ordered list of chunk hashes**, author device, time.
+- **Journal** — `(namespace_id, position)` → which path changed to which rev. Positions only grow. This is what devices sync from (next chapter).
+- **Chunk** — `hash` → size, location, reference count or GC bookkeeping.
+
+**Saving a file: chunks first, metadata last.**
+
+<Figure caption="The commit protocol. The version becomes visible only at the commit, and by then every chunk it names already exists.">
+  <Mermaid code={`sequenceDiagram
+    participant C as Client
+    participant M as Metadata service
+    participant B as Block store
+    C->>C: chunk + hash: h1, h2, h7
+    C->>M: which of h1, h2, h7 are missing?
+    M-->>C: missing: h7
+    C->>B: PUT h7 (presigned URL)
+    B-->>C: stored (hash verified)
+    C->>M: commit path, parent v8, chunks h1 h2 h7, commit id c-91
+    M->>M: one transaction: check parent = current, write v9, append journal entry
+    M-->>C: ok, rev v9, journal position 41212`} />
+</Figure>
+
+- **Ask before uploading.** "Which of these hashes are missing?" is the dedup step. Scope the answer to the user or namespace — a global "already have it" leaks whether *anyone* stores that file and lets a known hash stand in for the bytes. The privacy argument is in <a href={`${BASE}sd/lessons/blob-cdn/#dedup`}>Blob storage</a>; say it in one sentence here.
+- **Upload directly to the block store** with presigned URLs, so app servers never carry the bytes. The block service **verifies the hash** of what it received; a client can't claim `h7` and upload something else.
+- **Commit in one transaction**: check the parent, write the version, append to the journal. That transaction is the moment the new version exists.
+- **Make the commit retry-safe** with the parent version plus a client-generated commit id. A retry after a timeout either finds its own commit (success) or a different one (conflict, Chapter 6).
+
+<Trace title="Save it in the right order" steps={commit} takeaway="Missing-hash check → upload only those chunks → one conditional, idempotent commit that names its parent." />
+
+**Worked numbers: what a commit costs.** A typical 1 MB document is one chunk. Saving it after a small edit: one "missing?" call, one 1 MB PUT, one commit transaction writing two rows. Renaming a 2 GB video: zero chunk uploads, one commit with the same chunk list and a new path.
+
+<Reveal q="Chunks are shared between files and versions. When can a chunk be deleted?">
+
+Only when no live version references it. Two common approaches: **reference counts** updated with each version write and delete (fast, but counts drift under failures and races), or periodic **mark-and-sweep** over all live manifests with a grace period, so a chunk uploaded seconds ago for a commit in flight isn't collected. Many designs run mark-and-sweep, sometimes with refcounts as a hint. Also: version history means "deleted file" chunks stay alive for the retention window (say 30 days) on purpose.
+
+</Reveal>
+
+**Catch the trap:** committing metadata first "so the UI is fast". Another device reads the journal, sees v9, asks for `h7`, and gets a 404. Visible metadata must only ever point at bytes that exist.
+
+<h2 id="sync-protocol">Chapter 5 · The cursor</h2>
+
+<Scene chapter="Chapter 5" title="The cursor">
+
+Dev's dashboard shows the list endpoint at 70% of database CPU. Every Kestrel Drive client, every minute, downloads the full file list of every folder it syncs and compares.
+
+*"Most of those lists didn't change,"* he says. *"We're asking ten million devices to re-read a phone book to find out that nobody moved."*
+
+Mara writes a single number on the board: *41,212*. *"What if the device only had to remember this?"*
+
+</Scene>
+
+A device keeps sync state with **three journals**, not a full scan:
+
+1. **The local watcher.** The client subscribes to file-system events (inotify on Linux, FSEvents on macOS, ReadDirectoryChangesW on Windows). Events are hints: they can be dropped, merged or arrive mid-save, so the client **debounces** (waits until size and mtime stop changing), re-hashes, and compares with its own record. A periodic full rescan catches anything the watcher missed.
+2. **The local database.** A small embedded database (think SQLite) holding, for every synced path, the rev and chunk list the device last agreed with the server — the **base** for the next edit. Comparing disk against this tells the client what *it* changed.
+3. **The server journal and the cursor.** Each namespace has an append-only journal with monotonically increasing positions. A device's **cursor** is the last position it applied. Sync down is one question: *"give me every entry after 41,212"*.
+
+<Figure caption="Sync down: the notification says only “something changed”; the cursor fetch is the source of truth.">
+  <Mermaid code={`sequenceDiagram
+    participant D as Device
+    participant N as Notification service
+    participant M as Metadata service
+    participant B as Block store
+    D->>N: long-poll: namespace 7, cursor 41212
+    Note over N: held up to ~60 s
+    M-->>N: namespace 7 advanced to 41215
+    N-->>D: changed
+    D->>M: list changes after 41212
+    M-->>D: 3 entries, new cursor 41215
+    D->>B: GET missing chunks
+    D->>D: assemble file in temp, atomic rename, record rev + cursor locally`} />
+</Figure>
+
+**Why a cursor and not a timestamp.** "Changes since 10:04:31" double-counts or drops entries that share a millisecond, and clocks skew. A journal position is exact, gap-free and resumable: a device offline for three days sends its cursor and pages through what it missed.
+
+**Notify, then pull.** Holding a cheap long-poll (or a WebSocket — see <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime</a>) that carries **only "something changed"** keeps the protocol simple and safe:
+
+- A lost notification costs latency, never correctness: the next poll, or a periodic check every few minutes, still fetches by cursor.
+- The notification server holds no data and no state worth losing; if it dies, clients reconnect elsewhere.
+- Fan-out is cheap: one commit wakes the few devices watching that namespace.
+
+**Applying a change safely.** Download chunks to a temp file, verify hashes, then **atomically rename** over the old file — never write in place, or a crash leaves half a file. If the user edited the local file since the base rev, this is a conflict (next chapter), not an overwrite.
+
+<Trace title="Stay in sync" steps={protocol} takeaway="Watch locally, debounce, compare with the last-synced base. Sync down by cursor, woken by a data-free notification." />
+
+**Worked numbers.** 5 million devices connected at peak, each holding one long-poll. At an assumed 100,000 idle connections per notification server (benchmark it; idle connections are mostly memory), that is **50 servers**. Commits peak at about 1,400 per second; each wakes the user's other devices (say two), so about **2,800 wake-ups per second** — trivial. The expensive path would have been polling: 5 million devices × one list call a minute ≈ 83,000 requests per second, nearly all returning "nothing new".
+
+**Catch the trap:** pushing file contents over the notification channel. Devices are offline, slow, or on metered data; the notification should be a hint, and the device pulls what it needs by cursor.
+
+<h2 id="conflicts">Chapter 6 · Two laptops on a plane</h2>
+
+<Scene chapter="Chapter 6" title="Two laptops on a plane" mood="dusk">
+
+The fix for the Q3 deck is one `if` statement. Mara makes you say it before she lets you type it.
+
+*"The commit names its parent. The server holds the current version. If they don't match —"*
+
+*"— then someone else got there first,"* you say. *"And we don't pick a winner."*
+
+*"What do we do instead?"*
+
+</Scene>
+
+**Conflict detection is one comparison**: the commit's parent rev against the file's current rev, inside the commit transaction.
+
+- **Parent = current** → apply; the new version's parent is the old one. Sequential history.
+- **Parent ≠ current** → someone committed in between. The edit is **concurrent**.
+
+**Resolution for opaque files: punt, visibly.** The server rejects the stale commit. The client:
+
+1. keeps its local edit, **renamed** — `q3-deck (Ana's conflicted copy 2026-10-08).key`,
+2. uploads it as a **new file** (its chunks are probably already uploaded, so this is just a commit),
+3. downloads the server's current version into the original path,
+4. tells the user.
+
+Both versions survive; a person who understands a Keynote deck picks. **Auto-merging opaque bytes is never right**: a `.docx` is a zip of XML, a `.psd` is a layered binary — a byte merge produces corruption. This is the rung-one answer and, in your words, **a senior answer, not a cop-out**.
+
+<Figure caption="Rung one: detect by parent version, keep both, tell the human.">
+  <Mermaid code={`flowchart LR
+    C["commit\nparent v8"] --> Q{"current\n= v8?"}
+    Q -->|"yes"| W["write v9\nappend journal"]
+    Q -->|"no, v9 exists"| X["reject: stale"]
+    X --> R["client renames local edit:\nconflicted copy"]
+    R --> U["commit copy as new file"]
+    R --> D["download v9 into\noriginal path"]`} />
+</Figure>
+
+**Smarter than punting, when the type allows.** Some file types *do* have a merge: plain text with a three-way merge (base, mine, theirs — git's approach), a JSON settings file merged per key. A product can offer type-specific merges and fall back to conflicted copies. Default to punting and name the exceptions.
+
+<Trace title="Detect the conflict" steps={conflicts} takeaway="Parent ≠ current means concurrent. With one ordering authority, a version counter detects every conflict; resolve opaque files by keeping both." />
+
+**Worked numbers.** At 40 million commits a day, a conflict rate of 0.01% is **4,000 conflicted copies a day** — each one a confused user and a support ticket waiting to happen. That's why real sync clients work hard to *avoid* conflicts: sync quickly after each save (shrinking the concurrency window from hours to seconds), and treat the same user's own devices kindly (an edit on the phone after a sync is sequential, not concurrent).
+
+<Reveal q="Two devices both rename the same folder to different names while offline. Is that the same kind of conflict?">
+
+Same detection, harder resolution. A rename touches every path under the folder, and two renames can't both be "kept" as copies without duplicating the whole tree. Common answers: treat folders as entries with stable ids (rename = change the name on one id, so the conflict is a single field — pick one name deterministically and log it), or apply the first rename and turn the second into a move that fails visibly. The honest interview line: *"Directory operations — rename, move, delete of a non-empty folder — are where file sync gets hard; I'd give folders stable ids so a rename is one row."*
+
+</Reveal>
+
+**Catch the trap:** "Conflicts are rare, so last-writer-wins is fine." Rare times 40 million commits a day is thousands of silently destroyed files. Rare is a reason to make conflicts cheap and visible, not a reason to drop data.
+
+<h2 id="deletes">Chapter 7 · The file that came back</h2>
+
+<Scene chapter="Chapter 7" title="The file that came back" mood="night">
+
+Dev's page at 2:40 a.m.: a customer deleted a 30 GB folder of old footage on Monday. On Wednesday it reappeared. On Thursday she deleted it again. On Friday it was back.
+
+The culprit is a desktop that sleeps most of the week. Every time it wakes, it sees 30 GB of files on its disk that the server doesn't list — and helpfully uploads them.
+
+*"The server forgot it ever had them,"* Theo says. *"So the laptop's memory won."*
+
+</Scene>
+
+**A delete must be recorded, not just performed.** If deleting a file removes its row, a device that still has the file can't tell "deleted on the server" from "new on my disk", and it re-uploads. The fix is a **tombstone**: the FileEntry stays, marked deleted at rev N, and the journal gets an entry "path deleted at position 41,300". The sleeping desktop syncs from its cursor, sees the delete, and removes its local copy.
+
+**Edit versus delete.** A deletes a file; B, offline, edits it. Both sync. The safe rule is **edit beats delete**: restore the file with B's edit (or as a conflicted copy) and tell the user. A delete is cheap to repeat; an edit is not.
+
+**How long do tombstones live?** A tombstone is needed until every device that might still hold the file has synced past it. For a server-centred product, you can bound that: devices that haven't synced in, say, 90 days must do a **full resync** (compare everything, server wins on deletes older than the tombstone horizon) instead of a cursor sync. Then tombstones older than 90 days can be compacted. The deleted file's *chunks* follow the retention policy separately (Chapter 4's GC).
+
+<Trace title="Make deletes stick" steps={deletes} takeaway="Deletes are journal entries with tombstones. Edit beats delete. Tombstones live until every device has synced past them — bound it with a resync horizon." />
+
+<Reveal q="Why can’t the client just keep a list of files it deleted and tell other devices directly?">
+
+Because the devices that need to know are exactly the ones that are offline, and they may come back in any order. The server journal is the one place every device reads from, so the delete belongs there. A local "I deleted this" list also doesn't help a brand-new device or a reinstalled client. Put deletes in the shared history, and every device learns them the same way it learns edits.
+
+</Reveal>
+
+**Catch the trap:** "Deletes just remove the row." That works until the first device sleeps through one. Say *tombstone*, and say how long it lives.
+
+<h2 id="extras">Chapter 8 · Faster than the cloud</h2>
+
+<Scene chapter="Chapter 8" title="Faster than the cloud">
+
+Iris visits a customer's office: forty designers, one shared folder, one slow internet line. A designer saves a 500 MB render, and the other thirty-nine laptops each download it from the cloud, through the same line.
+
+*"They're sitting two metres apart,"* Iris says. *"Why is the file going to another continent and back forty times?"*
+
+</Scene>
+
+Extras worth one sentence each in an interview — say them after the core works:
+
+- **LAN sync.** Devices on the same local network discover each other (a broadcast or multicast announcement) and fetch chunks from a peer that already has them, instead of from the block store. The server still decides *what* to sync (journal, hashes, permissions); peers only serve *bytes*, verified by hash, so a peer can't inject anything. Dropbox ships a feature by this name. For Iris's office: one download over the internet line, 39 over the LAN — the line carries **500 MB instead of 19.5 GB**.
+- **Delta sync inside a chunk.** If a 4 MB chunk changed by a few bytes, send a binary delta against the old chunk (the rsync algorithm: the receiver sends block checksums of its old copy, the sender finds matching blocks with a rolling checksum and transmits only the rest). Saves bandwidth on in-place edits of large chunks, costs CPU and complexity.
+- **Compression** of chunks on the wire (and often at rest) — cheap for text, useless for already-compressed media.
+- **Streaming sync.** Start downloading chunks on other devices as soon as they are uploaded, before the commit, so a big file appears almost at once after the commit lands. Only the commit makes it *visible*.
+- **Selective sync / on-demand files.** Devices hold placeholders and fetch content on open — essential once a team folder is bigger than a laptop disk.
+
+**Catch the trap:** leading with LAN sync. Extras are wrap-up material; the interviewer first needs chunks, the commit protocol, the cursor and conflicts.
+
+<h2 id="drive-numbers">Chapter 9 · The whiteboard sweep</h2>
+
+<Scene chapter="Chapter 9" title="The whiteboard sweep" mood="dawn">
+
+Mara hands you the marker and four assumptions. *"Ten million users. Four thousand files each. A megabyte a file. Two million people a day touching twenty files. Go."*
+
+</Scene>
+
+**Storage.**
+
+```text
+Logical data     10M users × 4,000 files × 1 MB        = 40 PB, 40 billion files
+Dedup            assume 20% duplicate bytes per user    → 32 PB physical
+Durability       erasure coding at ~1.5× overhead        → 48 PB raw disk  (3× replication: 96 PB)
+File metadata    40B files × ~250 B per current version  = 10 TB  → shard by namespace_id
+Chunk index      ~40B chunks × ~64 B (hash, size, place) ≈ 2.6 TB (most files are one chunk)
+```
+
+**Traffic.**
+
+```text
+Commits          2M daily users × 20 files       = 40M/day ≈ 460/s average, ~1,400/s peak (3×)
+Upload           40M × ~1 MB changed (delta)     = 40 TB/day ≈ 460 MB/s ≈ 3.7 Gbit/s; ~11 Gbit/s peak
+Download         each commit to ~2 other devices = 80 TB/day ≈ 930 MB/s average
+Connections      ~5M devices online at peak ÷ 100K per server ≈ 50 notification servers
+```
+
+**What the numbers decide.**
+
+- **Bytes and metadata must be split.** 32 PB belongs in object storage; 10 TB of small, transactional rows belongs in a sharded relational store.
+- **The metadata shard key is the namespace**, because every hot query ("changes after cursor N", "commit to this path") is per namespace. A huge team folder is the hot-shard risk; it can get its own shard.
+- **Commit QPS is modest** (~1,400/s) — the metadata tier is sized by data volume and query shape, not write rate.
+- **Bandwidth is the real cost** — 11 Gbit/s up at peak, more down. Delta sync, dedup, LAN sync and a CDN for downloads all attack it. This is why Chapter 3 matters.
+
+<Reveal q="Dedup across users would save more storage. Why did the assumptions say “per user”?">
+
+Cross-user dedup lets a client learn whether *anyone* has a file (upload skipped) and, done naively, lets a known hash stand in for the bytes. Per-user (or per-team) dedup keeps most of the practical win — copies, re-uploads, old versions — with no cross-user leak. You can still dedup across users server-side, after receiving bytes, where clients can't observe it; that saves storage but not upload bandwidth. <a href={`${BASE}sd/lessons/blob-cdn/#dedup`}>Blob storage</a> has the full argument.
+
+</Reveal>
+
+<Part n="Part Three" title="Real-time collaboration">
+
+Kestrel Docs: many cursors in one document, edits visible in a blink. Punting and LWW are both off the table; edits must merge.
+
+</Part>
+
+<h2 id="why-merge">Chapter 10 · Two cursors, one paragraph</h2>
+
+<Scene chapter="Chapter 10" title="Two cursors, one paragraph">
+
+The first prototype of Kestrel Docs saves the whole document every two seconds, last write wins. In the demo, Iris and Theo type in the same paragraph. Iris's sentence appears, then disappears, then reappears, then disappears for good.
+
+*"It's not a bug,"* Dev says. *"It's last-writer-wins doing exactly what it says, every two seconds."*
+
+Mara turns to you. *"So send edits instead of documents. Iris types at position 5. Theo deletes at position 2. What goes wrong?"*
+
+</Scene>
+
+Three tempting designs, and why each fails:
+
+| Design | What happens with two typists | Verdict |
+|---|---|---|
+| **Save the whole document, LWW** | Each save erases the other person's keystrokes since their last refresh | Loses edits continuously |
+| **Lock the paragraph while someone types** | The second person waits; a dropped connection leaves a paragraph locked | Not collaboration; also fragile |
+| **Send position-based edits, apply as received** | "Insert at 5" was relative to a document that no longer exists once Theo's delete lands first | **Screens diverge** |
+
+The third design is almost right. Edits as **operations** — `insert(pos, char)`, `delete(pos)` — are small, fast, and say what the user meant. The problem is that **positions are relative to the document the editor saw**. Doc `"cat"`: Alice types `s` at 3 → `"cats"`; Bob, at the same moment, types `b` at 0 → `"bcat"`. Each receives the other's op and applies it naively:
+
+- Alice: `"cats"` then `insert(b, 0)` → `"bcats"`.
+- Bob: `"bcat"` then `insert(s, 3)` → `"bcast"`.
+
+Two screens, two documents, forever. Something must **rewrite positions** so concurrent operations mean the same thing on both sides. There are two families: **rewrite the operation** (OT) or **stop using positions** (CRDTs).
+
+**Catch the trap:** "We'll use WebSockets so edits are instant." Instant delivery makes divergence happen faster. The transport is <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime</a>'s problem; this chapter's problem is meaning.
+
+<h2 id="ot">Chapter 11 · Shifting the index</h2>
+
+<Scene chapter="Chapter 11" title="Shifting the index">
+
+Mara writes `"cat"` and two arrows. *"Bob's b went in at zero. Everything after it moved one to the right. Alice wanted her s after the t — where is the t now?"*
+
+*"At three,"* you say. *"So her s goes at four."*
+
+*"Then you've just invented operational transformation. Now do the other three cases."*
+
+</Scene>
+
+**Operational transformation (OT)**: when op `a` must be applied after a concurrent op `b` (both made against the same document), compute `a' = T(a, b)` — the version of `a` that means the same thing in the document where `b` already happened.
+
+For single-character insert and delete, the rules are short:
+
+| `a` \ `b` already applied | `b` = insert at q | `b` = delete at q |
+|---|---|---|
+| **`a` = insert at p** | q &lt; p, or q = p and b's site is lower → **p + 1**; else p | q &lt; p → **p − 1**; else p |
+| **`a` = delete at p** | q ≤ p → **p + 1**; else p | q &lt; p → **p − 1**; q = p → **no-op** (already gone); else p |
+
+**The worked example.** Doc `"cat"`, Alice `insert(s, 3)`, Bob `insert(b, 0)`. The server orders Bob first.
+
+- `T(Alice, Bob)`: Bob inserted at 0 &lt; 3, so Alice's op becomes `insert(s, 4)`. Server: `"bcat"` → `"bcats"`.
+- `T(Bob, Alice)`: Alice inserted at 3, which is after 0, so Bob's op is unchanged. Alice's screen: `"cats"` → `insert(b, 0)` → `"bcats"`.
+
+<Figure caption="The same two edits, applied in opposite orders, converge because each side transforms the other’s op against its own.">
+  <Mermaid code={`sequenceDiagram
     participant A as Alice
     participant S as Server (sequencer)
     participant B as Bob
-    Note over A,B: doc: "cat" — concurrent edits
-    A->>S: insert("s", pos 3) → "cats"
-    B->>S: insert("b", pos 0) → "bcat"
-    S->>S: order: Bob first. Transform Alice's op:\npos 3 → pos 4 (shifted by Bob's insert)
-    S-->>A: apply insert("b",0) → "bcats"
-    S-->>B: apply insert("s",4) → "bcats"
-    Note over A,B: both converge to "bcats" ✅`} />
+    Note over A,B: doc "cat"
+    A->>A: insert s at 3 → "cats"
+    B->>B: insert b at 0 → "bcat"
+    B->>S: insert b at 0 (rev 0)
+    A->>S: insert s at 3 (rev 0)
+    S->>S: order Bob then Alice. T(Alice, Bob) = insert s at 4
+    S-->>A: insert b at 0 → "bcats"
+    S-->>B: insert s at 4 → "bcats"
+    Note over A,B: both "bcats"`} />
+</Figure>
 
-The architecture consequence interviewers probe: OT needs a **central server per document** to sequence operations. That's fine (a doc has few concurrent editors — this is NOT a horizontal-scale problem; it's a per-doc-session one) and it gives you the op log for free = **version history**. Shard doc-sessions across servers by `doc_id` (consistent hashing — patterns compose), cursors/presence broadcast over the doc's WS room (realtime lesson).
+**The property that makes it work** (called TP1 in the literature): for any two concurrent ops,
 
-## Rung 4 — CRDTs: merge without a sequencer
+> apply(apply(doc, a), T(b, a)) = apply(apply(doc, b), T(a, b))
 
-**Conflict-free Replicated Data Types**: data structures whose merge is mathematically commutative — any replicas, merging in any order, converge without coordination. Examples: a grow-only counter (per-node counts, merge = element-wise max), an add/remove set with tombstones, sequence CRDTs for text (each character gets a stable unique ID between its neighbors — position-shifting, OT's hard part, disappears).
+Both orders land on the same document. Here is the transform, with the tie-break that makes the property hold:
 
-| | OT | CRDT |
-|--|----|------|
-| Coordination | central sequencer per doc | none — peer-to-peer, offline-first |
-| Complexity | transform functions (fiddly, well-trodden) | metadata overhead (IDs/tombstones grow) |
-| Used by | Google Docs | Figma-style apps, Riak, collaborative offline-first apps |
+```java id=op group=ot
+/** One single-character edit: 'I' insert ch at pos, 'D' delete the char at pos, 'N' do nothing. */
+record Op(char kind, int pos, char ch, int site) {
+    static Op ins(int pos, char ch, int site) { return new Op('I', pos, ch, site); }
+    static Op del(int pos, int site) { return new Op('D', pos, '\0', site); }
+    static Op noop(int site) { return new Op('N', 0, '\0', site); }
+    Op at(int newPos) { return new Op(kind, newPos, ch, site); }
+}
 
-Interview verdict to give: "Docs-style with a server anyway → OT is proven and the server doubles as history. Offline-first or peer-to-peer → CRDTs. I'd start OT." Naming both + choosing beats deep internals of either.
+static String apply(String doc, Op op) {
+    return switch (op.kind()) {
+        case 'I' -> doc.substring(0, op.pos()) + op.ch() + doc.substring(op.pos());
+        case 'D' -> doc.substring(0, op.pos()) + doc.substring(op.pos() + 1);
+        default -> doc;
+    };
+}
 
-## Questions this pattern unlocks
+/**
+ * Rewrite `a` so it means the same thing after `b` has been applied.
+ * Precondition: a and b were both made against the same document, by different sites.
+ */
+static Op transform(Op a, Op b) {
+    if (a.kind() == 'N' || b.kind() == 'N') return a;
+    if (b.kind() == 'I') {
+        // b's new character lands before a's position: shift right. On a tie, an insert
+        // from the lower site goes first, and a delete always moves past the new character.
+        boolean before = b.pos() < a.pos()
+                || (b.pos() == a.pos() && (a.kind() == 'D' || b.site() < a.site()));
+        return before ? a.at(a.pos() + 1) : a;
+    }
+    // b removed the character at b.pos.
+    if (b.pos() < a.pos()) return a.at(a.pos() - 1);
+    if (b.pos() == a.pos() && a.kind() == 'D') return Op.noop(a.site());   // both deleted it
+    return a;
+}
+```
 
-| Bank question | How the pattern applies |
-|---------------|------------------------|
-| **Dropbox** (walkthrough) | rung 1: version vectors + conflicted copies + chunk delta sync |
-| **Google Docs** (walkthrough) | rung 3: OT + sequencer + WS rooms + op-log history |
-| **Google Calendar** | mostly rung 1/2 per-field: events are structured rows — field-level LWW + invite-state machine |
-| **Figma-like canvas** | CRDT per object property (LWW-per-property is honest here — newest position wins) |
-| **Collaborative cart / notes** | small CRDTs (add-wins set) or server-serialized ops — say scale doesn't demand cleverness |
-| **Offline-first mobile apps** | queue local ops, replay on reconnect, resolve by rung 1–4 per data type |
+**How this is tested.** The checker for this page verifies TP1 for **every** pair of ops on every document up to five characters (in both argument orders), and on 5,000 random pairs on documents up to 26 characters. It also checks **intent**: with distinct letters, the surviving original characters keep their order, a character deleted by both is deleted once, and each inserted character keeps the same left neighbour it was typed after.
+
+<Trace title="Transform it" steps={ot} takeaway="Inserts before you push you right; deletes before you pull you left; deleting a deleted character is a no-op; ties need one rule both sides share." />
+
+**Catch the bug.** The version people write first treats "same position" as "before" for every case:
+
+```java fragment
+// Looks right, and passes every test where the two positions differ.
+static Op transformInsertInsert(Op a, Op b) {
+    return b.pos() <= a.pos() ? a.at(a.pos() + 1) : a;   // tie: BOTH sides shift right
+}
+```
+
+Doc `"cat"`, Alice inserts `!` at 3, Bob inserts `?` at 3. Each shifts the other's op right: Alice sees `"cat!?"`, Bob sees `"cat?!"` — and they never reconcile. The checker reproduces exactly this divergence. **Concurrent inserts at one position need a deterministic tie-break both sides agree on** (here, the lower site id goes first; with it, both see `"cat!?"`).
+
+<Reveal q="Real editors don’t send one op per character. How does this extend to strings and formatting?">
+
+Real OT systems use ops over ranges — "retain 10, insert 'hello', retain 40, delete 3" — and add attributes for formatting (bold from 5 to 9). The transform rules grow, but the idea is the same: shift ranges past concurrent inserts, shrink them past concurrent deletes, and break ties deterministically. Range ops also batch keystrokes: a client typically sends whatever was typed since its last op was acknowledged, as one op. Rich-text OT (tables, lists, comments) is where the real engineering effort lives; it's fine to say so.
+
+</Reveal>
+
+<h2 id="sequencer">Chapter 12 · One clerk per document</h2>
+
+<Scene chapter="Chapter 12" title="One clerk per document">
+
+Theo is sceptical. *"Two people, fine. Three people, each op has to be transformed against the other two — in what order? Five people editing over bad hotel wifi, ops arriving in every order at every laptop?"*
+
+*"That,"* Mara says, *"is why academic OT papers spent two decades proving each other wrong. Google-Docs-style OT just refuses to play that game. Who decides the order?"*
+
+</Scene>
+
+**The sequencer.** Every op for a document goes through **one server** that owns the document's session. It stamps each op with the next **revision number**, and that order is the order. The design goes back to the Jupiter collaboration system (Xerox PARC, mid-1990s), and Google has publicly described Google Docs as using operational transformation with a central server.
+
+**Why one ordering point makes OT tractable.** With a canonical order, each op only needs transforming against the ops ordered before it that its author hadn't seen — a sequence of the simple two-op transforms from Chapter 11. Without one, every client must converge regardless of the order ops reach it, which requires a stronger property (TP2) that many published transform functions turned out not to satisfy.
+
+```java id=session group=ot
+/** The single ordering point for one document: every op gets a revision number here. */
+static final class DocSession {
+    private String doc;
+    private final List<Op> log = new ArrayList<>();   // log.get(r) took revision r to r + 1
+
+    DocSession(String initial) { doc = initial; }
+
+    /** A client made `op` while it had seen revisions [0, baseRev). Returns the op as recorded. */
+    synchronized Op receive(Op op, int baseRev) {
+        if (baseRev < 0 || baseRev > log.size()) throw new IllegalArgumentException("unknown revision " + baseRev);
+        for (int r = baseRev; r < log.size(); r++) op = transform(op, log.get(r));   // catch up on what it missed
+        doc = apply(doc, op);
+        log.add(op);
+        return op;   // broadcast to every client in the room; the author treats it as its ack
+    }
+
+    synchronized String text() { return doc; }
+    synchronized int revision() { return log.size(); }
+}
+```
+
+**The client half** (the checker implements it and drives it): a client applies its own edits locally at once — typing never waits for the network — and keeps **at most one op in flight**, buffering the rest.
+
+- **Local edit:** apply it; if nothing is in flight, send it with the client's current revision; otherwise append it to the buffer.
+- **Ack for its own op:** revision + 1; send the first buffered op (it was already transformed against everything received meanwhile, so it is based on the new revision).
+- **Someone else's op:** transform it against the in-flight op and each buffered op (and them against it, in turn), apply the result, revision + 1.
+
+The checker runs 1,500 random sessions of two to four clients, with edits, sends and deliveries interleaved randomly, and asserts that every client ends with the server's text and revision.
+
+<Figure caption="Kestrel Docs’ session tier. A document’s ops all go to the one session server that owns it; documents are spread across servers by id.">
+  <Mermaid code={`flowchart LR
+    C1["Editors of doc 17"] -->|"WebSocket"| G["Gateway"]
+    C2["Editors of doc 42"] -->|"WebSocket"| G
+    G -->|"doc 17"| S1["Session server A\nsequencer for 17"]
+    G -->|"doc 42"| S2["Session server B\nsequencer for 42"]
+    R[("Ownership registry\ndoc → server, lease")] -.-> G
+    S1 -->|"append (doc, rev)"| L[("Op log\nkeyed by doc_id, rev")]
+    S2 --> L
+    S1 -.->|"every 1,000 ops"| SN[("Snapshots")]`} />
+</Figure>
+
+**It is not a scaling problem** — and saying why is the senior insight. The coordination is **per document**, and one document's load is tiny:
+
+- A hot document with 50 people typing at about 5 characters a second is **250 ops per second**. An in-memory sequencer does that without noticing.
+- Kestrel Docs at peak: 1 million open documents, about 3 million editors, around 1 op per second each on average (bursts of typing, long pauses) → **3 million ops per second fleet-wide**, spread over documents. At 10,000 documents per session server, that is **about 100 servers**.
+- Route by document id (a registry or consistent hashing — the same move as one matching engine per stock symbol in <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a>).
+
+**Failure.** Ack an op only after it is durably appended to the op log. The log is keyed by `(doc_id, rev)` with a uniqueness constraint, so if an old owner that lost its lease (a "zombie") tries to append rev 1,042 after the new owner already did, the write fails — **the revision number is the fencing token**. Clients resend un-acked ops with their base revision to the new owner, which loads snapshot + log and transforms as usual. Edits made during the failover are delayed, never lost.
+
+<Trace title="Who orders the edits?" steps={sequencer} takeaway="One sequencer per document gives one order, so simple transforms converge. Load is per document, so the fleet shards by doc id." />
+
+<Reveal q="If the server orders everything anyway, why not just have it lock the document and apply edits one at a time — why transform at all?">
+
+Because the clients don't wait. Each client applies its own keystrokes instantly (optimistic, local-first typing), so its op was made against a document that is already stale by the time it arrives. The server must turn "insert at 3 in revision 40" into the right position at revision 43. Transform is what lets the UI be instant *and* the order be single. Without it, typing would have to round-trip to the server before appearing — 100–200 ms of lag per keystroke.
+
+</Reveal>
+
+**Catch the trap:** "OT needs a central server, so it doesn't scale." Central *per document*. Say the per-doc op rate and the sharding key in the same breath.
+
+<h2 id="crdt">Chapter 13 · Names that never move</h2>
+
+<Scene chapter="Chapter 13" title="Names that never move">
+
+Iris's subway request comes back, sharper. *"Kestrel Notes. Phone and laptop. Must work underground for an hour, and sometimes there's no server in the loop at all — the phone syncs to the laptop over Bluetooth."*
+
+Theo shakes his head at the whiteboard. *"No sequencer. No canonical order. Every device merges whatever arrives, whenever it arrives."*
+
+Mara draws `"cat"` again, but this time she writes a tiny name under each letter. *"Positions move,"* she says. *"Names don't."*
+
+</Scene>
+
+A **CRDT** (conflict-free replicated data type) is a data structure whose merge is designed so that **any replicas that have seen the same set of updates hold the same state — whatever order they saw them in**. No server, no transform, no coordination.
+
+**The simplest one: a grow-only counter (G-counter).** Each replica keeps its own count; the value is the sum; merge takes the element-wise max. Phone `{phone: 3, laptop: 1}` and laptop `{phone: 2, laptop: 4}` merge to `{phone: 3, laptop: 4}` = 7, in either order, as often as you like. That's a **state-based** CRDT: ship the whole state; merge is commutative, associative and idempotent.
+
+**Text: a sequence CRDT.** Give **every character a permanent, unique id**, and express edits by id, not position:
+
+- Insert: *"put `s` (id 4@alice) after the character with id 3@alice"*.
+- Delete: *"character 2@alice is deleted"* — it becomes a **tombstone** that stays in the structure, because another replica might still say "insert after 2@alice".
+
+Since ids never shift, there's nothing to transform. The only question is ordering **concurrent inserts after the same character**, and the RGA (Replicated Growable Array) answer is: ids are Lamport timestamps plus the site, and the larger id goes first. Yjs and Automerge use related id-based designs with heavy optimisation.
+
+```java id=rga group=rga
+/** A replicated text where every character has a permanent, unique name (an RGA). */
+static final class Rga {
+    /** Lamport clock + site: unique, and totally ordered. */
+    record Id(long clock, int site) implements Comparable<Id> {
+        public int compareTo(Id o) {
+            return clock != o.clock ? Long.compare(clock, o.clock) : Integer.compare(site, o.site);
+        }
+    }
+    record Insert(Id id, Id after, char ch) {}    // after == null means "at the very start"
+    record Delete(Id target) {}
+
+    static final class Node {
+        final Id id; final char ch; boolean deleted;
+        Node(Id id, char ch) { this.id = id; this.ch = ch; }
+    }
+
+    private final int site;
+    private long clock;
+    private final List<Node> nodes = new ArrayList<>();   // document order, tombstones included
+
+    Rga(int site) { this.site = site; }
+
+    /** Local edit: put ch at visible position `index`. Returns the op to broadcast. */
+    Insert insert(int index, char ch) {
+        Id after = index == 0 ? null : visible(index - 1).id;
+        Insert op = new Insert(new Id(clock + 1, site), after, ch);
+        apply(op);
+        return op;
+    }
+
+    /** Local edit: delete the character at visible position `index`. */
+    Delete delete(int index) {
+        Delete op = new Delete(visible(index).id);
+        apply(op);
+        return op;
+    }
+
+    void apply(Insert op) {
+        if (find(op.id()) >= 0) return;                        // already have it: duplicates are harmless
+        clock = Math.max(clock, op.id().clock());
+        int i = op.after() == null ? 0 : find(op.after()) + 1;
+        // Skip anything with a bigger id: concurrent inserts at the same spot that sort first,
+        // and the characters later typed after them.
+        while (i < nodes.size() && nodes.get(i).id.compareTo(op.id()) > 0) i++;
+        nodes.add(i, new Node(op.id(), op.ch()));
+    }
+
+    void apply(Delete op) {
+        nodes.get(find(op.target())).deleted = true;            // a tombstone: the name must stay findable
+    }
+
+    boolean has(Id id) { return find(id) >= 0; }
+
+    String text() {
+        StringBuilder sb = new StringBuilder();
+        for (Node n : nodes) if (!n.deleted) sb.append(n.ch);
+        return sb.toString();
+    }
+
+    int tombstones() {
+        int count = 0;
+        for (Node n : nodes) if (n.deleted) count++;
+        return count;
+    }
+
+    private int find(Id id) {
+        for (int i = 0; i < nodes.size(); i++) if (nodes.get(i).id.equals(id)) return i;
+        return -1;
+    }
+
+    private Node visible(int index) {
+        for (Node n : nodes) if (!n.deleted && index-- == 0) return n;
+        throw new IndexOutOfBoundsException();
+    }
+}
+```
+
+**Why the skip rule works.** A character typed after X always has a larger Lamport clock than X. So when a new character arrives "after R", everything with a bigger id sitting right after R is either a concurrent insert at R that should come first, or something typed after one of those — skip them all. Stop at the first smaller id: that is an older neighbour, and the new character belongs before it.
+
+**The worked example, CRDT-style.** `"cat"` built on Alice's replica as ids 1@A, 2@A, 3@A. Alice types `s` after 3@A (id 4@A); Bob types `b` at the start (id 4@B). Both replicas end with **`"bcats"`**. Then both type at the end at once: Alice `!` (5@A), Bob `?` (5@B) — equal clocks, B's site is larger, so `?` goes first and both show **`"bcats?!"`**. (OT's tie-break put the lower site first; any deterministic rule works, as long as everyone uses the same one.)
+
+**Op-based versus state-based.** RGA above is **op-based**: replicas exchange operations, which is compact, but requires that every op is delivered (at least once — duplicates are ignored here) and that an op arrives after the character it refers to. **State-based** CRDTs ship whole state (or deltas of it) and merge; they tolerate any delivery but send more. The checker delivers ops to two to four replicas in random orders, with 10% duplicates, holding back only ops whose referenced character hasn't arrived yet — 1,500 runs, and every replica converges.
+
+<Trace title="Name every character" steps={crdt} takeaway="Ids instead of positions: nothing to transform, merge in any order. The price: an id per character and tombstones that can’t easily be collected." />
+
+**Worked numbers: the metadata bill.** A naive per-character id — an 8-byte clock and an 8-byte site — is 16 bytes on top of a 1-byte character: about **17× the text**. A document where 100,000 characters were typed is about **1.7 MB** of structure, and if 60,000 were later deleted it still holds **100,000 elements** for 40,000 visible characters. The checker confirms the shape at small scale (100 inserts, 60 deletes → 40 visible, 60 tombstones). Production CRDTs compress hard — Yjs, for example, stores runs of consecutive characters typed by one client as a single item — so real overhead is far smaller. The point to make in an interview: **CRDT metadata grows with history, not with the visible document, and tombstones can only be collected once every replica has seen the delete.**
+
+<Reveal q="Can you garbage-collect tombstones in a CRDT?">
+
+Only once you know no replica will ever refer to them again — every replica has seen the delete and has no pending op that says "insert after" that character. A server-backed system can establish that (all clients acked past revision N). A truly peer-to-peer, offline-first system often can't: a phone in a drawer for a month might come back with an op pointing at a tombstone. So practical systems either keep tombstones (compressed), or use a server-coordinated compaction point and force long-offline replicas to resync.
+
+</Reveal>
+
+**Catch the trap:** "CRDTs merge automatically, so there are no conflicts." There are no *divergences*. Two people concurrently changing the same word still produce a merged result someone may dislike ("teh catt"). CRDTs guarantee convergence, not good intent.
+
+<h2 id="ot-vs-crdt">Chapter 14 · Choosing between them</h2>
+
+<Scene chapter="Chapter 14" title="Choosing between them" mood="dusk">
+
+Two design docs land on the same afternoon. Kestrel Docs proposes OT with session servers. Kestrel Notes proposes a CRDT synced over anything — server, Bluetooth, a USB stick.
+
+Iris asks the question everyone was hoping she wouldn't. *"Why are we building two different things?"*
+
+</Scene>
+
+| | OT (with a sequencer) | Sequence CRDT |
+|---|---|---|
+| **Coordination** | A central server per document orders ops | None needed; any replica merges any other |
+| **Offline** | Short offline works (buffer, then transform on reconnect); long offline means a big transform at the server | Natural: merge whenever, in any order |
+| **Peer-to-peer** | No | Yes |
+| **Metadata** | Ops carry positions; the document is plain text | An id per character (compressed in practice) + tombstones |
+| **Complexity lives in** | Transform functions, especially rich text | Data structure, id design, GC of tombstones |
+| **History / audit** | The op log at the server is the history | Needs its own persistence; the merge doesn't give you a log of record |
+| **Permissions** | Checked at the sequencer on every op | Must be enforced where ops are accepted — usually a server anyway |
+| **Known in the wild** | Google Docs (publicly described as OT) | Yjs, Automerge; Figma has described a server-authoritative design inspired by CRDTs |
+
+**The interview verdict.** *"Google-Docs-style, always-online, and we need a server anyway for permissions, history and persistence — so OT with a per-document sequencer is the proven choice, and the server's log doubles as version history. If the product is offline-first or peer-to-peer, I'd use a CRDT and accept the metadata cost."* **Naming both and choosing beats reciting the internals of either.**
+
+<Trace title="Choose the merge" steps={choose} takeaway="A server you need anyway → OT through it. No reliable server, long offline, peer-to-peer → CRDT. Either way, say the cost you accept." />
+
+<Reveal q="Can you use a CRDT with a central server?">
+
+Yes — and many products do. The server acts as an always-online peer: it relays ops, persists the document, enforces permissions, and can coordinate tombstone compaction. You keep CRDT's order-independent merge (great for flaky connections and offline edits) while getting the operational benefits of a server. The difference from OT is that the server is a convenience, not a correctness requirement.
+
+</Reveal>
+
+<h2 id="presence">Chapter 15 · Fifty cursors</h2>
+
+<Scene chapter="Chapter 15" title="Fifty cursors" mood="storm">
+
+An all-hands at a customer: fifty people open the same planning doc and start scrolling, selecting and typing. Kestrel Docs' session server for that document hits 100% CPU. It's not the edits. It's the cursors.
+
+Dev, flatly: *"We're forwarding every mouse twitch to forty-nine people."*
+
+</Scene>
+
+**Presence** — who is here, where their cursor is, what they've selected — is the collaborative feature users notice first and the one with the worst fan-out.
+
+**Worked numbers for one document**, 50 editors:
+
+| Policy | Messages the server sends per second |
+|---|---|
+| Every cursor update (10/s each) forwarded to 49 others | 50 × 10 × 49 = **24,500** |
+| Throttle each client to 2 updates/s | 50 × 2 × 49 = **4,900** |
+| Batch: one frame per recipient every 100 ms with all changed cursors | 50 × 10 = **500 frames** |
+
+**Design rules for presence:**
+
+- **Ephemeral, newest-wins.** Cursor positions are the textbook honest use of LWW. Keep them **in memory** on the session server, send them over the same socket as ops, and **never persist** them. If the server restarts, clients re-announce.
+- **Throttle at the client, batch at the server.** Coalesce updates so only the latest position per user goes out in each frame.
+- **Cursors must be transformed too.** A cursor at position 10 must move to 11 when someone inserts before it. Send cursors tagged with the revision they refer to, and transform them like a zero-width insert. (In a CRDT, anchor the cursor to a character id instead — it moves for free.)
+- **Cap the room.** Beyond some number of simultaneous editors, show viewers without live cursors, or degrade to periodic updates. Google Docs, for one, documents a limit on simultaneous editors — check current docs for the number.
+- Transport, heartbeats and presence timeouts are <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime</a>'s territory; link it, don't re-derive it.
+
+<Trace title="Count the cursors" steps={presence} takeaway="Presence is ephemeral and newest-wins: in memory, throttled, batched, never logged. N editors means N × (N − 1) unless you batch." />
+
+**Catch the trap:** putting presence in the op log or database "for consistency". It's ten times chattier than edits and worthless a second later.
+
+<h2 id="history">Chapter 16 · Snapshots, the log and undo</h2>
+
+<Scene chapter="Chapter 16" title="Snapshots, the log and undo">
+
+A customer's two-year-old design doc takes nine seconds to open. Theo looks at the load path: the server replays every op since the document was created. All 400,000 of them.
+
+Then Iris asks for a feature: *"Undo should undo my typing — not Bob's."*
+
+</Scene>
+
+**Snapshots + op log.** The op log is the source of truth and the version history; a **snapshot** is a cached materialisation of the document at some revision.
+
+- **Write path:** append op to the log (that's the ack); every N ops (say 1,000) or every few minutes, write a snapshot `(doc_id, rev, content)`.
+- **Load path:** read the latest snapshot, then the ops after it. Never more than about 1,000 ops to replay.
+- **History:** "show me this doc last Tuesday" = nearest snapshot before Tuesday + ops up to the moment. Named versions are just bookmarked revisions.
+- **Compaction:** old ops can be squashed into coarser history (keep hourly snapshots after 30 days, say) and archived to cheaper storage.
+
+**Worked numbers.** About 50 bytes per stored op. A doc with 100,000 ops has a **5 MB** log; replaying it all on open is slow and gets slower forever. With a snapshot every 1,000 ops, open = one snapshot (about the document's size — tens of KB for a typical doc) + at most 1,000 ops (about **50 KB**). Fleet-wide, 3 million ops/s × 50 B = 150 MB/s ≈ **13 TB of op log a day** — which is exactly why compaction and tiering are part of the design, not an afterthought.
+
+**Undo in a shared document** (treat this as the hard, hedged part). Single-user undo pops the last op. In a shared doc that would undo whoever typed last. Users expect **selective undo: reverse my own last action**. The usual approach is to compute the **inverse** of my op (delete what I inserted, re-insert what I deleted), **transform it past every op applied since**, and send it as a new op. Edge cases — undoing an insert someone else has since edited inside, redo after others' edits, formatting ops — are genuinely subtle, and editors handle them with per-user undo stacks and careful rules (Yjs, for example, ships an undo manager that tracks changes by origin). In an interview: name selective undo, the inverse-and-transform idea, and that it's hard.
+
+<Trace title="Load fast, undo kindly" steps={history} takeaway="Snapshot every N ops; load = snapshot + tail. Undo = inverse of my op, transformed forward, sent as a new op." />
+
+<Reveal q="Should Kestrel Docs store the document as a row that it updates on every op, instead of a log?">
+
+No — that turns every keystroke into a full-document write and throws away history. The log is append-only (cheap, sequential, naturally ordered by revision) and is both the durability mechanism and the history. The current document lives in the session server's memory while the doc is open, and in snapshots when it isn't.
+
+</Reveal>
+
+<h2 id="local-first">Chapter 17 · The subway</h2>
+
+<Scene chapter="Chapter 17" title="The subway" mood="night">
+
+Iris rides the subway home with the Kestrel Notes beta. Forty minutes underground, a dozen edits, two of them to a note her partner also edited at home. When she surfaces, everything merges. She can't find the seams.
+
+*"That,"* she says, *"is what 'works offline' was supposed to mean all along."*
+
+</Scene>
+
+**Offline-first** means the app reads and writes a **local store** first and treats the network as a sync channel, not a requirement. **Local-first** (a term from Ink & Switch's 2019 essay) goes further: the user's device holds the primary copy, the app works without the vendor's servers, and collaboration is layered on — CRDTs are the usual engine.
+
+The recipe, for any app:
+
+1. **Local store first.** All reads hit local data; writes commit locally and land in an **outbox** of pending ops.
+2. **Sync when you can.** Push the outbox (idempotently — ops carry ids), pull remote changes by cursor.
+3. **Resolve per data type**, using the ladder — this is the part to say in an interview:
+
+| Data | Rung | How |
+|---|---|---|
+| A file attachment | 1 · punt | Parent version mismatch → conflicted copy |
+| A note's body text | 4 · CRDT (or 3 · OT via server) | Sequence merge |
+| A note's title, a calendar event's time | 2 · LWW **per field** | Newest per field; concurrent edits to *different* fields both survive |
+| Tags on a note, RSVP list, cart items | 4 · set CRDT | Add-wins set: union, deletes only remove what they saw |
+| A "times opened" counter | 4 · counter CRDT | Per-device counts, summed |
+| Cursor, "online now" | 2 · LWW | Ephemeral |
+
+**Per-field LWW is the quiet hero.** Storing an event as one blob and LWW-ing it loses Alice's title change when Bob moves the time. Storing it as fields and LWW-ing each field keeps both. That's the honest answer for **Google Calendar** events and **Figma-style canvases** (each object's properties: newest x-position wins, and that's genuinely what users want).
+
+<Reveal q="An offline-first app syncs through your server. A user was offline for two weeks and comes back with 3,000 queued ops. What do you worry about?">
+
+Three things. **Volume**: page the outbox upload and the downstream catch-up; don't make one giant request. **Validity**: permissions may have changed (they were removed from the shared note), so the server must re-check each op, and reject gracefully with a clear message. **Merge cost**: with OT, the server must transform 3,000 ops against two weeks of others' ops — expensive, so cap offline duration or convert to a three-way merge of states; with a CRDT, merge is cheap but tombstones from two weeks ago had better still exist. Saying "long offline is a different code path" is the senior line.
+
+</Reveal>
+
+**Catch the trap:** one conflict policy for the whole app. Real apps mix rungs per field; the design should say which field gets which.
+
+<Part n="Part Four" title="On the clock">
+
+Both showcase questions in the six-step order from <a href={`${BASE}sd/lessons/delivery-framework/`}>the delivery framework</a>. Forty-five minutes: checkpoints 9 · 15 · 25 · 38.
+
+</Part>
+
+<h2 id="dropbox">Chapter 18 · Design Dropbox, out loud</h2>
+
+<Scene chapter="Chapter 18" title="Design Dropbox, out loud" mood="night">
+
+Friday mock. Mara sets her phone face-down. *"Design Dropbox."* She folds her arms. *"You've had the whole week of Kestrel Drive. Don't tell me about it. Design it."*
+
+You write 9 · 15 · 25 · 38 in the corner and pick up the marker.
+
+</Scene>
+
+| Step | Clock | Output |
+|---|---|---|
+| Requirements + numbers | 0:03–0:09 | Upload, sync to all devices, offline edits, sharing; 10M users, 40 PB, ~1,400 commits/s peak |
+| Entities | 0:09–0:11 | Namespace, FileEntry, FileVersion, Chunk, Journal, Device |
+| API | 0:11–0:15 | missing-chunks, PUT chunk, commit, changes-after-cursor, long-poll |
+| High-level | 0:15–0:25 | Client (watcher, local DB, chunker) · metadata service · block store · notification service |
+| Deep dives | 0:25–0:38 | Chunking + dedup · sync protocol + conflicts · notifications at 5M connections |
+| Wrap-up | 0:38–0:41 | Bottlenecks, failure, monitoring |
+
+**0:03 · Requirements**
+
+> **You:** "Functional: a user puts files in a folder on any device and they appear on all their other devices; edits made offline sync when the device reconnects; concurrent edits never lose data; users can share a folder with others; and there's version history to restore old versions. Out of scope unless you want them: real-time co-editing of document contents, search inside files, the web previewer, and billing."
+>
+> "Non-functional: durability first — an acknowledged file must never be lost. Sync latency: a small change should reach other online devices within a few seconds. Bandwidth efficiency matters a lot, because users are on laptops and phones: a small edit to a big file should upload a small amount. Availability for reads and sync over strict consistency across devices, but each file's version history must be linear per path — that's where conflicts get detected."
+
+**0:06 · Numbers**
+
+> **You:** "I'll assume 10 million users, 4,000 files each averaging 1 MB: 40 PB logical and 40 billion files. With per-user dedup at maybe 20%, 32 PB physical; erasure-coded, around 48 PB of disk. File metadata at about 250 bytes per current version is 10 TB — big, so it needs sharding. Two million daily active users touching 20 files is 40 million commits a day: about 460 a second, 1,400 at peak. If delta sync keeps the average upload to a megabyte, that's 40 TB a day — about 11 Gbit/s at peak. So: storage and bandwidth are the big numbers, commit rate is modest, metadata is too big for one box."
+
+**0:08 · The bridge**
+
+> **You:** "So: sync files across devices with offline edits and no lost data; 40 PB of content, 10 TB of metadata, and bandwidth as the main running cost. Good?"
+
+**0:09 · Entities**
+
+> **You:** "A **Namespace** is a sync root — a user's Dropbox or a shared folder; everything shards by it. A **FileEntry** is a path in a namespace with its current revision or a deleted marker. A **FileVersion** has a revision, its parent revision, and the ordered list of chunk hashes. A **Chunk** is content-addressed bytes. The **Journal** is an append-only log per namespace of 'path changed to revision R', with increasing positions. And a **Device** remembers its cursor in each namespace."
+
+**0:11 · API**
+
+```text
+POST /chunks/missing        { namespace, hashes[] }                     → { missing[] }
+PUT  <presigned block URL>  bytes                                        → 201 (hash verified)
+POST /namespaces/{ns}/commit { path, parentRev, chunks[], commitId }     → 200 { rev, position }
+                                                                          | 409 { currentRev }
+GET  /namespaces/{ns}/changes?cursor=41212&limit=500                     → { entries[], cursor, hasMore }
+GET  /notify?ns=7:41212,9:880  (long-poll, ~60 s)                        → { changed: [7] } | { changed: [] }
+GET  <presigned/CDN block URL>                                           → chunk bytes
+```
+
+> **You:** "Commit is conditional on the parent revision — that's conflict detection — and carries a commit id so a retried commit is recognised. Changes are paged by cursor. The notify endpoint returns no data, just which namespaces moved."
+
+**0:15 · High-level design**
+
+> **You:** "Upload path. The desktop client watches the file system, debounces events until a file stops changing, splits it into content-defined chunks of about 4 MB and hashes each with SHA-256. It asks the metadata service which hashes are missing, uploads only those directly to object storage via presigned URLs — app servers never carry bytes — and then commits the new version with its parent revision. The commit is one transaction on the namespace's shard: check the parent is current, write the version, append a journal entry."
+>
+> "Sync-down path. Every device holds a long-poll to a notification service with its cursors. When a commit lands, the metadata service publishes 'namespace 7 advanced'; the notification service wakes the waiting devices; each one fetches changes after its cursor, downloads missing chunks, assembles the file in a temp location and atomically renames it into place."
+
+<Figure caption="Dropbox, high level. Bytes and facts travel separately: chunks go straight to object storage; small conditional commits go to the metadata shards; notifications carry no data.">
+  <Mermaid code={`flowchart LR
+    subgraph Client["Desktop / mobile client"]
+      W["Watcher +\ndebounce"] --> CH["Chunker +\nSHA-256"]
+      LDB[("Local DB\nbase revs, cursors")]
+    end
+    CH -->|"1 · missing?"| M["Metadata service"]
+    CH -->|"2 · PUT chunks"| OS[("Block store\nobject storage · 32 PB")]
+    CH -->|"3 · commit parent rev"| M
+    M --> DB[("Metadata DB\nsharded by namespace · 10 TB")]
+    M -->|"namespace advanced"| PS["Pub/sub"]
+    PS --> N["Notification service\nlong-polls · ~50 servers"]
+    N -.->|"changed"| Client
+    Client -->|"changes after cursor"| M
+    Client -->|"GET chunks"| CDN["CDN / presigned"] --> OS`} />
+</Figure>
+
+> **You:** "Sharing is just a namespace mounted by several users; permissions are checked on every metadata call and when presigned URLs are issued."
+
+**0:25 · Deep dive 1 — moving only what changed**
+
+> **You:** "The first risk is bandwidth. Fixed 4 MB blocks are simple, but an insertion near the start of a file shifts every block — one byte at the front of a 200 MB file re-uploads all 50 blocks. Content-defined chunking puts boundaries where a rolling hash of the last 64 bytes matches a pattern, so boundaries move with the content and the same edit uploads one or two chunks — 4 to 8 MB instead of 200. Average 4 MB, with a minimum and maximum so pathological content can't make tiny or giant chunks."
+>
+> "Dedup comes free with content addressing: an unchanged or copied chunk is never uploaded twice. I'd scope the 'missing?' answer to the user or team — cross-user answers leak whether someone else has a file, and a hash alone must never grant access to bytes. Chunk garbage collection is mark-and-sweep over live versions with a grace period, after the version-history retention window."
+
+**0:31 · Deep dive 2 — sync protocol and conflicts**
+
+> **You:** "The client keeps a local database of each path's base revision. When a local file changes, it commits with that base as the parent. If someone else committed first, the server returns 409. For opaque files I will not auto-merge — merging bytes of a .docx corrupts it. The client renames its version to 'conflicted copy' with the device name and date, commits it as a new file, and downloads the server version into the original path. Both survive; a person decides."
+>
+> "Deletes are tombstones in the journal, so a device that slept through a delete removes its copy instead of resurrecting it. Edit beats delete — an offline edit to a deleted file restores it. Tombstones are compacted after a horizon, say 90 days; devices offline longer do a full resync."
+
+**0:35 · Deep dive 3 — notifications at scale**
+
+> **You:** "Five million devices online at peak, each with one long-poll. At about 100,000 idle connections per server that's 50 notification servers. They're stateless: a device's long-poll lists its namespaces and cursors; the server subscribes to those namespaces on a pub/sub channel. A lost notification only costs latency, because clients also check by cursor every few minutes. Peak commits are 1,400 a second, each waking two or three devices — tiny. The risk is a huge shared folder: one commit wakes thousands of devices that all fetch at once, so I'd add jitter to the fetch and serve change lists from a cache keyed by namespace and cursor."
+
+**0:38 · Wrap-up**
+
+> **You:** "Recap: content-defined chunks, upload only missing ones directly to object storage, conditional commits on namespace-sharded metadata, cursor-based sync woken by data-free long-polls, conflicted copies for concurrent edits, tombstones for deletes. First bottleneck at 10× is metadata for giant team namespaces — those get dedicated shards, and change listing is paged. If a metadata shard fails, its namespaces pause commits during failover while downloads keep working. I'd monitor end-to-end sync latency — commit to last device applied — conflict rate, 409 rate, missing-chunk errors on download, and notification fan-out lag. With more time: LAN sync for offices, on-demand files, and binary deltas within chunks."
+
+**0:41.** Mara turns the phone over. *"You said 'I will not auto-merge' like you meant it. Good."*
+
+**Check the numbers yourself:** 10M × 4,000 × 1 MB = 4 × 10¹⁶ B = 40 PB; × 0.8 = 32 PB; × 1.5 = 48 PB. 4 × 10¹⁰ files × 250 B = 10¹³ B = 10 TB. 2M × 20 = 40M commits ÷ 86,400 ≈ 463/s, × 3 ≈ 1,389/s. 40M × 1 MB = 40 TB/day ÷ 86,400 ≈ 463 MB/s ≈ 3.7 Gbit/s, × 3 ≈ 11 Gbit/s. 5M ÷ 100K = 50 servers.
+
+<h2 id="google-docs">Chapter 19 · Design Google Docs, out loud</h2>
+
+<Scene chapter="Chapter 19" title="Design Google Docs, out loud" mood="night">
+
+The next Friday, Mara doesn't bother with small talk. *"Google Docs. And I'm going to ask you why the server exists."*
+
+You write 9 · 15 · 25 · 38. Then, below them, one word: *sequencer*.
+
+</Scene>
+
+| Step | Clock | Output |
+|---|---|---|
+| Requirements + numbers | 0:03–0:09 | Co-edit text live, see others' cursors, history; 1M open docs, 3M editors, 250 ops/s on a hot doc |
+| Entities | 0:09–0:11 | Document, Snapshot, Op, Session owner, Presence, Permission |
+| API | 0:11–0:15 | Load doc; WebSocket: op / ack / remote op / presence; history |
+| High-level | 0:15–0:25 | Gateway · session servers (sequencer per doc) · op log · snapshots · registry |
+| Deep dives | 0:25–0:38 | OT and the sequencer · presence fan-out · failover and history |
+| Wrap-up | 0:38–0:41 | Bottlenecks, OT vs CRDT, monitoring |
+
+**0:03 · Requirements**
+
+> **You:** "Functional: many users edit the same document at once and see each other's changes within a fraction of a second; everyone ends up with the same document; you see collaborators' cursors and selections; and there's version history. Out of scope: comments, suggestions mode, rich layout like tables and images, and full offline editing — I'll design for short disconnections and mention long offline at the end."
+>
+> "Non-functional: typing must feel local — my keystrokes appear instantly, never waiting for the server. Remote edits visible in roughly 100–200 ms. Convergence is non-negotiable: two screens must never permanently disagree. And an acknowledged edit is never lost."
+
+**0:06 · Numbers**
+
+> **You:** "I'll assume 1 million documents open at peak with about 3 editors each — 3 million connections. Averaged over bursts and pauses, maybe one op per second per editor: 3 million ops a second across the fleet, but per document it's small — even a hot doc with 50 people typing five characters a second is 250 ops a second. At about 50 bytes an op, the log grows 150 MB a second, roughly 13 TB a day, so snapshots and compaction matter. Presence is the surprise: 50 editors sending 10 cursor updates a second to 49 others is 24,500 messages a second for one document."
+
+**0:08 · The bridge**
+
+> **You:** "So the hard parts are convergence under concurrent edits, keeping typing instant, and presence fan-out — with load that's large in total but small per document. That shape suggests sharding by document. Sound right?"
+
+**0:09 · Entities**
+
+> **You:** "A **Document** with its permissions. An **Op** — document id, revision, author, the operation, and a client op id. A **Snapshot** — document id, revision, content. A **Session** — which server currently owns a document, under a lease. And **Presence** — user, cursor, selection — which is ephemeral and never stored."
+
+**0:11 · API**
+
+```text
+GET  /docs/{id}                → { snapshot, rev, opsSinceSnapshot[] }
+WS   /docs/{id}/session
+  client → server  { type: "op",       op, baseRev, clientOpId }
+  server → client  { type: "ack",      clientOpId, rev }
+  server → client  { type: "op",       op, rev, author }
+  both ways        { type: "presence", user, cursor, rev }      (throttled, batched, not stored)
+GET  /docs/{id}/history?at=2026-10-01T09:00Z → { content, rev }
+```
+
+> **You:** "Every op carries the revision it was made against. The client op id makes resends after a reconnect idempotent."
+
+**0:15 · High-level design**
+
+> **You:** "Clients open a WebSocket through a gateway. The gateway looks up which session server owns the document in a registry — if nobody does, one is assigned and takes a lease. That session server is the single sequencer for the document: it holds the current text in memory, receives ops, transforms each against the ops it hasn't seen since its base revision, appends it to the op log keyed by document and revision, acks the author and broadcasts it to everyone else in the room."
+>
+> "Clients apply their own edits instantly and keep one op in flight, buffering the rest; incoming ops are transformed against their pending ones. Every thousand ops the session server writes a snapshot. Opening a document reads the latest snapshot plus the ops after it."
+
+<Figure caption="Google Docs, high level. One sequencer per document, many documents per server; the op log is both durability and history.">
+  <Mermaid code={`flowchart LR
+    E["Editors"] -->|"WebSocket"| GW["Gateway"]
+    GW --> REG[("Registry\ndoc → owner, lease")]
+    GW --> SS["Session servers ~100\none sequencer per open doc"]
+    SS -->|"append (doc_id, rev) — the ack point"| LOG[("Op log\npartitioned by doc_id")]
+    SS -->|"every 1,000 ops"| SNAP[("Snapshots")]
+    SS -.->|"presence: memory only"| SS
+    API["Doc / history API"] --> SNAP
+    API --> LOG`} />
+</Figure>
+
+**0:25 · Deep dive 1 — convergence: OT and why the server exists**
+
+> **You:** "Naively applying position-based edits diverges: on 'cat', Alice inserts s at 3 and Bob inserts b at 0; applied in different orders you get 'bcats' on one screen and 'bcast' on the other. Operational transformation rewrites an op against a concurrent one — Bob's insert before position 3 shifts Alice's to 4 — so both orders give 'bcats'. Ties at the same position need a deterministic rule, like lower site first, or screens diverge."
+>
+> "The server exists to be the one ordering point. With a canonical order, each op only needs the simple pairwise transform against what its author hadn't seen; without one, you need much stronger guarantees that many published algorithms got wrong. And this doesn't limit scale: coordination is per document, the hottest doc does a few hundred ops a second, and documents shard across about a hundred session servers by id."
+
+**0:31 · Deep dive 2 — presence**
+
+> **You:** "Presence is ephemeral and newest-wins — the honest use of last-writer-wins. It stays in the session server's memory, never in the log. Clients throttle cursor updates to a couple a second, and the server batches all changed cursors into one frame per recipient every 100 ms, so fifty editors cost 500 frames a second instead of 24,500 messages. Cursors are tagged with a revision and transformed like zero-width inserts, so they don't jump when someone types above them. Past some room size, extra participants become viewers without live cursors."
+
+**0:35 · Deep dive 3 — failover and history**
+
+> **You:** "An op is acked only after it's durably appended to the log, keyed by document and revision with a uniqueness constraint. If a session server dies, its lease expires, another server takes the document, loads snapshot plus log, and clients reconnect and resend un-acked ops with their base revision — the new owner transforms them as usual. The unique revision key is also the fence: a zombie old owner can't append a revision that already exists. History is the log: any past moment is a snapshot plus replay, and old ops are compacted into coarser snapshots and archived."
+
+**0:38 · Wrap-up**
+
+> **You:** "Recap: one sequencer per document doing OT, clients applying edits optimistically with one op in flight, a durable op log as the ack point and history, snapshots every thousand ops, presence in memory with throttling and batching. At 10×, the first pressure is op log volume — over 100 TB a day — handled by batching keystrokes into range ops and compacting history. A session server failure pauses edits on its documents for the failover window, without losing acked edits. I'd monitor op round-trip time, transform queue depth per document, failover duration, and divergence checks — clients periodically send a hash of their text at a revision. If the product had to work offline for days or peer-to-peer, I'd switch the text model to a CRDT and keep the server as a relay and archive."
+
+**0:41.** Mara nods once. *"Why does the server exist?"* You answer in one sentence. She writes it down.
+
+**Check the numbers yourself:** 1M docs × 3 = 3M editors × 1 op/s = 3M ops/s; × 50 B = 150 MB/s × 86,400 ≈ 12.96 TB/day; at 10× ≈ 130 TB/day. Hot doc: 50 × 5 = 250 ops/s. 1M docs ÷ 10,000 per server = 100 servers. Cursors: 50 × 10 × 49 = 24,500; 50 × 2 × 49 = 4,900; batched 50 × 10 = 500.
+
+<Reveal q="In both walkthroughs, which sentence would you most likely have skipped — and what would it have cost?">
+
+In Dropbox, the order of the commit — chunks first, metadata last — and the "I will not auto-merge" line. Without the first, an interviewer asks what another device sees mid-upload; without the second, they assume you'd LWW and lose data. In Google Docs, "the server is per document, and here is the per-doc op rate". Without it, the central sequencer reads as a single point of everything, and you spend your deep-dive time defending it instead of using it.
+
+</Reveal>
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The sync review" steps={drills} takeaway="Pick the rung per data type. Chunks first, commit last, parent version always. One sequencer per document. Presence in memory. Durable before ack." />
 
 <Quiz questions={[
   {
@@ -98,9 +1227,148 @@ Interview verdict to give: "Docs-style with a server anyway → OT is proven and
     ],
     answer: 1,
     why: 'LWW is a product statement wearing a technical costume. The failure mode isn\'t the mechanism, it\'s using it on data where both writes mattered.'
+  },
+  {
+    q: 'One byte is inserted at the start of a 200 MB file. With 4 MB fixed chunks vs ~4 MB content-defined chunks, roughly how much is uploaded?',
+    options: [
+      '4 MB with either scheme',
+      '200 MB with fixed chunks; about 4–8 MB with content-defined chunks',
+      '200 MB with either scheme',
+      'Nothing — dedup catches it'
+    ],
+    answer: 1,
+    why: 'Fixed boundaries stay at the same offsets while the content shifts, so every chunk changes. Content-defined boundaries follow the content, so only the chunk containing the edit (occasionally its neighbour) is new.'
+  },
+  {
+    q: 'A document has 50 editors, each sending 10 cursor updates per second to the other 49. What fixes the fan-out without hurting edits?',
+    options: [
+      'Persist cursors in the op log so they replay in order',
+      'Throttle cursor updates at the client and batch all changed cursors into one frame per recipient every ~100 ms, kept in memory only',
+      'Move presence to a CRDT',
+      'Shard the document across several session servers'
+    ],
+    answer: 1,
+    why: '24,500 messages/s becomes 500 frames/s. Presence is ephemeral and newest-wins; logging it or splitting the document would add cost or break ordering.'
   }
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: the escalation drill — 6 data types (file, doc text, cursor, cart, calendar event, canvas object), you assign each a rung + one-line justification, 60 seconds each. Weekend mock: **Dropbox** (rung 1 + blob lesson) or **Google Docs** (rung 3) — the pattern's two walkthroughs.
+<Scene title="The interview room" mood="night">
+
+The Interviewer leans back. *"Two users edit the same thing at the same time. What happens?"* It's an innocent question. It's also the whole module. You ask one thing first: *"What kind of thing?"*
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "It depends on the data, so I'd pick per type. For opaque files, I detect and punt: every commit names its parent version, and if the server has moved on, the client keeps its edit as a conflicted copy — I won't auto-merge bytes. For values where the newest genuinely supersedes — a cursor, presence, a toggle — last-writer-wins, and I'd say that losing the older write is the intended behaviour. For live text, edits must merge: as operations, transformed through a single sequencer per document — that's OT, Google Docs style — so concurrent inserts shift each other's positions and everyone converges; the sequencer is per document, so a few hundred ops a second at most, sharded by doc id, and its op log doubles as version history. If it has to work offline for days or peer-to-peer, I'd use a CRDT instead: every character gets a permanent id, so merges commute — at the cost of id metadata and tombstones. Underneath any of these, sync moves only what changed: content-defined chunks addressed by hash, a journal with cursors, and data-free notifications."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · Why content-defined chunking rather than fixed blocks?">
+
+An insertion shifts all later bytes. Fixed boundaries stay put, so every later block changes — one byte at the front of a 200 MB file re-uploads all of it. Content-defined boundaries are chosen by a rolling hash of nearby bytes, so they move with the content and re-synchronise right after the edit: one or two chunks change.
+
+</Reveal>
+
+<Reveal q="2 · How does a device that was offline for a week catch up?">
+
+It sends its cursor — the last journal position it applied in each namespace — and pages through every entry after it: edits, renames and tombstones. It downloads only the chunks it lacks. Its own offline edits commit with their base revisions; any that conflict become conflicted copies. If it's been offline past the tombstone horizon, it does a full resync instead.
+
+</Reveal>
+
+<Reveal q="3 · Walk me through OT on a tiny example.">
+
+"cat". Alice inserts s at 3, Bob inserts b at 0, concurrently. The server orders Bob first; Bob's insert is before position 3, so Alice's op becomes insert s at 4 → "bcats". Alice receives Bob's op; her insert was after 0, so it's unchanged → "bcats". Same-position inserts need a tie-break such as lower site first; deleting an already-deleted character becomes a no-op.
+
+</Reveal>
+
+<Reveal q="4 · OT or CRDT — which would you pick?">
+
+Always-online editor that needs a server anyway for permissions, persistence and history: OT through a per-document sequencer, proven and simple to reason about with one order. Offline-first or peer-to-peer: a CRDT, because any replica can merge in any order; I'd accept the per-character id metadata (compressed in practice) and plan for tombstones. A hybrid — CRDT with a server as relay and archive — is common too.
+
+</Reveal>
+
+<Reveal q="5 · The session server for a busy document crashes. What happens?">
+
+Edits pause for the failover window and nothing acknowledged is lost, because an op is acked only after it's durably appended to the log. The lease expires, a new owner loads the latest snapshot plus the log tail, and clients reconnect and resend un-acked ops with their base revision and client op id. The unique (doc, revision) key in the log stops a zombie owner from appending.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "Sync across devices", "works offline" | Every device is a leader; commits name their parent version |
+| Opaque files edited concurrently | Rung 1: reject the stale commit, conflicted copy, tell the user — no auto-merge |
+| Cursor, presence, a toggle | Rung 2: LWW, and say why losing the older value is correct |
+| Event fields, canvas object properties | LWW **per field**, not per object |
+| Big files, small edits | Content-defined chunks (rolling hash), SHA-256 names, upload only missing |
+| "Which chunks to upload?" | Ask the server which hashes are missing — scoped per user/team |
+| Saving a version | Chunks first, then one conditional, idempotent commit |
+| "How do devices learn of changes?" | Journal per namespace, cursor fetch, data-free long-poll |
+| Deleted file came back | Tombstones in the journal; edit beats delete; resync horizon |
+| Office full of devices, one slow line | LAN sync: peers serve hash-verified chunks |
+| Live co-editing of text | Rung 3: OT through one sequencer per document |
+| "Doesn't a central server bottleneck?" | Per document: ~250 ops/s on a hot doc; shard by doc id |
+| Offline-first, peer-to-peer | Rung 4: CRDT — unique ids, commutative merge; pay metadata + tombstones |
+| Counters, sets across replicas | G-counter (per-replica counts), add-wins set |
+| Many cursors | In memory, throttle, batch per recipient, transform with ops |
+| Slow document open, history | Snapshot every N ops; load = snapshot + tail; log is history |
+| "Undo" in a shared doc | Selective undo: inverse of my op, transformed forward — hard, say so |
+
+## Five mistakes to leave behind
+
+1. **Last-writer-wins on data where both writes mattered.** Name the rung per data type, and justify any LWW.
+2. **Fixed-size chunks with no answer for insertions.** Say content-defined chunking and why it re-synchronises.
+3. **Committing metadata before the bytes exist.** Chunks first, commit last, parent version in the commit.
+4. **Deletes that just remove a row.** Tombstones, edit-beats-delete, a tombstone horizon.
+5. **"OT needs a central server, so it won't scale."** Per document, not global — give the per-doc op rate and the shard key.
+
+<Scene title="Mara’s last word" mood="dusk">
+
+The Q3-deck customer writes back a month later. She edited the deck on another flight; so did her co-founder. When they landed, there were two files side by side, one with *conflicted copy* in its name. *"Annoying,"* she writes. *"But nothing's gone. Thank you."*
+
+Mara pins the email to the whiteboard, next to the ladder. *"That's the best review a sync product ever gets,"* she says. *"Nothing's gone."*
+
+</Scene>
+
+**Keep it warm:** with the buddy, run the **escalation drill**: six data types — a file, a document's text, a cursor, a shopping cart, a calendar event, a canvas object — and for each, the rung plus a one-line justification, 60 seconds apiece. Then a weekend mock of one of this pattern's two walkthroughs: **Dropbox** (rung 1, plus <a href={`${BASE}sd/lessons/blob-cdn/`}>Blob storage</a> for the bytes) or **Google Docs** (rung 3, plus <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime</a> for the sockets). Log where the clock went.
+
+**Questions this pattern unlocks:**
+
+| Bank question | How the pattern applies |
+|---|---|
+| **Dropbox / Google Drive** | Rung 1: parent versions + conflicted copies; CDC chunks, missing-hash upload, journal + cursor, tombstones (Chapter 18) |
+| **Google Docs** | Rung 3: OT + per-doc sequencer + WebSocket rooms + op-log history; presence fan-out (Chapter 19) |
+| **Google Calendar** | Events are structured rows — per-field LWW plus the invite-state machine; attendees as a set |
+| **Figma-like canvas** | Per-object, per-property LWW (newest position wins — honest here); text inside shapes may need a sequence merge |
+| **Collaborative cart / notes** | Small CRDTs (add-wins set) or server-serialised ops — say scale doesn't demand cleverness |
+| **Offline-first mobile apps** | Local store + outbox, replay on reconnect, resolve per field by rung 1–4 |
+
+Related: <a href={`${BASE}sd/lessons/blob-cdn/`}>Blob storage & CDN</a> (presigned uploads, multipart, content-hash dedup and its privacy scope) · <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime</a> (WebSocket gateways, presence, heartbeats) · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> (multi-leader replication, sharding the metadata) · <a href={`${BASE}sd/lessons/pattern-partitioning/`}>Partitioning</a> (version vectors, routing by key) · <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> (the journal as a log, idempotent consumers) · <a href={`${BASE}sd/lessons/core-concepts/`}>Core concepts</a> (consistency models, CAP) · <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a> (one owner per entity) · <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> (the clock used in Part Four) · <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and races</a> · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 5, "Replication": multi-leader replication, handling write conflicts, detecting concurrent writes with version vectors, and a first look at CRDTs and OT. The theory under Part One.
+- [Local-first software](https://www.inkandswitch.com/local-first/) (Ink & Switch, 2019) — the essay that named local-first and argues for CRDTs as its engine. Chapter 17's source.
+- [How Figma's multiplayer technology works](https://www.figma.com/blog/how-figmas-multiplayer-technology-works/) (Figma blog) — a server-authoritative design inspired by CRDTs, with per-property last-writer-wins. A useful contrast with both OT and pure CRDTs.
+- [Operational transformation (Wikipedia)](https://en.wikipedia.org/wiki/Operational_transformation) — the history from Ellis and Gibbs (1989) through Jupiter, the transformation properties (TP1, TP2), and why so many algorithms were found incorrect.
+- [Conflict-free replicated data type (Wikipedia)](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) — state-based versus op-based, G-counters, sets, sequences, with pointers to Shapiro et al.'s 2011 papers.
+- [Yjs documentation](https://docs.yjs.dev/) and [Automerge](https://automerge.org/) — two production CRDT libraries; read how they represent text and handle undo.
+- [The rsync algorithm](https://rsync.samba.org/tech_report/) (Tridgell and Mackerras) — rolling checksums and delta transfer, the ancestor of Chapter 3 and Chapter 8's delta sync.
+- [FastCDC](https://www.usenix.org/conference/atc16/technical-sessions/presentation/xia) (USENIX ATC 2016) — the gear-hash chunker family used in Chapter 3, and how to tune it.
+
+**Look these up yourself**
+
+- **The Jupiter collaboration system** (Nichols et al., 1995) — the client/server OT protocol that Google-Docs-style editors descend from; compare it with Chapter 12's one-op-in-flight client.
+- **"What's different about the new Google Docs"** (Google Drive blog, 2010) — Google's own short description of moving Docs to operational transformation.
+- **Dropbox engineering posts on sync** (for example, their writing on rebuilding the sync engine) — how a real client models local, remote and synced trees; search the Dropbox tech blog rather than trusting a summary.
+- **Three-way merge** — how git merges text with a common ancestor, and why it needs the base version just like a conflicted-copy check.
+- **Hybrid logical clocks** — timestamps that respect causality and stay close to wall time; a better clock for LWW, though still LWW.
+- **Interleaving anomalies in text CRDTs** — why some sequence CRDTs interleave two people's concurrently typed words character by character, and how newer designs avoid it.
+- **Peritext** — a CRDT for rich-text formatting, and why bold and italics are harder than plain characters.
+- **Merkle trees for sync** — comparing large trees of hashes to find differences quickly; used in anti-entropy and some file sync designs.

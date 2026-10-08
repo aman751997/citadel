@@ -87,7 +87,7 @@ export const mixedReview = [
     ['A HashSet of every prefix of every word', 'That stores L strings per word and answers a question nobody asked.'],
   ]),
   step('Find every dictionary word that can be traced in a letter grid (adjacent cells, no cell reused within a word).', [], 2, [
-    ['Run a grid search for each word separately', 'Correct, but it re-walks the same paths once per word: about 1.7 × 10¹¹ steps at LeetCode’s limits.'],
+    ['Run a grid search for each word separately', 'Correct, but it re-walks the same paths once per word: up to about 1.7 × 10¹¹ steps at LeetCode’s limits in the worst case.'],
     ['Breadth-first search from every cell', 'BFS does not keep the per-path “cell already used” state that a word path needs; this is a path search, not a shortest-distance search.'],
     ['Plant the words in a trie and walk the grid and the trie in lockstep, pruning spent branches', 'Yes. One walk serves every word, dead prefixes stop the walk early, and pruning shrinks the garden as words are found.'],
   ]),

@@ -159,7 +159,7 @@ test('chapter 1-3 trace numbers', () => {
   const unsorted = subsetsRun([2, 1, 2], { skip: 'start' }).book;
   assert.equal(unsorted.length, 8);
   assert.equal(unsorted.filter(p => p.join() === '2').length, 2);
-  assert.match(correct(subsetsDup[2]), /8 pages with \[2\] twice/);
+  assert.match(subsetsDup[2].choices[2].feedback, /8 pages with \[2\] twice/);
   assert.equal(subsetsRun(Array(10).fill(7)).calls, 1024);
   assert.equal(subsetsRun(Array(10).fill(7), { skip: 'start' }).calls, 11);
   // Combinations
@@ -219,7 +219,7 @@ test('chapter 7-9 trace numbers', () => {
   assert.equal(spell(['AB'], 'ABA', 'noMark'), true);
   assert.deepEqual(cells(wordSearch[0].rows[0]), ['#', 'B']);
   // Palindrome Partitioning
-  assert.deepEqual(gapCuts('aab').map(p => p.join('|')).sort(), ['a|a|b', 'aa|b']);
+  assert.deepEqual(new Set(gapCuts('aab').map(p => p.join('|'))), new Set(['a|a|b', 'aa|b']));
   assert.deepEqual(['a', 'aa', 'aab'].filter(isPal), ['a', 'aa']);
   assert.match(correct(palindrome[0]), /^a and aa$/);
   assert.equal(correct(palindrome[2]), '2');
@@ -354,11 +354,11 @@ test('the lab catches the classic bugs with the board’s numbers', () => {
   assert.match(lab.move(s, 'alias').state.message, /every page would read \[ \]/);
   for (const a of ['record', 'choose', 'record', 'choose', 'record', 'choose', 'record']) s = lab.move(s, a).state;
   assert.deepEqual(s.path, [1, 2, 3]);
+  assert.match(lab.move(s, 'choose').state.message, /No doors are left at this junction\. Wind the thread back first: remove 3/);
+  s = lab.move(s, 'unchoose').state;                             // back at [1, 2]; its loop is exhausted, [1] still has door 3
   const forgot = lab.move(s, 'choose');
   assert.equal(forgot.accepted, false);
-  assert.match(forgot.state.message, /forgotten un-choose/);
-  s = lab.move(s, 'unchoose').state;                             // back at [1, 2]; its loop is exhausted
-  assert.match(lab.move(s, 'choose').state.message, /you would write \[1, 3\] where \[1, 3\] belongs|you would write \[1, 2, 3\] where \[1, 3\] belongs/);
+  assert.match(forgot.state.message, /forgotten un-choose: you would write \[1, 2, 3\] where \[1, 3\] belongs/);
   // twin rule: i == start is walked, i > start is skipped
   let d = lab.create('subsets', 1);                              // [1, 2, 2]
   for (const a of ['record', 'choose', 'record', 'choose', 'record']) d = lab.move(d, a).state;   // thread [1, 2], start = 2

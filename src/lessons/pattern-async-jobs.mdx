@@ -1,65 +1,1079 @@
 ---
 title: 'Pattern: Async Jobs & Pipelines'
-description: 'The queue + workers + status template behind transcoding, crawling, notifications, and every "this takes too long for a request" problem.'
+description: 'The night Kestrel Clips held 3,600 uploads open at once, and the template that fixed it. Job rows, leases, retries, fairness, fan-out and fan-in, schedulers, crawlers and code judges — then YouTube and a web crawler, out loud, on the clock.'
 module: 8
 order: 1
-minutes: 30
+minutes: 115
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { whyAsync, template, states, leases, retries, effects, fairness, scaling, progress, pipelines, fanIn, orchestration, scheduler, frontier, dedup, judge, youtube, crawlerWalk, drills } from '../data/sd/pattern-async-jobs';
+import { BASE } from '../paths';
 
-## The pattern in one sentence
+<PatternHub
+  pattern="sd-pattern-async-jobs"
+  start="prologue"
+  logline="Work that cannot finish inside a request becomes a job: written down, queued, picked up by workers that can die at any moment, tracked by a status anyone can ask about. Transcoding, crawling, exports, code judging, scheduled reports — every one of them is this template with different nouns."
+  cast={[
+    { name: 'You', role: 'Two months into your job at Kestrel. You run an event-driven pipeline at your day job. Interviews want you to say why each piece is there.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Draws boxes, asks questions, never answers first.' },
+    { name: 'Dev Okafor', role: 'SRE. Gets paged at 3 a.m. Narrates incidents in a very calm voice.' },
+    { name: 'Iris Tan', role: 'Product lead. Every “oh, and also…” turns one job into a pipeline.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has seen every way a job can run twice, or never.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · The shape of a job', description: 'Why async, the template, and the state machine.', links: [['why-async', 'Sixty seconds'], ['template', 'The tracking number'], ['state-machine', 'Where is job 42?']] },
+    { name: 'Part Two · When workers die', description: 'Leases, retries, dead letters, and effects that happen once.', links: [['leases', 'The worker that vanished'], ['retries', 'The file that never transcodes'], ['effects', 'Two emails for one export']] },
+    { name: 'Part Three · Many jobs, many tenants', description: 'Fairness, back-pressure, sizing and cost, progress and cancellation.', links: [['fairness', 'One customer, a million jobs'], ['scaling', 'Forty minutes behind'], ['progress', 'Seventy-three percent']] },
+    { name: 'Part Four · Pipelines', description: 'Stages, fan-out and fan-in, orchestration, schedulers.', links: [['pipelines', 'One job becomes six'], ['fan-in', 'The last chunk'], ['orchestration', 'Who holds the plan?'], ['scheduler', 'Nine o’clock, twice']] },
+    { name: 'Part Five · The family', description: 'The crawler’s frontier and dedup; the code judge; exports and notifications.', links: [['frontier', 'A spider with manners'], ['dedup', 'The calendar that never ends'], ['code-judge', 'Untrusted code at midnight']] },
+    { name: 'Part Six · The whole thing, twice', description: 'YouTube and a web crawler, on the 45-minute clock, with the spoken lines.', links: [['youtube', 'YouTube, out loud'], ['crawler', 'A web crawler, out loud']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Make the calls interviewers probe, with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="Read one part per sitting. Parts One and Two are the template every design reuses; Part Six is what to read the night before a YouTube or crawler mock."
+/>
 
-Work that can't finish inside a request (too slow, too big, too flaky, or triggered by schedule) becomes a **job**: persisted, queued, executed by scalable workers, tracked by status — and every long-running feature in every design is this one template re-skinned.
+<h2 id="prologue">Prologue · The spinner that never stopped</h2>
 
-**Trigger words:** "process the video", "generate a report", "send to all", "crawl", "index", "run nightly", "it can take minutes".
+<Scene chapter="Prologue" title="The spinner that never stopped" mood="storm">
 
-## The template
+Kestrel Clips launches on a Thursday. By 8 p.m. Dev's calm voice is in the incident channel: *"Upload endpoint p50 is 61 seconds. Error rate 40%. The load balancer is cutting connections at sixty."*
 
-<Mermaid code={`flowchart LR
-    U["request"] --> API["API: validate,\ncreate job row (queued),\nenqueue job ID"]
-    API -->|"202 + job_id, instantly"| U
-    API --> Q[("queue")]
-    Q --> W["worker pool\n(scales on queue depth)"]
-    W --> X["do the work\n(idempotent!)"]
-    W --> J[("job store:\nqueued → running →\ndone | failed")]
-    U -.->|"poll GET /jobs/{id}\nor push via SSE"| J`} />
+The prototype transcoded each video inside the upload request. A one-minute clip took about two minutes to transcode. The load balancer gave up at sixty seconds; the phone showed an error; the user tapped *retry*. The first transcode was still running. Now there were two.
 
-Speak it in this order — each numbered piece is a sentence:
+At 9 p.m. Theo counts the transcodes for one unlucky video: seven.
 
-1. **Persist the job first, then enqueue the ID.** The DB row is truth; the queue is a delivery mechanism. (Queue message lost → a reconciler re-enqueues rows stuck in `queued`. Queue-only jobs vanish silently.)
-2. **Return `202 + job_id` immediately.** The user experience of async is "accepted, here's your tracking number."
-3. **Workers pull, do, update status.** Stateless, scaled on **queue depth** (the autoscaling metric — say it).
-4. **Status flows back** — polling `GET /jobs/{id}` is fine (realtime lesson: poll when you can); SSE/WS for progress bars.
-5. **Failures are the design**: retries with exponential backoff + jitter, then **DLQ + alert** (queues lesson). Worker crashes mid-job → lease/visibility timeout returns the job to the queue → someone else retries → therefore **the work must be idempotent** (contention lesson: dedupe key or naturally idempotent writes).
+Next morning Mara writes one word on the whiteboard — *JOB* — and draws a box around it. *"Where does it live,"* she asks, *"before anyone starts working on it?"*
 
-That last chain — *crash → redelivery → idempotency* — is the pattern's core insight and the follow-up every interviewer runs.
+</Scene>
 
-## Pipelines — jobs that make jobs
+This lesson is about one template. **Work that can't finish inside a request — too slow, too big, too bursty, too flaky, or due at a later time — becomes a job: persisted, queued, run by workers that scale, tracked by a status.** Every long-running feature in every design is this template with different nouns. Learn it once, deeply, and YouTube, the web crawler, the notification system, the code judge, the job scheduler and "export my data" become variations.
 
-Real work is often staged: video upload → split → transcode each chunk × each resolution → thumbnail → manifest → publish. Chain the template: each stage consumes from its queue and produces to the next, with the job store tracking a **state machine per item** (`uploaded → transcoding → packaged → live`).
+**Trigger words:** "process the video", "generate a report", "send to everyone", "crawl", "index", "run nightly", "it can take minutes", "the user shouldn't wait".
 
-Why stages beat one mega-job: independent scaling (transcode needs 50 workers, thumbnails need 2), independent retry (a failed thumbnail doesn't redo the transcode), parallelism inside a stage (4K transcode = many chunk-jobs fanned out and joined). "Fan out chunks, join on completion counter" — a Redis atomic decrement hitting zero triggers the next stage — is the standard join answer.
+**Why this matters to you specifically.** You've built this at work. Your <a href={`${BASE}sd/war/event-driven-ai-pipeline/`}>War Room entry on the event-driven AI pipeline</a> is the template in production: the trigger moved from page open to document upload, durable queues, a DLQ with no TTL and a replay script, a webhook back when the work is done, a push to the page. Interviews won't test whether you *can* build it. They test whether you can **say why each piece is there**, out loud, under a clock — and two of your logged gaps live here: **silent skips** (leaving out the failure path because "obviously there are retries") and **decomposition from scratch** (the crawler is the classic problem with no API to hide behind).
 
-## Scheduled jobs — the scheduler's two problems
+<Figure caption="The template. Every chapter below deepens one arrow.">
+  <Mermaid code={`flowchart LR
+    U["Client"] -->|"1 · POST /exports"| API["API\nvalidate, auth"]
+    API -->|"2 · INSERT job\nstatus = queued"| J[("Job store\nthe truth")]
+    API -->|"3 · enqueue job id"| Q[("Queue")]
+    API -->|"4 · 202 + job id"| U
+    Q --> W["Workers × N\nscale on queue age"]
+    W -->|"5 · lease, run,\nidempotent effects"| X[("Outputs\nobject storage")]
+    W -->|"6 · status + progress"| J
+    U -.->|"7 · poll GET /jobs/id\nor webhook / push"| J`} />
+</Figure>
 
-"Run this at 9am daily" adds two hard sub-problems on top of the template:
+<Part n="Part One" title="The shape of a job">
 
-- **Firing on time at scale:** don't poll the whole jobs table every second. Standard: a **due-time index** queried each tick (`WHERE next_run <= now LIMIT batch`), or a delay-queue / timing-wheel. Fine-grained answer only if pushed.
-- **Firing exactly once when the scheduler is replicated:** two scheduler nodes must not both fire the 9am job. This is contention: **lease on the job** (lock + TTL + heartbeat) or partition the job space so each node owns a slice. Plus idempotent execution as the backstop — belt and suspenders, name both layers.
+What makes something a job, the shape every job takes, and the states it moves through.
 
-This is why "design a distributed job scheduler" is a Tier-4 question: it's this pattern + contention + the queues lesson composed. You already own all three pieces.
+</Part>
 
-## Questions this pattern unlocks
+<h2 id="why-async">Chapter 1 · Sixty seconds</h2>
 
-| Bank question | How the pattern applies |
-|---------------|------------------------|
-| **YouTube** (walkthrough) | the canonical pipeline: upload → chunk transcode fan-out/join → CDN publish |
-| **Web crawler** (walkthrough) | self-feeding pipeline — workers produce new jobs (URLs) into their own frontier queue + politeness rate limits + Bloom dedup |
-| **Notification system** (walkthrough) | fan-out (feeds pattern) into per-channel pipelines with retry/DLQ per provider |
-| **Job scheduler** (walkthrough) | the template + due-time firing + lease-based exactly-once |
-| **LeetCode judge** | jobs into sandboxed workers (containers), per-user quotas, status via poll |
-| **Report generation / data export** | the template verbatim — the most common "boring" interview add-on |
+<Scene chapter="Chapter 1" title="Sixty seconds" mood="dawn">
+
+Mara asks for two numbers: how long a transcode takes, and how many uploads arrive per second at peak. *"About two minutes,"* you say, *"and thirty."*
+
+She writes them side by side and waits. *"So how many requests were we holding open at 8 p.m.?"*
+
+</Scene>
+
+A request is a promise to answer *now*. Some work can't keep that promise. Four signals say a piece of work should become a job:
+
+| Signal | Example | Why a request is the wrong container |
+|---|---|---|
+| **Longer than a request should live** | Transcoding (minutes), a year-long PDF export, an ML batch | Load balancers, proxies and phones time out (often 30–60 s); a timeout is not a cancellation, so the work keeps running and the retry starts another |
+| **Bursty** | Month-end exports, a contest's final minutes, a viral upload wave | A queue absorbs the burst; workers drain it at the rate you can afford instead of the rate users arrive |
+| **Retriable and flaky** | Calling a slow third-party API, sending email, fetching a web page | Failures should be retried with backoff *without* the user holding a connection open |
+| **Not now** | "Every Monday at 9", "in three days unless they buy" | No request exists at the moment the work is due |
+
+**Worked numbers — the Thursday night.** Little's law: *things in a system = arrival rate × time each one spends there.* 30 uploads/s × 120 s = **3,600 requests in flight**, each pinning a thread, a connection and a load-balancer slot. And none of them could succeed, because the load balancer cut them at 60 s. As a job, the request does a few milliseconds of work (insert a row, enqueue an id) and returns. The 3,600 become 3,600 rows and 3,600 messages — which cost nearly nothing to hold.
+
+**What async costs — say it, don't hide it:**
+
+- **The user doesn't get the answer in the response.** They get a tracking number, and the UI needs a "processing" state.
+- **More moving parts:** a queue, workers, a status store, a failure path.
+- **Duplicates become normal.** Workers die mid-job and the work runs again (Chapter 4). The rest of this lesson is mostly about making that harmless.
+
+<Trace title="Should it be a job?" steps={whyAsync} takeaway="Rate × duration = requests held open. Work longer than a timeout, bursty, retriable or due later becomes a job." />
+
+**Catch the trap:** "We'll just make it async" for work that takes 20 ms and that the user needs to see the result of. A queue in front of a fast, needed answer adds latency and failure modes. The trigger is duration, burstiness, retries or timing — say which one.
+
+<h2 id="template">Chapter 2 · The tracking number</h2>
+
+<Scene chapter="Chapter 2" title="The tracking number">
+
+Iris has a ticket from a seller on Kestrel's marketplace: *"I asked for a CSV of last year's sales. The page spun for a minute, then said 'something went wrong'. I tried again. Now I have two emails with two files."*
+
+Mara draws a parcel with a sticker on it. *"When you post a parcel, they don't make you wait at the counter until it arrives. What do they give you?"*
+
+</Scene>
+
+**The canonical shape, said as five sentences:**
+
+1. **Persist the job first, then enqueue its id.** The database row is the truth; the queue is a delivery mechanism. If the enqueue fails or a message is lost, a **reconciler** re-enqueues rows stuck in `queued` past a threshold. A queue-only job vanishes silently when its message does.
+2. **Return `202 Accepted` with a job id immediately.** The experience of async is "accepted, here's your tracking number". Include a status URL: `Location: /jobs/7f3a`.
+3. **Workers pull, lease, do, update status.** Stateless, replaceable, scaled on how far behind the queue is (Chapter 8).
+4. **Status flows back.** Polling `GET /jobs/{id}` is fine — poll when you can. Push (SSE or WebSocket) when a person is watching a progress bar. A **webhook** when the client is another server.
+5. **Failures are the design.** Retries with backoff and jitter, then a dead-letter queue and an alert. A worker that dies mid-job loses its lease, the job comes back, someone else runs it — **so the work must be idempotent.**
+
+<Figure caption="The export, as a job. The client is answered in milliseconds; the work happens when a worker is free.">
+  <Mermaid code={`sequenceDiagram
+    participant C as Client
+    participant API
+    participant DB as Job store
+    participant Q as Queue
+    participant W as Worker
+    C->>API: POST /exports (Idempotency-Key k1)
+    API->>DB: INSERT job 81, status queued
+    API->>Q: enqueue 81
+    API-->>C: 202 job 81, Location /jobs/81
+    Q->>W: deliver 81
+    W->>DB: claim 81, lease 60 s, status running
+    W->>W: build CSV, upload to storage
+    W->>DB: status succeeded, output key
+    C->>API: GET /jobs/81
+    API-->>C: 200 succeeded + download URL`} />
+</Figure>
+
+**The job row** — what to write next to the job-store cylinder:
+
+```text
+jobs
+  id              uuid PK            -- the tracking number
+  tenant_id, type                    -- who, and what kind of work
+  status          queued | running | retrying | succeeded | failed | dead | cancelled
+  attempt         int                -- incremented on each claim; also the fencing token (Ch. 3)
+  max_attempts    int
+  lease_owner     text
+  lease_until     timestamp          -- when an unheartbeated claim expires (Ch. 4)
+  run_after       timestamp          -- backoff and scheduling
+  priority        int
+  progress_done, progress_total      -- Ch. 9
+  input_ref, output_ref              -- object keys, never the bytes
+  last_error      text
+  idempotency_key unique per tenant  -- a retried POST returns the same job
+  created_at, updated_at
+```
+
+**Where the queue lives — two honest options:**
+
+| | The database *is* the queue | Database for truth + a broker for delivery |
+|---|---|---|
+| How | Workers claim rows: `SELECT … FOR UPDATE SKIP LOCKED` in Postgres | Row in the database; job id in SQS, RabbitMQ or similar |
+| Strengths | One system, transactional with your data; no dual write | Scales delivery independently; built-in visibility timeouts and DLQs |
+| Limits | Polling load and row churn at high rates; fine up to hundreds or low thousands of jobs/s on good hardware (benchmark) | The insert and the enqueue are a dual write — closed by the reconciler or an <a href={`${BASE}sd/lessons/queues-streams/`}>outbox</a> |
+| Pick when | Modest rates, you want simplicity | High rates, many worker types, or you already run a broker |
+
+```sql
+-- The database as the queue: claim one job, skipping rows other workers hold.
+UPDATE jobs
+SET status = 'running', attempt = attempt + 1,
+    lease_owner = :worker, lease_until = now() + interval '60 seconds'
+WHERE id = (
+  SELECT id FROM jobs
+  WHERE status IN ('queued', 'retrying') AND run_after <= now()
+  ORDER BY priority DESC, created_at
+  LIMIT 1
+  FOR UPDATE SKIP LOCKED)
+RETURNING id, attempt;
+```
+
+**Why not Kafka for jobs?** A log hands each partition to one consumer and tracks one offset per partition. A ten-minute job at the head of a partition blocks everything behind it, and you can't acknowledge job 5,013 while 5,012 is still running. Logs fit event streams; **per-message-ack queues fit independent jobs.** (Newer Kafka versions are adding queue-style consumption — check its current status before leaning on it.) The difference is the subject of <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a>, Chapter 2.
+
+**Status back to the client:**
+
+| Mechanism | When | The detail that scores |
+|---|---|---|
+| **Polling** `GET /jobs/{id}` | Default; jobs of seconds to hours | Return `Retry-After` or a suggested interval; cache the status read |
+| **SSE / WebSocket push** | A person watching a progress bar | Still keep polling as the fallback for reconnects |
+| **Webhook** | The client is a server (partner integration) | Sign it, retry with backoff, receiver idempotent on job id |
+| **Email / push notification** | Long jobs where the user has left | "Your export is ready" with a short-lived download link |
+
+<Trace title="Write the contract" steps={template} takeaway="Row first, then enqueue. 202 with a job id. Poll by default, push for watchers, webhooks for servers." />
+
+<Reveal q="The seller got two files from two clicks. Which line of the template would have stopped the second export?">
+
+The **idempotency key** on `POST /exports`. The client generates a key per logical request and reuses it on retry; the API stores it with a unique constraint on `(tenant_id, idempotency_key)`. The second click finds the existing job 81 and returns the same 202 — one job, one file, one email. Without a key, two clicks are two legitimately different jobs as far as the server can tell. <a href={`${BASE}sd/lessons/delivery-framework/#api`}>The delivery framework's API chapter</a> covers the header; <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a> covers idempotency end to end.
+
+</Reveal>
+
+**Catch the trap:** drawing the queue without the job row. "Put it on Kafka and workers process it" has no answer to "how does the user know it's done?", "what if the message is lost?", or "what did job 81 fail with?". The row is where status, attempts, errors and outputs live.
+
+<h2 id="state-machine">Chapter 3 · Where is job 42?</h2>
+
+<Scene chapter="Chapter 3" title="Where is job 42?" mood="dusk">
+
+A support engineer asks a simple question: *"Customer says job 42 has been 'running' since yesterday. Is it?"*
+
+Dev looks. The worker that claimed it was replaced by an autoscaler at 2 a.m. Nothing has touched the row since. *"It's running,"* he says, *"in the sense that nobody has told the database otherwise."*
+
+</Scene>
+
+A job is a small **state machine**, and the row stores which state it's in. Draw it on the board; every arrow is a question an interviewer can ask.
+
+<Figure caption="The job state machine. Workers move jobs forward; the reconciler rescues jobs whose workers vanished; a human (or a fixed bug) redrives the dead.">
+  <Mermaid code={`stateDiagram-v2
+    [*] --> queued: API inserts row
+    queued --> running: worker claims, takes lease
+    running --> succeeded: outputs written, conditional update
+    running --> retrying: transient error or lease expired
+    retrying --> queued: backoff elapsed
+    running --> failed: permanent error
+    running --> dead: attempts exhausted
+    dead --> queued: redrive after fix
+    queued --> cancelled: user cancels
+    running --> cancelled: worker sees flag
+    succeeded --> [*]
+    failed --> [*]`} />
+</Figure>
+
+| State | Meaning | Who moves it out |
+|---|---|---|
+| `queued` | Waiting for a worker | A worker's claim; the user's cancel |
+| `running` | A worker holds a lease | That worker (succeeded / failed / retrying); the reconciler when the lease expires |
+| `retrying` | Failed transiently; waiting until `run_after` | The scheduler of retries (or the claim query, which skips rows not yet due) |
+| `succeeded` | Outputs exist; `output_ref` set | Nobody — terminal |
+| `failed` | Permanent error (bad input) — the user is told why | Nobody — terminal; the user fixes input and submits a new job |
+| `dead` | Transient errors outlasted every attempt | An operator's redrive, after the cause is fixed |
+| `cancelled` | User asked to stop | Nobody — terminal |
+
+**Two rules make the machine safe under concurrency:**
+
+- **Every transition is a conditional update.** `UPDATE jobs SET status = 'succeeded' … WHERE id = 42 AND status = 'running' AND attempt = 3`. If it changes 0 rows, you didn't own the job any more, and you stop.
+- **The attempt number is a fencing token.** A worker that paused (a long GC, a network partition) and wakes up after its lease expired holds an old attempt number. Its writes match nothing. This is the same idea as fencing tokens for distributed locks in <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a>, made cheap by a column you already have.
+
+**Failed versus dead** is a distinction worth saying. *Failed* means "this input can never work" — the user needs to hear it in seconds. *Dead* means "something on our side kept breaking" — an operator needs to hear it, and the job should be redriven once the cause is fixed.
+
+<Trace title="Read the row" steps={states} takeaway="An expired lease is a failed attempt. Every transition is conditional on the current attempt, so a zombie worker’s late write changes nothing." />
+
+**Catch the trap:** a status column with only `pending` and `done`. Ask yourself where a job goes when its worker dies, when its input is bad, and when it has failed five times. If the answer is "it stays `pending`", that's job 42.
+
+<Part n="Part Two" title="When workers die">
+
+Workers crash, deploy, get pre-empted, pause. The template survives all of it with one chain: crash, redelivery, idempotency.
+
+</Part>
+
+<h2 id="leases">Chapter 4 · The worker that vanished</h2>
+
+<Scene chapter="Chapter 4" title="The worker that vanished" mood="night">
+
+Kestrel moves transcoding to cheap pre-emptible machines. The cloud provider takes some back with a short warning, several times an hour. Iris asks whether that means videos get lost.
+
+Mara draws one worker, then crosses it out mid-job. *"It took a job and died holding it. Who notices? How long do they wait? And what happens to the half-written files?"*
+
+</Scene>
+
+A worker that takes a job can die at any instant: before it starts, halfway, or after doing the work but before saying so. **The broker (or job store) can't tell those apart.** So the system must assume the worst and give the job to someone else — which means the job may run twice.
+
+**The lease.** Claiming a job grants a time-limited lease. While the worker is alive it **heartbeats**, extending the lease. If the heartbeats stop, the lease expires and the job becomes claimable again.
+
+- **Broker flavour:** SQS's *visibility timeout* — a received message is hidden for N seconds; delete it to acknowledge; extend it with `ChangeMessageVisibility` while working. RabbitMQ: an unacknowledged message returns to the queue when the consumer's channel closes.
+- **Database flavour:** `lease_until` on the row, extended by heartbeat; the reconciler moves `running` rows with `lease_until` in the past to `retrying`.
+
+**Sizing the lease.** The lease length is how long a crash goes unnoticed. Too short and healthy slow jobs get handed out twice; too long and a crashed job sits idle. **Short lease plus heartbeat** gives both: say a 60-second lease renewed every 20 seconds. A crash is noticed within a minute; a healthy two-hour job keeps renewing. (Brokers cap visibility timeouts — SQS allows up to 12 hours; check current docs.)
+
+<Figure caption="Crash → redelivery → idempotency. The second run overwrites the same output keys, so running twice has the same effect as running once.">
+  <Mermaid code={`sequenceDiagram
+    participant Q as Queue / job store
+    participant A as Worker A
+    participant B as Worker B
+    participant S as Object storage
+    Q->>A: job 42, lease 60 s (attempt 1)
+    A->>S: write chunk-0001 … chunk-0040
+    Note over A: pre-empted, no more heartbeats
+    Note over Q: lease expires
+    Q->>B: job 42, lease 60 s (attempt 2)
+    B->>S: write chunk-0001 … chunk-0050 (same keys, overwrite)
+    B->>Q: succeeded, WHERE attempt = 2`} />
+</Figure>
+
+**That chain — crash → redelivery → idempotency — is the pattern's core insight, and the follow-up every interviewer runs.** You can't prevent the second run; you make it harmless (Chapter 6).
+
+**Restart or resume?** Restarting from the beginning is the default: simple, and correct if the work is idempotent. Resuming from a **checkpoint** pays off only when jobs are long and pre-emption is common — and the better answer is usually to **make the job smaller**: split the video into chunks (Chapter 11), the export into id ranges. Then a crash costs one chunk, not the whole job.
+
+**Graceful shutdown.** On a deploy or pre-emption warning, a worker should stop claiming, finish or release its current job (set the lease to expire now), and exit. Then deploys don't look like crashes.
+
+<Trace title="Size the lease" steps={leases} takeaway="A lease must outlive the work: short lease, frequent heartbeat. Expired lease → the job comes back → the work must be idempotent." />
+
+<Reveal q="Why not just make the visibility timeout longer than the longest job could ever take — say, three hours?">
+
+Because the timeout is also the **recovery time**. If a worker dies one minute into a three-hour lease, the job sits invisible for 2 hours 59 minutes, and the user's video is "processing" for no reason. Heartbeat extension decouples the two: the lease is short (fast recovery), the work can be long (as long as the worker stays alive to renew).
+
+</Reveal>
+
+**Catch the trap:** "If a worker crashes, the job is retried." By whom, after how long, and what stops it from producing a second copy of the output? The complete sentence: *"The lease expires within a minute, another worker reclaims it with attempt + 1, outputs go to deterministic keys and completion is conditional on the attempt, so the rerun is harmless."*
+
+<h2 id="retries">Chapter 5 · The file that never transcodes</h2>
+
+<Scene chapter="Chapter 5" title="The file that never transcodes" mood="storm">
+
+Saturday, 2 a.m. Dev: *"Transcode queue age is forty minutes and climbing. Workers are healthy. They're just all very busy failing."*
+
+One creator uploaded a file with a codec the encoder can't read — then, impatient, uploaded it again eleven times. Every worker that picks one up crashes, the job reappears, and another worker picks it up. Around them, thousands of good videos wait.
+
+</Scene>
+
+The **retry policy** is part of every job design. <a href={`${BASE}sd/lessons/queues-streams/#poison`}>Queues & streams, Chapter 8</a> covers the broker mechanics (redrive policies, retry topics, head-of-line blocking on logs). At the job level, five decisions:
+
+1. **Classify the error.** *Permanent* — bad input, unsupported format, a 4xx from a dependency, a validation failure → **fail now**, tell the user, keep the input for inspection. *Transient* — timeout, 5xx, throttling, lost lease → **retry**.
+2. **Back off exponentially, with jitter.** Delay before attempt *n* ≈ `base × 2^n`, capped, then randomised (for example "full jitter": a random value between 0 and that number). Without jitter, every job that failed at 14:00:00 retries at 14:00:01, 14:00:03, 14:00:07 — in lockstep, hammering the recovering dependency.
+3. **Size the retry window to the failures you want to ride out.** That's the arithmetic below.
+4. **Cap the attempts; then `dead` plus the DLQ.** A dead job is not deleted. It's kept with its last error.
+5. **Alert and redrive.** A DLQ nobody watches is a slower way to lose work. Once the bug is fixed, move dead jobs back to `queued` — safe, because the work is idempotent.
+
+**Worked numbers — the retry window.** The thumbnail service has outages lasting up to 20 minutes.
+
+| Policy | Delays between attempts | Total backoff | Survives a 20-minute outage? |
+|---|---|---|---|
+| A: 6 attempts, base 1 s, ×2 | 1, 2, 4, 8, 16 s | 31 s | **No** — every affected job is dead in half a minute |
+| B: 8 attempts, base 30 s, ×2 | 30, 60, 120, 240, 480, 960, 1,920 s | 3,810 s ≈ **63.5 min** | **Yes**, with margin |
+
+Policy A is what most libraries do by default, and it's right for a blip. For outages, you need minutes of backoff — or a **circuit breaker** that pauses the stage entirely while the dependency is down, so jobs wait in the queue instead of spending their attempts.
+
+**Retries multiply load.** If each of three layers retries 3 times, one user action can become 3 × 3 × 3 = 27 calls to the bottom dependency during an outage — exactly when it can least afford them. Retry at **one** layer (usually the job), and let inner calls fail fast.
+
+<Trace title="Classify, then back off" steps={retries} takeaway="Permanent errors fail fast. Transient errors back off with jitter over a window longer than the outages you expect. Then dead, alert, redrive." />
+
+**Catch the trap:** "Failed jobs go to a DLQ." Then what? Name the alert, who looks, the difference between failed (user's input) and dead (our fault), and the redrive. A DLQ without a redrive story is a bin.
+
+<h2 id="effects">Chapter 6 · Two emails for one export</h2>
+
+<Scene chapter="Chapter 6" title="Two emails for one export">
+
+The export worker is rewritten: build the CSV, upload it, email the link, mark the job done. Then a deploy lands between the email and the database write. The job is redelivered. The seller gets two emails with two links.
+
+*"Exactly once,"* Iris says. *"Can't we just turn that on?"*
+
+Theo shakes his head. *"You can't make it run once. You can make running it again do nothing."*
+
+</Scene>
+
+**Delivery is at-least-once; you make the *effect* exactly-once.** (Why delivery can't be exactly-once across a network is <a href={`${BASE}sd/lessons/queues-streams/#delivery`}>Queues & streams, Chapter 4</a>; the dedup-table recipe is <a href={`${BASE}sd/lessons/queues-streams/#idempotency`}>Chapter 5</a>.) For jobs, three tools cover almost everything:
+
+**1. Deterministic outputs.** Name every output by the job's inputs, never by the attempt: `exports/81/sales-2025.csv`, `videos/9/720p/chunk-0007.ts`. A rerun overwrites the same object with the same bytes. A random name per attempt leaves orphans and forces you to decide which copy is real.
+
+**2. Conditional state transitions.** Completion is `UPDATE … WHERE id = 81 AND attempt = :mine AND status = 'running'`. Downstream triggers (the next stage, the email) fire only for the worker whose update changed a row.
+
+**3. Markers for effects outside your systems.** An email, a charge or a third-party call can't join your transaction. Give each one a marker keyed by the job: `effects(job_id, 'email') unique`. Then choose a side, out loud:
+
+| Order | If it crashes in between | Fits |
+|---|---|---|
+| Record marker, then send | The email is never sent (at-most-once) | Effects where a duplicate is worse than a miss |
+| Send, then record marker | The email is sent twice (at-least-once) | Receipts and "your export is ready" — a rare duplicate is fine |
+| Pass the job id as the provider's **idempotency key** | Provider deduplicates | Payment and messaging providers that support it — best when available |
+
+**The point of no return.** Some effects can't be undone or deduplicated (a push notification already on someone's lock screen). Put them **last**, after every step that can fail, so a retry rarely reaches them twice.
+
+<Trace title="Make twice harmless" steps={effects} takeaway="Deterministic output keys, conditional completion, and a marker or provider idempotency key for each external effect." />
+
+<Reveal q="The interviewer asks: “So your workers process each job exactly once?” What do you say?">
+
+*"No — each job is delivered at least once; a worker can always die between doing the work and recording it. What I guarantee is that the effect happens once: outputs are written to deterministic keys, completion is a conditional update on the attempt number, and the one external effect, the email, uses the job id as its dedup key. A redelivery redoes some work and changes nothing."* Saying *delivered at least once, effect exactly once* is the whole answer.
+
+</Reveal>
+
+**Catch the trap:** "The worker is idempotent" as a slogan. Say *how*: which key the outputs use, which condition the completion update checks, and where the marker for the email lives.
+
+<Part n="Part Three" title="Many jobs, many tenants">
+
+One job is easy. A million jobs from a thousand customers, arriving in bursts, on machines you pay for by the hour — that's the design.
+
+</Part>
+
+<h2 id="fairness">Chapter 7 · One customer, a million jobs</h2>
+
+<Scene chapter="Chapter 7" title="One customer, a million jobs" mood="dusk">
+
+Kestrel signs its first enterprise seller. On day one, their integration requests an export for every one of their million products. Within minutes, support tickets arrive from small sellers whose single exports have been "queued" for eight minutes.
+
+*"The queue is first-come, first-served,"* Dev says. *"It's working perfectly. That's the problem."*
+
+</Scene>
+
+**Worked numbers.** One FIFO queue, 2,000 jobs/s of worker capacity. The enterprise tenant enqueues 1,000,000 jobs. A small seller's single job lands behind them and waits 1,000,000 ÷ 2,000 = **500 s ≈ 8.3 minutes**. Nobody did anything wrong; one tenant's burst simply became everyone's latency.
+
+**Priorities** come first, and they bring their own problem:
+
+- **Separate queues per class** — interactive (a user is waiting), standard, bulk. Workers poll the high queue first.
+- **Strict priority starves.** If interactive work alone can saturate the fleet, bulk jobs never run. Starvation is the predictable result of strict priority under load, not a rare edge case.
+- **Aging** fixes starvation crudely: a job's effective priority rises the longer it waits, so eventually it wins.
+
+**Fairness across tenants** is a scheduling decision:
+
+| Scheme | How | Gives you |
+|---|---|---|
+| **Per-tenant queues, round-robin** | One logical queue per tenant; the dispatcher takes one job from each non-empty queue in turn | A small tenant waits about one "turn", not behind a million jobs |
+| **Weighted fair scheduling** | Each class or tenant gets a weight; each receives throughput in proportion to its weight when there's contention (deficit round-robin is a classic implementation) | Guaranteed shares, no starvation, and a paid tier can buy a bigger weight |
+| **Per-tenant concurrency cap** | At most N running jobs per tenant | One tenant can't occupy every worker, even with long jobs |
+| **Admission control** | Per-tenant rate limits or quotas at the API (`429` with `Retry-After`) | Bounds the backlog itself — see <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> |
+
+**Worked numbers — weights.** Interactive and bulk share 2,000 jobs/s, weighted 4 : 1. When both have work, bulk gets 1 ÷ (4 + 1) = **20% = 400 jobs/s** — never zero. A good scheduler is **work-conserving**: when interactive is idle, bulk gets all 2,000. The enterprise million then drains in 500 s when the fleet is otherwise quiet, or 1,000,000 ÷ 400 = 2,500 s ≈ **42 minutes** at worst while interactive saturates — and nobody else waits behind it.
+
+<Figure caption="Per-tenant queues feeding a weighted scheduler. The million-job tenant fills its own queue, not everyone’s.">
+  <Mermaid code={`flowchart LR
+    A[("tenant A\n1,000,000 jobs")] --> S["Scheduler\nweighted round-robin\n+ per-tenant cap"]
+    B[("tenant B\n1 job")] --> S
+    C[("tenant C\n12 jobs")] --> S
+    S --> W["Workers\n2,000 jobs/s"]`} />
+</Figure>
+
+**Implementation honesty.** "A queue per tenant" with ten thousand tenants means ten thousand queues to poll. Common shapes: the database-as-queue with a claim query that picks the tenant with the fewest running jobs; a small dispatcher that keeps a ring of active tenants; or a few shared queues plus per-tenant caps enforced at claim time. Pick one and say how the worker finds its next job.
+
+<Trace title="Share the fleet" steps={fairness} takeaway="FIFO makes one burst everyone’s latency. Per-tenant queues, weights and caps make it that tenant’s latency. Strict priority starves; weights don’t." />
+
+**Catch the trap:** "Add a priority queue." Then ask what happens to the lowest priority under sustained load. If the answer is "it waits", say how long, and why that's acceptable — or add weights.
+
+<h2 id="scaling">Chapter 8 · Forty minutes behind</h2>
+
+<Scene chapter="Chapter 8" title="Forty minutes behind" mood="night">
+
+Kestrel Clips grows to a million uploads a day. Every evening around 9 p.m., the transcode queue's oldest job is forty minutes old. The autoscaler, set to keep workers at 70% CPU, does nothing — the workers spend half their time waiting on storage, so CPU sits at 55%.
+
+The finance dashboard shows the other half of the problem: the cluster provisioned for the evening peak sits two-thirds idle at 4 a.m.
+
+*"Two questions,"* Mara says. *"How many machines do we need? And how do we know when we need them?"*
+
+</Scene>
+
+**Sizing workers: Little's law again.** *Busy workers = arrival rate × time per job.* Then divide by a target utilisation (60–80%), because a fleet at 100% has no slack and its queue grows without bound.
+
+**Worked numbers — Kestrel Clips.** Assumptions: 1,000,000 uploads/day, about 1 minute each; the full rendition ladder costs about **4 core-minutes per video-minute** (an assumption — benchmark your encoder and settings); peak is 3× average; 32-core machines; an illustrative **$0.04 per core-hour** (check current prices).
+
+```text
+Work         1,000,000 videos × 1 min × 4 core-min = 4,000,000 core-min/day
+Average      4,000,000 ÷ 1,440 min ≈ 2,778 cores busy  → ≈ 87 machines
+Peak (3×)    ≈ 8,333 cores                             → ≈ 261 machines
+Cost         4,000,000 core-min = 66,667 core-hours × $0.04 ≈ $2,667/day of real work
+Peak 24/7    8,333 cores × 24 h × $0.04               ≈ $8,000/day — 3× the work
+```
+
+**Three ways to provision, and what each costs:**
+
+| Strategy | Machines | What users feel | Bill |
+|---|---|---|---|
+| Provision for peak, always on | ~261 | No queue, ever | ~$8,000/day; two-thirds idle at night |
+| Provision near average, let the queue absorb peaks | e.g. 4,200 cores ≈ 131 machines | A wait at peak (below) | ~half the peak bill |
+| Autoscale on queue age, with a floor | 87–261, following load | Short waits while new machines boot | Close to the $2,667 of real work, plus headroom |
+
+**Worked numbers — what "let the queue absorb it" means.** Provision 4,200 cores. A 2-hour evening peak arrives at 8,333 core-minutes per minute of work. The backlog grows by 8,333 − 4,200 ≈ **4,133 core-minutes every minute**; after 2 hours that's about **496,000 core-minutes** of queued work. A video uploaded at the end of the peak waits about 496,000 ÷ 4,200 ≈ **118 minutes** before a worker reaches it. If the night runs at half the average rate (≈ 1,389 cores of arrivals), the backlog drains at 4,200 − 1,389 ≈ 2,811 per minute — about **3 hours**. Two-hour waits are not acceptable for "your video is processing" — which is why the real answer is **autoscaling plus priorities** (short videos and first renditions first, Chapter 17), with the queue absorbing only the few minutes it takes new machines to boot.
+
+**What to autoscale on.** Not CPU — workers can be saturated or I/O-bound whatever the backlog. Use:
+
+- **Age of the oldest queued job** — what users feel ("ready in about 4 minutes"). Alert and scale on it.
+- **Backlog per worker** = queued work ÷ workers, against a target ("each worker should have at most 2 minutes of work waiting"). Depth alone means nothing without job duration: 10,000 one-millisecond jobs are nothing; 10,000 ten-minute jobs are a crisis.
+- **Scale per stage.** Each stage of a pipeline has its own queue and its own fleet (Chapter 10).
+
+**Back-pressure** is how the system says "slow down" instead of drowning:
+
+- **Pull-based workers can't be overwhelmed** — they take work at their own rate, and the queue grows instead. Queue age *is* the back-pressure signal.
+- **Bound the queue when the backlog itself is the danger.** Per-tenant quotas at the API, `429` with `Retry-After` for bulk work, shedding low-priority jobs. An unbounded queue just turns overload into ever-later results.
+- **Protect downstream.** Scaling workers moves the bottleneck to whatever they write to. Doubling transcoders doubles writes to object storage and the job store — check they can take it, or cap concurrency per dependency.
+
+**Pre-emptible (spot) machines** fit job workers unusually well: the lease-and-idempotency machinery from Part Two already handles a machine disappearing. Run a floor of on-demand capacity for interactive work and burst on spot for bulk. (Pricing and eviction behaviour vary by provider — check current terms.)
+
+<Trace title="Size and scale the fleet" steps={scaling} takeaway="Cores = work per day ÷ minutes per day, then ÷ utilisation. Provision near average, autoscale on queue age, and say the wait you accept at peak." />
+
+<Reveal q="Autoscaling reacts in minutes. A contest or a viral moment arrives in seconds. What fills the gap?">
+
+The queue, plus a warm floor. Jobs wait for the few minutes it takes new machines to boot — acceptable if you've said so. For predictable spikes (a contest ending at 21:00, a scheduled launch), **scale ahead on a schedule**. For work where seconds matter (a code judge during a contest), keep a **pre-warmed pool** sized by Little's law (Chapter 16). And prioritise inside the queue so the wait lands on bulk work, not on the user staring at a spinner.
+
+</Reveal>
+
+**Catch the trap:** "Workers autoscale." On what signal, between what bounds, and what happens to the queue while new machines boot? And did you check the database the workers write to?
+
+<h2 id="progress">Chapter 9 · Seventy-three percent</h2>
+
+<Scene chapter="Chapter 9" title="Seventy-three percent" mood="dawn">
+
+Iris watches a two-hour concert video process. The progress bar says 73%. Then 73%. Then 73% for six minutes. Then 100%.
+
+*"Was it stuck?"* she asks. Nobody knows. And when she clicks *cancel* on the next one, nothing happens for a quarter of an hour — and then it publishes anyway.
+
+</Scene>
+
+**Progress** is a derived, cheap number. Define it in units the job actually has: chunks done ÷ chunks total, rows exported ÷ rows estimated, pages crawled this run. Then:
+
+- **Write it rarely.** Per chunk, or at most every few seconds per job — never per frame or per row. Thousands of workers writing progress every millisecond is a self-inflicted database load.
+- **Store it on the job row** (or a fast side store for very chatty jobs), and serve it from `GET /jobs/{id}`. Push via SSE or WebSocket only when someone is watching.
+- **Report stage as well as percent.** "Transcoding 180 / 300 chunks" beats "60%". A per-stage view answers Iris: the bar paused at 73% because packaging — one serial step — was running.
+- **Heartbeat ≠ progress.** A worker can heartbeat while stuck in an infinite loop. Alert on "lease renewed but no progress for N minutes" as well as on expired leases.
+- **ETA** = remaining work ÷ recent throughput for this job — and say it's an estimate.
+
+**Checkpoints for long jobs.** A 3-hour export over 50 million rows should save a **cursor** (the last exported id) every few thousand rows, alongside the partial output's part number in a multipart upload. A crash then resumes from the cursor instead of from row zero. The output key stays deterministic, so the resumed run writes the same parts.
+
+**Cancellation is a state, not a signal.** You can't reach into a queue and pluck out a job's 140 pending tasks, and you shouldn't kill shared worker processes. Instead:
+
+1. **Mark the job `cancelled`** (a conditional update — it might have just succeeded).
+2. **Queued work skips itself.** A worker that dequeues a task checks the parent job's status first and acks without working if it's cancelled.
+3. **Running work stops at safe points.** Workers check the flag at each heartbeat or between chunks, abort, and release their lease.
+4. **A sweeper cleans up** partial outputs under the job's prefix.
+5. **Past the point of no return, say so.** If publishing has started, "cancel" may mean "delete after it completes". The UI should tell the truth.
+
+<Trace title="Report and stop" steps={progress} takeaway="Progress is a throttled counter in real units. Cancellation is a flag every worker checks at safe points, plus a sweeper." />
+
+**Catch the trap:** a progress bar backed by a write per unit of work. Ask how many writes per second the whole fleet generates. If it's more than the jobs themselves, throttle it.
+
+<Part n="Part Four" title="Pipelines">
+
+Real work comes in stages. Stages fan out and fan in, someone has to hold the plan, and some jobs are due at nine o'clock every Monday.
+
+</Part>
+
+<h2 id="pipelines">Chapter 10 · One job becomes six</h2>
+
+<Scene chapter="Chapter 10" title="One job becomes six" mood="dusk">
+
+Iris, cheerful: *"Oh, and also — thumbnails. And a preview GIF. And captions from the audio. And can we check uploads for banned content before anyone sees them?"*
+
+The transcode job is now a 40-minute script that does seven things. On Tuesday the thumbnail step fails on one odd aspect ratio. The retry starts the whole 40 minutes again.
+
+</Scene>
+
+A **pipeline** is a graph of stages. Each stage is the job template — its own queue, its own workers, its own retries — and finishing one stage enqueues the next. The item (a video) carries a state machine of its own: `uploaded → validating → transcoding → packaging → ready`.
+
+<Figure caption="Kestrel Clips as a staged pipeline. Each box is a stage with its own queue and fleet; branches run in parallel; publish waits for what it needs.">
+  <Mermaid code={`flowchart LR
+    U["upload complete"] --> V["validate + probe\nscan content"]
+    V --> SP["split into chunks"]
+    SP --> T["transcode\nchunk × rendition\nthousands of cores"]
+    T --> P["package\nHLS segments + manifests"]
+    V --> TH["thumbnails\na few workers"]
+    V --> CA["captions\nGPU workers"]
+    P --> PUB["publish\nstatus = ready, CDN"]
+    TH --> PUB`} />
+</Figure>
+
+**Why stages beat one large job:**
+
+- **Independent retry.** A failed thumbnail retries the thumbnail, not the transcode.
+- **Independent scaling.** Transcode needs thousands of cores; thumbnails need a few; captions need GPUs. One job type would have to run on the most expensive machine for its whole length.
+- **Parallelism.** Branches with no dependency (thumbnails, captions) run alongside transcoding. Inside a stage, fan-out splits one item into many tasks (Chapter 11).
+- **Failure isolation.** A broken caption model stalls captions, not playback. Decide per branch whether it **blocks publish** (content scan: yes) or **arrives later** (captions: publish without, add when ready).
+
+**Between stages, pass references.** A message carries `{ videoId, stage, inputKey }`, never the 4 GB file — the **claim-check** pattern. Workers read and write object storage directly. Messages stay small, brokers stay happy, and a stage can be rerun from its stored input.
+
+**Self-feeding pipelines.** In most pipelines work flows one way. In a **web crawler**, the fetch stage produces new work for itself: every fetched page yields links, which become new fetch jobs. That loop needs a guard against infinite work — dedup and budgets (Chapters 14–15).
+
+<Trace title="Cut it into stages" steps={pipelines} takeaway="Stages retry, scale and fail independently. Messages carry keys, not bytes." />
+
+**Catch the trap:** a pipeline drawn as one long arrow with no queues between steps. Ask what happens when step four fails: if the answer is "steps one to three run again", it's a mega-job in a costume.
+
+<h2 id="fan-in">Chapter 11 · The last chunk</h2>
+
+<Scene chapter="Chapter 11" title="The last chunk" mood="night">
+
+A two-hour concert takes ninety minutes to transcode on one machine. Theo proposes cutting it into one-minute chunks and transcoding all of them at once. It works beautifully — 120 chunks, five renditions each, done in a few minutes.
+
+Then a viewer reports a video that skips from minute 41 straight to minute 43. Dev finds that the packaging stage started while chunk 42 was still running. *"Who decided all the chunks were done?"* Mara asks.
+
+</Scene>
+
+**Fan-out** turns one item into many independent tasks. **Fan-in** notices when all of them have finished and fires the next stage exactly once.
+
+**Worked numbers — why fan out.** A 60-minute video at 4 core-minutes per video-minute is **240 core-minutes** of work. Even a 32-core machine with perfect parallelism needs 7.5 minutes, and a single encode rarely uses 32 cores perfectly, so one-machine jobs run much longer. Split into 60 one-minute chunks × 5 renditions = **300 tasks of about 0.8 core-minutes each**. With 300 free cores, wall-clock time is roughly the slowest task plus the split and package steps — minutes, not tens of minutes.
+
+**Splitting video correctly.** Chunks must start on a **keyframe** (split on closed GOP boundaries) so each can be encoded alone. Force keyframes at a fixed interval in every rendition so segment boundaries line up across renditions — the player switches bitrate at those boundaries (<a href={`${BASE}sd/lessons/blob-cdn/#video`}>Blob storage & CDN, Chapter 15</a>). The cost of chunking: per-task overhead, and encoder rate control can't see across chunk boundaries, so quality can vary slightly at the seams. Chunk size is the dial: smaller chunks, more parallelism and more overhead.
+
+<Figure caption="Fan-out to 300 tasks, fan-in by counting completions once each. The stage transition is itself conditional, so exactly one worker fires packaging.">
+  <Mermaid code={`flowchart LR
+    S["split\nvideo 9"] --> T1["chunk 1 × 360p"]
+    S --> T2["chunk 1 × 720p"]
+    S --> T3["…"]
+    S --> T4["chunk 60 × 1080p"]
+    T1 --> F{"mark task done\nif not already;\nremaining − 1"}
+    T2 --> F
+    T3 --> F
+    T4 --> F
+    F -->|"remaining = 0\nand state = transcoding"| P["package video 9\n(fired once)"]`} />
+</Figure>
+
+**Fan-in, the classic answer — and its bug.** "Set a counter to 300; each finished task does an atomic decrement; whoever hits zero fires the next stage." Atomic is not the same as idempotent. A task that decrements and then dies before acknowledging is **redelivered and decrements again**. The counter reaches zero one task early, and packaging starts with a hole — minute 42.
+
+**Count each task once:**
+
+```sql
+BEGIN;
+  UPDATE tasks SET state = 'done'
+  WHERE id = :task AND state <> 'done';          -- 0 rows = already counted, stop here
+  UPDATE videos SET remaining = remaining - 1
+  WHERE id = :video RETURNING remaining;         -- only if the first update changed a row
+COMMIT;
+
+-- the worker that sees remaining = 0 tries to fire the stage:
+UPDATE videos SET state = 'packaging'
+WHERE id = :video AND state = 'transcoding';     -- exactly one caller changes a row
+```
+
+- **The simplest version** skips the counter: after marking its task done, each worker checks `count(*) of tasks not done = 0`, then attempts the conditional stage transition. 300 rows is a cheap count, and every step is idempotent.
+- **In Redis**, do "add task id to a done-set; only if it was new, decrement" in **one Lua script** so the two steps are atomic, and keep the task table as the truth you can recount from if Redis loses data.
+- **The next stage must be idempotent too.** Two workers might race to fire it; the conditional transition lets one win, and packaging writes deterministic keys anyway.
+
+**Fan-in needs a failure path.** If task 233 is dead-lettered, `remaining` sits at 1 forever and the video is "processing" until someone complains. Either a dead child **fails the parent** (or marks it partially ready, if that's a product choice), or a sweeper fails parents with no progress past a deadline. "Wait for all" must always come with "…or until this deadline".
+
+<Trace title="Count the last chunk once" steps={fanIn} takeaway="Atomic is not idempotent. Mark each task done conditionally and count in the same transaction; fire the next stage with a conditional transition; give the parent a deadline." />
+
+<Reveal q="Could you avoid fan-in altogether by having the packaging stage poll “are all 300 chunks there yet?” every few seconds?">
+
+Yes — it's a legitimate design, sometimes simpler: a packaging job for video 9 is scheduled once, checks the task table (or lists the output prefix), and re-schedules itself with a delay until everything is present or a deadline passes. The cost is latency (up to one polling interval) and wasted checks, in exchange for no counter at all. Saying "a completion-triggered fan-in, or a self-rescheduling check with a deadline — I'd pick the trigger for latency" shows you see both.
+
+</Reveal>
+
+**Catch the trap:** "A Redis counter, decrement on completion." The interviewer's next question is "what if a completion is delivered twice?" Have the conditional-mark answer ready before they ask.
+
+<h2 id="orchestration">Chapter 12 · Who holds the plan?</h2>
+
+<Scene chapter="Chapter 12" title="Who holds the plan?" mood="dusk">
+
+Support asks for a page that shows, for any video, which stage it's in, what failed, and a button to rerun from that stage. The engineer who built the pipeline opens seven repositories to work out what happens after "chunks transcoded". The answer is spread across seven subscriptions.
+
+*"The plan exists,"* Mara says. *"It's just not written down anywhere."*
+
+</Scene>
+
+Two ways to connect stages:
+
+| | **Choreography** | **Orchestration** |
+|---|---|---|
+| How | Each stage reacts to events: "transcoded" → packaging subscribes; "packaged" → publish subscribes | One coordinator (an orchestrator service or a workflow engine) tells each stage what to do next and records the result |
+| Where the plan lives | Implicitly, in everyone's subscriptions | Explicitly, in one workflow definition |
+| Strengths | Loose coupling; a new listener (analytics) joins without touching anyone | One place to see status, set timeouts, retry from a stage, add compensation, change the order |
+| Weaknesses | "Where is video 9?" has no single answer; cycles and lost steps are hard to spot | The coordinator is a dependency every stage talks to; it must be durable itself |
+| Fits | Side reactions to facts: notify followers, update search, analytics | The core flow of one item through ordered stages with deadlines |
+
+Most real systems use both: **orchestrate the core flow, choreograph the side effects.** The orchestrator publishes `VideoReady`; anyone may listen.
+
+<Figure caption="The same pipeline, two ways. Left: each stage reacts to the last one’s event. Right: one workflow drives the stages and records every step.">
+  <Mermaid code={`flowchart LR
+    subgraph CH["Choreography"]
+      direction LR
+      a1["validate"] -->|"Validated"| a2["transcode"]
+      a2 -->|"Transcoded"| a3["package"]
+      a3 -->|"Packaged"| a4["publish"]
+    end
+    subgraph OR["Orchestration"]
+      direction TB
+      O["workflow for video 9\nstate per step"] --> b1["validate"]
+      O --> b2["transcode"]
+      O --> b3["package"]
+      O --> b4["publish"]
+    end`} />
+</Figure>
+
+**Workflow engines, at intuition level.** Engines such as Temporal (and Cadence, which it came from) and AWS Step Functions let you write the plan once and make it *durable*: the engine records each step's result, so a crashed coordinator resumes where it left off; steps get retry policies and timeouts; a workflow can wait for days on a timer or a human approval. Two details are worth knowing, hedged:
+
+- **Replay-based engines (Temporal-style)** rebuild a workflow's state by re-running its code against the recorded history, so workflow code must be **deterministic** — clock, randomness and I/O go through the engine's APIs or into "activities". Check the engine's docs for the exact rules.
+- **State-machine engines (Step Functions-style)** describe the flow as a JSON/YAML state machine with built-in parallel and map steps for fan-out. Check current limits on history size and execution duration before betting a design on them.
+
+In an interview, you rarely need to name an engine. Say: *"An orchestrator with a durable state table per video — one row per stage with status, attempt and timestamps. A workflow engine would give me that off the shelf."*
+
+<Trace title="Choose the shape" steps={orchestration} takeaway="Orchestrate the core flow when you need to see, retry and time it out; choreograph side reactions. Replay-based workflow code must be deterministic." />
+
+**Catch the trap:** choosing choreography because "microservices should be decoupled", then being asked to show a video's status or retry from stage four. Name the shape and why, and who can answer "where is video 9?".
+
+<h2 id="scheduler">Chapter 13 · Nine o’clock, twice</h2>
+
+<Scene chapter="Chapter 13" title="Nine o’clock, twice" mood="night">
+
+Kestrel sends sellers a weekly summary every Monday at 9 a.m., local time. For resilience, Dev runs the scheduler on two nodes. On the first Monday, every seller gets two summaries.
+
+On the second Monday, a deploy takes the scheduler down from 8:55 to 9:20. Nobody gets anything.
+
+</Scene>
+
+"Run this at 9 a.m. daily" adds two hard sub-problems on top of the template.
+
+**Problem 1 — firing on time at scale.** Don't scan the whole schedules table every second.
+
+- **Due-time index.** Each schedule row stores `next_run_at` (computed from its rule and time zone), indexed. Each tick: `WHERE next_run_at <= now() ORDER BY next_run_at LIMIT 500`. For each due row: enqueue a job, compute the next occurrence, write it back — in one transaction, or with the execution id below so a crash in between is harmless.
+- **Delay queues and timing wheels** for short delays (seconds to minutes): a broker's per-message delay, or an in-memory timing wheel — a ring of buckets, one per tick, each holding the timers due then. Long or cancellable delays belong in the database (<a href={`${BASE}sd/lessons/queues-streams/#delay`}>Queues & streams, Chapter 11</a>).
+- **Time zones:** store the rule and the IANA zone (Europe/London), not a fixed UTC instant, so 9 a.m. stays 9 a.m. across daylight-saving changes.
+
+**Problem 2 — firing exactly once when the scheduler is replicated.** Two nodes both see "9:00 job due". This is contention:
+
+- **A lease per firing** — a lock with a TTL and a heartbeat — or **partition the schedule space** so each node owns a slice (schedules hashed to node, with reassignment when a node dies).
+- **Plus idempotent execution as the backstop.** The execution id is `(schedule_id, scheduled_time)`, unique in the jobs table. A second fire for Monday 9:00 hits the constraint and does nothing. Belt and braces: name both layers.
+- **Why not one scheduler node?** It trades correctness for availability: one node down means no schedule fires. Say why you rejected it, and you've had the whole senior conversation.
+
+**Problem 3 — misfires.** When the scheduler was down at 9:00, what should happen at 9:20? There's no universal answer, so make it a **per-schedule policy**: *fire once now* (a weekly report — late is better than never) or *skip* (a "good morning" push at 9:20 is pointless). Never "fire every missed tick" by accident — a once-a-minute job down for a day would fire 1,440 times.
+
+This is why "design a distributed job scheduler" is a top-tier question: it's this pattern plus <a href={`${BASE}sd/lessons/pattern-contention/`}>contention</a> plus <a href={`${BASE}sd/lessons/queues-streams/`}>queues</a>, composed. You already own all three pieces.
+
+<Figure caption="A replicated scheduler. The due-time index finds work; the lease (or partitioning) makes double firing rare; the unique execution id makes it harmless.">
+  <Mermaid code={`flowchart LR
+    S1["scheduler node 1"] -->|"due rows,\nlease per firing"| DB[("schedules\nnext_run_at indexed")]
+    S2["scheduler node 2"] -->|"due rows,\nlease per firing"| DB
+    S1 -->|"INSERT job\nunique (schedule_id, time)"| J[("jobs")]
+    S2 -->|"INSERT job\nduplicate → no-op"| J
+    J --> Q[("queue")] --> W["workers"]`} />
+</Figure>
+
+<Trace title="Fire on time, once" steps={scheduler} takeaway="An indexed next_run_at, a lease or partition per firing, a unique execution id as the backstop, and an explicit misfire policy." />
+
+**Catch the trap:** "Cron on one box." Fine for a side project; in an interview, the follow-ups are "what if it dies?" and "what if two run?". Answer both before they're asked.
+
+<Part n="Part Five" title="The family">
+
+The same template, three more costumes: a crawler that feeds itself, a judge that runs hostile code, and the boring exports and notifications every product needs.
+
+</Part>
+
+<h2 id="frontier">Chapter 14 · A spider with manners</h2>
+
+<Scene chapter="Chapter 14" title="A spider with manners" mood="dawn">
+
+Kestrel launches *Discover*, which shows previews and search over public pages people share. It needs a crawler. The first version is a loop: pop a URL, fetch it, push its links. It works for an hour.
+
+Then an email arrives from the operator of a small recipe site. Kestrel's crawler sent them 3,000 requests in a minute, and their server fell over. Mara reads it aloud, then asks: *"Whose job was it to be polite?"*
+
+</Scene>
+
+A crawler is a **self-feeding pipeline**: fetching produces new work. Its heart is the **URL frontier** — the set of URLs waiting to be fetched — and the frontier must answer two questions at once: **which URL is most worth fetching next** (priority) and **which hosts may be contacted right now** (politeness).
+
+**The two-level frontier** (the design described for the Mercator crawler, and taught in *Introduction to Information Retrieval*, chapter 20):
+
+- **Front queues — priority.** A prioritiser assigns each new URL a score (site importance, how often the page changes, depth from a seed) and puts it in one of F priority queues.
+- **Back queues — politeness.** Each back queue holds URLs for **exactly one host**. A table maps host → back queue.
+- **A min-heap of hosts by next-allowed time.** A fetcher pops the host whose time has come, takes one URL from its back queue, fetches, and puts the host back with `next_allowed = now + gap`. When a back queue empties, it's refilled from the front queues (biased toward high priority).
+
+<Figure caption="The frontier. Priority decides what’s worth fetching; per-host queues and a heap of next-allowed times decide what’s allowed now.">
+  <Mermaid code={`flowchart LR
+    N["new URLs\n(normalised, unseen)"] --> PR["prioritiser"]
+    PR --> F1[("front: high")]
+    PR --> F2[("front: medium")]
+    PR --> F3[("front: low")]
+    F1 --> R["router\nhost → back queue"]
+    F2 --> R
+    F3 --> R
+    R --> B1[("back: recipes.example")]
+    R --> B2[("back: news.example")]
+    R --> B3[("back: … one per host")]
+    H{"heap of hosts\nby next-allowed time"} --> FE["fetchers"]
+    B1 -.-> H
+    B2 -.-> H
+    B3 -.-> H`} />
+</Figure>
+
+**Politeness, concretely:**
+
+- **One connection per host at a time**, and a **gap** between requests — a fixed 1–10 s, or adaptive (Mercator's heuristic waited a multiple of the last download time, so slow servers get gentler treatment).
+- **Back off on distress.** A `429` or `503` (honour `Retry-After`), rising latency or errors → widen that host's gap; persistent errors → pause the host.
+- **Identify yourself.** A user-agent with a URL explaining the crawler and how to contact you.
+
+**robots.txt** — the Robots Exclusion Protocol, standardised as RFC 9309:
+
+- Fetch `/robots.txt` once per host, **cache it** (the RFC says crawlers shouldn't use a cached copy for more than 24 hours, except when the file is unreachable), and check every URL against the rules for your user-agent before enqueueing or fetching.
+- Error handling is specified: broadly, a 4xx for robots.txt means the crawler may access everything, while a 5xx or network failure means **assume everything is disallowed** until it can be read. Check the RFC for the exact rules.
+- `Crawl-delay` is a common but **non-standard** directive (it's not in RFC 9309). Honouring it is polite; don't promise it as part of the standard.
+
+**DNS is a hidden bottleneck.** Every fetch needs an IP address. At hundreds of pages per second, uncached lookups add tens of milliseconds each and can overload resolvers. Keep a **local DNS cache per crawler node** (respecting TTLs), and resolve ahead of time for hosts about to come up in the heap. Early crawler papers reported DNS as a surprisingly large share of fetch time — measure yours.
+
+**Distributing the crawler: partition by host.** With ten crawler nodes, assign each **host** to a node by hash. Then one node owns each host's back queue, politeness clock, robots.txt cache, DNS entry and page budget — politeness becomes a local rule, not a distributed lock. Links discovered for another node's host are forwarded to it in batches. Partitioning by full-URL hash would scatter one host's pages across every node, and no node could enforce its gap alone.
+
+**Worked numbers — how many hosts must be in rotation.** At 386 pages/s (1 billion a month, Chapter 18) with a 2-second gap and one request per host at a time, each host yields at most 0.5 pages/s. So at least 386 ÷ 0.5 ≈ **772 hosts** must be ready at every moment — more at peak. A frontier dominated by a few huge sites stalls on politeness however many fetchers you add. Keep many hosts active, and spread priority across hosts, not just pages.
+
+<Trace title="Be polite by construction" steps={frontier} takeaway="Per-host back queues with a heap of next-allowed times; partition by host so each host has one owner; rate ÷ (1 ÷ gap) = hosts needed." />
+
+**Catch the trap:** "Fetchers sleep a second between requests." Forty fetchers sleeping a second can still send forty requests a second to one host. Politeness belongs to the host, so put it where the host's queue lives.
+
+<h2 id="dedup">Chapter 15 · The calendar that never ends</h2>
+
+<Scene chapter="Chapter 15" title="The calendar that never ends" mood="storm">
+
+Two weeks into the crawl, Dev notices one host has served Kestrel two million pages. It's a small shop. Its event calendar has a "next month" link on every page — and every month, forever, is a real page with a real URL.
+
+Meanwhile, storage is growing faster than the page count. Theo samples it: the same article, stored forty times, under forty URLs with different tracking parameters.
+
+</Scene>
+
+Three ways a crawler wastes itself: fetching the **same URL** twice, storing the **same content** under different URLs, and wandering into **infinite URL spaces**.
+
+**1. URL dedup — "have I seen this URL?"**
+
+- **Normalise first:** lowercase scheme and host, drop default ports and `#fragments`, resolve `../`, sort query parameters, strip known tracking parameters, settle trailing slashes. Then dedup on the normalised form.
+- **A Bloom filter** answers "seen?" in a small fixed amount of memory. It has **no false negatives** (a seen URL always reports seen) and a tunable **false-positive rate** — a genuinely new URL wrongly reported as seen and therefore **never crawled**.
+
+**Worked numbers — Bloom sizing.** For *n* items and false-positive rate *p*, the optimal filter uses *m = −n · ln p ÷ (ln 2)²* bits and *k = (m ÷ n) · ln 2* hash functions.
+
+| n (URLs) | p | Bits per URL | Memory | Hashes |
+|---|---|---|---|---|
+| 10 billion | 1% | ≈ 9.6 | ≈ **12 GB** | 7 |
+| 10 billion | 0.1% | ≈ 14.4 | ≈ **18 GB** | 10 |
+| 10 billion, exact set of 8-byte fingerprints | — | 64 | ≈ **80 GB** | — |
+
+The exact set is also feasible on a sharded store (and with 64-bit fingerprints, about 3 accidental collisions are expected across 10 billion URLs — birthday arithmetic, *n² ÷ 2⁶⁵*). The Bloom filter saves roughly 7× the memory in exchange for skipping about 1% of new URLs. Partitioned by host across ten nodes, each node holds about a tenth. Say which you'd choose and why: *"1% coverage loss is fine for discovery; I'd use 0.1% if missing pages costs us."*
+
+**2. Content dedup — "have I stored this page?"**
+
+- **Exact duplicates:** hash the normalised content (for example SHA-256 of the extracted text). Same hash → store once, record the URL as an alias.
+- **Near duplicates** (same article with a different ad, date or session id): **SimHash** gives each page a 64-bit fingerprint where similar pages have fingerprints differing in few bits. Google's 2007 paper on near-duplicate detection for crawling used 64-bit SimHash with a Hamming distance of 3 as the threshold at the scale of billions of pages.
+
+**3. Traps — infinite URL spaces.** Calendars, session ids in URLs, faceted search with endless filter combinations, and pages that generate links to themselves with one more path segment. Dedup can't help — every URL is genuinely new. Bound the damage:
+
+- **Per-host page budget** per crawl cycle (scaled by the host's importance).
+- **Depth limit** from the seed, and **URL length** limit.
+- **Pattern rules:** repeated path segments (`/a/b/a/b/a/b`), date paths far in the future, too many query parameters.
+- **Yield monitoring:** a host whose pages are mostly near-duplicates gets its budget cut automatically.
+
+**Recrawl — staying fresh.** A crawl is never finished; pages change. Store per URL: last fetch time, content hash, and an estimated change interval.
+
+- **Adaptive revisit:** if the content hash changed since last time, halve the interval (down to a floor, say an hour); if not, double it (up to a ceiling, say 30 days).
+- **Conditional fetches** (`If-Modified-Since`, `If-None-Match`) let unchanged pages answer `304` with no body — cheaper for both sides.
+- A **recrawl scheduler** is the job scheduler from Chapter 13: URLs with `next_fetch_at <= now` feed the frontier, sharing the crawl budget with discovery. Say the split ("about 70% recrawl, 30% new") as a tunable, not a fact.
+
+<Trace title="Don’t fetch, store or wander twice" steps={dedup} takeaway="Normalise, then Bloom-filter URLs (no false negatives; false positives are skipped pages). Hash content for exact dups, SimHash for near dups. Budgets and pattern rules for traps." />
+
+<Reveal q="Why not just keep a set of every URL in Redis instead of a Bloom filter?">
+
+You can — sharded by host, 10 billion URLs as 8-byte fingerprints is about 80 GB plus per-key overhead, which a Redis cluster could hold (Redis has real per-key overhead, so measure; a sorted on-disk structure is cheaper still). The Bloom filter's appeal is about 12 GB for the same job with no per-key overhead, at the cost of 1% skipped URLs and no deletions. Neither is "the" answer. The answer is the arithmetic, and the coverage loss you accept.
+
+</Reveal>
+
+**Catch the trap:** "A Bloom filter prevents duplicate crawling" with the error direction backwards. A Bloom filter never makes you crawl a page twice; it occasionally makes you **skip** a new one. Say which way it errs.
+
+<h2 id="code-judge">Chapter 16 · Untrusted code at midnight</h2>
+
+<Scene chapter="Chapter 16" title="Untrusted code at midnight" mood="night">
+
+Kestrel runs its first public coding contest, the Kestrel Code Cup. Thirty thousand people join. At 20:50, ten minutes before the end, the judge queue's oldest submission is six minutes old, and the leaderboard is frozen.
+
+At 20:55, Dev finds a submission that tried to open a network connection to Kestrel's internal metadata service. *"Not malicious,"* he says. *"Just curious. This time."*
+
+</Scene>
+
+A **code judge** (the LeetCode question in the bank) is the job template with one twist: **the work itself is hostile.**
+
+- **Template:** `POST /submissions` → row (`queued`) → queue per language → judge workers → `running` → verdict (`accepted`, `wrong answer`, `time limit`, `runtime error`, `compile error`) → client polls or gets a push.
+- **Sandbox every run:** no network; CPU, memory, process-count and wall-time limits; a read-only filesystem plus a small scratch directory; a non-root user. Containers share the host kernel, so put them inside a **stronger boundary** — a user-space kernel such as gVisor, or a lightweight VM such as Firecracker — and throw the sandbox away after each run.
+- **Idempotency:** a judged submission's verdict is a pure function of code + tests + limits, so a rerun after a crash produces the same verdict. Completion is still a conditional update, so a zombie can't overwrite.
+- **Fairness:** per-user concurrency caps and rate limits, so one user submitting in a loop can't fill the pool; contest submissions on their own queue with priority over practice runs.
+
+**Worked numbers — the contest spike.** 30,000 users submit about 3 times each in the last 10 minutes: 90,000 ÷ 600 s = **150 submissions/s**. Each takes about 2 s of sandbox time (compile plus tests). Little's law: 150 × 2 = **300 sandboxes busy**. At a 70% utilisation target: 300 ÷ 0.7 ≈ **430 pre-warmed sandboxes**. Autoscaling on queue age would react minutes too late, so **scale ahead on the contest schedule** — the contest end time is known in advance.
+
+**The other two family members, in one table:**
+
+| Problem | The template, re-skinned | The detail that scores |
+|---|---|---|
+| **Report / data export** | `POST /exports` → job → worker streams rows to object storage as a multipart upload → `succeeded` with a short-lived presigned download link → email | Read from a replica or snapshot so the export doesn't hammer the primary; checkpoint by id cursor for long exports; idempotency key on the POST; the link expires |
+| **Notification system** | An event fans out to recipients (<a href={`${BASE}sd/lessons/pattern-fanout/`}>Fan-out</a>) → per-channel queues (push, email, SMS) → per-provider workers | Per-provider retry/DLQ and rate limits; user preferences and quiet hours checked at send time; dedup key per (notification, recipient, channel); priority queues so a password reset never waits behind a marketing blast |
+
+<Trace title="Judge hostile code" steps={judge} takeaway="Assume every submission is hostile: limits plus a stronger boundary than a plain container. Size the pool with Little’s law and scale ahead of known spikes." />
+
+**Catch the trap:** "Run the code in Docker." Docker with defaults has network access and shares the kernel. Say the limits, the network policy, the stronger boundary, and that the sandbox is discarded after each run.
+
+<Part n="Part Six" title="The whole thing, twice">
+
+Two classic rounds, compressed to their spoken lines, on the 45-minute clock from <a href={`${BASE}sd/lessons/delivery-framework/`}>the delivery framework</a>: requirements by 0:09, API by 0:15, design by 0:25, deep dives to 0:38, wrap-up by 0:41.
+
+</Part>
+
+<h2 id="youtube">Chapter 17 · YouTube, out loud</h2>
+
+<Scene chapter="Chapter 17" title="YouTube, out loud" mood="night">
+
+Friday mock. Mara sets the phone face-down. *"Design YouTube."*
+
+You write four numbers in the corner of the board — 9 · 15 · 25 · 38 — and, under them, one word you've learned to say early: *pipeline*.
+
+</Scene>
+
+**0:03 · Roadmap and requirements**
+
+> **You:** "Here's how I'd like to use the time: about six minutes on requirements and scale, a couple on entities and the API, a working design, then deep dives on the hardest parts, and a short wrap-up. Capacity numbers as they become relevant — is that all right?"
+>
+> **Interviewer:** "Sure."
+>
+> **You:** "Functional: creators upload a video; the system processes it into streamable formats; viewers watch it with adaptive quality and can seek. Out of scope unless you want them: recommendations, search, comments, live streaming, monetisation. I'll mention view counts in passing."
+
+**0:05 · Non-functionals with numbers**
+
+> **You:** "Scale: I'll assume 500 hours of video uploaded every minute — the order of magnitude YouTube has cited publicly — and a billion views a day. Uploads must be resumable, because phones lose signal. Processing: a video should be playable within a few minutes of upload, at least at low quality. Playback must start fast and never stall where bandwidth allows — so a CDN. Durability: an acknowledged upload is never lost. Availability over consistency for metadata — a new video can take seconds to appear everywhere."
+>
+> "Three numbers decide boxes. Ingest: 500 hours a minute is 720,000 hours a day; at about 8 megabits a second that's 3.6 GB an hour, so about 2.6 PB a day — 30 GB a second, 240 gigabits, straight into object storage, never through our servers. Transcode: 30,000 video-minutes arrive every minute; at about 4 core-minutes per video-minute for the whole rendition ladder — I'd benchmark that — that's 120,000 cores busy on average, roughly 3,750 32-core machines before peak headroom. Egress: a billion views at, say, 5 minutes at 3 megabits is about 112 PB a day — about 10 terabits a second. That's a CDN problem, not a server problem."
+
+**0:08 · The bridge**
+
+> **You:** "So: upload, process, watch; 240 gigabits a second in, 120,000 cores of transcoding, about 10 terabits a second out. The design is a pipeline feeding a CDN, and the hard part is the pipeline. Does that match?"
+>
+> **Interviewer:** "Yes. Go."
+
+**0:09 · Core entities**
+
+> **You:** "**Video** — id, owner, title, duration, status. **Channel** — one-to-many with videos. An **upload session** for the resumable upload's parts. A **processing job** per video, with a **task** per chunk and rendition — that's where the pipeline's state lives. And **renditions**: a manifest per bitrate plus segments, all in object storage."
+
+**0:11 · API**
+
+```text
+POST /videos               { title, sizeBytes, contentType }  Idempotency-Key
+                           → 201 { videoId, uploadId, partUrls[] }    (presigned multipart)
+POST /videos/{id}/complete { parts: [etag…] }
+                           → 202 { status: "processing" }
+GET  /videos/{id}          → 200 { status, stage, progress, manifestUrl? }
+GET  cdn/v/{id}/master.m3u8 → manifest; segments follow, all from the CDN
+```
+
+> **You:** "The create is idempotent so a retried tap doesn't make two videos. Bytes go straight to object storage through presigned part URLs, so a dropped connection resumes from the last part. The complete call returns 202 — it's a job. Playback never touches our API: the player fetches the manifest and segments from the CDN."
+
+**0:15 · High-level design, one requirement at a time**
+
+> **You:** "Upload: the client asks the video service for an upload; we insert the video row as `uploading` and return presigned part URLs; the client uploads parts directly to object storage and calls complete. Complete inserts the processing job row, then enqueues it — row first, so a lost message is re-enqueued by a reconciler."
+>
+> "Process: a pipeline of stages, each its own queue and fleet. Validate and probe — is this really a video, what codec, how long. Split into one-minute chunks at keyframes. Transcode fans out to chunk × rendition tasks. Package writes the HLS segments and manifests. Thumbnails and a content scan run in parallel. Publish flips the video to `ready`."
+>
+> "Watch: the player gets the master manifest URL from the video service, then everything comes from the CDN, with origin shielding in front of object storage."
+
+<Figure caption="YouTube’s upload and processing path. Bytes go direct to storage; the work is a staged pipeline; viewers only ever talk to the CDN.">
+  <Mermaid code={`flowchart LR
+    C["Creator app"] -->|"1 · POST /videos"| VS["Video service"]
+    VS --> DB[("Metadata DB\nvideos, jobs, tasks")]
+    C ==>|"2 · parts, presigned"| OS[("Object storage")]
+    C -->|"3 · complete → 202"| VS
+    VS -->|"4 · job row, enqueue"| Q1[("validate")]
+    Q1 --> SPL["split"] --> Q2[("transcode tasks\nchunk × rendition")]
+    Q2 --> TW["transcode workers\n~120K cores, spot"]
+    TW -->|"segments, deterministic keys"| OS
+    TW -->|"5 · count once"| DB
+    DB -->|"6 · all done → package"| PK["packager\nmanifests"]
+    PK --> OS
+    PK -->|"7 · ready"| DB
+    V["Viewer"] ==>|"A · manifest + segments"| CDN["CDN + shield"] ==> OS`} />
+</Figure>
+
+**0:25 · Deep dive 1 — fan-out, fan-in and time-to-playable**
+
+> **You:** "The hardest part is turning one upload into thousands of tasks and back into one playable video, quickly. A 60-minute video is 240 core-minutes of work; split into 60 one-minute chunks times 5 renditions it's 300 tasks of under a core-minute each, so with free capacity it finishes in a couple of minutes instead of most of an hour. Chunks start on keyframes, and every rendition gets keyframes at the same fixed interval so segments line up for bitrate switching."
+>
+> "Fan-in: each task, when it finishes, marks itself done with a conditional update and decrements the video's remaining count in the same transaction — so a redelivered completion counts zero, not twice. When remaining hits zero, a conditional state change from `transcoding` to `packaging` lets exactly one worker fire the packager. If any task dies, the video job fails with a reason rather than sitting at 99%."
+>
+> "And time-to-playable: I'd put the 360p rendition's tasks on a high-priority queue and publish as soon as it's packaged, adding higher renditions to the master manifest as they finish. The creator sees 'live in SD, HD processing' in a couple of minutes."
+
+**0:31 · Deep dive 2 — sizing, cost and fairness**
+
+> **You:** "120,000 cores on average. At an illustrative 4 cents a core-hour that's about 16 cents per hour of video, around $115,000 a day — so cost is a first-class requirement. Three levers. Spot capacity: our leases and idempotent tasks already survive a machine vanishing, so pre-emption is just a retry. Autoscaling on queue age per stage, not CPU, with a floor. And priorities: first renditions and short videos first; bulk re-encodes of old catalogue run at low weight. Fairness: one channel uploading 10,000 videos gets a per-channel concurrency cap and weighted fair share, so a new creator's single video isn't stuck behind them."
+
+**0:35 · Deep dive 3 — failures**
+
+> **You:** "Worker dies mid-chunk: the lease expires in about a minute, another worker reruns that one chunk — outputs use deterministic keys like `videos/9/720p/chunk-0042`, so it just overwrites. A corrupt or unsupported file is a permanent error: fail the job in seconds and tell the creator, no retries. A flaky dependency like the thumbnail service gets exponential backoff with jitter over about an hour, then dead-letter with an alert and a redrive once fixed. And a reconciler re-enqueues jobs stuck in `queued` and fails jobs with no progress past a deadline."
+
+**0:38 · Wrap-up**
+
+> **You:** "To recap: resumable direct uploads, a staged pipeline with chunked fan-out and an idempotent fan-in, low rendition first, and a CDN for everything viewers touch. At 10×, storage is the first pressure — about 5 PB a day if renditions double the original — so lifecycle tiering for old renditions, and possibly encoding the top renditions only for videos that get views. View counts I'd do with sharded counters aggregated asynchronously. I'd monitor time-to-playable p95, queue age per stage, DLQ rate, transcode cost per video-hour, and CDN hit ratio."
+
+**0:41.** Mara turns the phone over.
+
+**Check the numbers yourself:** 500 h/min × 60 × 24 = 720,000 h/day. 8 Mbps × 3,600 s ÷ 8 = 3.6 GB/h; × 720,000 = 2.592 PB/day; ÷ 86,400 = 30 GB/s = 240 Gbps. 500 × 60 = 30,000 video-min per min × 4 = 120,000 cores; ÷ 32 = 3,750 machines. 120,000 × 24 h × $0.04 = $115,200/day; 240 core-min = 4 core-hours × $0.04 = $0.16 per video-hour. Views: 300 s × 3 Mbps ÷ 8 = 112.5 MB; × 10⁹ = 112.5 PB/day ÷ 86,400 ≈ 1.3 TB/s ≈ 10.4 Tbps. Stored: 7.2 GB/h × 720,000 ≈ 5.2 PB/day.
+
+<Trace title="The YouTube calls" steps={youtube} takeaway="Hours per minute × 60 × core-minutes per video-minute = cores busy. Time-to-playable decides the order: lowest rendition first." />
+
+<Reveal q="The interviewer asks: “Why split into chunks at all — why not one task per rendition?”">
+
+Per-rendition tasks give you 5-way parallelism; a 60-minute 1080p encode is still one long task — slow to finish, and a crash at minute 50 redoes all of it. Chunks give 300-way parallelism and make a crash cost one minute of video. The costs: a split step, a fan-in, per-task overhead, and slight quality variation at chunk seams because the encoder can't plan across boundaries. For short clips (under a minute or two), I'd skip chunking — per-rendition tasks are simpler and fast enough.
+
+</Reveal>
+
+<h2 id="crawler">Chapter 18 · A web crawler, out loud</h2>
+
+<Scene chapter="Chapter 18" title="A web crawler, out loud" mood="dusk">
+
+The next Friday, Mara doesn't let you reuse the board. *"Design a web crawler,"* she says. *"There's no user, no API to hide behind. Show me you can decompose it from nothing."*
+
+You write the four numbers in the corner. Under them, instead of an API, you write *data flow*.
+
+</Scene>
+
+**0:03 · Requirements**
+
+> **You:** "Functional: start from seed URLs; fetch pages; extract links and add new ones; store raw HTML and metadata for a downstream indexer; recrawl pages to keep them fresh. Out of scope: rendering JavaScript-heavy pages, images and video, the index and ranking themselves. Tell me if you want any of them."
+
+**0:05 · Non-functionals with numbers**
+
+> **You:** "Scale: a billion pages a month. That's 10⁹ over 2.6 million seconds — about 386 pages a second on average; I'll plan for about 800 at peak. Average page 100 KB, so about 39 MB a second, roughly 310 megabits — bandwidth isn't the constraint. Storage is 100 TB a month raw, less after compression. Politeness is a hard requirement: obey robots.txt, one connection per host, a gap between requests. Robust to traps and malformed pages. Fresh: important pages recrawled within a day. And fault-tolerant: a crashed node must not lose its frontier."
+
+**0:08 · The bridge**
+
+> **You:** "So a self-feeding pipeline at about 400 pages a second where politeness, dedup and traps are the hard parts, not raw throughput. Since there's no user-facing API, I'll replace the API step with a data-flow sketch. OK?"
+
+**0:09 · Core entities**
+
+> **You:** "A **URL record** — normalised URL, host, priority, last fetch, next fetch, content hash. A **host record** — robots rules and when we fetched them, next-allowed time, page budget, cached IP. And **page content** in object storage, keyed by content hash, with URLs as aliases."
+
+**0:11 · Data flow, instead of an API**
+
+```text
+seeds ─▶ frontier (priority queues ─▶ per-host queues ─▶ heap by next-allowed time)
+      ─▶ fetcher (DNS cache, robots check, conditional GET)
+      ─▶ content store (dedup by content hash / SimHash)  ─▶ indexer (downstream)
+      ─▶ parser ─▶ link extractor ─▶ normalise + trap filters + robots
+      ─▶ seen-URL check (Bloom filter) ─▶ forward to owning node by host hash ─▶ frontier
+recrawl scheduler (next_fetch_at <= now) ─▶ frontier
+```
+
+**0:15 · High-level design**
+
+> **You:** "Ten crawler nodes. Each owns a slice of hosts by hash, and holds those hosts' frontier queues, robots cache, DNS cache and Bloom-filter shard. A fetcher takes the host whose next-allowed time has come, takes its highest-priority URL, checks robots, fetches with If-Modified-Since, stores the content, and hands it to the parser. New links are normalised, filtered, checked against the seen set, and sent to whichever node owns their host. Fetched URLs get a next-fetch time; the recrawl scheduler feeds them back when due. The frontier is persisted — per-host queues in a durable store with an in-memory window — and URLs are leased to fetchers, so a crash re-offers them."
+
+<Figure caption="One crawler node. Every host belongs to exactly one node, so politeness, robots and DNS caching are local decisions.">
+  <Mermaid code={`flowchart LR
+    S["seeds +\nrecrawl due"] --> FR["frontier\npriority → per-host queues\nheap by next-allowed"]
+    FR --> FE["fetchers\nDNS cache, robots cache"]
+    FE -->|"HTML"| CS[("content store\nby content hash")]
+    FE --> PA["parser +\nlink extractor"]
+    PA --> NF["normalise, trap rules,\nrobots filter"]
+    NF --> BF{"seen?\nBloom shard"}
+    BF -->|"new, my host"| FR
+    BF -->|"new, other host"| X["forward to owning node"]
+    CS --> IX["indexer\n(downstream)"]`} />
+</Figure>
+
+**0:25 · Deep dive 1 — the frontier and politeness**
+
+> **You:** "Politeness first, because it's a hard requirement. Each host has one back queue and a next-allowed time in a heap; a fetcher only takes a host whose time has come, then pushes it back with now plus the gap. With a 2-second gap a host gives at most half a page a second, so to hit 386 pages a second I need at least 772 hosts ready at any moment — the frontier has to keep many hosts warm, and priority has to spread across hosts. A 429 or 503 widens that host's gap and honours Retry-After. robots.txt is fetched once per host and cached for up to a day; if it's unreachable with a server error, I treat the host as disallowed until I can read it. Partitioning by host makes all of this local — no distributed locks."
+
+**0:31 · Deep dive 2 — dedup**
+
+> **You:** "Two kinds. URLs: normalise, then check a Bloom filter. For 10 billion URLs at a 1% false-positive rate that's about 12 GB with 7 hashes, split across ten nodes. A false positive means a new URL is skipped — about 1% — and I'd go to 0.1%, about 18 GB, if coverage matters. An exact set of 8-byte fingerprints would be about 80 GB — also feasible, so I'd say the trade out loud. Content: SHA-256 of the extracted text catches exact copies under different URLs; a 64-bit SimHash with a small Hamming threshold catches near-duplicates like the same article with a different ad."
+
+**0:35 · Deep dive 3 — traps and freshness**
+
+> **You:** "Traps are infinite URL spaces — calendars, session ids, faceted filters — where every URL is genuinely new, so dedup doesn't help. Per-host page budgets per cycle, a depth limit, a URL length limit, and pattern rules for repeating path segments; a host whose pages are mostly near-duplicates gets its budget cut. Freshness: each URL keeps an estimated change interval — halve it when the content hash changed, double it when it didn't, between an hour and 30 days — and conditional GETs make unchanged pages cost a 304."
+
+**0:38 · Wrap-up**
+
+> **You:** "Recap: host-partitioned nodes, a two-level frontier that makes politeness local, Bloom plus content-hash dedup, budgets against traps, adaptive recrawl. At 10× — 4,000 pages a second — DNS and frontier storage come first: more resolver capacity and prefetching, and the per-host queues spill to disk. Node failure: its host range is reassigned, and its persisted frontier and leased URLs are picked up by the new owner. I'd monitor pages per second, per-host error and 429 rates, frontier size and age, duplicate rate, and the share of budget going to recrawl versus discovery."
+
+**0:41.** Done, with four minutes for questions.
+
+**Check the numbers yourself:** 30 days × 86,400 = 2,592,000 s; 10⁹ ÷ 2,592,000 ≈ 385.8 pages/s. × 100 KB ≈ 38.6 MB/s × 8 ≈ 309 Mbps. 10⁹ × 100 KB = 100 TB/month. 385.8 ÷ 0.5 ≈ 772 hosts. Bloom: −ln(0.01) ÷ (ln 2)² ≈ 9.59 bits × 10¹⁰ ÷ 8 ≈ 12.0 GB, k ≈ 6.6 → 7; at 0.1%, 14.38 bits ≈ 18.0 GB, k ≈ 10. Exact: 10¹⁰ × 8 B = 80 GB.
+
+<Trace title="The crawler calls" steps={crawlerWalk} takeaway="Pages per month ÷ 2.6M seconds = pages per second; bandwidth is rarely the constraint. Partition by host so politeness is local." />
+
+<Reveal q="Which sentence in the crawler round would you most likely have skipped silently — and what would it have cost?">
+
+The robots.txt error handling and the direction of the Bloom filter's error. Both take five seconds. Without the first, the interviewer asks "what if robots.txt times out?" and you improvise. Without the second, "Bloom filter for dedup" sounds memorised. Saying *"a false positive skips about 1% of new pages; here's the memory to make it 0.1%"* shows you know what you're trading. The other common skip is the frontier's persistence: a crawler that loses its frontier on a crash restarts from the seeds.
+
+</Reveal>
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The job review" steps={drills} takeaway="Row first, 202, lease and heartbeat, idempotent effects, classified retries with a DLQ and redrive, fair scheduling, scaling on queue age, fan-in counted once, schedulers with leases and execution ids." />
 
 <Quiz questions={[
   {
@@ -94,9 +1108,163 @@ This is why "design a distributed job scheduler" is a Tier-4 question: it's this
     ],
     answer: 1,
     why: 'Two layers: coordination to make double-firing rare, idempotency to make it harmless. One scheduler node (option 1) trades correctness for availability — say WHY you rejected it, and you\'ve had the whole senior conversation.'
+  },
+  {
+    q: 'A fan-in counter starts at 300 and each finished chunk task runs an atomic DECR. What goes wrong?',
+    options: [
+      'Nothing — DECR is atomic',
+      'A redelivered completion decrements twice, so the next stage fires one task early with a chunk missing',
+      'Redis cannot hold a counter that large',
+      'The counter must be a float'
+    ],
+    answer: 1,
+    why: 'Atomic is not idempotent. Mark each task done with a conditional update and decrement in the same transaction; fire the next stage with a conditional state change.'
+  },
+  {
+    q: 'A web crawler’s seen-URL Bloom filter is sized for a 1% false-positive rate. What does a false positive cost?',
+    options: [
+      'A page is fetched twice',
+      'A genuinely new URL is treated as seen and never crawled',
+      'The filter has to be rebuilt',
+      'robots.txt is ignored for that host'
+    ],
+    answer: 1,
+    why: 'Bloom filters have no false negatives — a seen URL is never re-fetched because of the filter. Their error is the other way: about 1% of new URLs are skipped. Lower p if coverage matters (0.1% ≈ 18 GB for 10 billion URLs).'
   }
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: 12-minute mini-design — "user requests a PDF export of a year of data (takes ~2 min)." Full template out loud: job row, 202, workers, status endpoint, retry story, idempotency. This template is the highest-reuse 12 minutes in your whole prep. Weekend mock: **YouTube** or **web crawler**.
+<Scene title="The interview room" mood="night">
+
+The Interviewer has a simple design on the board and adds, almost lazily: *"Users can also request a PDF of their whole year. It takes about two minutes to generate. Where does that go?"*
+
+A year ago you'd have drawn a queue and moved on. Today you say five sentences, in order.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "Two minutes is longer than any request should live, and month-end makes it bursty, so it's a job. `POST /exports` with an idempotency key inserts a job row — status queued, tenant, attempt, input parameters — then enqueues the job id, and returns **202 with the job id** and a status URL. The row is the truth; a reconciler re-enqueues rows stuck in queued, so a lost message can't lose the job. Workers claim a job with a **lease** — sixty seconds, renewed by heartbeat — so if a worker dies, the job is back within a minute with the attempt number bumped. That means it can run twice, so the work is **idempotent**: the PDF goes to a deterministic key, completion is a conditional update on the attempt number, and the 'your export is ready' email has its own dedup marker. Transient failures retry with exponential backoff and jitter; bad input fails immediately with a reason; after the attempt cap it's **dead-lettered** with an alert and a redrive path. Workers autoscale on the **age of the oldest job**, tenants get a fair share so one big customer can't starve everyone, and the client **polls** `GET /jobs/{id}` — or we push if they're watching — and gets a short-lived download link."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · A worker crashes halfway. What exactly happens?">
+
+Its heartbeats stop, its lease expires within about a minute, and the job becomes claimable again (the reconciler moves it to retrying, or the broker's visibility timeout makes the message visible). Another worker claims it as attempt n + 1 and starts from the beginning — or from the last checkpoint for very long jobs. Outputs overwrite the same deterministic keys. If the first worker was only paused and wakes up, its completion update includes the old attempt number and changes nothing.
+
+</Reveal>
+
+<Reveal q="2 · Can you guarantee the job runs exactly once?">
+
+Delivery is at least once — a worker can always die between doing the work and recording it. I guarantee the **effect** happens once: deterministic output keys, conditional completion, and a marker or provider idempotency key for each external effect such as the email. Running twice redoes some work and changes nothing visible.
+
+</Reveal>
+
+<Reveal q="3 · One customer submits a million jobs. What happens to everyone else?">
+
+With one FIFO queue at 2,000 jobs/s, everyone else waits about 8 minutes. So: per-tenant queues (or a claim query that picks the tenant with the fewest running jobs), weighted fair scheduling, and a per-tenant concurrency cap — plus quotas at the API so the backlog itself is bounded. The big tenant's million jobs consume the big tenant's share, and a small tenant's job waits about one turn.
+
+</Reveal>
+
+<Reveal q="4 · How many workers do you need, and how do you scale them?">
+
+Little's law: arrival rate × time per job, divided by a 60–80% utilisation target. For the export: if month-end brings 20 exports a second at 2 minutes each, that's 2,400 busy workers (20 × 120 s), about 3,400 at 70%. Provision a floor near the average, autoscale on queue age (not CPU), and accept a short wait while machines boot. Check that the database or replica the exports read from can take the extra load — scaling workers moves the bottleneck downstream.
+
+</Reveal>
+
+<Reveal q="5 · Now it’s a video: one upload becomes 300 parallel tasks. How do you know when they’re all done?">
+
+Each task marks itself done with a conditional update and decrements the parent's remaining count in the same transaction, so a redelivered completion counts zero. When remaining reaches zero, a conditional state change from transcoding to packaging lets exactly one worker fire the next stage. If any task is dead-lettered, the parent fails — or a sweeper fails parents with no progress past a deadline — so nothing sits at 99% forever.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "It can take minutes", "send to all", "nightly" | It's a job: row, enqueue, 202 + job id, workers, status |
+| Order of writes | Row first, then enqueue; a reconciler re-enqueues stuck rows (or an outbox) |
+| "How does the user know?" | Poll `GET /jobs/{id}` by default; SSE/WebSocket for a watcher; signed, retried webhook for a server |
+| A job's lifecycle | queued → running → succeeded / failed / retrying → dead; cancelled; every transition conditional |
+| "Worker crashes mid-job" | Lease + heartbeat → expires → reclaimed with attempt + 1 → idempotent rerun |
+| "Exactly once?" | Delivered at least once; effect once via deterministic keys, conditional completion, effect markers |
+| Errors | Classify: permanent fails fast; transient backs off with jitter over a window longer than the outage |
+| Retries exhausted | Dead + DLQ + alert + redrive after the fix |
+| One tenant floods the queue | Per-tenant queues, weighted fair scheduling, concurrency caps, API quotas |
+| Strict priority | Starvation; add weights or aging |
+| "How many workers?" | Little's law ÷ utilisation; provision near average; autoscale on queue age |
+| A progress bar | Throttled counter in real units (chunks), per stage; heartbeat ≠ progress |
+| Cancel | A flag on the job; workers check at safe points; a sweeper cleans outputs |
+| Multi-step work | Stages, each with its own queue; messages carry keys, not bytes |
+| Parallel chunks then "next step" | Fan-in: conditional mark-done + count in one transaction; conditional stage transition; parent deadline |
+| "Where is video 9?" | Orchestrate the core flow (state table or workflow engine); choreograph side effects |
+| "Every Monday at 9" | Indexed next_run_at; lease or partition per firing; unique execution id; misfire policy |
+| A crawler | Per-host back queues + heap of next-allowed times; partition by host; robots.txt cached ≤ 24 h |
+| Crawler dedup | Normalise; Bloom filter (skips ~p of new URLs); content hash + SimHash |
+| Crawler traps | Per-host budgets, depth and length limits, pattern rules |
+| Untrusted code | No network, resource limits, read-only FS, gVisor/microVM, discard after each run |
+| A known spike (contest, launch) | Pre-warm on schedule; autoscaling is minutes late |
+
+## Five mistakes to leave behind
+
+1. **A queue with no job row.** No status, no attempts, no errors, nothing to poll, nothing to reconcile.
+2. **"The worker is idempotent" as a slogan.** Say the output key, the conditional completion, and the effect marker.
+3. **An atomic counter for fan-in.** Atomic is not idempotent; count each task once.
+4. **"Failed jobs go to a DLQ."** And then? The alert, failed versus dead, and the redrive.
+5. **Autoscaling on CPU.** Scale on queue age or backlog per worker, and check the downstream.
+
+<Scene title="Mara’s last word" mood="dusk">
+
+Six months after the Thursday night, Kestrel Clips processes a million videos a day. The evening queue peaks at ninety seconds. Dev's dashboards have one panel he looks at first: *oldest job, per stage*.
+
+Mara stops by your desk with a printout of the incident timeline from launch night. She has circled one line: *"7 transcodes for 1 video."*
+
+*"Pin that somewhere,"* she says. *"Every time you draw a queue, ask how many times the work behind it can run — and make sure the answer doesn't matter."*
+
+</Scene>
+
+**Keep it warm:** with the buddy, a 12-minute mini-design — *"a user requests a PDF export of a year of data (about 2 minutes)"* — the full template out loud: job row, 202, workers and leases, status endpoint, the retry story, idempotency, fairness. This template is the highest-reuse 12 minutes in your whole prep; it shows up as a sub-problem in half the bank. Then a weekend mock: **YouTube** or **web crawler**, on the 45-minute clock with 9 · 15 · 25 · 38 in the corner. The crawler doubles as your decomposition-from-scratch rep — no API to hide behind.
+
+**Questions this pattern unlocks:**
+
+| Bank question | How the pattern applies |
+|---|---|
+| **YouTube / Netflix** | The canonical pipeline: resumable upload → chunked transcode fan-out and fan-in → package → CDN (Chapter 17) |
+| **Web crawler** | A self-feeding pipeline: frontier with per-host politeness, Bloom and content dedup, traps, recrawl (Chapters 14, 15, 18) |
+| **TikTok** | The YouTube pipeline for short clips (skip chunking; per-rendition tasks), plus recommendations |
+| **Notification system** | Fan-out into per-channel pipelines with per-provider retry, DLQ, rate limits and priorities (Chapter 16) |
+| **Distributed job scheduler** | The template + due-time firing + lease-based firing with an idempotent backstop + misfire policy (Chapter 13) |
+| **LeetCode / code judge** | Jobs into hardened sandboxes, per-user quotas, pre-warmed pools for contests, status via poll (Chapter 16) |
+| **Report generation / data export** | The template verbatim — the most common "boring" add-on in any design (Chapters 2, 9, 16) |
+| **Food delivery order flow** | The order as a state machine moved by workers and events — the same transitions and conditional updates (Chapter 3) |
+
+Related: <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> (delivery semantics, dedup tables, the outbox, poison messages, lag) · <a href={`${BASE}sd/lessons/blob-cdn/`}>Blob storage & CDN</a> (presigned and multipart uploads, HLS segments, upload state machines) · <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a> (leases, fencing, idempotency keys) · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> (where the job rows live) · <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a> (Kestrel Clips' upload firehose) · <a href={`${BASE}sd/lessons/delivery-framework/`}>The delivery framework</a> (the clock for Part Six) · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> (quotas at the front door) · <a href={`${BASE}sd/lessons/pattern-fanout/`}>Fan-out</a> (notifications) · <a href={`${BASE}sd/war/event-driven-ai-pipeline/`}>War Room: event-driven AI pipeline</a> (your own pipeline, this template in production) · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a> · <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and races</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 10 (Batch Processing) and chapter 11 (Stream Processing) for pipelines, fault tolerance by rerunning deterministic work, and exactly-once effects.
+- [Exponential Backoff and Jitter](https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/) (AWS Architecture Blog) — why retries without jitter synchronise, and the "full jitter" formula.
+- [Google SRE book — Handling Overload](https://sre.google/sre-book/handling-overload/) and [Addressing Cascading Failures](https://sre.google/sre-book/addressing-cascading-failures/) — retry budgets, load shedding, and why retries multiply load.
+- [Amazon SQS visibility timeout](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html) — leases as a broker feature, extension while working, and their limits.
+- [PostgreSQL SELECT — the locking clause](https://www.postgresql.org/docs/current/sql-select.html) — `FOR UPDATE SKIP LOCKED`, the basis of database-backed job queues.
+- [Temporal documentation](https://docs.temporal.io/) and [AWS Step Functions documentation](https://docs.aws.amazon.com/step-functions/) — two styles of durable workflow engine; read about determinism and parallel/map steps.
+- [RFC 9309: Robots Exclusion Protocol](https://www.rfc-editor.org/rfc/rfc9309) — caching rules and how crawlers must treat robots.txt errors.
+- [Introduction to Information Retrieval](https://nlp.stanford.edu/IR-book/) (Manning, Raghavan, Schütze) — chapter 20, "Web crawling and indexes": the Mercator-style frontier with front and back queues. Chapter 19 covers near-duplicate detection with shingles.
+- *Detecting Near-Duplicates for Web Crawling* (Manku, Jain, Das Sarma; WWW 2007) — SimHash at the scale of billions of pages.
+- [RFC 8216: HTTP Live Streaming](https://www.rfc-editor.org/rfc/rfc8216) — what the packaging stage produces.
+- [Bloom filter (Wikipedia)](https://en.wikipedia.org/wiki/Bloom_filter) and [Little's law (Wikipedia)](https://en.wikipedia.org/wiki/Little%27s_law) — the two formulas this lesson leans on.
+- [gVisor](https://gvisor.dev/) and [Firecracker](https://firecracker-microvm.github.io/) — the two common "stronger than a container" sandbox boundaries.
+
+**Look these up yourself**
+
+- **Deficit round-robin and weighted fair queuing** — the classic algorithms behind "weights 4 : 1", and how they stay fair with jobs of different sizes.
+- **Per-title / content-aware encoding** — choosing the bitrate ladder per video instead of one fixed ladder; a big cost lever at video scale.
+- **Sagas and compensation** — undoing earlier stages when a later one fails, the natural next step after orchestration.
+- **Retry budgets** — capping retries as a fraction of total traffic so retries can never amplify an outage.
+- **Lease-based leader election (and why fencing still matters)** — how a scheduler or orchestrator picks one active node.
+- **Headless-browser crawling** — rendering JavaScript-heavy pages, why it costs orders of magnitude more per page, and how crawlers decide which pages need it.
+- **Sitemaps and change-frequency signals** — how sites tell crawlers what changed, and how far to trust them.
+- **Speculative execution of stragglers** — re-running the slowest tasks of a fan-out on another machine, as MapReduce did, to cut tail latency.

@@ -218,6 +218,16 @@ public class Check {
             t.erase("apple");
             eq(0, t.countWordsStartingWith("app"), "LC: branch cut");
             eq(0, t.countWordsEqualTo("apple"), "LC: none left");
+            var fig = new B_TrieII().new Trie();
+            for (String w : new String[]{"apple", "apple", "app", "apt"}) fig.insert(w);
+            eq(4, fig.countWordsStartingWith("a"), "figure: a pass 4");
+            eq(3, fig.countWordsStartingWith("app"), "figure: app pass 3");
+            eq(2, fig.countWordsStartingWith("appl"), "figure: appl pass 2");
+            eq(2, fig.countWordsEqualTo("apple"), "figure: apple end 2");
+            eq(1, fig.countWordsEqualTo("app"), "figure: app end 1");
+            fig.erase("apt");
+            eq(3, fig.countWordsStartingWith("ap"), "figure: ap pass 3 after erase apt");
+            eq(0, fig.countWordsStartingWith("apt"), "figure: apt cut");
             BugCounts bug = new BugCounts(); bug.insert("apple"); bug.erase("apple");
             eq(1, bug.countWordsStartingWith("app"), "catch-the-bug: forgetting pass-- leaves countWordsStartingWith(app) at 1");
             for (int trial = 0; trial < 1500; trial++) {

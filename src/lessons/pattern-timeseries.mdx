@@ -1,66 +1,904 @@
 ---
 title: 'Pattern: Time-Series & Aggregation'
-description: 'Metrics, leaderboards, counters, trending — the write-a-firehose, read-a-summary problem and its three tools.'
+description: 'The night Kestrel’s dashboard said everything was fine. Firehose ingest, Gorilla compression, TSDB layout, cardinality, rollups, windows and watermarks, mergeable percentiles, sketches, top-K, leaderboards, exactly-once-ish ad clicks and alerting — then a full metrics-system round out loud.'
 module: 10
 order: 1
-minutes: 30
+minutes: 120
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { shape, ingest, compression, layout, cardinality, rollups, preagg, windows, percentiles, sketches, topk, leaderboard, adclicks, alerting, walkthrough, drills } from '../data/sd/pattern-timeseries';
+import { BASE } from '../paths';
 
-## The pattern in one sentence
+<PatternHub
+  pattern="sd-pattern-timeseries"
+  start="prologue"
+  logline="Millions of tiny timestamped events pour in, and nobody ever reads one of them. They read summaries over windows — p99 for the last five minutes, the top ten today, clicks this hour. Absorb the firehose cheaply, and compute the summaries people actually ask for before they ask."
+  cast={[
+    { name: 'You', role: 'Two months at Kestrel. You have read dashboards. You have never had to wonder whether one was lying.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Draws a time axis before she draws a box.' },
+    { name: 'Dev Okafor', role: 'SRE. Owns the pager, and therefore owns an opinion about every alert rule.' },
+    { name: 'Iris Tan', role: 'Product lead. Wants a leaderboard, an ads dashboard and a trending page, in that order, by Friday.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has watched a single label take down a metrics cluster.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · The shape of the stream', description: 'What time-series data is, how it arrives, how it shrinks.', links: [['shape', 'Write a firehose, read a summary'], ['ingest', 'A million samples a second'], ['compression', 'Sixteen bytes into two']] },
+    { name: 'Part Two · Storing it', description: 'TSDB layout, cardinality, rollups, and where the work happens.', links: [['tsdb', 'Series, blocks and an index'], ['cardinality', 'The label that ate the cluster'], ['rollups', 'The retention ladder'], ['pre-aggregation', 'Write time or read time?']] },
+    { name: 'Part Three · Counting in motion', description: 'Windows, event time, watermarks, and percentiles that merge.', links: [['windows', 'Three ways to cut time'], ['watermarks', 'When is a minute over?'], ['percentiles', 'The average of two p99s']] },
+    { name: 'Part Four · Counting the uncountable', description: 'Sharded counters, HyperLogLog, Count-Min, top-K, leaderboards.', links: [['counters', 'One number, too hot'], ['hyperloglog', 'Counting strangers'], ['count-min', 'A table that never undercounts'], ['top-k', 'The ten loudest'], ['leaderboards', 'Who is winning?']] },
+    { name: 'Part Five · Trust and alarms', description: 'Counting money exactly-once-ish, and alerts people can trust.', links: [['ad-clicks', 'Every click is money'], ['alerting', 'Twenty-five pages an hour']] },
+    { name: 'Part Six · The fights', description: 'A full metrics-system round, then three shorter sketches.', links: [['walkthrough', 'Kestrel Pulse, out loud'], ['sketch-ads', 'Sketch: ad-click aggregator'], ['sketch-leaderboard', 'Sketch: a game leaderboard'], ['sketch-trending', 'Sketch: top-K trending'], ['family', 'The wider family']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Make the calls interviewers probe, with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="This is a long lesson. Read one part per sitting; Part Six is a mock round you can fight cold once Parts One to Five feel familiar."
+/>
 
-Millions of tiny timestamped events pour in; nobody ever reads them individually — they read **summaries over windows** (p99 last 5 min, top-10 today, views this hour). The design job: absorb the firehose cheaply and precompute the summaries readers actually ask for.
+<h2 id="prologue">Prologue · The dashboard that said everything was fine</h2>
 
-**Trigger words:** "metrics", "analytics", "dashboard", "leaderboard", "trending", "view counts", "alerts on thresholds", "clicks per campaign".
+<Scene chapter="Prologue" title="2:40 a.m." mood="night">
 
-## Tool 1 — Pre-aggregation: never store what you won't read
+Support has forty tickets about slow checkouts. Dev has the latency dashboard on the big screen, and the line is flat and green: p99 at 310 ms, as it has been all week.
 
-The naive design stores every raw event and computes `AVG(...)` at query time — dead at scale (a dashboard query scanning 100M rows per refresh). Instead, **aggregate on ingest**:
+Theo reads the panel's query aloud, slowly. *"Average of p99, across hosts."* Thirty-nine healthy hosts and one host on a bad disk, where every request takes four seconds. The average of forty p99s barely moved.
 
-<Mermaid code={`flowchart LR
-    E["events firehose\n(1M/s)"] --> K[("Kafka\nkeyed by series")]
-    K --> AGG["stream aggregators:\nper minute, per series:\ncount, sum, min, max, p99"]
-    AGG --> TS[(time-series store\n1-min rollups)]
-    TS --> RU["background rollups:\n1min → 1hr → 1day"]
-    D["dashboards"] -->|"read tiny\nprecomputed rows"| TS`} />
+At ten past three, the metrics cluster itself falls over. A team had added a `user_id` label to a request metric that afternoon.
 
-- **Resolution ladder + retention:** raw/1-min data kept days, 1-hour kept months, 1-day kept years. Storage estimate collapses (estimation lesson: say the ladder), and old-data queries stay fast because they read coarse rollups.
-- **Percentiles don't average** — you can't combine two p99s. Store **histograms/sketches** per window and merge those. One sentence, big signal.
-- Late events (mobile clients, retries) → **watermarks**: "window closes at T+2min; later events go to a correction path." Name it, don't derive it.
+In the morning, Mara draws a horizontal arrow on the whiteboard and labels it *time*. *"Nobody ever reads one sample,"* she says. *"So which summaries do we read, how are they built, and when are they wrong?"*
 
-This is "move work to write time" again — the same trade as feed fan-out and typeahead top-K. Third appearance; by now you should *see* it coming on unseen problems.
+</Scene>
 
-## Tool 2 — Sharded counters: when one number is too hot
+**The pattern in one sentence.** Millions of tiny timestamped events pour in; nobody ever reads them individually — they read **summaries over windows** (p99 for the last 5 minutes, top 10 today, views this hour). The design job: absorb the firehose cheaply and precompute the summaries readers actually ask for.
 
-A viral video's view counter takes 100K increments/sec — a single row/key melts (hot key, fourth costume). Fix: **split the counter into N shards** (`views:{video}:{0..15}`), increment a random shard, read = sum of 16. Write contention drops 16×; reads pay a small fan-in. Batch further in the app (accumulate 100 locally, flush one +100) when "views" tolerates seconds of lag — which it always does.
+**Trigger words:** "metrics", "monitoring", "analytics", "dashboard", "leaderboard", "trending", "view counts", "alert on thresholds", "clicks per campaign", "top K", "unique visitors", "telemetry".
 
-## Tool 3 — Top-K and the honest approximation
+Like caching's four promises, this pattern has **four dials you set out loud in every design**:
 
-"Top 10 trending" over a firehose has an exact answer only if you count *everything* — often impossible in memory (millions of distinct keys). Two-level standard answer:
+1. **What is one series, and how many are there?** The unit you store, and its cardinality.
+2. **What summary, at what resolution, over what window?** The question the reader asks.
+3. **Where is it computed — write time or read time?** Pre-aggregation versus query-time aggregation.
+4. **How late, how wrong, how long?** Lateness you wait for, approximation error you accept, retention you keep.
 
-- **Exact, bounded keyspace:** Redis **sorted set** (`ZINCRBY views:1h video123`) → `ZREVRANGE 0 9` is the leaderboard. Works to millions of members; say the memory estimate.
-- **Approximate, unbounded keyspace:** **count-min sketch** — a fixed-size 2D array of counters updated via k hashes; overestimates slightly, never underestimates; pair with a small heap of current top-K candidates. The sentence to say: *"exact counting of every URL/search-term doesn't fit memory; a count-min sketch gives top-K with bounded error in kilobytes."* Interviewers accept the name + property; they rarely want internals derived.
+<Figure caption="The shape of every design in this lesson. Work moves left, toward write time, for the questions you can predict.">
+  <Mermaid code={`flowchart LR
+    E["events / samples\n(firehose)"] --> I["ingest\nbatch, buffer, key"]
+    I --> A["aggregate\nwindows, rollups, sketches"]
+    A --> S[("store\nby series + time")]
+    S --> Q["query\nrange + tags"]
+    Q --> D["dashboards\nalerts, APIs"]`} />
+</Figure>
 
-Windowing for "trending last hour": maintain per-minute sorted sets and union/decay them, or bucket-per-window sketches — say buckets, avoid inventing sliding-window magic on the spot.
+Interviews ask this pattern directly (metrics/Datadog, ad-click aggregator, top-K, leaderboard) and hide it inside others (YouTube view counts, trending hashtags, Strava heatmaps, tracing). It is the third appearance of **"move work to write time"** — the same trade as feed fan-out and typeahead's precomputed top-K. By now you should *see* it coming on problems you have never been shown.
 
-## Storage: why time-series stores are LSM-shaped
+<Part n="Part One" title="The shape of the stream">
 
-Write-heavy append workloads fit **LSM trees** (memtable → flushed immutable SSTables → compaction) — sequential writes, no in-place updates, which is why Cassandra/InfluxDB/ClickHouse-family engines win here over B-tree row stores. Plus columnar layout + delta/gorilla compression: metrics compress ~10×+ because consecutive values barely change. Two sentences total — storage-engine depth beyond this only if the interviewer digs.
+Before you store anything, know what it looks like, how fast it arrives, and how small it can get.
 
-The other disease to name: **cardinality explosion** — a `user_id` tag on a metric turns 1 series into 50M. Tag design (bounded-cardinality labels only) is the operational fix; it's the Datadog walkthrough's favorite deep dive.
+</Part>
 
-## Questions this pattern unlocks
+<h2 id="shape">Chapter 1 · Write a firehose, read a summary</h2>
+
+<Scene chapter="Chapter 1" title="Write a firehose, read a summary" mood="dawn">
+
+Mara asks you for two numbers: how many samples Kestrel writes a second, and how many queries read them. You find the first in the estimation notes — a million. The second takes Dev an hour to count. About twelve hundred.
+
+*"A thousand writes for every read,"* Mara says. *"And no write is ever changed. What does that tell you about the store?"*
+
+</Scene>
+
+A **time series** is a sequence of `(timestamp, value)` points identified by a **metric name plus a set of tags** (also called labels or dimensions): `http_requests{service="checkout", region="eu", status="5xx"}`. Each distinct combination of name and tags is one series.
+
+Four properties shape every design decision:
+
+- **Append-only.** Points arrive in roughly time order and are never updated. No in-place writes, no row locks, no read-modify-write.
+- **Recent is hot.** Most queries look at the last hour or day; alerts look at the last few minutes. Old data is read rarely and coarsely.
+- **Queried by range and tags.** "These series (selected by tags), over this time range, aggregated like this." Almost never "point number 81,233,007".
+- **Write-heavy by a lot.** Kestrel writes about 1,000,000 samples/s and reads about 1,200 queries/s — though each query touches many points.
+
+**Worked numbers: where the reads come from.** Assume 500 dashboards open during the day, 20 panels each, refreshing every 30 s: 500 × 20 ÷ 30 ≈ **333 queries/s**. Plus 50,000 alert rules evaluated every 60 s: 50,000 ÷ 60 ≈ **833 queries/s**. Total about **1,200 queries/s**, against 10,000 hosts × 1,000 series ÷ 10 s = **1,000,000 samples/s** (the same numbers as <a href={`${BASE}sd/lessons/estimation/#metrics`}>Estimation · a million samples a second</a>). Note that **alerting, not humans, is the biggest reader**.
+
+| Property | What it rules out | What it invites |
+|---|---|---|
+| Append-only | B-tree in-place updates, row locks | Log-structured, sequential writes, immutable blocks |
+| Recent is hot | Treating all data the same | Memory for the newest hours, cheap storage for old data |
+| Range + tags | Point lookups by id | Grouping by series, sorting by time, a tag index |
+| Write-heavy | Expensive work per write | Batching, compression, cheap appends |
+
+<Trace title="Read the shape" steps={shape} takeaway="Append-only, recent-hot, read by range and tags. Questions about individual users belong in an event store, not a metrics store." />
+
+**Catch the trap:** "Store each event as a row in Postgres." It works on day one. At a million inserts a second, with indexes, it is the wrong tool — and it will happily answer per-user questions that a metrics design should send elsewhere.
+
+<h2 id="ingest">Chapter 2 · A million samples a second</h2>
+
+<Scene chapter="Chapter 2" title="A million samples a second" mood="storm">
+
+The first prototype of Kestrel's metrics pipeline has every host send each sample as its own HTTP request. It works for twelve hosts. At two hundred, the collectors spend all their CPU on TLS handshakes.
+
+Dev looks at the graphs. *"We're not drowning in data,"* he says. *"We're drowning in envelopes."*
+
+</Scene>
+
+The standard ingest path has four stages, each absorbing a different problem:
+
+<Figure caption="The firehose. Agents batch, collectors validate and route, a durable log buffers, writers own series and build blocks.">
+  <Mermaid code={`flowchart LR
+    subgraph H["10,000 hosts"]
+      AG["agent\nlocal pre-aggregation\n10 s batches"]
+    end
+    AG -->|"~1,000 batches/s\n~100 MB/s"| LB["load balancer"]
+    LB --> C["collectors\nauth, validate,\ndrop bad labels"]
+    C -->|"key = series id"| K[("Kafka\nreplicated log")]
+    K --> W["writers\nown series, head block\nin memory + WAL"]
+    W --> B[("blocks\nlocal disk / object store")]`} />
+</Figure>
+
+- **Agents** run on every host. They gather samples, **pre-aggregate locally** (a StatsD-style agent turns 5,000 counter increments a second into one number per flush), and send **one compressed batch per interval**. 10,000 hosts flushing every 10 s is **1,000 requests/s**, not 1,000,000.
+- **Collectors** are stateless: authenticate, validate, enforce label rules and per-team quotas (Chapter 5), and route. Scale them behind a load balancer.
+- **Kafka** decouples ingest from storage. Writers can restart, deploy or fall behind without losing data; the log is the buffer and the replay source. Keyed by **series id** (a hash of metric name + sorted tags), so every sample of a series lands on one partition, in order.
+- **Writers** (ingesters) consume partitions, append each sample to its series' open chunk in memory, write a WAL, and periodically cut immutable blocks (Chapter 4).
+
+**Push or pull?** Agents can **push** (Datadog-style agents, OpenTelemetry exporters) or the system can **pull** by scraping each target's `/metrics` endpoint on a schedule (Prometheus). Pull makes "target is down" obvious (the scrape fails) and keeps the server in control of load; push suits short-lived jobs, hosts behind NAT, and SaaS where the vendor can't reach your network. Either is fine — say which and why.
+
+**Worked numbers: sizing the log.** At about 100 B per sample on the wire, 1,000,000 samples/s is **100 MB/s**. Using the assumptions from <a href={`${BASE}sd/lessons/queues-streams/#sizing`}>Queues & streams · sizing</a> (about 10 MB/s per partition), that needs at least **10 partitions**; give it 64 so writers can scale out about sevenfold (64 ÷ 9) without remapping series. Retention of 24 hours: 100 MB/s × 86,400 s = 8.64 TB a day; batches compress — assume about 5× for repetitive label text (measure it) — so about 1.7 TB, × 3 replicas ≈ **5.2 TB** of Kafka disk. Writers: at an assumed 200,000 samples/s per node run at 60%, 1,000,000 ÷ 120,000 ≈ 8.3 → **9 writers**, as in the estimation lesson.
+
+| Choice | Option A | Option B | Say |
+|---|---|---|---|
+| Collection | Push (agents) | Pull (scrape) | Pull for a fleet you control; push for SaaS and short jobs |
+| Buffer | Write straight to the TSDB | Durable log first | Log first at scale: replay, smoothing, independent deploys |
+| Kafka key | Random | Series id | Series id: in-order, one owner per series |
+| Back-pressure | Drop at the agent | Buffer on the agent's disk | Buffer a few minutes, then drop and count drops — monitoring must never take down the host it monitors |
+
+<Trace title="Shape the firehose" steps={ingest} takeaway="Batch at the edge, key the log by series id, let writers own series. Request count, not bytes, is usually the first wall." />
+
+<Reveal q="Kafka lag on the metrics topic reaches 4 minutes. What breaks first, and what do you do?">
+
+Alerting breaks first: rules evaluate on data that hasn't arrived, so "no requests" rules fire falsely and real problems are seen 4 minutes late. Scale writers up to the partition count (that's why you gave the topic headroom), check whether a writer is stuck on a hot or bloated series, and make alert evaluation **lag-aware** — never judge a minute whose data the pipeline hasn't finished writing (Chapter 17). Page on pipeline lag itself; see <a href={`${BASE}sd/lessons/queues-streams/#lag`}>Queues & streams · lag</a> for the drain-time arithmetic.
+
+</Reveal>
+
+**Catch the trap:** "Hosts write directly to the database." Then every database hiccup pushes back into ten thousand production hosts, and every deploy of the storage tier loses samples. The log in the middle is the shock absorber.
+
+<h2 id="compression">Chapter 3 · Sixteen bytes into two</h2>
+
+<Scene chapter="Chapter 3" title="Sixteen bytes into two" mood="dawn">
+
+Theo prints a single series — one host's CPU — and puts it on the table. Timestamps ten seconds apart, give or take a second. Values that wander between 41.0 and 43.5.
+
+*"Sixteen bytes per point, uncompressed,"* he says. *"Look at it. How much of that is news?"*
+
+</Scene>
+
+A raw sample is an 8-byte timestamp and an 8-byte float: **16 B**. But consecutive points of one series are almost the same as the previous one. Facebook's Gorilla paper (VLDB 2015) showed two simple tricks that exploit this. You need the **intuition**, not the bit layout.
+
+**Timestamps: delta-of-delta.** Store the first timestamp, then the first delta, then only *the change in the delta*. A steady scrape interval makes that change zero.
+
+```text
+timestamp        1000   1010   1020   1030   1041   1050
+delta              —     10     10     10     11      9
+delta-of-delta     —      —      0      0      1     -2
+```
+
+In Gorilla's scheme a zero delta-of-delta costs **one bit**, and small jitter costs a handful of bits (a short prefix plus a few value bits). Fully regular series spend about one bit per timestamp.
+
+**Values: XOR with the previous value.** Equal floats XOR to all zeros — stored as one bit. Close floats share their sign, exponent and leading mantissa bits, so the XOR is a run of zeros, a few meaningful bits, and more zeros. The encoder stores "how many leading zeros, how many meaningful bits, and those bits".
+
+```text
+12.0  = 0x4028000000000000
+12.5  = 0x4029000000000000
+XOR   = 0x0001000000000000   -> 15 leading zeros, 1 meaningful bit, 48 trailing zeros
+```
+
+**How much does it save?** The paper reports about **1.37 bytes per point** on Facebook's production data, roughly 12× smaller than 16 B. Treat that as "one to two bytes per sample for well-behaved series", not a guarantee: noisy values (random-looking floats, high-precision measurements) compress far worse. The estimation lesson's **2 B per sample** is the safe whiteboard number, and this lesson keeps it.
+
+**What it costs:** a chunk must be decoded from its start, so you cut series into chunks (say, about two hours or about a hundred-odd samples) and decompress only the chunks a query overlaps. The encoding is also why **samples must arrive in order per series** — another reason the log is keyed by series id.
+
+<Trace title="Squeeze the series" steps={compression} takeaway="Regular timestamps become zeros; repeated or close values become short XORs. Lossless, about one to two bytes per sample when the data is well behaved." />
+
+**Catch the trap:** quoting "12× compression" as a fact about your system. Say "Gorilla-style encoding gets to about a byte or two per sample on regular data; we'd measure ours". Interviewers punish confident numbers that depend on data you haven't seen.
+
+<Part n="Part Two" title="Storing it">
+
+Where samples live, why one label can sink the system, and how retention becomes the storage design.
+
+</Part>
+
+<h2 id="tsdb">Chapter 4 · Series, blocks and an index</h2>
+
+<Scene chapter="Chapter 4" title="Series, blocks and an index">
+
+Theo draws a grid. Rows are series, columns are two-hour slices of time. *"Every write lands in the right-most column,"* he says. *"Every query is a few rows and a few columns. And deleting old data?"* He tears off the left edge of the paper.
+
+</Scene>
+
+A time-series database (Prometheus's TSDB, InfluxDB, VictoriaMetrics, M3, and the storage behind hosted products) is organised around three ideas:
+
+1. **Series id.** Hash the metric name plus *sorted* tags into an id. Samples are grouped by series, so a series' points sit together and compress together.
+2. **Time blocks.** Data is cut into blocks by time (Prometheus uses two-hour blocks by default, compacted into larger ones later — check current docs). The newest block — the **head** — lives in memory with a write-ahead log; older blocks are immutable files.
+3. **Inverted index.** For each `tag=value`, a sorted **posting list** of series ids — the same structure as a search engine's index (see <a href={`${BASE}sd/lessons/search/#inverted-index`}>Search · the back of the book</a>). A query intersects posting lists to find its series.
+
+<Figure caption="A query walks index → series ids → only the chunks that overlap its time range. Retention drops whole blocks.">
+  <Mermaid code={`flowchart LR
+    Q["avg(cpu) by service\nregion=eu, last 6 h"] --> IX["inverted index\n__name__=cpu ∩ region=eu"]
+    IX --> IDS["series ids\n17, 42, 97, ..."]
+    IDS --> B1["block 06:00-08:00"]
+    IDS --> B2["block 08:00-10:00"]
+    IDS --> B3["head 10:00-now\n(in memory)"]
+    B1 --> AGG["decode chunks,\naggregate by service"]
+    B2 --> AGG
+    B3 --> AGG`} />
+</Figure>
+
+**Why this is LSM-shaped.** Write-heavy, append-only workloads fit **LSM trees** — memtable, flushed immutable files, background compaction — because writes are sequential and nothing updates in place. A TSDB is a specialised LSM: the head block is the memtable, blocks are the sorted files, compaction merges small blocks into bigger ones. That is why Cassandra-, InfluxDB- and ClickHouse-family engines win here over B-tree row stores. (The full LSM story is in <a href={`${BASE}sd/lessons/databases/#storage-engines`}>Databases · two ways to keep a book sorted</a>. In an interview, two sentences about this is plenty; go deeper only if the interviewer digs.)
+
+**Retention is a file delete.** Because blocks are cut by time, dropping data older than 15 days means deleting whole blocks — no tombstones, no row-by-row deletes. Design the layout so the most common delete is free.
+
+**Three ways to build the store**, each worth one sentence:
+
+| Option | Layout | Good for | Watch out |
+|---|---|---|---|
+| **Purpose-built TSDB** | Series + time blocks + tag index, Gorilla-style chunks | Metrics: high write rate, tag queries, rollups | Cardinality limits (next chapter); weak at ad-hoc event analytics |
+| **Wide-column store** (Cassandra, Bigtable) | Partition key `(series_id, day)`, clustering key timestamp | Teams already running it; very high write rates | You build the tag index, rollups and compression yourself; partition per day keeps partitions bounded |
+| **Columnar OLAP** (ClickHouse, Druid, Pinot) | Rows sorted by `(metric, tags, time)`, compressed per column | High-cardinality event analytics, ad-hoc group-bys | Heavier per-query cost than a TSDB for simple dashboards |
+
+**Where blocks live.** Many modern designs keep the last couple of hours on the writers (in memory plus WAL) and upload finished blocks to **object storage**, where a query tier reads them. Disk becomes cheap and nearly infinite; the hot head stays fast. Replication of the head comes from Kafka (replay from offsets) or from running two writers per partition.
+
+<Trace title="Read through the layout" steps={layout} takeaway="Index → series → chunks in the time range. Blocks cut by time make retention a file delete." />
+
+**Catch the trap:** partitioning by time *only* (one big table per day, all series mixed). Every write hits today's partition (a hot spot), and every query scans all of today's series to find its few. Group by series, slice by time.
+
+<h2 id="cardinality">Chapter 5 · The label that ate the cluster</h2>
+
+<Scene chapter="Chapter 5" title="The label that ate the cluster" mood="storm">
+
+The post-mortem from the prologue has one graph that silences the room: *active series*, flat at ten million for a year, then a cliff straight up after a two-line change that added `user_id` to a latency metric. Memory on every writer climbed until the kernel started killing them, one by one.
+
+*"Sample rate didn't change at all,"* Theo says. *"We just gave it a hundred million new names."*
+
+</Scene>
+
+**Cardinality** is the number of distinct series. It multiplies: every label's distinct values multiply with every other label's. Each series costs an index entry, an open in-memory chunk on its writer, and per-series metadata — **memory first, disk second**. That's why cardinality, not volume, is what usually kills a time-series system, and why it is the metrics walkthrough's favourite deep dive.
+
+**Worked numbers.** `http_request_duration` with labels service × endpoint × status class × region: 4,000 service-endpoint pairs × 5 × 3 = **60,000 series**. Add `user_id`. 10M daily users, each touching about 10 endpoint-status combinations: 10⁷ × 10 = **10⁸ new series per day** — ten times the whole system's 10 million series. Assume a few KB of memory per active series (index, head chunk, bookkeeping; measure it): 10⁸ × 3 KB = **300 GB of RAM** from one label.
+
+A quieter multiplier: **histograms are many series**. In the Prometheus model, a histogram with 10 buckets is 10 bucket series plus a sum and a count, so the 60,000 above becomes about 720,000. Budget for it.
+
+**How to cap it** — layered, cheapest first:
+
+1. **Label rules at the collector.** An allowlist of labels per metric; drop or rewrite unbounded ones (`user_id`, `request_id`, raw URLs with ids in the path → route templates like `/orders/:id`).
+2. **Per-team series quotas.** A team over its quota gets new series rejected and an alert, rather than taking down everyone. This is multi-tenancy for metrics: a noisy neighbour's blast radius is its own quota.
+3. **Detect early.** Track new series per metric per minute — a HyperLogLog per metric (Chapter 12) is the cheap counter — and alert on sudden jumps.
+4. **Bucket the long tail.** Keep the top N values of a label and fold the rest into `other`.
+5. **Send "who" questions elsewhere.** Metrics answer *how much*; events answer *who*. Per-user or per-request questions go to an event, log or tracing store (columnar, built for high-cardinality group-bys), usually sampled.
+
+<Trace title="Count the series" steps={cardinality} takeaway="Labels multiply. Unbounded labels never reach the TSDB: drop them at the collector, cap per team, detect new-series spikes, and send per-user questions to an event store." />
+
+<Reveal q="Iris asks for “p99 latency per customer” for the 50 enterprise customers. Is that a cardinality problem?">
+
+Not necessarily — **bounded** cardinality is fine. 50 customers × the existing label set is a 50× multiplier on one metric, which you can afford for a key metric if you budget it (and keep `customer` off the others). The problem is *unbounded* values: every user, every request id, every URL. Say the bound out loud: "50 enterprise customers, others folded into `other`, on this one metric."
+
+</Reveal>
+
+**Catch the trap:** "We'll add more nodes." Series cost memory on the write path and index entries on the read path. An unbounded label grows faster than you can buy hardware. Stop it at the door.
+
+<h2 id="rollups">Chapter 6 · The retention ladder</h2>
+
+<Scene chapter="Chapter 6" title="The retention ladder" mood="dusk">
+
+Finance asks why the vendor quote for a year of metrics is twenty times what Dev expected. Mara opens the quote and points at one line: one year, full resolution. *"Who looks at last March in ten-second steps?"* Nobody in the room ever has.
+
+</Scene>
+
+**Rollups (downsampling)** replace many fine points with a few summary numbers over a coarser interval, kept on a **resolution ladder**: raw data for days, coarse data for months or years. Old-data queries stay fast because they read coarse rollups, and storage collapses.
+
+**What a rollup stores.** Not the average — **min, max, sum and count** per interval (plus a histogram for latency metrics, Chapter 10). Averages don't average either; **sums and counts do**, so any coarser average is sum ÷ count. Min of mins and max of maxes are exact. For **counters** (monotonically increasing totals), roll up the *increase* in each interval, handling counter resets when a process restarts.
+
+**Worked numbers: the ladder.** Same assumptions as the estimation lesson: 10M series, one sample per 10 s, about 2 B per stored number compressed (optimistic for rollups — fine for a whiteboard), per-day conversion × 10⁵.
+
+```text
+Raw 10 s         1M samples/s × 10⁵ s × 2 B ≈ 200 GB/day
+                 kept 15 days → 15 × 200 GB = 3 TB
+1-minute rung    6 samples → 4 numbers: 200 GB × 4/6 ≈ 133 GB/day
+                 kept 30 days → ≈ 4 TB
+1-hour rung      360 samples → 4 numbers: 200 GB ÷ 90 ≈ 2.2 GB/day
+                 kept 1 year → ≈ 0.8 TB
+Total            ≈ 3 + 4 + 0.8 ≈ 7.8 TB logical (× 3 replicas ≈ 23 TB)
+Without rollups  1 year raw: 200 GB × 365 = 73 TB logical
+```
+
+Two things to say out loud. First, **retention is the storage design**: the hourly rung keeps a year in 0.8 TB, versus 73 TB raw. Second, **the 1-minute rung saves almost nothing per day** — six samples become four numbers — and kept for 30 days it costs more than the raw tier. It exists for **query cost**, not disk: a 7-day panel reads 7 × 1,440 = 10,080 points per series instead of 60,480 raw. If disk matters more, use a 5-minute rung (30 samples → 4 numbers, 7.5× smaller). The estimation lesson's two-rung ladder (raw 15 days + hourly 1 year ≈ 3.8 TB) is the cheapest version.
+
+<Figure caption="Three rungs. Each rung keeps less detail for longer; a background job builds each from the rung below.">
+  <Mermaid code={`flowchart LR
+    I["1M samples/s"] --> R["Raw 10 s\n15 days\n3 TB"]
+    R -->|"per minute:\nmin, max, sum, count"| M["1 minute\n30 days\n4 TB"]
+    M -->|"per hour"| H["1 hour\n1 year\n0.8 TB"]`} />
+</Figure>
+
+**Which rung does a query read?** The query planner picks the **coarsest rung that still gives about one point per pixel**. A 1,000-pixel chart over 30 days: raw is 259,200 points per series, 1-minute 43,200, hourly 720 — read hourly. Over the last 6 hours: raw is 2,160 points — read raw.
+
+**How rollups are built.** Either a streaming job aggregates as data arrives (and must handle late data, Chapter 9), or a background job rolls up each closed block after the fact — simpler, and late samples are already in the block. Many systems do both: streaming for the first rung, batch compaction for the coarse ones.
+
+<Trace title="Climb the ladder" steps={rollups} takeaway="Store min, max, sum, count (and histograms), never just averages. Coarse rungs save disk; middle rungs save query cost. Read the coarsest rung that fills the chart." />
+
+**Catch the trap:** storing only `avg` in rollups. Then a 1-hour average of 1-minute averages is wrong whenever counts differ, and the max — the spike you were looking for — is gone forever.
+
+<h2 id="pre-aggregation">Chapter 7 · Write time or read time?</h2>
+
+<Scene chapter="Chapter 7" title="Write time or read time?">
+
+The main incident dashboard takes eleven seconds to load and, Dev discovers, accounts for a third of the query cluster's CPU. Every engineer on the incident has it open. Each refresh decodes every host's raw series to draw two hundred lines.
+
+</Scene>
+
+The naive design stores every raw event and computes `AVG(...)` at query time — dead at scale, with a dashboard scanning a hundred million rows per refresh. The opposite extreme computes everything on ingest and can't answer anything new. Real systems split the work:
+
+| | Pre-aggregation (write time) | Query-time aggregation (read time) |
+|---|---|---|
+| Work happens | Once, as data arrives | On every query |
+| Reads | Tiny precomputed rows | Scan raw points for the range |
+| Answers | Only the questions you predicted | Any question over data you kept |
+| Freshness | Seconds behind (window close) | As fresh as raw ingest |
+| Cost driver | Stream jobs, extra storage per rollup | Query CPU, scales with viewers × refresh rate |
+| Use for | Dashboards everyone opens, alert rules, billing counts | Incidents, ad-hoc exploration, recent data |
+
+**Worked numbers.** "Requests per second by service, last 24 hours" over 10,000 host series: raw is 10,000 × 8,640 = **86.4 million points** per refresh. Pre-aggregated by service at 1 minute: 200 × 1,440 = **288,000 points** — 300× fewer, and it's the same for every viewer.
+
+**The rule:** pre-aggregate **known, repeated** questions (the top dashboards, every alert rule, billing); keep a **short raw window** for questions nobody predicted. The pre-aggregated series are *recording rules* in Prometheus terms — named, stored results of a query, refreshed on a schedule.
+
+<Trace title="Pick where the work happens" steps={preagg} takeaway="Pre-aggregate what everyone reads; keep raw data for the questions nobody predicted." />
+
+<Reveal q="Isn't a rollup just a cache? Say the four cache promises for it.">
+
+It is a cache of answers, and the same four promises apply. **Key:** `(metric, group-by tags, resolution, window start)`. **Lifetime:** the rung's retention, by design. **Invalidation:** none needed if the window is closed — except late data, which the correction path (Chapter 9) handles by rewriting the window. **Failure:** if the rollup job falls behind, queries fall back to raw data for recent ranges, and lag is alerted on. Saying this connects your number-one logged gap to this pattern.
+
+</Reveal>
+
+**Catch the trap:** "We'll precompute everything." You can't precompute questions you haven't been asked, and every rollup multiplies storage and stream-job work. Name the few you precompute and why.
+
+<Part n="Part Three" title="Counting in motion">
+
+Stream processing: how time is cut into windows, when a window is finished, and why p99 refuses to be averaged.
+
+</Part>
+
+<h2 id="windows">Chapter 8 · Three ways to cut time</h2>
+
+<Scene chapter="Chapter 8" title="Three ways to cut time" mood="dawn">
+
+Iris wants three numbers for the ads product: clicks per ad per minute for invoices, "clicks in the last five minutes" for a live widget, and how long people browse before they click. Mara writes *minute*, *last five minutes* and *browse* on the board, and asks whether those are the same kind of window. They aren't.
+
+</Scene>
+
+A stream processor (Flink, Kafka Streams, Spark Structured Streaming, Google's Dataflow model) groups an endless stream into finite **windows** so it can emit results.
+
+```text
+time  12:00   12:01   12:02   12:03   12:04   12:05
+       |-------|-------|-------|-------|-------|      tumbling 1 min: each event in exactly one window
+
+       |---------------------------------------|      sliding 5 min, every 1 min:
+               |---------------------------------...  each event in five windows
+                       |-------------------------...
+
+user A  x x  x          x x                           session (gap 5 min): one window per burst
+        |----|          |--|                          of activity, per key; length varies
+```
+
+| Window | Shape | Use for | Watch out |
+|---|---|---|---|
+| **Tumbling** | Fixed size, no overlap | Per-minute counts, billing, rollups — totals add up | Spikes split across a boundary look smaller |
+| **Sliding (hopping)** | Fixed size, advances by a smaller step | "Last 5 minutes, updated every minute", moving averages, alert rules | Each event is in size ÷ step windows; never sum them |
+| **Session** | Per key, closes after a gap of inactivity | User sessions, browsing before a click | Unbounded length; state per active key |
+
+A cheap way to build a sliding window: keep tumbling **1-minute buckets** and combine the latest five. That is how "last hour" leaderboards and trending work later in this lesson: **say buckets; don't invent sliding-window magic on the spot**.
+
+<h2 id="watermarks">Chapter 9 · When is a minute over?</h2>
+
+<Scene chapter="Chapter 9" title="When is a minute over?" mood="night">
+
+A phone on the underground buffers twelve clicks and sends them when the train surfaces, ninety seconds later. The live dashboard has already published the minute those clicks belonged to. Iris wants to know which number is the true one. Dev wants to know how long the dashboard should have waited. Both are asking the same question.
+
+</Scene>
+
+Every event has two times:
+
+- **Event time** — when it happened (stamped by the device or the first server).
+- **Processing time** — when your job sees it.
+
+They differ by network delay, retries, offline phones, and consumer lag. **Count by event time**, or a backlog replay will dump an hour of clicks into the current minute.
+
+But with event time, how do you know a minute is complete? A **watermark** is the job's running claim: *"I believe I have now seen every event with event time ≤ W."* A window `[12:00, 12:01)` fires when the watermark passes 12:01. The usual heuristic is **bounded out-of-orderness**: W = the largest event time seen − an allowed delay (here 30 s).
+
+<Figure caption="Watermark = largest event time seen − 30 s. Window [12:00, 12:01) fires only when the watermark reaches 12:01 — on the arrival of 12:01:31 — with four events, including the out-of-order 12:00:50.">
+  <ArrayStrip name="Event time" values={['12:00:10', '12:00:40', '12:00:55', '12:01:05', '12:00:50', '12:01:20', '12:01:31']} indices={false} tones={{ 0: 'done', 1: 'done', 2: 'done', 3: 'ghost', 4: 'done', 5: 'ghost', 6: 'hot' }} pointers={[{ at: 4, label: 'out of order', tone: 'blue' }, { at: 6, label: 'W = 12:01:01', tone: 'gold' }]} />
+</Figure>
+
+**What about events behind the watermark?** They are **late**. The watermark was a guess, and some events will always miss it. Options, chosen by product:
+
+- **Drop and count.** Fine for a live dashboard; publish the late fraction so you know what it misses.
+- **Allowed lateness.** Keep window state a little longer and emit an *updated* result (the sink must accept updates — upserts).
+- **Side output → correction path.** Late events go to a separate stream or to the batch job that recomputes from the raw log (Chapter 16). Billing uses this.
+
+The trade is unavoidable: **a longer watermark delay means more complete results and slower ones**. Two-hour-offline phones should not make every dashboard two hours late; give them a correction path instead.
+
+<Trace title="Close the window" steps={windows} takeaway="Tumbling for totals, sliding for 'last N', session for bursts. Event time for correctness; a watermark decides when a window is done; late data gets a policy, not a shrug." />
+
+<Reveal q="The stream job is down for 20 minutes, then catches up. With processing-time windows, what does the dashboard show? With event-time windows?">
+
+Processing time: a flat zero for 20 minutes, then a giant spike in the minutes of catch-up as 20 minutes of events land "now" — a fake outage followed by a fake surge. Event time: once the job catches up, every event lands in the minute it happened and the chart is correct; it was only *late*, never wrong. This is the reason to say "event time" out loud in any aggregation design.
+
+</Reveal>
+
+**Catch the trap:** "We wait until the minute ends, then publish." Ends on whose clock? Name event time, the watermark delay, and the late-data policy — three short sentences.
+
+<h2 id="percentiles">Chapter 10 · The average of two p99s</h2>
+
+<Scene chapter="Chapter 10" title="The average of two p99s" mood="dusk">
+
+Back to the prologue. Theo rebuilds the incident on a whiteboard with two servers instead of forty. One fast, busy server. One slow, quiet one. *"Tell me the p99 of the fleet,"* he says, and waits for you to average.
+
+</Scene>
+
+A percentile is a **position in a sorted list**. p99 is the value below which 99% of observations fall. **You cannot combine two p99s** — not by averaging, not by weighting, not by taking the max — because the merged list's 99th-percentile position depends on the whole distributions, which the two numbers threw away.
+
+**Worked numbers (nearest-rank).** Server A: 1,000 requests — 985 at 10 ms, 15 at 500 ms. Its p99 is the 990th value: **500 ms**. Server B: 10 requests, all 2,000 ms: p99 = **2,000 ms**.
+
+- Average of p99s: (500 + 2,000) ÷ 2 = **1,250 ms**.
+- True p99: merged 1,010 requests; the ⌈0.99 × 1,010⌉ = 1,000th value. Values 1–985 are 10 ms, 986–1,000 are 500 ms. True p99 = **500 ms**.
+
+The average was 2.5× too high here; with other mixes it is too low — as in the prologue, where 39 healthy hosts hid one terrible one. Either way, it isn't p99. **One sentence, big signal: "percentiles don't average, so I store mergeable distributions."**
+
+**What to store instead: mergeable distributions.**
+
+- **Fixed-bucket histograms.** Counts per latency bucket (≤10, ≤50, ≤100, ≤250, ≤500, ≤1,000, ≤2,500 ms, +∞). Merging is **adding counts** across hosts and across time. A quantile is read off the merged histogram by finding the bucket holding rank ⌈0.99n⌉ and interpolating — so the error is bounded by the **bucket width**. Here the merged rank 1,000 lands in (250, 500]: "p99 is between 250 and 500 ms".
+- **HDR Histogram.** Log-linear buckets configured by significant digits: bounded *relative* error over a huge range, fixed memory.
+- **t-digest.** Clusters values into centroids, small near the tails, so extreme percentiles are accurate. Mergeable, approximately.
+- **DDSketch.** Logarithmic buckets with a guaranteed relative error; fully mergeable (it came out of Datadog).
+
+With any of these, each host sends a distribution per window (plus count and sum), the rollup ladder merges distributions instead of numbers, and p99 for any service, any range, is computed at query time from the merged distribution.
+
+<Figure caption="Bucket counts add. The merged histogram is exactly what one big server would have produced; p99 is read from it.">
+  <ArrayStrip name="A" values={['≤10: 985', '≤500: 15', '≤2500: 0']} indices={false} />
+  <ArrayStrip name="B" values={['≤10: 0', '≤500: 0', '≤2500: 10']} indices={false} />
+  <ArrayStrip name="A + B" values={['≤10: 985', '≤500: 15', '≤2500: 10']} indices={false} tones={{ 1: 'hot' }} pointers={[{ at: 1, label: 'rank 1,000 lands here', tone: 'gold' }]} />
+</Figure>
+
+<Trace title="Merge the tail" steps={percentiles} takeaway="Percentiles are positions, not quantities. Ship histograms or sketches; add them; read the percentile last." />
+
+**Catch the trap:** "p99 per host per minute, then average for the service." It's the most common candidate error in this domain, and the interviewer will have the counterexample ready.
+
+<Part n="Part Four" title="Counting the uncountable">
+
+Some numbers are too hot for one key, too big for exact memory, or too spread across machines. Here is the toolbox.
+
+</Part>
+
+<h2 id="counters">Chapter 11 · One number, too hot</h2>
+
+<Scene chapter="Chapter 11" title="One number, too hot" mood="storm">
+
+A Kestrel video goes viral on a Sunday morning. Its view counter — one Redis key — takes a hundred thousand increments a second. One shard runs at 100% CPU while the other fifteen idle. Dev sighs. *"Same disease, new costume."*
+
+</Scene>
+
+This is a **hot key** (fourth costume: hot cache key, hot shard, hot partition, hot counter). One key lives on one shard, so bigger machines and more shards don't spread it.
+
+**Sharded counter.** Split the counter into N sub-keys — `views:v123:0` … `views:v123:15` — increment a random one, and **read = sum of all 16**. At 100,000 increments/s, each sub-key takes 100,000 ÷ 16 = **6,250/s**. Reads pay a small fan-in: 16 `GET`s, pipelined. (In Redis Cluster the sub-keys deliberately land in different slots so the load spreads, which means one multi-key `MGET` won't work across them.) In a relational database, the same trick is N counter rows per item (see the like-count example in <a href={`${BASE}sd/lessons/databases/#modeling`}>Databases</a>).
+
+**Batch in the app.** View counts tolerate seconds of lag, so each app server accumulates increments in memory and flushes one `INCRBY 100` instead of 100 `INCR`s. That cuts writes a hundredfold more — at the cost of losing up to one flush interval if a server crashes. Say the trade: "a few seconds of views can be lost on a crash; for views that's fine; for money it isn't."
+
+**Periodic flush to truth.** The authoritative count lives in a database; the hot counter is flushed there every few seconds, and the page reads the cached total.
+
+<Reveal q="Why not just queue every increment and apply them one by one?">
+
+A queue doesn't remove the bottleneck; it moves it. The consumer still applies 100,000 updates a second to one key. Queueing helps only if the consumer **batches** — sums 1,000 increments and writes one — which is the app-side batching above, with an extra hop.
+
+</Reveal>
+
+<h2 id="hyperloglog">Chapter 12 · Counting strangers</h2>
+
+<Scene chapter="Chapter 12" title="Counting strangers">
+
+Iris wants "unique viewers" on every campaign, per day, for a year. The first prototype keeps a set of user ids per campaign per day. On day three it has used more memory than the rest of the ads system combined.
+
+</Scene>
+
+**Distinct counts don't add, and exact sets are big.** 100 million user ids × 8 B = 800 MB per set, per campaign, per day.
+
+**HyperLogLog (HLL)** estimates distinct counts in fixed, tiny memory. The intuition: hash every item to random-looking bits. In a stream of random hashes, seeing one that starts with *k* zero bits suggests you've seen about 2^k distinct items (a run of 20 zeros is a one-in-a-million event). One such estimate is noisy, so HLL splits the hashes into *m* buckets (registers) by their first bits, keeps the longest zero run per register, and combines them with a harmonic mean. The standard error is about **1.04 ÷ √m**.
+
+Redis's HLL uses m = 16,384 registers: 1.04 ÷ 128 ≈ **0.81% standard error** in at most **12 KB**, whether it has seen a thousand ids or a billion. Commands: `PFADD`, `PFCOUNT`, `PFMERGE`.
+
+**The superpower is merging.** The HLL of a union is the register-wise **max** of the HLLs. So keep one sketch per campaign per hour, and "unique viewers this week" is `PFMERGE` of 168 sketches, then one `PFCOUNT` — with the same error. Adding hourly counts would count a returning viewer once per hour.
+
+**Worked numbers.** 1,000 campaigns × 365 days × 12 KB ≈ **4.5 GB** for a year of daily uniques — and any range, by merge. (Redis stores small HLLs sparsely, so real memory is often less.) Exact sets: hundreds of GB *per day*.
+
+**What it can't do:** list the ids, or answer "did user 42 view?" (a Bloom filter answers membership), and intersections ("viewed both campaigns") via inclusion–exclusion are noisy for small overlaps.
+
+<h2 id="count-min">Chapter 13 · A table that never undercounts</h2>
+
+<Scene chapter="Chapter 13" title="A table that never undercounts" mood="dawn">
+
+Search wants "how often was each query typed in the last hour?" for trending. There are hundreds of millions of distinct strings, most of them typed once. Theo draws a small grid of counters, two rows of five, and starts feeding it words. *"Every word lands in one box per row,"* he says. *"Boxes are shared. So which box do you believe?"*
+
+</Scene>
+
+**Count-Min Sketch (CMS)** estimates *how often* each item appears, in fixed memory. It is **d rows × w columns** of counters, with one hash function per row.
+
+- **Update(x):** for each row *i*, add 1 to `C[i][h_i(x)]`.
+- **Query(x):** the **minimum** of `C[i][h_i(x)]` over the rows.
+
+Each counter holds x's true count **plus** whatever collided with it. Collisions only add, so every row overestimates, and the minimum is the least-polluted guess. **It never undercounts; it may overcount.**
+
+**Tiny worked example.** Stream: cat, dog, cat, eel, fox, cat, dog (cat ×3, dog ×2, eel ×1, fox ×1). Pretend hashes — row 1: cat→0, dog→2, eel→0, fox→4; row 2: cat→2, dog→3, eel→3, fox→1.
+
+<Figure caption="Two rows of five counters after seven updates. cat collides with eel in row 1 but not in row 2, so the minimum rescues it. eel collides in both rows, so it is overestimated.">
+  <ArrayStrip name="Row 1" values={[4, 0, 2, 0, 1]} tones={{ 0: 'hot' }} pointers={[{ at: 0, label: 'cat + eel', tone: 'red' }, { at: 2, label: 'dog' }, { at: 4, label: 'fox' }]} />
+  <ArrayStrip name="Row 2" values={[0, 1, 3, 3, 0]} tones={{ 3: 'hot' }} pointers={[{ at: 1, label: 'fox' }, { at: 2, label: 'cat' }, { at: 3, label: 'dog + eel', tone: 'red' }]} />
+</Figure>
+
+| Item | Row 1 | Row 2 | Estimate (min) | True |
+|---|---|---|---|---|
+| cat | 4 | 3 | **3** | 3 |
+| dog | 2 | 3 | **2** | 2 |
+| eel | 4 | 3 | **3** | 1 (overcount 2) |
+| fox | 1 | 1 | **1** | 1 |
+
+**Error intuition.** With N total updates spread over w columns, one counter collects about N ÷ w of noise on average. The guarantee: with w = ⌈e ÷ ε⌉ and d = ⌈ln(1 ÷ δ)⌉, the overcount is at most **εN** with probability at least 1 − δ. Take ε = 0.1% and δ = 1%: w = ⌈2,718.3⌉ = 2,719, d = ⌈4.6⌉ = 5, so 13,595 counters × 4 B ≈ **54 KB**. For a billion searches in an hour, the overcount is at most about **a million** with 99% probability. Read that honestly: **Count-Min is excellent for heavy hitters** (terms counted in the tens of millions) **and useless for the long tail** (a term typed 50 times is lost in the noise). That's exactly what top-K needs.
+
+**Merging:** two sketches with the same dimensions and hash functions merge by **adding cell by cell** — so per-minute sketches combine into an hour, and per-server sketches into a fleet.
+
+**The sentence to say:** *"Exact counting of every term doesn't fit memory across all the windows and shards we need; a Count-Min Sketch gives frequency estimates with bounded overcount in kilobytes, paired with a small heap of the current top-K."* Interviewers accept the name plus the property; they rarely want the internals derived — but the tiny example above is how you'll remember which way the error goes.
+
+<Trace title="Count without counting" steps={sketches} takeaway="Hot counter → shard it and batch. Distinct count → HyperLogLog, merge by max. Frequency → Count-Min, read the minimum, never undercounts." />
+
+<h2 id="top-k">Chapter 14 · The ten loudest</h2>
+
+<Scene chapter="Chapter 14" title="The ten loudest" mood="storm">
+
+Kestrel's first "trending now" page is built by sixteen stream workers, each sending its own top ten to a merger. On launch day the page shows ten mid-sized hashtags. The real story of the day — a hashtag everybody used, spread evenly across all sixteen workers — doesn't appear at all.
+
+</Scene>
+
+**Exact top-K on one machine.** Count with a hash map, then keep a **min-heap of size K**: for each item, if the heap has fewer than K entries or the item beats the heap's minimum, push it (and pop the minimum). O(n log K) time, O(distinct + K) memory. The min-heap is the "door guard who admits only the best K" (see <a href={`${BASE}dsa/lessons/heaps/`}>DSA: Heaps</a>).
+
+**Distributed top-K: local lists don't merge.** If an item's count is **split across shards**, it can be just below the cut on every shard and still win globally. Shard A: x=10, y=9. Shard B: z=10, y=9. Shard C: w=10, y=9. Every local top-1 is a 10; the true winner is y with **27**.
+
+**Fixes:**
+
+- **Partition by item.** Key the stream by item (hashtag, video id), so each item's full count lives on one shard. Then any global top-K item is in its own shard's top K, and **merging the shards' top-K lists is exact**. This is the standard answer. Hot items (one hashtag with a third of all traffic) get pre-aggregated per producer first, then sent as partial sums.
+- **Over-fetch.** Ask each shard for its top 2K or 10K. Usually right, not guaranteed. Algorithms that make this exact in rounds exist (look up TPUT); in an interview, "partition by item" wins.
+
+**Count-Min + heap (unbounded keyspace).** For each arriving item: update the sketch, read its estimate, and if it beats the heap's minimum (or the heap isn't full), insert or update it in a **K-entry heap of candidates**. Memory is the sketch plus K entries, regardless of how many distinct items exist. Overcounts can let an unlucky small item into the heap; keep a few more than K candidates and the error stays in the noise for true heavy hitters.
+
+**Windowed top-K ("last hour").** Keep **per-minute buckets** — per-minute count tables or per-minute sketches — and combine the latest 60: add counts (or add sketches cell by cell), then rank the union of the per-minute candidates. Don't merge 60 per-minute top-K *lists*: that's the split-count trap again, split across time instead of shards. As each minute ages out, drop its bucket.
+
+**Top versus trending.** "Top" is the biggest count; "trending" is the biggest **surprise** — current rate divided by a baseline (the same hour last week, or a slow exponential moving average). A perennial giant is top but not trending. Exponential **decay** of scores (multiply every count by, say, 0.9 each minute) is the cheap way to favour recent activity without keeping buckets.
+
+**Exact or approximate? Say the regime.** With a **bounded keyspace** (10 million videos), exact counts in a sorted set or hash map are simple and fit (10M × ~100 B ≈ 1 GB). With an **unbounded keyspace** (every search string, every URL) across many windows and dimensions, sketches win: per country (200) × per 5-minute window kept for an hour (12) × 54 KB ≈ **130 MB** of Count-Min, where exact tables could need gigabytes per window. **Picking the regime before picking the tool is the whole judgment being tested.**
+
+<Trace title="Merge the leaders" steps={topk} takeaway="Local top-K lists merge exactly only when each item lives on one shard. Window with per-minute buckets of counts or sketches, never per-minute lists." />
+
+<Reveal q="Typeahead suggestions come from an hourly offline trie build. How do you add “trending in the last ten minutes”?">
+
+A small streaming layer: count queries over a short window with Count-Min + a heap of current leaders (per region), and merge those few fresh phrases into the trie's precomputed list at query time. The trie stays the bulk answer; the stream supplies freshness. See <a href={`${BASE}sd/lessons/search/#trie`}>Search · a tree that already knows</a>.
+
+</Reveal>
+
+**Catch the trap:** "Each worker sends its top 10 and we merge." Only if workers own disjoint items. Say "partitioned by hashtag, so the merge is exact" — or the interviewer will draw shard A, B and C for you.
+
+<h2 id="leaderboards">Chapter 15 · Who is winning?</h2>
+
+<Scene chapter="Chapter 15" title="Who is winning?" mood="dusk">
+
+Iris launches **Kestrel Daily**, a one-puzzle-a-day game. Twenty million players by the end of the month. Every player wants three things: the top ten, their own rank, and the people just above them. *"Rank,"* Theo says, *"is the expensive word in that sentence."*
+
+</Scene>
+
+**Redis sorted sets** are the default leaderboard: each member has a score, kept in a skip list (plus a hash for member lookup), so ranks are known without scanning.
+
+```text
+ZINCRBY  lb:daily:2026-10-08  50  player:42          # add 50 points          O(log N)
+ZREVRANGE lb:daily:2026-10-08  0  9  WITHSCORES      # top 10                  O(log N + 10)
+ZREVRANK lb:daily:2026-10-08  player:42              # my rank (0-based)       O(log N)
+ZREVRANGE lb:daily:2026-10-08  r-5  r+5  WITHSCORES  # the 5 above and below   O(log N + 11)
+ZSCORE   lb:daily:2026-10-08  player:42              # my score                O(1)
+```
+
+(Since Redis 6.2, `ZRANGE … REV` is the preferred spelling of `ZREVRANGE`; both work.)
+
+**Worked numbers.** 20M members × roughly 100 B each (skip-list node, hash entry, member string; measure it) ≈ **2 GB** — one node. Writes: 20M players × 10 score updates a day = 2 × 10⁸ ÷ 10⁵ ≈ **2,000/s** average, perhaps 10,000/s at a 5× peak. Reads: 20M × 5 leaderboard views a day ≈ **1,000/s** average. A Redis primary handles very roughly 100,000 simple ops/s (benchmark yours), so one primary plus replicas carries it. The cluster exists for availability, not capacity.
+
+**Periods.** One key per period (`lb:daily:2026-10-08`) with a TTL; weekly = `ZUNIONSTORE` of seven dailies (or a separate weekly key incremented alongside). Resets become "start writing a new key".
+
+**Ties.** Equal scores are ordered by member name, which is rarely what players expect. To let the earlier achiever win, encode time into the score: `score = points × 10⁶ + (999,999 − seconds into the week)`. Scores are doubles, exact for integers up to 2⁵³ ≈ 9 × 10¹⁵; 10⁶ points × 10⁶ ≈ 10¹² is far inside that.
+
+**Friends leaderboards.** Don't keep a sorted set per user. Fetch the ~200 friends' scores (`ZMSCORE`, one call) and sort in the app.
+
+**Sharding limits.** One sorted set lives on one shard, so past one primary's write rate or memory (say 500M players), you split:
+
+| Split by | Top-K | One player's rank | Watch out |
+|---|---|---|---|
+| **Hash of player id** (16 sets) | Exact: best 10 of the 16 shards' top 10s (each player is in one shard) | Sum of `ZCOUNT` above my score across all 16 | Rank is a fan-out; cache it for a few seconds |
+| **Score range** (tiers) | Read the top tier only | Count of all higher tiers + my rank in my tier | Players move between shards as scores change; tiers go hot |
+| **Approximate for the tail** | Exact top from a small set of leaders | "Top 3%" from a score histogram | Players outside the top thousands rarely need an exact rank |
+
+**Source of truth.** Redis is the serving structure, not the ledger. Score events go to a database or log; the leaderboard can be rebuilt from them after a failover loses the last few writes.
+
+<Trace title="Rank the players" steps={leaderboard} takeaway="Sorted set per period: ZINCRBY, ZREVRANGE, ZREVRANK. Shard by player when you must; then top-K stays exact and rank becomes a fan-out." />
+
+**Catch the trap:** "Store scores in Postgres and `ORDER BY score DESC` with an `OFFSET` to find my rank." Ranking 20M rows per view is a scan; the sorted set already knows the answer in O(log N).
+
+<Part n="Part Five" title="Trust and alarms">
+
+Some counts are money and some numbers wake people up. Both need to be right for different reasons.
+
+</Part>
+
+<h2 id="ad-clicks">Chapter 16 · Every click is money</h2>
+
+<Scene chapter="Chapter 16" title="Every click is money" mood="night">
+
+An advertiser's finance team emails a spreadsheet: their own logs show 1,000,312 clicks for October; Kestrel's invoice says 1,003,904. Theo opens the raw click log and finds the same click id three times — a double tap, then a client retry after a timeout.
+
+*"Exactly once,"* Mara says, *"isn't something you buy. It's something you build, and then you check."*
+
+</Scene>
+
+Counting clicks for billing combines everything above with the delivery rules from <a href={`${BASE}sd/lessons/queues-streams/#delivery`}>Queues & streams · delivery</a>: delivery is **at-least-once**; you make the **effect** exactly-once.
+
+1. **A stable id per click.** The ad server mints a `click_id` at impression time and signs it into the click URL; the redirect service logs `(click_id, ad_id, event_time, …)` to Kafka, keyed by `ad_id`. Double taps and retries now carry the same id.
+2. **Dedup in the stream job.** Keyed state "seen click ids", with a TTL longer than any realistic retry (a day, say). Exact state is affordable: about 10⁹ ids a day × ~40 B ≈ **40 GB**, spread across the job's RocksDB state. Not a Bloom filter: its false positives would silently **drop real clicks** — underbilling you can't trace.
+3. **Event-time tumbling windows** per `(ad_id, minute)`, with a watermark and a late-data side output (Chapter 9).
+4. **Checkpoints.** Flink-style checkpoints snapshot window state together with Kafka offsets. After a crash, the job rewinds to the checkpoint and **replays** — so the sink will see some results twice.
+5. **An idempotent sink.** Upsert `count = N` for key `(ad_id, minute)`, never `count += N`. A replay rewrites the same value. (Kafka-to-Kafka pipelines can use transactions instead.)
+6. **Reconciliation.** Raw clicks also land in object storage. A nightly batch job recomputes exact counts with complete data (including very late events) and compares; **batch is the invoice, streaming is the dashboard**, and drift beyond a threshold pages someone.
+
+<Figure caption="Fast path for dashboards, slow exact path for money, and a reconciler watching the gap. This is the Lambda shape.">
+  <Mermaid code={`flowchart LR
+    C["click redirect\nclick_id signed"] --> K[("Kafka\nkey = ad_id")]
+    K --> F["stream job\ndedup by click_id\n1-min event-time windows"]
+    F -->|"upsert (ad, minute)"| O[("OLAP store")]
+    K --> S[("raw log in\nobject storage")]
+    S --> B["nightly batch\nexact recount"]
+    B --> R["reconcile\nbatch wins for billing"]
+    O --> R
+    O --> Q["advertiser\ndashboard"]`} />
+</Figure>
+
+**Lambda or Kappa?** **Lambda** runs two code paths (stream for speed, batch for truth) and pays for keeping them in sync. **Kappa** runs one streaming code path and recomputes by **replaying the retained log** through a new job version. Kappa is simpler if your log retention covers the reprocessing window; Lambda is common where money demands an independent recount. Either is a defensible answer — say which and why.
+
+**Hot ads.** A Super Bowl ad with a third of all clicks makes its `ad_id` partition hot. Key by `(ad_id, salt 0..7)` in the first stage and sum the eight partial counts in a second, tiny stage.
+
+<Trace title="Bill it right" steps={adclicks} takeaway="Stable click ids, exact dedup state, event-time windows, idempotent upserts, and a batch recount that owns the invoice." />
+
+**Catch the trap:** "Kafka has exactly-once, so the counts are exact." Kafka's transactions cover Kafka-to-Kafka processing; your OLAP write, the client's retry and the double tap are all outside it. Name the id, the dedup, the idempotent write and the reconciliation.
+
+<h2 id="alerting">Chapter 17 · Twenty-five pages an hour</h2>
+
+<Scene chapter="Chapter 17" title="Twenty-five pages an hour" mood="storm">
+
+Dev's phone buzzes. Then again. Checkout p99 is hovering right at its 500 ms threshold, and every crossing is a new page. By dawn he has silenced the alert entirely — which is how, the following week, a real latency regression goes unnoticed for an hour.
+
+*"An alert that cries wolf,"* he says, *"is worse than no alert. It trains me to ignore it."*
+
+</Scene>
+
+**Alert rules are queries on a schedule.** "Page if p99 of checkout > 500 ms" is a query evaluated every minute (about 833 queries/s for 50,000 rules, Chapter 1), which is why rules run against **1-minute rollups and recording rules**, not raw data. At larger scale, simple threshold rules can be evaluated **in the stream** as data arrives.
+
+**Making alerts trustworthy:**
+
+- **Duration ("for: 5m").** The condition must hold for several consecutive evaluations before firing. Kills single-sample spikes.
+- **Hysteresis.** Fire above 500 ms, resolve only below 450 ms, so a value hovering at the line doesn't flap.
+- **Respect ingest lag.** Never evaluate a minute whose data the pipeline hasn't finished writing — the watermark idea again. Otherwise every ingest backlog fires "requests = 0" across the fleet.
+- **"No data" is its own state,** not zero. A dead service and a quiet one look the same to a naive rule.
+- **Alert on symptoms, not causes.** Page on what users feel (error rate, latency against an SLO, ideally as burn-rate alerts); send causes (CPU, disk) to dashboards and tickets.
+
+**Alert storms.** A rack switch dies: 400 "host down" and 1,600 "service degraded" alerts in two minutes. The alert router (Prometheus's Alertmanager is the classic example) should **group** by cluster and alert name, **inhibit** child alerts while a parent like "rack down" is firing, **deduplicate** across replicas of the evaluator, and **rate-limit** notifications — so a human gets one page naming the scope.
+
+**Who watches the watchers?** The monitoring system must be monitored from **outside** itself: a "dead man's switch" alert that always fires, and an external service that pages if it ever *stops* arriving.
+
+<Figure caption="Rules run on rollups, a router turns alert floods into one page, and an external heartbeat watches the whole pipeline.">
+  <Mermaid code={`flowchart LR
+    RU[("1-min rollups\n+ recording rules")] --> EV["rule evaluator\nevery 60 s, lag-aware"]
+    EV -->|"firing / resolved"| RT["alert router\ngroup, inhibit, dedup"]
+    RT --> P["pager / chat"]
+    EV -->|"heartbeat alert"| EXT["external\ndead man's switch"]`} />
+</Figure>
+
+<Trace title="Calm the pager" steps={alerting} takeaway="Duration plus hysteresis stops flapping; grouping and inhibition stop storms; lag-aware evaluation stops false zeros; an external heartbeat watches the watcher." />
+
+**Catch the trap:** "We alert when the metric crosses the threshold." Which window, held for how long, resolving where, and what happens when the data is late? Four short answers.
+
+<Part n="Part Six" title="The fights">
+
+A full round on the showcase question, then three shorter sketches for the rest of module 10.
+
+</Part>
+
+<h2 id="walkthrough">Chapter 18 · Kestrel Pulse, out loud</h2>
+
+<Scene chapter="Chapter 18" title="Kestrel Pulse, out loud" mood="night">
+
+Friday, the small room with the bad whiteboard. Mara sets her phone face-down: sixty minutes this time. *"Design a metrics and monitoring system,"* she says. *"Like Datadog. I won't help you."*
+
+You write **12 · 20 · 32 · 52** in the corner of the board — the 60-minute checkpoints from the delivery framework — and pick up the marker.
+
+</Scene>
+
+A 60-minute round, compressed to its spoken lines (budget from <a href={`${BASE}sd/lessons/delivery-framework/#clock`}>Delivery framework · the clock</a>: intro 5, requirements 7, entities 3, API 5, high-level 12, deep dives 20, wrap-up 3, questions 5). Read it aloud once; then fight it cold.
+
+**0:05 · Roadmap and requirements**
+
+> **You:** "Here's how I'd like to use our time: about seven minutes on requirements and scale, a few on entities and the API, a simple design that works, then deep dives on the hardest parts — I expect ingest and cardinality, storage and rollups, and alerting — and a short wrap-up. Would you like estimates up front or as they become relevant?"
+>
+> **Interviewer:** "As relevant."
+>
+> **You:** "Functional: hosts and services emit metrics — counters, gauges, histograms — with tags; users query any metric by tags and time range with aggregation, on dashboards; users define threshold alert rules that notify on-call. Out of scope: logs, traces, APM, the dashboard UI, and billing. Tell me if you want any of those."
+
+**0:08 · Non-functionals with numbers**
+
+> **You:** "Scale: 10,000 hosts, 1,000 series each — 10 million active series — at a 10-second interval, so a million samples a second, about 100 MB/s on the wire. Retention: raw 15 days, a year at coarse resolution. Ingest must never block the host; an outage of the metrics system must not hurt production. Freshness: data queryable within about 30 seconds; alerts detect within a minute or two. Dashboards for the last day load in under a second. Availability: alerting matters most — it must keep working when production is on fire, which is exactly when we need it."
+>
+> "One number decides a lot already: a million writes a second against about 1,200 reads a second — most of them alert rules. This is a write-optimised system whose biggest reader is a machine."
+
+**0:12 · The bridge**
+
+> **You:** "So: tagged metrics in, tag-and-range queries out, threshold alerts; a million samples a second, ten million series, 15 days raw, a year rolled up, alerting the most available part. Does that match what you had in mind?"
+>
+> **Interviewer:** "Yes. Watch the series count."
+
+**0:12 · Core entities**
+
+> **You:** "Metric — a name and type. Series — a metric plus one set of tag values; that's the unit of storage and the thing whose count we have to control. Sample — timestamp and value, belonging to one series. Rollup — a series at a coarser resolution, with min, max, sum and count, or a histogram. AlertRule — a query, a threshold, a duration, and a notification route. Team — owns metrics and has a series quota."
+
+**0:15 · API**
+
+> **You:** "Ingest: `POST /v1/series` with a batch — each item a metric name, tags, type, and points — authenticated by an API key per team; it returns 202 once the batch is durable in the log, and 429 with a reason if the team is over quota. Query: `GET /v1/query` with an expression like `avg by (service) (cpu{region="eu"})`, start, end and step; it returns one array of points per result series. Alerts: CRUD on `/v1/alerts`, each rule with its query, threshold, `for` duration and route."
+
+**0:20 · High-level design**
+
+> **You:** "Write path: an agent on each host aggregates locally and sends one compressed batch every 10 seconds — a thousand requests a second fleet-wide, not a million. Stateless collectors authenticate, enforce label rules and quotas, and write to Kafka keyed by series id, so each series lands on one partition, in order. Writers consume partitions, append to in-memory chunks with Gorilla-style compression and a WAL, and every two hours cut an immutable block to object storage with its tag index."
+>
+> "Read path: a query service parses the expression, resolves series through the tag index, picks the resolution rung by range, reads recent data from writers and older blocks from storage, and aggregates. A rollup job builds 1-minute and 1-hour rungs. The alert evaluator runs every rule each minute on the rollups and sends firing alerts to a router, which groups and notifies."
+
+<Figure caption="Kestrel Pulse at the end of the high-level step.">
+  <Mermaid code={`flowchart LR
+    AG["agents\n10 s batches"] --> COL["collectors\nauth, labels, quotas"]
+    COL -->|"key = series id"| K[("Kafka")]
+    K --> WR["writers\nhead block + WAL"]
+    WR --> OS[("blocks + index\nobject storage")]
+    K --> RJ["rollup job\n1 min, 1 h"]
+    RJ --> OS
+    QS["query service"] --> WR
+    QS --> OS
+    D["dashboards"] --> QS
+    AE["alert evaluator\nevery 60 s"] --> QS
+    AE --> AR["alert router"] --> PG["pager"]`} />
+</Figure>
+
+**0:32 · Deep dive 1 — ingest and cardinality**
+
+> **You:** "The thing that kills these systems is series count, not sample rate. Labels multiply: one request metric with service, endpoint, status and region is 60,000 series; add user_id with 10 million daily users touching 10 combinations each, and it's 100 million new series a day — ten times everything else — and each costs a few KB of writer memory. So collectors enforce a label allowlist per metric and rewrite raw paths to route templates; every team has a series quota, and over-quota series get rejected with an alert to the owner, not a cluster-wide outage. We track new series per metric per minute with a HyperLogLog and alert on jumps. Per-user questions go to the event store, not here."
+>
+> "Kafka: 100 MB/s at about 10 MB/s per partition needs ten; I'd give it 64 for headroom. 24 hours of retention is about 5 TB with compression and three replicas, which also covers a day-long writer outage. Writers: about nine at 200,000 samples a second each, 60% utilised. If agents can't reach us, they buffer a few minutes on disk, then drop and count drops — monitoring must never take down the host."
+
+**0:39 · Deep dive 2 — storage, rollups and percentiles**
+
+> **You:** "Storage: the head block in writer memory, two-hour immutable blocks in object storage, each with a posting-list index from tag-value to series ids. Gorilla encoding — delta-of-delta timestamps, XOR'd values — gets regular series to about one or two bytes a sample; I'll use two. Raw: a million a second times 10⁵ seconds times 2 bytes is about 200 GB a day, 3 TB for 15 days. Hourly rollups of min, max, sum, count are 90 times smaller: 0.8 TB a year. A 1-minute rung for 30 days adds about 4 TB — it's for query speed, not disk. Without rollups a year would be 73 TB. Retention is dropping whole blocks."
+>
+> "Latency metrics are histograms, not p99s, because percentiles don't average: each host sends bucket counts, rollups add them, and p99 is read off the merged histogram at query time. The query planner picks the coarsest rung with about one point per pixel; the top dashboards and every alert rule read pre-aggregated recording rules — 288,000 points instead of 86 million for the main service dashboard."
+
+**0:45 · Deep dive 3 — alerting**
+
+> **You:** "Fifty thousand rules a minute is about 830 queries a second, on rollups. Rules have a duration and hysteresis so they don't flap. The evaluator only judges minutes the pipeline has finished — it reads ingest lag — and 'no data' is its own state, so a backlog doesn't page the fleet. The router groups by cluster and alert, inhibits children under a parent like 'rack down', and dedups across two evaluator replicas. Alerting runs in its own deployment with priority on the query tier, and an external dead man's switch pages if the whole pipeline goes quiet."
+
+**0:52 · Wrap-up**
+
+> **You:** "To recap: a million samples a second through batched agents and a series-keyed log, Gorilla-compressed blocks with a tag index, a three-rung retention ladder that keeps a year in under a terabyte, mergeable histograms for percentiles, and lag-aware alerts that page once per real problem. At 10×, series count and writer memory hit first, then query fan-out over old blocks. I'd monitor active series per team, Kafka lag in seconds, writer memory, and alert-evaluation delay. Next: an events store for high-cardinality questions, SLO burn-rate alerts, and multi-region with per-region ingest."
+
+**0:55.** Mara turns the phone over. *"Five minutes for questions,"* she says. *"You spent seven on requirements. I checked."*
+
+**Check the numbers yourself:** 10,000 × 1,000 ÷ 10 = 1,000,000 samples/s; × 100 B = 100 MB/s; 10,000 ÷ 10 = 1,000 batches/s. 100 MB/s × 86,400 ÷ 5 × 3 ≈ 5.2 TB. 1,000,000 ÷ (200,000 × 0.6) ≈ 8.3 → 9 writers. 10⁶ × 10⁵ × 2 B = 200 GB/day; × 15 = 3 TB; ÷ 90 × 365 ≈ 0.8 TB; × 4/6 × 30 ≈ 4 TB; × 365 = 73 TB. 50,000 ÷ 60 ≈ 833. 10,000 × 8,640 = 86.4M vs 200 × 1,440 = 288,000.
+
+<Trace title="Run the clock" steps={walkthrough} takeaway="Scope in one breath, leave requirements at the checkpoint, and spend the dives where these systems die: series count, storage cost, and alerts people trust." />
+
+<Reveal q="Which step would you most likely have skipped silently — and what would it have cost?">
+
+For most people it's the **failure story for the monitoring system itself**: what happens to hosts when ingest is down (buffer, then drop — never block), and what watches the alerting pipeline (an external heartbeat). Without the first, "the agent retries forever" quietly makes monitoring a production risk. Without the second, the interviewer asks "and if your alerting is down during an outage?" — and the most important property of the whole system was never designed.
+
+</Reveal>
+
+<h2 id="sketch-ads">Chapter 19 · Sketch: ad-click aggregator</h2>
+
+<Scene chapter="Chapter 19" title="Twelve minutes on the clock" mood="dawn">
+
+Mara gives you twelve minutes, not sixty. *"Per-campaign ad-click dashboard. Clicks also drive billing. Go."*
+
+</Scene>
+
+**Requirements.** Count clicks per ad and per campaign per minute; advertisers see counts within about 5 seconds on a dashboard; invoices must be exact; query ranges up to 90 days. Assume 1B clicks/day ≈ 10,000/s average (÷10⁵), 50,000/s peak; 10M active ads.
+
+**Design** (Chapter 16's figure): redirect service with signed `click_id` → Kafka keyed by `ad_id` (salted for hot ads) → stream job: dedup by `click_id` in keyed state, 1-minute event-time tumbling windows, watermark of a few seconds, late events to a side output → upsert `(ad_id, minute) → count` in an OLAP store (columnar, sorted by ad and time) → query service. Raw clicks to object storage; nightly batch recount; reconciliation; batch owns the invoice.
+
+**Numbers.** Rows per day ≤ min(clicks, ads × minutes) = min(10⁹, 1.44 × 10¹⁰) = 10⁹ — far fewer in practice, because clicks cluster on popular ads; at about 20 B per row that's at most 20 GB/day, and hourly and daily rollups serve the 90-day ranges. Dedup state ≈ 40 GB. Campaign-level counts are a second, cheap aggregation over ad-minute rows.
+
+**The two dives they'll want:** exactly-once-ish (id, dedup, idempotent upsert, reconciliation — and why not a Bloom filter) and late data (watermark versus correction path). Unique users per campaign? One HyperLogLog per campaign per hour, merged on read.
+
+> **Spoken summary:** "Clicks carry a signed id from the ad server. The stream job dedups on it, counts per ad per minute in event time, and upserts the window's full count so replays are harmless. Dashboards read those within seconds. Raw clicks also go to object storage, and a nightly recount is what we bill from; a reconciler alerts if the two drift. Hot ads are salted across partitions and summed in a second stage."
+
+<h2 id="sketch-leaderboard">Chapter 20 · Sketch: a game leaderboard</h2>
+
+<Scene chapter="Chapter 20" title="Ten minutes, one sorted set">
+
+Iris pins a screenshot of Kestrel Daily to the board: a top-100 list and, underneath, *You are #48,211*. *"Ten minutes,"* Mara says. *"And tell me when it stops fitting on one box."*
+
+</Scene>
+
+**Requirements.** Global daily and weekly leaderboards, top 100, my rank, players around me, friends' board. 20M players, 2,000 score updates/s average, 1,000 reads/s average (Chapter 15).
+
+**Design.** Score events → game service validates (anti-cheat) → database ledger (truth) and `ZINCRBY` on `lb:daily:<date>` and `lb:weekly:<week>` in Redis with TTLs → read API: `ZREVRANGE 0 99`, `ZREVRANK` then a range around it, `ZMSCORE` for friends. Ties broken by encoding time into the score. One primary plus replicas; reads from replicas for the top-100 (cache it for a second at the edge — everyone sees the same list).
+
+**At 25× (500M players):** hash-shard by player into 16 sets: top-K stays exact by merging the shards' top lists; exact rank becomes a 16-way `ZCOUNT` fan-out, cached briefly, with approximate percentiles ("top 3%") from a score histogram for the long tail.
+
+> **Spoken summary:** "A sorted set per period, written with ZINCRBY and read with ZREVRANGE and ZREVRANK — all O(log N). Twenty million players is about 2 GB, so one primary with replicas; the database ledger is the truth and can rebuild it. Ties are broken in the score itself. If we outgrow one primary, I shard by player: the top 100 stays exact, and rank becomes a cached fan-out."
+
+<h2 id="sketch-trending">Chapter 21 · Sketch: top-K trending</h2>
+
+<Scene chapter="Chapter 21" title="What is everyone talking about?" mood="storm">
+
+A football final ends in penalties, and within a minute half of Kestrel is posting the same hashtag. Iris wants it on the trending page before the players leave the pitch. *"Per country,"* she adds. *"Oh, and also — not the hashtags that are always big."*
+
+</Scene>
+
+**Requirements.** "Top 10 trending hashtags in the last hour, per country, refreshed every minute." Billions of posts a day; unbounded hashtag space; approximate is fine.
+
+**Design.** Posts → extract hashtags → Kafka keyed by hashtag (so each tag's count lives on one worker; pre-aggregate hot tags per producer) → per worker, per country, per minute: a Count-Min Sketch plus a candidate heap → every minute, merge the last 60 minute-buckets (add sketches, union candidates), score each candidate as **current rate ÷ baseline** for "trending" (or raw count for "top"), and keep the best 10 → a small aggregator merges the workers' per-country lists (exact, because workers own disjoint tags) → write the result to a cache keyed by country; clients read the cache.
+
+**Numbers.** 54 KB per sketch × 200 countries × 60 minute-buckets ≈ 650 MB across the fleet — or 130 MB with 5-minute buckets. Results: 200 countries × 10 tags — tiny, served from cache.
+
+**Filters you should mention:** spam and bot accounts, blocked terms, and a minimum number of distinct users (an HLL per candidate) so one account can't trend a tag.
+
+> **Spoken summary:** "Keyed by hashtag so the merge is exact; per-minute Count-Min sketches with a heap of candidates, merged over 60 minutes; trending means rate divided by a baseline, not raw count; results precomputed per country every minute and served from cache. Exact counts would be simpler for a bounded keyspace — hashtags aren't bounded, so I use sketches."
+
+<h2 id="family">Chapter 22 · The wider family</h2>
+
+The same moves — batch the firehose, key by the thing you aggregate, window in event time, pre-aggregate what's read, sketch what's unbounded — unlock the rest of module 10 and pieces of other questions:
 
 | Bank question | How the pattern applies |
-|---------------|------------------------|
-| **Metrics / Datadog** (walkthrough) | the whole pattern + cardinality + alerting (sliding threshold checks on rollups) |
-| **Ad click aggregator** | stream aggregation + exactly-once-ish counting (contention lesson) + watermark windows |
-| **Top-K / leaderboard** | sorted sets vs count-min, windowing |
-| **YouTube view counts** | sharded counters + periodic flush to truth |
-| **Trending topics** | count-min + per-window buckets + decay |
-| **Distributed tracing ingest** | span firehose + sampling + time-partitioned storage |
-| **Strava heatmaps** | geo (previous pattern) + time bucketing — patterns compose |
+|---|---|
+| **Metrics / Datadog** (Chapter 18) | The whole pattern + cardinality + alerting on rollups |
+| **Ad click aggregator** (Chapter 19) | Stream aggregation + exactly-once-ish counting + watermark windows + Lambda/Kappa |
+| **Top-K / leaderboard** (Chapters 20–21) | Sorted sets versus Count-Min, windowing, sharding limits |
+| **YouTube view counts** | Sharded counters + app batching + periodic flush to truth |
+| **Trending topics** | Count-Min + per-window buckets + rate ÷ baseline, decay |
+| **Distributed tracing** | Span firehose; trace-id propagation (W3C `traceparent` header); **head sampling** (decide at the root, say 1%) versus **tail sampling** (buffer whole traces keyed by trace id, keep errors and slow ones); time-partitioned storage indexed by trace id; RED metrics derived from spans *before* sampling |
+| **Strava heatmaps** | Geo cells (geospatial pattern) × time buckets — patterns compose |
+| **Stock exchange charts** | Price candles are rollups: open, high, low, close, volume per interval — first/last instead of sum/count |
+| **Typeahead** | Offline top-K per prefix plus a streaming trending layer |
+
+<Part n="Epilogue" title="Make it stick">
+
+Drills, the spoken answer, the cheat sheet, and where to go next.
+
+</Part>
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The aggregation review" steps={drills} takeaway="Four dials, every time: what one series is and how many; what summary at what resolution; write time or read time; how late, how wrong, how long." />
 
 <Quiz questions={[
   {
@@ -95,9 +933,126 @@ The other disease to name: **cardinality explosion** — a `user_id` tag on a me
     ],
     answer: 1,
     why: 'The trigger is UNBOUNDED KEYSPACE. With bounded keys (10M videos) a sorted set is exact and simpler — say which regime you\'re in before picking, that\'s the whole judgment being tested.'
-  }
+  },
+  {
+    q: 'Your billing stream job restarts from a checkpoint and replays two minutes. Which sink write keeps invoices right?',
+    options: [
+      'count += N for each (ad, minute) result',
+      'Upsert count = N for each (ad, minute) key, so a replay rewrites the same value',
+      'Append a row per result and sum at query time',
+      'Disable checkpoints so nothing replays'
+    ],
+    answer: 1,
+    why: 'Replays are how at-least-once recovers. Make the write idempotent: overwrite the window’s full count. Increments and appends double-count; no checkpoints means losing data instead.'
+  },
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: 12-minute mini-design — "per-campaign ad-click dashboard, 500K clicks/s, 5s freshness." Ingest → keyed aggregation → rollups → sharded hot counters, ending with the storage estimate ladder. Weekend mock: **Datadog** — the Tier-4 heavyweight this pattern unlocks.
+<Scene title="The interview room" mood="night">
+
+The Interviewer writes one line: *"Design a system that shows p99 latency and request rates for all our services, with alerts."* Two years ago you'd have drawn a database and a cron job. Today you draw a time axis first.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "It's write-a-firehose, read-a-summary: about a million samples a second from 10,000 hosts, but only about a thousand queries a second, mostly alert rules. Agents batch every 10 seconds; collectors enforce label rules and per-team series quotas, because **cardinality** — not volume — is what kills these systems; a log keyed by series id feeds writers that own each series. Storage is a time-series layout: series ids, a tag inverted index, Gorilla-compressed chunks in two-hour blocks, so retention is a file delete. **Retention is the storage design**: raw 15 days is 3 TB, hourly min, max, sum, count for a year is under a terabyte. Latency is stored as **histograms**, because p99s can't be averaged; buckets add across hosts and time. Known dashboards and alert rules read pre-aggregated recording rules; ad-hoc questions scan the short raw window. Aggregations run in **event time** with a watermark and a late-data path. Alerts evaluate on rollups with a duration and hysteresis, respect ingest lag, and go through a router that groups and inhibits — and an external heartbeat watches the whole thing."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · Someone adds user_id as a tag. What happens, and what stops it?">
+
+Series multiply: 10M users × ~10 combinations is 100M new series a day, each costing writer memory and index entries — the cluster falls over on memory before disk. Collectors drop unbounded labels by allowlist, per-team quotas cap the blast radius, and a HyperLogLog of new series per metric alerts on jumps. Per-user questions go to an event store.
+
+</Reveal>
+
+<Reveal q="2 · How do you show p99 across 200 hosts and 30 days?">
+
+Each host sends a histogram (or a mergeable sketch like DDSketch or t-digest) per window. Rollups add bucket counts across hosts and time; p99 is read from the merged distribution at query time. Averaging p99s is wrong — a quiet slow host and a busy fast one make the average meaningless.
+
+</Reveal>
+
+<Reveal q="3 · How much storage, and how do you keep it bounded?">
+
+1M samples/s × 10⁵ s × ~2 B ≈ 200 GB/day raw; 15 days = 3 TB. Hourly rollups (360 samples → 4 numbers) are 90× smaller: 0.8 TB/year. A year of raw would be 73 TB. Time-partitioned blocks make dropping old data a file delete.
+
+</Reveal>
+
+<Reveal q="4 · Events arrive late or out of order. How are your per-minute numbers right?">
+
+Window by event time, not processing time. A watermark — largest event time seen minus an allowed delay — decides when a minute closes. Late events are counted as late and either dropped (dashboards), applied as updates via allowed lateness, or sent to a correction path that rewrites the window (anything that bills).
+
+</Reveal>
+
+<Reveal q="5 · How do you stop alert fatigue?">
+
+Rules hold for a duration before firing and resolve below a lower threshold (hysteresis); they evaluate only minutes the pipeline has completed; "no data" is a separate state. The router groups related alerts, inhibits children under a parent outage, deduplicates, and rate-limits, so a rack failure is one page. Page on user-facing symptoms; send causes to dashboards.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "Metrics", "dashboard", "analytics" | Write a firehose, read a summary — the four dials |
+| A million tiny writes a second | Agent batching, series-keyed log, writers own series |
+| "How is it stored?" | Series id + tag inverted index + time blocks; LSM-shaped; Gorilla chunks |
+| "How much disk?" | Retention ladder: raw days, coarse months; min/max/sum/count rollups |
+| A tag like user_id or request_id | Cardinality explosion: allowlist, quotas, new-series alert, event store |
+| Dashboard everyone opens | Pre-aggregate (recording rule); keep short raw for ad-hoc |
+| p99 across hosts or time | Histograms / t-digest / HDR / DDSketch — never average percentiles |
+| "Per minute" from a stream | Tumbling windows in event time, watermark, late-data policy |
+| "Last 5 minutes" | Sliding window built from 1-minute buckets |
+| One counter at 100K/s | Sharded counter + app-side batching |
+| Unique users | HyperLogLog: 12 KB, ~0.81%, merge by max |
+| Frequencies over an unbounded keyspace | Count-Min (never undercounts) + heap |
+| Top-K across shards | Partition by item, then merging top-K lists is exact |
+| Trending | Rate ÷ baseline (or decay), per-minute buckets |
+| Leaderboard | Sorted set: ZINCRBY / ZREVRANGE / ZREVRANK; shard by player; ties in the score |
+| Clicks are money | Click id, exact dedup, idempotent upsert, batch reconciliation |
+| Alert flapping / storms | for-duration + hysteresis; group, inhibit, dedup; lag-aware |
+
+## Five mistakes to leave behind
+
+1. **Averaging percentiles.** Store mergeable distributions; read the percentile last.
+2. **Unbounded labels.** One `user_id` tag can outgrow the rest of the system.
+3. **Keeping everything at full resolution.** The retention ladder *is* the storage design.
+4. **Processing-time windows.** Count by event time, with a watermark and a late-data policy.
+5. **Merging local top-K lists from shards that split items.** Partition by item first.
+
+<Scene title="Mara’s last word" mood="dusk">
+
+Months later, the latency dashboard has a new panel: p99 from merged histograms, next to a small grey number — *late events, last hour: 0.02%*. Dev added the grey number himself.
+
+*"That one's my favourite,"* Mara says. *"It's the dashboard admitting what it doesn't know."*
+
+</Scene>
+
+**Keep it warm:** with the buddy, run the 12-minute mini-design — **per-campaign ad-click dashboard, 500,000 clicks/s, 5-second freshness.** Ingest → keyed aggregation → rollups → sharded hot counters, ending with the storage estimate ladder; time-box requirements to two minutes. Then the weekend mock: **Datadog** — the Tier-4 heavyweight this pattern unlocks — on the 60-minute clock, checkpoints **12 · 20 · 32 · 52** in the corner.
+
+Related: <a href={`${BASE}sd/lessons/estimation/#metrics`}>Estimation · a million samples a second</a> · <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> (partitions, lag, exactly-once effect) · <a href={`${BASE}sd/lessons/databases/#storage-engines`}>Databases · LSM-trees</a> · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (hot keys, Redis) · <a href={`${BASE}sd/lessons/search/#trie`}>Search · typeahead top-K</a> · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> (windows and counters in Redis) · <a href={`${BASE}sd/lessons/pattern-partitioning/`}>Partitioning</a> · <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> · <a href={`${BASE}dsa/lessons/heaps/`}>DSA: Heaps</a> · <a href={`${BASE}sd/war/event-driven-ai-pipeline/`}>War Room: event-driven AI pipeline</a> · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 11, "Stream Processing" (event time, windows, joins, fault tolerance), and chapter 3 for LSM-trees and column storage.
+- [Gorilla: A Fast, Scalable, In-Memory Time Series Database](https://www.vldb.org/pvldb/vol8/p1816-teller.pdf) (VLDB 2015) — delta-of-delta timestamps and XOR value compression, with the 1.37 bytes-per-point figure.
+- [The Dataflow Model](https://www.vldb.org/pvldb/vol8/p1792-Akidau.pdf) (VLDB 2015) — windows, watermarks, triggers and late data, from the people who built Google's stream processing.
+- [Prometheus: storage](https://prometheus.io/docs/prometheus/latest/storage/) — head block, WAL, two-hour blocks, compaction and retention in a real TSDB.
+- [Apache Flink: timely stream processing](https://nightlies.apache.org/flink/flink-docs-stable/docs/concepts/time/) — event time and watermarks as implemented.
+- [Redis sorted sets](https://redis.io/docs/latest/develop/data-types/sorted-sets/) and [Redis HyperLogLog](https://redis.io/docs/latest/develop/data-types/probabilistic/hyperloglogs/) — the leaderboard and distinct-count commands, with complexity.
+- [Count–min sketch](https://en.wikipedia.org/wiki/Count%E2%80%93min_sketch) and [HyperLogLog](https://en.wikipedia.org/wiki/HyperLogLog) (Wikipedia) — the error bounds and the original papers.
+- [Google SRE book: Monitoring Distributed Systems](https://sre.google/sre-book/monitoring-distributed-systems/) and [SRE workbook: Alerting on SLOs](https://sre.google/workbook/alerting-on-slos/) — symptoms versus causes, and burn-rate alerts.
+
+**Look these up yourself**
+
+- **Space-Saving and Misra–Gries** — deterministic heavy-hitter algorithms that keep K counters and guarantee every item above N ÷ K is found.
+- **DDSketch, t-digest and HDR Histogram compared** — relative versus rank error, mergeability, and memory.
+- **Native (sparse exponential) histograms in Prometheus** — histograms without hand-picked buckets, and why they cut series count.
+- **Monarch (Google, VLDB 2020)** — a planet-scale in-memory time-series system with push-down aggregation.
+- **Thanos, Cortex/Mimir and VictoriaMetrics** — how open-source systems put Prometheus blocks in object storage and scale queries.
+- **Kafka Streams and Flink exactly-once internals** — checkpoint barriers, two-phase commit sinks, and what they do not cover.
+- **SLO burn-rate alerting** — multi-window, multi-burn-rate rules that page fast for big outages and slowly for small leaks.
+- **Tail-based sampling for tracing** — buffering whole traces to keep the interesting ones, and what it costs in memory.

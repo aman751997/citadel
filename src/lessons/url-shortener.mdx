@@ -1,0 +1,1297 @@
+---
+title: 'Walkthrough: Design a URL Shortener'
+description: 'The morning forty million Kestrel links died, and the 45-minute fight that designs kst.to. Every framework step on the clock: the numbers, 301 versus 302, four ways to mint a code with the collision maths checked, tested Java for base62 and range allocation, the redirect hot path, expiry, analytics, abuse and three regions — then the whole round out loud.'
+module: 3
+order: 1
+minutes: 95
+---
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import Mermaid from '../components/Mermaid.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { scoping, estimate, contract, redirects, keyspace, hashing, counters, enumeration, claiming, storage, hotPath, expiry, analytics, abuse, regions, drills } from '../data/sd/url-shortener';
+import { BASE } from '../paths';
+
+<PatternHub
+  pattern="sd-url-shortener"
+  start="prologue"
+  logline="A URL shortener is a promise that seven characters will mean the same thing for years, answered in milliseconds, a hundred times for every time it is made. The fun part is minting the seven characters. The senior part is everything around them: the status code you return, the cache that carries the load, and the clicks you count without slowing anyone down."
+  cast={[
+    { name: 'You', role: 'Ten weeks at Kestrel. Your design round is in nine days, and this is the warm-up question everybody gets.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Plays the interviewer, phone face-down as the clock. Never answers first.' },
+    { name: 'Iris Tan', role: 'Product lead. Lost forty million links to someone else’s shutdown, and would like to own the next forty million.' },
+    { name: 'Dev Okafor', role: 'SRE. Has opinions about anything that turns a viral post into a pager alert.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has watched a counter hand out the same number twice.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · Scope it (steps 1–3)', description: 'Requirements with numbers, the arithmetic, the contract, and the status code that decides analytics.', links: [['requirements', 'Three verbs and a promise'], ['estimation', 'The arithmetic of a short link'], ['entities-api', 'The contract'], ['status-codes', '301 or 302']] },
+    { name: 'Part Two · Draw it (step 4)', description: 'The fewest boxes that create a link and follow one.', links: [['high-level', 'Boxes that earn their place']] },
+    { name: 'Part Three · Deep dive: the code', description: 'How long is short, and four ways to mint seven characters — with the maths and the Java.', links: [['keyspace', 'How long is short?'], ['hash', 'The fingerprint that collides'], ['counter', 'One counter, many servers'], ['enumeration', 'The scraper who counted'], ['random', 'Dice and a unique key'], ['aliases', 'Names people choose']] },
+    { name: 'Part Four · Deep dive: the hot path', description: 'Where ninety terabytes live, and how 300,000 redirects a second never reach them.', links: [['storage', 'Ninety terabytes of tiny rows'], ['redirect-path', 'Three hundred thousand a second'], ['expiry', 'Links that die on time']] },
+    { name: 'Part Five · Deep dive: around the edges', description: 'Counting clicks, stopping abuse, and serving three continents.', links: [['analytics', 'Counting without slowing'], ['abuse', 'The parcel that was not a parcel'], ['regions', 'A link across an ocean']] },
+    { name: 'Part Six · Finish the fight', description: 'Wrap-up, then the whole round on the clock.', links: [['wrap-up', 'The last three minutes'], ['walkthrough', 'The fight, out loud']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Requirement → numbers → code → hot path → decision' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'The calls interviewers probe, with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="A walkthrough is a fight, not a read. At every chapter break, say your answer out loud before you scroll. Parts One and Two are one sitting; each deep-dive part is another."
+/>
+
+<h2 id="prologue">Prologue · Forty million dead links</h2>
+
+<Scene chapter="Prologue" title="Forty million dead links" mood="storm">
+
+The support queue fills before breakfast. *"Every old link in my chats is broken."* *"The recipe my mum sent me is gone."* By nine there are eleven thousand tickets.
+
+Kestrel never built its own short links. Every link shared in a message went through Tinylane, a small shortening service with a generous free tier. Overnight, Tinylane shut down. Its domain now returns nothing, and forty million links in four years of Kestrel conversations point at it.
+
+Iris stands at the whiteboard with her coat still on. *"We own our links from now on. kst.to. Every share, every campaign."*
+
+Mara puts her phone face-down on the table. *"Good. And you,"* she says to you, *"have a design round in nine days where this is the most common warm-up there is. So you design it, I'll interview. Forty-five minutes."* She writes **9 · 15 · 25 · 38** in the corner of the board.
+
+</Scene>
+
+A **URL shortener** maps a short code to a long URL. `https://kst.to/aZ3kQ9x` answers with a redirect to `https://market.kestrel.app/listings/88213/vintage-brass-lamp?ref=share&utm_source=chat`. That is the whole product. Two verbs: make a short link, follow one.
+
+**Why it is asked so often.** It is small enough to finish in 45 minutes, and every part of it opens onto a classic idea:
+
+- **ID generation:** how do many servers mint unique, short, unguessable codes?
+- **Read-heavy design:** a hundred clicks for every link created, so the cache carries the system.
+- **HTTP semantics:** 301 versus 302 decides whether you can count clicks at all.
+- **Partitioning:** which key, and why the obvious one (the user) breaks the hottest query.
+- **Async pipelines:** count clicks without slowing them.
+
+**Why this one is personal.** You met this prompt as the running example in the <a href={`${BASE}sd/lessons/delivery-framework/`}>delivery framework</a>, and its numbers in <a href={`${BASE}sd/lessons/estimation/#shortener`}>estimation</a>. This is the full fight. It hits your gap register in four places:
+
+- **Pacing.** Code generation is fun, and candidates spend twenty minutes on base62 before drawing a box. You will be at the deep dive at 0:25, not 0:10.
+- **The cache hand-wave.** "Cache the redirects in Redis" is the sentence this design invites. Chapter 13 says the four promises instead.
+- **Silent skips.** You will say out loud what you are *not* designing: the analytics dashboard UI, billing, link previews.
+- **Sanity-checking the prompt.** Estimation showed a famous version of this prompt whose numbers disagree. You will check yours.
+
+**How to use this walkthrough.** Attempt each step yourself first. Say the answer out loud, *then* scroll. The part breaks are your pause points.
+
+<Figure caption="The six steps from the delivery framework, with this lesson’s chapters under each. The four checkpoints for a 45-minute round are the moments you must be leaving requirements, drawing, diving, and wrapping up.">
+  <Mermaid code={`flowchart LR
+    R["1 · Requirements\nCh 1–2 · leave by 0:09"] --> E["2 · Entities\nCh 3"]
+    E --> A["3 · API\nCh 3–4 · leave by 0:15"]
+    A --> H["4 · High-level\nCh 5 · leave by 0:25"]
+    H --> D["5 · Deep dives\nCh 6–17 · leave by 0:38"]
+    D --> W["6 · Wrap-up\nCh 18"]`} />
+</Figure>
+
+The lesson teaches each step in far more depth than 45 minutes allows, so that you have choices in the room. Chapter 19 then compresses it back into the round you would actually speak, with timestamps.
+
+<Part n="Part One" title="Scope it (steps 1–3)">
+
+Six minutes of requirements and numbers, two of nouns, four of API. The numbers you write down here decide every box later.
+
+</Part>
+
+<h2 id="requirements">Chapter 1 · Three verbs and a promise</h2>
+
+<Scene chapter="Chapter 1" title="Three verbs and a promise" mood="dawn">
+
+Iris doesn't sit down. *"It has to do what Tinylane did. Shorten, redirect. And marketing wants their own names — kst.to/spring-sale. And links that expire when a promotion ends. And click counts, obviously. Per day. Per country —"*
+
+Mara raises one finger without looking up from her phone. Iris stops.
+
+*"Five features,"* Mara says to you. *"Forty-five minutes. Which ones make it this product, what happens to the rest — and what does 'never break a link again' mean as a number?"*
+
+</Scene>
+
+**Functional requirements.** Run the delivery framework's filter: the verbs without which it isn't this product, then the ones that create the hard engineering.
+
+1. **Shorten:** a user submits a long URL and gets back a short link.
+2. **Redirect:** anyone following the short link is sent to the long URL.
+3. **Custom alias (optional):** a user may choose the code (`kst.to/spring-sale`), if it is free.
+4. **Expiry (optional):** a link may carry an expiry time, after which it stops redirecting.
+
+**Stretch, said out loud:** click analytics (counts per link per day, by country and referrer). It does not change the core design, but it does constrain the redirect path. *"I'll make sure the redirect path can emit click events cheaply, and design the pipeline if we have time."*
+
+**Out of scope, said out loud:** the analytics dashboard UI, billing and plans, link-in-bio pages, QR codes, editing a link's destination after creation. *"Tell me if you want any of those."*
+
+Notice what made the cut. Aliases and expiry stay because they are cheap and they *touch the core*: aliases share the code namespace (Chapter 11), and expiry changes the cache TTL (Chapter 14). A feature that touches the core is worth two sentences; a feature that doesn't is worth one line in the out-of-scope list.
+
+**Non-functional requirements, each with a number or a choice:**
+
+| Quality | The requirement | What it decides |
+|---|---|---|
+| **Redirect latency** | p99 under **50 ms** at the server, plus the user's network | The read path is one memory lookup; no sequential database calls |
+| **Availability** | Redirects **99.99%** (about 4.3 minutes of downtime a month); creates 99.9% | Redirects degrade last: caches, replicas, multi-region reads |
+| **Durability** | **An acknowledged link is never lost** and never changes meaning | Replicated write before `201`; codes are never reused (Chapter 14) |
+| **Consistency** | A new link may take **a second or two** to resolve in other regions; never resolves to the wrong URL | Async replication is fine; a stale *miss* must not become a 404 (Chapter 17) |
+| **Scale** | **100M new links a day**, **100 redirects per link**, links kept **5–10 years** | Chapter 2's arithmetic: partitioning, cache cluster, 7-character codes |
+| **Code shape** | **Short** (7 characters), URL-safe, **not sequential** | Base62, length from keyspace maths, a non-guessable order (Chapters 6–10) |
+
+"Never break a link again" became two rows: **durability** (we never lose a mapping) and **availability** (we always answer). The Tinylane failure was a third thing — the company disappeared — and the only defence against that is owning the domain. Say it in one line; it is why Iris is building this at all.
+
+**The bridge**, in the delivery framework's shape: *"So: shorten and redirect, custom aliases and expiry as small extras, analytics as a stretch. Redirects under 50 ms at p99 and four nines; links never lost; a second of cross-region lag is fine. Does that match what you had in mind?"*
+
+<Trace title="Scope the shortener" steps={scoping} takeaway="Two verbs make the product; the extras earn a place only if they touch the core. The redirect latency and the durability promise place most of the boxes." />
+
+**Catch the trap:** "It should be fast and highly available." Fast for which path — creating, or redirecting? Available at what number? The create path and the redirect path have different requirements, and saying so is the first senior signal of the round.
+
+<h2 id="estimation">Chapter 2 · The arithmetic of a short link</h2>
+
+<Scene chapter="Chapter 2" title="The arithmetic of a short link">
+
+You start writing "100M DAU" because that is what the practice prompts say. Mara turns the phone over and back. *"Kestrel has 100 million users. How many links a day?"*
+
+You hesitate. Theo, passing with coffee, answers for you: *"Tinylane said we sent them about a million a day. But Iris wants every shared listing and every campaign on kst.to. Call it a hundred times that."*
+
+*"Then do the arithmetic,"* Mara says, *"and tell me which numbers change a box."*
+
+</Scene>
+
+The <a href={`${BASE}sd/lessons/estimation/#shortener`}>estimation lesson</a> sized this prompt at two scales: **Scale A**, 1M new links a day, and **Scale B**, "100× the traffic". Kestrel's ambition is Scale B, so that is the design target here, and every number below matches estimation's table. (Scale A — a single Postgres primary, one cache node — is the follow-up "what if it's a hundred times smaller?" and needs almost none of Parts Four and Five.)
+
+**Assumptions, stated:** 100M new links a day · 100 redirects per link over its life, so reads to writes ≈ 100:1 · a day rounded to 10⁵ seconds · peak = 3× average · 500 B per stored link including indexes · 5-year planning horizon, 10-year sanity check.
+
+```text
+Writes     100M/day ÷ 10⁵ s            = 1,000/s average   → 3,000/s peak
+Reads      100M × 100 = 10B/day ÷ 10⁵  = 100,000/s average → 300,000/s peak
+Storage    100M × 500 B                = 50 GB/day
+           × 365                       ≈ 18.25 TB/year
+           × 5 years                   ≈ 91 TB logical       (× 3 replicas ≈ 274 TB raw)
+           × 10 years                  ≈ 182.5 TB logical
+Links      100M × 365 × 5              = 182.5 billion in five years
+                          × 10         = 365 billion in ten
+Bandwidth  300,000/s × ~500 B          ≈ 150 MB/s peak       → non-issue, skip
+```
+
+(The 10⁵ rounding overstates the per-second rate by about 16% — 86,400 seconds is the true day. That errs in the safe direction for capacity, and estimation uses the same convention.)
+
+**The conclusion sentences** — the deliverable, not the numbers:
+
+- **Reads dominate 100:1, and peak at 300,000 a second.** → The redirect path is the system; it needs a cache that answers ~99% of reads (Chapter 13).
+- **91 TB in five years** is past one comfortable database node. → Partition from day one, by the key the redirect uses (Chapter 12). At about 2 TB per partition that is roughly 46 partitions, before replicas.
+- **182.5 billion links in five years.** → The code must address at least that many, with room to stay sparse. Chapter 6 turns this into "seven characters".
+- **Writes are only 3,000 a second at peak.** → Creating links is not the hard part. Do not spend the deep dive there unless the interviewer asks.
+- **Bandwidth is tiny.** Say "non-issue" and move on.
+
+<Trace title="Size kst.to" steps={estimate} takeaway="Writes per second, reads per second, storage to the horizon, and the count of links the code must address. Then one conclusion sentence each — and skip what changes nothing." />
+
+<Reveal q="The classic practice prompt says “100M DAU, 10:1 read:write, 1M new URLs a day”. What do you do with it?">
+
+Check it before you use it. 1M links a day at 10:1 is 10M redirects a day — one click per ten daily users, which is low for a product built on sharing. Either the ratio or the DAU is off. Say so, propose the ratio you believe (most shortener prompts land between 10:1 and 100:1), and **ask which number to trust**. The design barely changes between them; what the interviewer is watching is whether you notice. Estimation's Chapter 12 makes the same point.
+
+</Reveal>
+
+**Catch the trap:** spending four minutes on bandwidth and server counts. Estimation in requirements is a few numbers that each change a decision; everything else waits until a deep dive needs it.
+
+<h2 id="entities-api">Chapter 3 · The contract</h2>
+
+<Scene chapter="Chapter 3" title="The contract" mood="dusk">
+
+Dev forwards a screenshot from the Tinylane days. One Kestrel user, on a train, shortened the same listing link nine times in four minutes. Each tap timed out in a tunnel. Each retry created a new link. Nine codes, one URL, and a plan quota that thought she had made nine links.
+
+*"She wasn't doing anything wrong,"* Dev says. *"The network was. What should the API have done?"*
+
+</Scene>
+
+**Core entities — two minutes, names and relationships:**
+
+- **Link** — the short code, the long URL, the owner, created-at, an optional expires-at, a status (active, disabled, expired), and whether the code is a custom alias.
+- **User** — the creator. One user has many links: **one-to-many**. Anonymous links have no owner.
+- **Click** — an event, not a row we update: code, time, country, referrer, a hashed client id. It flows to analytics; it never touches the Link.
+
+That is the whole model. Say the one non-obvious thing: **the Link is immutable after creation** (apart from status). There is no "edit destination" — that was put out of scope — and immutability is what makes the caching in Chapter 13 almost free.
+
+**The API:**
+
+```text
+POST /urls                                         create a short link
+  Authorization: Bearer <token>                    → the owner comes from here, never the body
+  Idempotency-Key: 5b0e7c9e-...                    → a retry returns the first response
+  { "longUrl": "https://market.kestrel.app/...",
+    "alias": "spring-sale",                        optional
+    "expiresAt": "2026-12-31T23:59:59Z" }          optional
+  → 201 { "code": "aZ3kQ9x", "shortUrl": "https://kst.to/aZ3kQ9x", "expiresAt": ... }
+  → 400 invalid URL or alias · 409 alias taken · 429 creating too fast
+
+GET /{code}                                        follow a short link
+  → 302 Location: <longUrl>                        (Chapter 4 explains 302)
+  → 404 no such code · 410 expired or disabled
+
+DELETE /urls/{code}                                owner only → 204
+GET /users/me/urls?cursor=...                      the owner's links, newest first, paginated
+GET /urls/{code}/stats?from=...&to=...             stretch: daily click counts
+```
+
+**The idempotency key, precisely.** The client generates a unique key per *intent* ("shorten this link, this tap") and sends it with every retry of that intent. The server keeps `(owner, key) → (request fingerprint, response)` for 24 hours:
+
+- **First time:** claim the key (an insert-if-absent, so two concurrent retries can't both run), create the link, store the response.
+- **Same key, same request:** return the stored `201` and the same code. No second link.
+- **Same key, different request body:** a client bug — reject it (409 or 422; pick one and document it).
+- **Same key, first attempt still running:** answer 409 "in progress, retry shortly" rather than running it twice.
+
+Cost: 100M creates a day × ~200 B per record ≈ **20 GB** live at any time with a 24-hour TTL. Small.
+
+The delivery framework called idempotency keys *optional* for a shortener, because a duplicate link is harmless to routing. That is true — until a duplicate costs the user something. Here a retry mints a second link against a plan quota and splits the click counts, so it flips. **The rule is not "always add idempotency keys"; it is "ask what a duplicate costs".**
+
+**Two more API habits worth a sentence each:** the user list endpoint is **cursor-paginated** (a user with 200,000 campaign links exists), and `GET /{code}` sits on the short domain with **no `/api` prefix** — the path *is* the product.
+
+<Trace title="Write the contract" steps={contract} takeaway="Identity from the token, an idempotency key because a duplicate costs the user, and a GET whose only job is to redirect." />
+
+**Catch the trap:** `POST /createShortUrl` with `userId` in the body. Verbs in paths and identity in bodies each take a second to avoid, and each tells the interviewer you haven't built many public APIs.
+
+<h2 id="status-codes">Chapter 4 · 301 or 302</h2>
+
+<Scene chapter="Chapter 4" title="301 or 302" mood="night">
+
+Theo tells the story of a different shortener, years ago, at a different company. They returned 301 Moved Permanently, because the links were permanent, and it seemed correct. It was fast, too: their traffic graph fell by a third in the first month.
+
+*"We celebrated,"* he says. *"Then marketing asked why their campaign links showed a third fewer clicks than the ad platform. And then someone reported a link as malware, and we disabled it, and people kept landing on the malware for weeks."*
+
+He lets that sit. *"The traffic didn't go away. It just stopped asking us."*
+
+</Scene>
+
+The redirect status is a two-letter decision that interviewers love, because it hides a caching question.
+
+| Status | Meaning | Cached by browsers by default? | Method on redirect |
+|---|---|---|---|
+| **301** Moved Permanently | This resource has moved for good | **Yes** — "heuristically cacheable" (RFC 9110); browsers may keep it a long time | May change POST to GET (historical) |
+| **302** Found | Temporarily elsewhere | **No**, unless you send explicit freshness (`max-age`, `Expires`) | May change POST to GET (historical) |
+| **307** Temporary Redirect | Like 302 | No | **Preserved** |
+| **308** Permanent Redirect | Like 301 | Yes | **Preserved** |
+
+For a shortener every request is a `GET`, so the method column doesn't matter. **Cacheability does.**
+
+- **301 and the browser remembers.** The second time this browser follows the link, it may not ask you at all. That is less load and a faster click — and it means **you don't see the click**, and **you can't change your mind**: disable, expire or take down the link, and every browser that cached the 301 still goes to the old destination. You cannot purge a browser.
+- **302 and the browser always asks.** Every click reaches you (or your CDN). You can count it, and you can stop redirecting the moment a link is disabled or expires.
+
+**The status code sets the default; `Cache-Control` sets the truth.** You can send a 301 with `Cache-Control: max-age=3600` to bound how long browsers keep it, or a 302 with `max-age` to let them cache it. So say both halves:
+
+> *"302 Found, with `Cache-Control: private, max-age=0`. We sell click analytics and we need to disable links instantly, so every click must come back to us. If analytics didn't matter, a 301 with a bounded max-age would save load — but expiry and takedown would then lag by up to that max-age."*
+
+<Trace title="Choose the status" steps={redirects} takeaway="301 is cacheable by default — less load, but invisible clicks and no take-backs. 302 brings every click home. Say the status and the Cache-Control together." />
+
+<Reveal q="Doesn’t a 302 mean 300,000 requests a second hit your servers, where a 301 would let browsers absorb many of them?">
+
+Yes, and that is the price, so name it. Two things make it affordable. First, browsers only absorb *repeat* clicks by the same browser; most short-link clicks are first clicks from different people (a link in a chat is clicked once by each recipient), so the saving is smaller than it looks. Second, a CDN can cache the redirect at the edge with a short shared-cache lifetime — browsers still ask, the edge answers — which Chapter 13 weighs against what it does to analytics.
+
+</Reveal>
+
+**Catch the trap:** "301, because links are permanent." The link is permanent; your *control* over it shouldn't be. A permanent redirect hands control of every future click to each user's browser.
+
+<Part n="Part Two" title="Draw it (step 4)">
+
+0:15. One functional requirement at a time, the fewest boxes that work, each flow traced out loud.
+
+</Part>
+
+<h2 id="high-level">Chapter 5 · Boxes that earn their place</h2>
+
+<Scene chapter="Chapter 5" title="Boxes that earn their place" mood="dawn">
+
+You start drawing a code-generation service, a ZooKeeper cluster, a Bloom filter and a Kafka topic. Mara points at the Bloom filter. *"What requirement is that for?"*
+
+*"Checking whether a code exists?"*
+
+*"Before or instead of the database?"* You don't know yet. She erases it, and the ZooKeeper cluster with it. *"Shorten first. Then redirect. The fewest boxes. You'll earn the rest in the deep dives — or you won't."*
+
+</Scene>
+
+**Create path, traced out loud:**
+
+> **You:** "POST /urls arrives at the API gateway, which authenticates the token and applies the per-user creation rate limit. The link service validates the URL, checks the idempotency key, mints a 7-character code, and writes the link to the links store with an *insert-if-absent* on the code. When the write is acknowledged by a quorum of replicas, it returns 201 with the short URL."
+
+**Redirect path:**
+
+> **You:** "GET /aZ3kQ9x arrives at the CDN, which terminates TLS close to the user and forwards to a redirect service instance. The service checks a tiny in-process cache, then Redis, then the links store on a miss, and fills the caches on the way back. It returns 302 with the long URL — and, after the response is on its way, drops a click event into a local buffer that ships to a log."
+
+<Figure caption="The high-level design. Numbers trace a create; letters trace a redirect. The dashed line is fire-and-forget: the redirect never waits on analytics.">
+  <Mermaid code={`flowchart LR
+    U["Creator"] -->|"1 · POST /urls"| GW["API gateway\nauth · create rate limit"]
+    GW --> LS["Link service × N\nvalidate · idempotency · mint code"]
+    LS -->|"2 · insert if absent"| DB[("Links store\npartitioned by code\n× 3 replicas")]
+    B["Browser"] -->|"A · GET /code"| CDN["CDN edge\nTLS · optional edge cache"]
+    CDN -->|"B"| RS["Redirect service × N\nL1 cache · 1 s"]
+    RS -->|"C · GET link:code"| RC[("Redis cluster")]
+    RS -->|"D · on miss"| DB
+    RS -.->|"click event"| K["Click log"]
+    K --> AG["Stream aggregator"] --> CS[("Click counts")]`} />
+</Figure>
+
+**Every box earns one sentence:**
+
+- **API gateway** — authentication and the creation rate limit live here, before any work (Chapter 16).
+- **Link service** — the write path: validation, idempotency, code minting. Stateless, so it scales by adding instances.
+- **Redirect service, separate from the link service** — the read path is 100× the traffic with a 50 ms budget. Separating it lets it scale, deploy and fail independently: a bad deploy of link creation must not break four years of links.
+- **Links store** — a partitioned key-value store keyed by code (Chapter 12 defends the choice).
+- **Redis + in-process L1** — the redirect path's 99% (Chapter 13).
+- **CDN** — TLS termination and anycast close to users; edge caching is a lever we will weigh, not a default.
+- **Click log + aggregator** — the stretch goal, drawn as a dashed line to show it can never slow a redirect (Chapter 15).
+
+**Worked numbers for the redirect path.** An in-process lookup is about a microsecond; a same-datacentre Redis round trip about 0.5 ms; a store read a few milliseconds. With 99% of redirects answered from the two caches, a redirect costs about **1 ms at the median and a few milliseconds at p99** inside the data centre — comfortably within 50 ms. The redirect fleet: assuming one instance handles about 10,000 simple requests a second (an assumption to benchmark), 300,000 a second needs **30 instances**, so run about **45** for headroom and a lost zone.
+
+<Reveal q="Why not put the redirect inside the link service? It’s one more box.">
+
+You can, at Scale A, and you should say so. At Scale B the two paths differ on every axis: 300,000 reads a second against 3,000 writes, 50 ms against "a few hundred is fine", four nines against three, and a code path that never changes against one that gains features every sprint. One service would have to be sized, deployed and paged for the strictest of each. Splitting it is the read/write separation idea, applied to services: *"Two services, one store — because a deploy of the create path should never be able to break a redirect."*
+
+</Reveal>
+
+**Catch the trap:** drawing a "code generation service" with its own box and network hop before you know which generation strategy you'll pick. Minting a code is a function call in the link service for three of the four strategies in Part Three; only the counter needs a shared component, and even that is touched once per ten thousand ids.
+
+<Part n="Part Three" title="Deep dive: the code">
+
+0:25 on the clock. *"The interesting part is minting the codes — how short, how unique, how unguessable. Let me go deep there first."* Then keep an eye on the clock: this deep dive is the one that eats rounds.
+
+</Part>
+
+<h2 id="keyspace">Chapter 6 · How long is short?</h2>
+
+<Scene chapter="Chapter 6" title="How long is short?" mood="dawn">
+
+Iris wants six characters. *"Tinylane's were six. Shorter is better in a chat bubble."*
+
+Mara hands you the marker. *"How many links will exist in five years? How many codes do six characters give you? And what happens to everything else in the design as the space fills up?"*
+
+</Scene>
+
+**Base62** is the 62 characters that are safe in a URL path without escaping and easy to type: `0–9`, `A–Z`, `a–z`. (Base64 adds `+` and `/`, which need escaping in URLs; base64url swaps them for `-` and `_`, which work but look odd in a code and are easy to mistype. Base62 is the convention.) A code of length *n* can be one of 62ⁿ values.
+
+| Length | Codes (62ⁿ) | Five years at 100M/day (182.5B) | Ten years (365B) |
+|---|---|---|---|
+| 6 | 56.8 billion | **Too few** — runs out in about a year and a half | Too few |
+| **7** | **3.52 trillion** | **5.2% full** · 19× headroom | 10.4% full · 9.6× headroom |
+| 8 | 218 trillion | 0.08% full | 0.17% full |
+
+(62⁷ = 3,521,614,606,208. At Scale A — 1M links a day — six characters *would* last: 1.8 billion links fill 3% of 62⁶. That is estimation's table, and it is why the scale question comes before the length question.)
+
+**Why the fill fraction matters more than the raw count.** It decides three things in the rest of the design:
+
+- **Collision rate for random codes.** A uniformly random code is already taken with probability equal to the fill. At 5.2%, about one draw in 19 collides; expected draws per link are 1 ÷ (1 − 0.052) ≈ **1.05**; needing more than three draws is about **1 in 7,000**.
+- **Guessability.** A scraper trying random codes finds a real link **one try in 19** at five years. Short codes are not secrets (Chapter 9).
+- **Headroom.** At 10× growth the five-year fill would be 52% — then eight characters. Say the flip condition before the interviewer asks.
+
+**Commit:** *"Seven characters of base62: 3.5 trillion codes, about 5% full after five years and 10% after ten. Six is too few at our scale; eight is only needed at ten times the traffic."*
+
+<Trace title="Size the code" steps={keyspace} takeaway="Count the links to the horizon, compare with 62ⁿ, and say the fill fraction — it is the collision rate and the guess rate in one number." />
+
+**Catch the trap:** "62⁷ is 3.5 trillion, so collisions are impossible." The space is large, not empty. What matters is how full it is — a point the delivery framework made, and one the next chapter makes painfully.
+
+<h2 id="hash">Chapter 7 · The fingerprint that collides</h2>
+
+<Scene chapter="Chapter 7" title="The fingerprint that collides" mood="night">
+
+Your first idea is the elegant one. *"Hash the long URL with SHA-256, take the first seven base62 characters. Same URL, same code — free deduplication, no state."*
+
+Theo nods slowly, the way he does before a story. *"How many links until two different URLs get the same seven characters?"*
+
+You guess. *"A few hundred billion? Half the space?"*
+
+*"Do the birthday sum,"* he says. *"Then tell me what time of day it happens."*
+
+</Scene>
+
+**Hash-and-truncate:** `code = first 7 base62 characters of SHA-256(longUrl)`. SHA-256 is collision-resistant across all 256 bits, but seven base62 characters keep only about 42 bits' worth. Truncated, a good hash behaves like a random code — so it collides like one.
+
+**The birthday bound.** Put *n* random codes into a space of *N*. The chance that *at least one pair* collides is about
+
+```text
+P(some collision) ≈ 1 − e^(−n² / 2N)          so a 50% chance arrives at n ≈ √(2N · ln 2) ≈ 1.18 √N
+```
+
+**Worked numbers** for N = 62⁷ ≈ 3.52 × 10¹²:
+
+- √N ≈ 1.88 million.
+- A **1%** chance of some collision after about **266,000** links.
+- A **50%** chance after about **2.2 million** links — at 100M links a day, about **32 minutes** after launch.
+- After five years (182.5 billion links), the expected number of colliding pairs is n² / 2N ≈ **4.7 billion**. Collisions aren't an event; they're a flow — at the five-year fill, about **5.2 million a day** (100M × 5.2%).
+
+So the design must detect and resolve collisions, and the resolution is where hash-and-truncate loses its charm:
+
+```text
+code = base62(sha256(longUrl))[0:7]
+if the code exists and points at a DIFFERENT url:
+    try base62(sha256(longUrl + "#1"))[0:7], then "#2", ...   until free or it is this url
+```
+
+Now finding the code for a URL means walking that chain and checking each candidate — the "free deduplication" costs a lookup per step. And the deduplication is often *wrong* anyway:
+
+- **Two users shortening the same URL share a code** — and its click counts, its expiry and its "owner". One user deletes "their" link and breaks the other's.
+- **Anyone can compute the code for a URL they can guess,** and check whether it has been shortened. That leaks which private documents were shared.
+- **Salting it per user** fixes both and removes the only advantage hashing had.
+
+**Where hashing is right:** content-addressed storage, where identical bytes *should* share one key (the <a href={`${BASE}sd/lessons/blob-cdn/#dedup`}>blob storage lesson's</a> dedup), or as an optional *per-user* dedup index — "you already shortened this; here's your existing link" — kept beside the main table, not as the code itself.
+
+<Trace title="Hash it, and count the collisions" steps={hashing} takeaway="Truncated hashes collide like random codes — a coin flip after ~2.2M links. The deterministic code is a bug as often as a feature: shared ownership, guessable codes." />
+
+**Catch the trap:** quoting the birthday bound and the fill fraction as if they answered the same question. "Has *any* pair collided?" is the birthday bound: yes, within the hour. "Is *this* new code taken?" is the fill fraction: 5% at five years. Interviewers ask both.
+
+<h2 id="counter">Chapter 8 · One counter, many servers</h2>
+
+<Scene chapter="Chapter 8" title="One counter, many servers" mood="dusk">
+
+*"Fine,"* you say. *"No collisions at all, then. A counter. Every link gets the next number, base62-encoded."*
+
+Theo puts his coffee down. *"I watched that one in production,"* he says. *"One Redis INCR, very fast, very simple. Then the primary died, the replica was promoted, and the replica was eleven seconds behind."*
+
+He waits. You work it out: eleven seconds of numbers, handed out a second time.
+
+*"Every one of those codes,"* Theo says, *"now meant two different things."*
+
+</Scene>
+
+**Counter + base62.** A counter hands out 0, 1, 2, …; base62 turns each number into a code. Distinct numbers give distinct codes, so there is **nothing to check** on insert. Seven characters hold every number below 62⁷.
+
+<Figure caption="Base62 is positional, like decimal with 62 digits. The id 1,000,000 is 4 × 62³ + 12 × 62² + 9 × 62 + 2, so its code is “4C92” — padded to seven characters, “0004C92”.">
+  <ArrayStrip name="digit value" values={[4, 12, 9, 2]} indices={false} tones={{ 0: 'blue', 1: 'purple', 2: 'blue', 3: 'purple' }} />
+  <ArrayStrip name="place" values={['62³ = 238,328', '62² = 3,844', '62¹ = 62', '62⁰ = 1']} indices={false} />
+  <ArrayStrip name="character" values={['4', 'C', '9', '2']} indices={false} tones={{ 0: 'done', 1: 'done', 2: 'done', 3: 'done' }} />
+</Figure>
+
+The encoder. The alphabet is in ASCII order (`0–9` < `A–Z` < `a–z`), which buys a small gift: **fixed-width codes sort in the same order as their numbers.**
+
+```java id=base62 group=codes
+/** Base62: digits, then upper case, then lower case — ASCII order, so fixed-width codes sort like numbers. */
+static final class Base62 {
+    static final String ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    private static final int[] DIGIT = new int[128];               // char → value, -1 if not base62
+    static {
+        Arrays.fill(DIGIT, -1);
+        for (int i = 0; i < 62; i++) DIGIT[ALPHABET.charAt(i)] = i;
+    }
+
+    /** Shortest form of a non-negative id: 0 → "0", 61 → "z", 62 → "10". */
+    static String encode(long n) {
+        if (n < 0) throw new IllegalArgumentException("ids are non-negative: " + n);
+        char[] buf = new char[11];                                  // 62^11 > Long.MAX_VALUE: 11 always suffice
+        int pos = buf.length;
+        do {
+            buf[--pos] = ALPHABET.charAt((int) (n % 62));
+            n /= 62;
+        } while (n > 0);                                            // do-while, so 0 still yields "0"
+        return new String(buf, pos, buf.length - pos);
+    }
+
+    /** Fixed width, left-padded with '0': encode(1000, 7) → "00000G8". */
+    static String encode(long n, int width) {
+        String s = encode(n);
+        if (s.length() > width) throw new IllegalArgumentException(n + " needs more than " + width + " characters");
+        return "0".repeat(width - s.length()) + s;
+    }
+
+    static long decode(String code) {
+        if (code.isEmpty() || code.length() > 11) throw new IllegalArgumentException("bad length: " + code.length());
+        long n = 0;
+        for (int i = 0; i < code.length(); i++) {
+            char c = code.charAt(i);
+            int d = c < 128 ? DIGIT[c] : -1;
+            if (d < 0) throw new IllegalArgumentException("not base62: '" + c + "'");
+            n = Math.addExact(Math.multiplyExact(n, 62), d);        // ArithmeticException past Long.MAX_VALUE
+        }
+        return n;
+    }
+}
+```
+
+The checker for this page round-trips 0, `Long.MAX_VALUE` (which encodes to `AzL8n0Y58m7`, eleven characters) and 200,000 random longs against an independent `BigInteger` implementation, checks that fixed-width codes sort numerically, and confirms that `decode` refuses — rather than silently wraps — anything above `Long.MAX_VALUE`. That last one matters: a decoder that overflows quietly turns a garbage code from a scraper into a valid-looking id.
+
+**The single counter's three problems.** A database sequence or one Redis `INCR` can easily keep up with 3,000 creates a second — throughput is not the problem.
+
+1. **A single point of failure** on the create path.
+2. **Re-issued ids after failover.** With asynchronous replication, a promoted replica can be behind the old primary. It hands out numbers that already belong to links — Theo's story. The fix is a *durable, strongly consistent* counter (a synchronously replicated database row, or a consensus store such as etcd or ZooKeeper), and those are slower per call.
+3. **Sequential codes leak** your volume and let anyone walk your links (Chapter 9).
+
+**Range allocation fixes the first two.** Each link-service instance reserves a **block** of ids — say 10,000 — from the durable counter, then hands them out from memory. The counter is touched once per block, so it can afford to be slow and strongly consistent.
+
+<Figure caption="Each server owns a block and hands out ids from memory. A crashed server leaves a gap; nobody ever receives its unused ids, because the counter only moves forward.">
+  <Mermaid code={`sequenceDiagram
+    participant A as Link service A
+    participant B as Link service B
+    participant C as Counter row
+    A->>C: reserve 10,000
+    C-->>A: block 1,240,000 to 1,249,999
+    B->>C: reserve 10,000
+    C-->>B: block 1,250,000 to 1,259,999
+    Note over A: hands out 1,240,000 onward from memory
+    Note over A: crashes at 1,244,999
+    A->>C: restarted A reserves 10,000
+    C-->>A: block 1,260,000 to 1,269,999
+    Note over C: 1,245,000 to 1,249,999 are a gap, never reused`} />
+</Figure>
+
+```java id=ranges group=codes
+/** The one shared, durable thing: a counter. Each call reserves a whole block of ids. */
+interface RangeSource {
+    long reserve(long size);    // returns the first id of a fresh block [start, start + size)
+}
+
+/** Stand-in for one row in a strongly consistent store:
+ *  UPDATE id_blocks SET next_id = next_id + :size WHERE name = 'links' RETURNING next_id - :size */
+static final class CounterRow implements RangeSource {
+    private final AtomicLong next;
+    CounterRow(long start) { next = new AtomicLong(start); }
+    public long reserve(long size) { return next.getAndAdd(size); }    // atomic: blocks never overlap
+}
+
+/** One per link-service instance. Hands out ids from memory; touches the counter once per block. */
+static final class RangeIdGenerator {
+    private final RangeSource source;
+    private final long blockSize;
+    private long next, end;                     // the current block is [next, end); it starts empty
+
+    RangeIdGenerator(RangeSource source, long blockSize) {
+        if (blockSize < 1) throw new IllegalArgumentException("block size must be positive");
+        this.source = source;
+        this.blockSize = blockSize;
+    }
+
+    synchronized long nextId() {
+        if (next == end) {                      // block used up (or never fetched): reserve another
+            next = source.reserve(blockSize);
+            end = next + blockSize;
+        }
+        return next++;
+    }
+}
+```
+
+**What stays true:** the counter only moves forward, and each reservation is atomic, so **no two blocks overlap** — and within a block, `synchronized` makes each `next++` belong to exactly one caller. The checker runs eight "servers", each shared by four threads, drawing 800,000 ids concurrently from one counter in blocks of 1,000: every id from 0 to 799,999 appears exactly once. It also crashes a server halfway through a block and checks that the unused half is never handed out.
+
+**Worked numbers.** At 3,000 creates a second and blocks of 10,000, the whole fleet makes **0.3 counter calls a second** — the counter can live in an ordinary synchronously replicated Postgres row. Gaps are harmless: even a hundred servers each losing a whole block every day for ten years wastes about **0.1%** of 62⁷. (A refinement for production: fetch the next block in the background when the current one is 80% used, so no request ever waits on the counter. Flickr's "ticket servers" are a well-known version of this idea: two databases issuing odd and even numbers.)
+
+**And Snowflake?** The <a href={`${BASE}sd/lessons/databases/#ids`}>databases lesson</a> builds Snowflake ids: 41 bits of milliseconds, 10 of machine, 12 of sequence, with no coordination per id. They are excellent *primary keys*, but poor *short codes*:
+
+- **Length.** The timestamp is shifted left 22 bits, so a Snowflake id one year past its epoch is already about 1.3 × 10¹⁷ — **10 base62 characters** — and it passes 62¹⁰ about 6.3 years after the epoch, becoming **11**. Not short.
+- **Guessable.** The high bits are the clock. Anyone can predict the codes being minted right now.
+
+<Trace title="Count without a single point of failure" steps={counters} takeaway="A counter needs no collision check, but one counter is a single point of failure that can re-issue ids. Ranges make the counter rare and durable. Snowflake is unique but long and predictable." />
+
+<Reveal q="Why does the crashed server’s half-block become a gap rather than being handed back?">
+
+Because handing it back requires knowing, reliably, which ids the dead server did *not* use — and it is dead. Maybe it handed out 1,244,999 and wrote the link a millisecond before crashing; maybe the write is still in flight on the network. Reclaiming is a coordination problem with a correctness risk; the gap costs a few thousand numbers out of trillions. **Waste the numbers, keep the promise.**
+
+</Reveal>
+
+**Catch the trap:** "Redis INCR — it's atomic." Each `INCR` is atomic. A failover that loses recent increments is not, and a counter that goes backwards breaks the one promise a shortener makes.
+
+<h2 id="enumeration">Chapter 9 · The scraper who counted</h2>
+
+<Scene chapter="Chapter 9" title="The scraper who counted" mood="night">
+
+Dev pulls up a log from the counter prototype on staging. One IP address, requesting `kst.to/0000001`, `kst.to/0000002`, `kst.to/0000003` … in order, twelve a second, for six hours.
+
+*"It's not attacking us,"* he says. *"It's reading us. Every link anyone made, in the order they made them. Including the ones people thought were private because nobody else had the link."*
+
+Iris goes pale. *"And a competitor can shorten one link today and one tomorrow, subtract, and know our daily volume?"*
+
+*"To the link,"* Dev says.
+
+</Scene>
+
+**Sequential codes leak two things:**
+
+1. **Every link, walkable.** Count upwards and you visit them all. Shared Google-Docs-style links, unlisted videos, password-reset pages someone shortened — all of it. Researchers have shown exactly this against real shorteners: short codes from cloud-storage sharing links could be enumerated, exposing private files (see "Look these up yourself").
+2. **Your business volume** — the difference between two codes made a day apart.
+
+**Fix one: scramble the counter with a keyed permutation.** Keep the counter (no collision checks), but pass each id through a one-to-one shuffle of `[0, 62⁷)` before encoding. Distinct ids still give distinct codes, and consecutive ids land far apart. A standard construction is a **Feistel network**: split the number into two halves, and for a few rounds swap them while mixing one half into the other with a keyed function. Feistel networks are invertible whatever the mixing function is — that is their whole trick. 62⁷ isn't a power of two, so run the network on 42 bits (2⁴² ≈ 4.4 × 10¹² ≥ 62⁷) and **cycle-walk**: if the output lands at or above 62⁷, apply the network again until it lands inside. Because the network is a permutation of the 42-bit space, this gives a permutation of the smaller domain, and since 2⁴² is only about 1.25 × 62⁷, it takes about 1.25 rounds of walking on average.
+
+```java id=scramble group=codes
+/** A keyed permutation of [0, domain): distinct inputs give distinct outputs, and the order is hidden.
+ *  A Feistel network on 2 × halfBits bits, plus cycle walking to stay inside the domain. */
+static final class CodeScrambler {
+    static final long SEVEN_CHARS = 3_521_614_606_208L;    // 62^7, which fits in 42 bits = 2 × 21
+
+    static CodeScrambler sevenChars(long... roundKeys) { return new CodeScrambler(SEVEN_CHARS, 21, roundKeys); }
+
+    private final long domain;
+    private final int half;
+    private final long mask;
+    private final long[] keys;
+
+    CodeScrambler(long domain, int halfBits, long... roundKeys) {
+        if (halfBits < 1 || halfBits > 31 || domain < 1 || domain > (1L << (2 * halfBits)))
+            throw new IllegalArgumentException("domain must fit in 2 × halfBits bits");
+        if (roundKeys.length < 3) throw new IllegalArgumentException("use at least 3 rounds");
+        this.domain = domain;
+        this.half = halfBits;
+        this.mask = (1L << halfBits) - 1;
+        this.keys = roundKeys.clone();
+    }
+
+    long scramble(long x) {
+        check(x);
+        do x = forward(x); while (x >= domain);       // cycle walking: land inside the domain
+        return x;
+    }
+
+    long unscramble(long y) {
+        check(y);
+        do y = backward(y); while (y >= domain);
+        return y;
+    }
+
+    private long forward(long x) {
+        long l = x >>> half, r = x & mask;
+        for (long k : keys) { long t = l ^ round(r, k); l = r; r = t; }
+        return (l << half) | r;
+    }
+
+    private long backward(long y) {                   // the same rounds, in reverse
+        long l = y >>> half, r = y & mask;
+        for (int i = keys.length - 1; i >= 0; i--) { long t = r ^ round(l, keys[i]); r = l; l = t; }
+        return (l << half) | r;
+    }
+
+    // Mixes one half with a round key. A fast mixer, NOT a cipher: see below.
+    private long round(long v, long key) {
+        long h = (v ^ key) * 0x9E3779B97F4A7C15L;
+        h ^= h >>> 29;
+        return h & mask;
+    }
+
+    private void check(long v) {
+        if (v < 0 || v >= domain) throw new IllegalArgumentException(v + " is outside [0, " + domain + ")");
+    }
+}
+```
+
+A code is then `Base62.encode(scrambler.scramble(generator.nextId()), 7)`. The checker proves the permutation property **exhaustively** on small domains (every input maps to a distinct output inside the domain, and `unscramble` inverts it), round-trips 100,000 random ids on the real 62⁷ domain, and checks that 100,000 consecutive ids produce 100,000 distinct, non-consecutive codes.
+
+**Be honest about what it is.** This round function is a fast mixer, not a cipher: it hides the order from a casual observer, not from a determined cryptanalyst. If hiding your volume must survive a motivated adversary, use a vetted **format-preserving encryption** mode (NIST's FF1) with a key from your secrets manager — or skip the counter and draw random codes (next chapter).
+
+**Fix two, needed whatever you mint: codes are not secrets.** Even with perfectly random codes, at five years the space is 5.2% full, so **one random guess in 19 finds a real link**. A short code is a *name*, not a *password*. So:
+
+- **Rate-limit lookups per IP**, and alert on high 404 rates — a scraper's signature is a wall of misses.
+- **Private links get a long code** — 22 base62 characters is about 131 bits, unguessable in practice — or sit behind authentication. Say this as a product rule: *"short links are public; for private content, the long-token mode or sign-in."*
+
+<Trace title="Hide the order" steps={enumeration} takeaway="A raw counter leaks volume and lets anyone walk every link. A keyed permutation hides the order without collisions. Neither makes a 7-character code a secret." />
+
+**Catch the trap:** "Random codes are unguessable, so links are private." Unguessable *order* is not unguessable *existence*. In a space that is 5% full, guessing works one try in 19.
+
+<h2 id="random">Chapter 10 · Dice and a unique key</h2>
+
+<Scene chapter="Chapter 10" title="Dice and a unique key" mood="dawn">
+
+Mara has listened to three approaches without a word. Now she draws four columns on the board and writes nothing in them.
+
+*"You have hash, counter with ranges, Snowflake, and one you haven't tried: roll dice. Seven random characters, and let the database say no if the code is taken."* She hands you the marker. *"Fill in the columns. Then pick one, and tell me the condition under which you'd pick a different one."*
+
+</Scene>
+
+**Random codes with a conditional insert.** Draw seven characters from a cryptographically secure random generator. Write the link with an **insert-if-absent**: a unique key on `code` in a relational database, or a conditional put ("only if no item with this key exists") in a key-value store. If the store says the code is taken, draw again.
+
+**Why "insert if absent" and not "check, then insert".** Two servers can draw the same code in the same millisecond. Both read "absent", both insert, and the second silently overwrites the first link — a link that now redirects somewhere its creator never chose. A **single conditional write** lets the store decide atomically: exactly one wins, the other gets a conflict and redraws. This is the <a href={`${BASE}sd/lessons/pattern-contention/`}>contention lesson's</a> rule — push the check into the atomic write — in its smallest form.
+
+```java id=mint group=codes
+/** Stand-in for the links table: a unique key on code, written with insert-if-absent. */
+static final class LinkStore {
+    private final ConcurrentHashMap<String, String> byCode = new ConcurrentHashMap<>();
+    boolean insertIfAbsent(String code, String longUrl) { return byCode.putIfAbsent(code, longUrl) == null; }
+    String get(String code) { return byCode.get(code); }
+    int size() { return byCode.size(); }
+}
+
+/** The committed design: random codes, claimed atomically; on a collision, draw again. */
+static final class CodeMinter {
+    static final Set<String> RESERVED = Set.of("api", "admin", "login", "help", "static", "health");
+    private final LinkStore store;
+    private final Random random;            // a SecureRandom in production
+    private final int length;
+    private final int maxAttempts;
+    final AtomicLong collisions = new AtomicLong();
+
+    CodeMinter(LinkStore store, Random random, int length, int maxAttempts) {
+        this.store = store;
+        this.random = random;
+        this.length = length;
+        this.maxAttempts = maxAttempts;
+    }
+
+    String create(String longUrl) {
+        for (int attempt = 0; attempt < maxAttempts; attempt++) {
+            char[] c = new char[length];
+            for (int i = 0; i < length; i++) c[i] = Base62.ALPHABET.charAt(random.nextInt(62));
+            String code = new String(c);
+            if (store.insertIfAbsent(code, longUrl)) return code;     // the store decides, atomically
+            collisions.incrementAndGet();
+        }
+        throw new IllegalStateException("no free code after " + maxAttempts + " draws: the space is too full");
+    }
+
+    /** Custom alias: same table, same conditional insert. false means taken → 409 Conflict. */
+    boolean claimAlias(String alias, String longUrl) {
+        if (!alias.matches("[A-Za-z0-9_-]{4,32}") || RESERVED.contains(alias.toLowerCase(Locale.ROOT)))
+            throw new IllegalArgumentException("invalid alias: " + alias);   // → 400
+        return store.insertIfAbsent(alias, longUrl);
+    }
+}
+```
+
+**What the checker proves.** On a deliberately tiny space (three characters, 238,328 codes) filled to 25–33%, the number of collisions matches the fill-fraction prediction — the expected redraws at fill *f* are *f* ÷ (1 − *f*) per link — within 5%. That is Chapter 6's "one in 19" claim, tested at a scale where it happens often. Eight threads creating 40,000 links concurrently never hand one code to two links and never overwrite one. And a completely full space fails loudly after `maxAttempts` draws instead of looping forever — which in production is the alarm that says "time for eight characters". (`maxAttempts` of 5 at our fill: the chance of five straight collisions at 5.2% is about 4 in 10 million.)
+
+**The four strategies, side by side:**
+
+| | Hash + truncate | Counter + ranges (+ permutation) | Snowflake | **Random + conditional insert** |
+|---|---|---|---|---|
+| Coordination | None | One counter call per block | Machine-id assignment | **None** |
+| Check on insert | Yes, plus a probe chain | **No** (but see aliases) | No | **Yes** — one conditional write |
+| Length | 7 | 7 | 10–11 | **7** |
+| Order guessable? | Computable from the URL | Raw: yes. Permuted: hidden | Yes, from the clock | **No** |
+| What can go wrong | Shared codes across users | Counter durability, key management | Long codes | Retries grow as the space fills |
+
+**Commit:**
+
+> *"Random 7-character base62 codes from a secure random generator, written with insert-if-absent; on conflict, redraw, up to five times. At 5% fill that's 1.05 draws per link. It needs no coordinator, reveals no order, and uses the same conditional write as custom aliases, so there's one uniqueness mechanism in the system. I'd flip to counter ranges through a keyed permutation if our store made conditional writes expensive — some wide-column stores implement them with a consensus round per write — or if the space got crowded enough that retries showed up in latency."*
+
+<Reveal q="With counter ranges, generated codes never collide. So can the insert be a plain write?">
+
+Only if custom aliases can never land in the generated space. A user could claim the alias `0004C92` today; the counter reaches id 1,000,000 next month and mints exactly `0004C92`. A plain write would **overwrite the user's alias**. Two fixes: keep the insert conditional everywhere (and treat a conflict on a generated code as "skip this id"), or make the namespaces disjoint by rule — for example, aliases must contain a `-` or be a length the generator never produces. Say which.
+
+</Reveal>
+
+<Trace title="Claim the code" steps={claiming} takeaway="Insert-if-absent, never check-then-insert. Aliases and generated codes share one namespace, so they share one conditional write." />
+
+**Catch the trap:** "Generate a random code and check the database to see if it exists." That sentence has a race in it. The check and the write must be one operation.
+
+<h2 id="aliases">Chapter 11 · Names people choose</h2>
+
+<Scene chapter="Chapter 11" title="Names people choose" mood="dusk">
+
+Iris's marketing team has a list. `kst.to/sale`. `kst.to/login`. `kst.to/help`. `kst.to/careers`.
+
+Dev reads it over her shoulder and winces at two of them. *"If someone else gets kst.to/login first,"* he says, *"they own the most convincing phishing link we'll ever host."*
+
+</Scene>
+
+**Custom aliases** are short codes a person picks. They live in **the same table and the same namespace** as generated codes, because the redirect path doesn't know or care which kind a code is: `GET /{code}` looks up one key.
+
+- **Uniqueness:** the same insert-if-absent as generated codes. Taken → **409 Conflict**, with a suggestion if you're feeling generous.
+- **Validation → 400:** a character set (`A–Z a–z 0–9 - _`), a length range (4–32 here), and a **reserved-words list**: `api`, `admin`, `login`, `help`, `static`, `health`, your own product names. Anything that could pass for an official page or collide with a route you'll need later. The checker tests that reserved words are refused in any letter case.
+- **Case:** codes are case-sensitive (`aZ3` ≠ `az3` — that's where base62's extra capacity comes from). Keep aliases case-sensitive too, so there is one rule; the UI can warn when `Spring-Sale` and `spring-sale` would both exist.
+- **Squatting:** aliases are scarce, so limit how many a user can hold, and require an account (no anonymous aliases).
+- **Profanity in generated codes:** random base62 will eventually spell something rude. Some shorteners drop vowels from the alphabet to make that much rarer; it costs keyspace (an alphabet of 52 for seven characters is about 1.03 trillion codes — still plenty here). A nice detail to mention, not to design.
+
+<Reveal q="Should a user be able to change where their alias points after a campaign ends?">
+
+That's "edit destination", which you put out of scope — and this is the moment to explain why it was a cut with consequences, not just time. Editable links break the "immutable after creation" property that made caching trivial: every edit needs invalidation across L1 caches, Redis, the CDN — and browsers, if you ever sent a cacheable redirect. If Iris insists, it's doable with delete-on-write and short TTLs (the <a href={`${BASE}sd/lessons/caching/#invalidation`}>caching lesson's</a> machinery). Say what it costs, and let the interviewer choose.
+
+</Reveal>
+
+**Catch the trap:** a separate `aliases` table checked before inserting into `links`. Two tables means `spring1` can exist in both, and the redirect has to pick one — plus the check-then-insert race is back.
+
+<Part n="Part Four" title="Deep dive: the hot path">
+
+0:31. Codes are settled. Now the part that carries the load: where the links live, and why almost no redirect ever reaches them.
+
+</Part>
+
+<h2 id="storage">Chapter 12 · Ninety terabytes of tiny rows</h2>
+
+<Scene chapter="Chapter 12" title="Ninety terabytes of tiny rows">
+
+Theo has one question, and he asks it every time anyone proposes a table. *"What query hits this thing the most, and what does that query know?"*
+
+You answer: the redirect, and it knows the code — nothing else.
+
+*"Then that,"* he says, *"is your whole schema decision. Everything else is a side table."*
+
+</Scene>
+
+**The access patterns, ranked:**
+
+1. **Get link by code** — 300,000 a second at peak, before caching. Single key, no joins, no ranges.
+2. **Insert link if code absent** — 3,000 a second at peak.
+3. **List a user's links, newest first** — a page view in the dashboard; rare by comparison.
+4. **Find links expiring today** — a batch job (Chapter 14).
+
+**Schema:**
+
+```text
+links        PRIMARY KEY (code)
+             code · long_url · owner_id · created_at · expires_at · status · is_alias
+user_links   PRIMARY KEY (owner_id, created_at DESC, code)       -- "my links", newest first
+idempotency  PRIMARY KEY (owner_id, idem_key)  TTL 24 h          -- request fingerprint + response
+```
+
+**Which store?** Both answers below are defensible; the senior move is to say why for *this* access pattern.
+
+| | Key-value / wide-column (DynamoDB, Cassandra-style) | Relational (Postgres, sharded) |
+|---|---|---|
+| Fit for "get by key" | Exactly what it is built for | Fine — a primary-key lookup |
+| 91 TB, growing | Partitioning and rebalancing are built in | Needs a sharding layer (application, Citus, Vitess) |
+| Conditional insert | Conditional put; cost varies by store — check yours | `INSERT ... ON CONFLICT DO NOTHING`: cheap |
+| Joins, ad-hoc queries | Few or none | Rich — useful for admin and support tools |
+| Operational shape | Managed services remove most of it | You run the shards, or pay someone who does |
+
+**Commit:** *"A partitioned key-value store keyed by code. The hot query is a single-key lookup, there are no joins on any request path, and at 91 TB I want partitioning built in. Writes need a cheap conditional put — I'd confirm that for the specific store. At Scale A, I'd just use Postgres with a unique key on code; it's 1 TB."*
+
+**Partition by the code, hashed.** Every redirect knows the code and nothing else, so each lookup touches exactly one partition. Random codes are already uniformly spread; hashing the key keeps it uniform even for aliases like `sale` and `sale2`. **Never partition by user**: a redirect has no user id, so it would ask every partition (the <a href={`${BASE}sd/lessons/databases/`}>databases lesson's</a> quiz has exactly this question). **Never partition by date**: today's partition would take every write and most reads. The <a href={`${BASE}sd/lessons/pattern-partitioning/`}>partitioning lesson</a> covers how the partitions themselves are placed and moved.
+
+**Worked numbers:** 91 TB ÷ ~2 TB per partition ≈ **46 partitions**; × 3 replicas ≈ **274 TB raw**. At 3,000 writes a second, that's about 65 writes a second per partition — nothing. Reads that miss the caches: at a 99% hit ratio, about 3,000 a second across the whole store (Chapter 13) — also nothing. **This store is sized by bytes, not by requests.** Say that sentence.
+
+**Durability.** "An acknowledged link is never lost": return `201` only after a quorum of replicas (two of three) has the write, or after a synchronous replica has it. A link someone has already pasted into a chat must survive any single node dying a millisecond later.
+
+**The user index** is a second table, written beside the link. It may lag the main table by a moment — a dashboard that shows a new link a second late hurts nobody — so it can be written asynchronously, or by a change stream from the links table. The links table cannot lag; it is the truth.
+
+<Trace title="Place the rows" steps={storage} takeaway="Partition by what the hottest query knows: the code. Other access patterns get their own denormalised tables. The store is sized by bytes; the cache handles requests." />
+
+**Catch the trap:** "We'll use Cassandra because it scales." Every store "scales". Say the access pattern, the size, the conditional-write requirement, and *then* name a store — or say you'd pick between two and on what basis.
+
+<h2 id="redirect-path">Chapter 13 · Three hundred thousand a second</h2>
+
+<Scene chapter="Chapter 13" title="Three hundred thousand a second" mood="storm">
+
+A rehearsal, on staging, with a load generator. Dev plays a celebrity: one link posted to forty million followers. The graph climbs to fifty thousand redirects a second on a single code.
+
+Redis holds. The redirect fleet holds. One Redis shard climbs to 100% CPU and stays there, while the other eleven idle.
+
+*"We sharded the cache,"* Iris says. *"Why is one box doing all the work?"*
+
+Mara looks at you. *"You know this one. And before you fix it — say the four promises for this cache. Out loud."*
+
+</Scene>
+
+The <a href={`${BASE}sd/lessons/caching/`}>caching lesson's</a> rule: a cache is four promises, spoken, or it doesn't count. For the redirect cache:
+
+1. **Key shape:** `link:<code>` → a compact value: long URL, expires-at, status. A few hundred bytes.
+2. **TTL, and why:** **24 hours**, capped at the link's remaining life — `min(24 h, expires_at − now)` — with ±10% jitter. Links never change, so the TTL isn't about staleness; it's about **memory**: it lets links nobody clicks any more leave the cache.
+3. **Invalidation:** links are **immutable**, so the only events are *disable* and *delete*. Both delete the key in Redis, broadcast a delete to the L1 caches (or simply wait for their one-second TTL), and purge the CDN if the redirect was edge-cached. This is the rare cache with almost nothing to invalidate — say that, it's why the design is easy.
+4. **Failure plan:** the cache is **load-bearing**. At 300,000 redirects a second against a store read budget of about 30,000, the store survives a 90% hit ratio but not a cold cache. So: Redis replicas with failover, request coalescing so a cold key is fetched once per server, the L1 and CDN still absorbing hot links while Redis warms, and shedding (fast 503s for new requests) rather than letting the store collapse.
+
+<Figure caption="One redirect, worst case: every layer misses. The common case stops at the first or second layer. The click event leaves after the response, so it never adds latency.">
+  <Mermaid code={`sequenceDiagram
+    participant B as Browser
+    participant E as CDN edge
+    participant S as Redirect service
+    participant R as Redis
+    participant D as Links store
+    participant K as Click log
+    B->>E: GET /aZ3kQ9x
+    E->>S: forward, no edge copy
+    S->>S: L1 lookup, miss
+    S->>R: GET link:aZ3kQ9x
+    R-->>S: miss
+    S->>D: read code aZ3kQ9x
+    D-->>S: long URL, expires_at, status
+    S->>R: SET with TTL min of 24 h and time left
+    S-->>E: 302 with Location
+    E-->>B: 302 with Location
+    S--)K: click event, fire and forget`} />
+</Figure>
+
+**The hit-ratio arithmetic.** The store sees `(1 − h) × 300,000` reads a second:
+
+| Hit ratio | Store reads at peak | Verdict |
+|---|---|---|
+| 90% | 30,000/s | Exactly the read budget — no headroom (estimation's Scale B number) |
+| **99%** | **3,000/s** | **The target** |
+| 99.9% | 300/s | What a good day looks like |
+
+99% is realistic because clicks are concentrated: a link is clicked mostly in the hours and days after it is shared. **Sizing the cache:** estimation's upper bound puts *every* link from the last 30 days in cache at full row size — 3B links × 500 B = **1.5 TB**. A cache entry is smaller (call it ~250 B with Redis overhead — an assumption to measure), and most clicks land in a link's first week, so a working set of 7 days × 100M × 250 B ≈ **175 GB** is a better plan: about **8 nodes** at ~25 GB usable each, with LRU (or LFU) evicting the cold tail. Throughput: 300,000 reads a second at very roughly 100,000 simple operations per node is 3 nodes' worth, so here the cluster is sized by **memory**, and its replicas by availability.
+
+**The hot link** — Dev's rehearsal. One code hashes to one Redis shard, so more shards don't help (the <a href={`${BASE}sd/lessons/caching/#hot-keys`}>caching lesson's</a> celebrity). Fixes, in order:
+
+- **In-process L1 cache, ~1 second TTL**, on every redirect server. With 45 servers, Redis sees at most about 45 reads a second for the hot code instead of 50,000. Staleness costs nothing — the link can't change — and the one-second TTL bounds how long a *disabled* link keeps redirecting.
+- **Request coalescing:** concurrent misses for the same code on one server share one fetch.
+- **The edge:** let the CDN cache the redirect itself.
+
+**Edge redirects — the lever, and its price.** Send the 302 with a shared-cache lifetime only the CDN obeys — `Cache-Control: s-maxage=60` (browsers don't store a 302 without explicit freshness for *them*; some CDNs also accept a CDN-only header such as `CDN-Cache-Control`, RFC 9213) — and the edge answers repeat clicks for 60 seconds without reaching you. A viral link's load then dies at hundreds of edge locations. The price:
+
+- **Clicks served at the edge never reach your service.** Analytics must come from the CDN's request logs (most large CDNs can stream them — check your provider), or from code running at the edge.
+- **Takedown needs a purge,** and is bounded by the 60 seconds if the purge is slow.
+
+**Commit:** *"Redirects go through the CDN for TLS and anycast, but by default the edge doesn't cache them — `Cache-Control: private, max-age=0` — so every click reaches our fleet and our analytics. The L1 cache handles hot links within our data centre. If the fleet's cost or a DDoS made edge caching worth it, I'd turn it on for hot codes only, with a 60-second s-maxage, and take those clicks from the CDN's log stream."*
+
+**Negative caching.** Scrapers and typos request codes that don't exist; each one misses every layer and reaches the store. Cache "not found" for a short time (say 60 seconds) — and delete that entry when a code is created, or a brand-new link reads as missing for a minute. (Chapter 17 adds the cross-region wrinkle.)
+
+<Trace title="Carry the load" steps={hotPath} takeaway="99% hits keep the store idle. One hot code melts one shard: L1 first, coalescing, then the edge. Cache misses for missing codes too, briefly." />
+
+**Catch the trap:** "We cache the redirects in Redis." Which key? Why that TTL — when the data never changes? What happens to the store when Redis restarts at peak? This design has an unusually easy answer to all four, which is exactly why interviewers expect you to say them.
+
+<h2 id="expiry">Chapter 14 · Links that die on time</h2>
+
+<Scene chapter="Chapter 14" title="Links that die on time" mood="dusk">
+
+The spring sale ends at midnight. At 12:04 a.m. a customer emails a screenshot: the sale link still works, and the checkout page it lands on says the prices are gone.
+
+The cleanup job runs at 2 a.m. The cache entry had a 24-hour TTL. *"Who,"* Mara asks, *"was supposed to know that it was midnight?"*
+
+</Scene>
+
+**Expiry is a read-path check, not a cleanup job.** Correctness can't wait for a batch.
+
+- **Store `expires_at` in the link and in every cached copy.** Every layer checks it on read: expired → **410 Gone**. (404 means "never existed"; 410 means "existed, deliberately gone" — more honest, and it tells crawlers to stop.)
+- **Cap every cache TTL** at the time left: `min(24 h, expires_at − now)`. The entry leaves the cache on time, so the check above is a backstop, not the only defence.
+- **Edge copies** carry the same cap: `s-maxage` never exceeds the time left.
+
+**Cleanup is about storage, and it is lazy.** Rows for expired links cost bytes, not correctness. Either let the store's **native TTL** delete them (several key-value stores offer per-item expiry; deletion is typically delayed, sometimes by days — check the store's guarantees, which is fine precisely because reads already check `expires_at`), or run a daily sweeper over an index of links by expiry day.
+
+**Never reuse a code.** This is the one that bites random generation specifically. If cleanup *deletes* the row, the code is free again — and the minter will eventually draw it. Then an old copy of the link, in an email from 2026 or a printed poster, opens a stranger's destination. So cleanup leaves a **tombstone**: the code with status `expired` and no URL — a few dozen bytes — which keeps the conditional insert failing for that code forever. With 19× headroom, there is no reason to recycle and every reason not to. (A counter never re-issues on its own, but aliases can be re-claimed, so tombstones matter there too.)
+
+<Trace title="Expire on time" steps={expiry} takeaway="Check expires_at on every read, cap every TTL at the time left, clean up lazily — and tombstone the code so it can never mean something else." />
+
+<Reveal q="A user deletes a link by mistake and asks for it back. Can you restore it?">
+
+If you tombstoned it, yes: the code is still reserved and nobody else can have taken it, so restoring is flipping the status back (and the URL, if you kept it in a soft-delete window). That is another argument for tombstones over deletion — and for keeping the long URL for a grace period, say 30 days, before trimming the tombstone to just the code.
+
+</Reveal>
+
+**Catch the trap:** "A cron job deletes expired links every night." Then a link expires at midnight and redirects until the job runs — and if the job deletes the row, the code is up for grabs.
+
+<Part n="Part Five" title="Deep dive: around the edges">
+
+0:35. With the core settled, the extras each get a few minutes: counting, abuse, and the world.
+
+</Part>
+
+<h2 id="analytics">Chapter 15 · Counting without slowing</h2>
+
+<Scene chapter="Chapter 15" title="Counting without slowing" mood="dawn">
+
+The first analytics prototype is two lines in the redirect handler: increment a counter row, then redirect. It works beautifully on staging.
+
+Then Dev runs the celebrity rehearsal again. Fifty thousand increments a second land on one row. Lock waits climb. The redirect p99, which was two milliseconds, becomes four hundred.
+
+*"We made every click wait,"* Dev says, *"so that we could count it."*
+
+</Scene>
+
+**The rule: the redirect must never wait on analytics.** Counting is a stretch goal; redirecting is the product. So the redirect service:
+
+1. Sends the 302.
+2. Appends a click event to an **in-memory buffer** (no I/O on the request).
+3. A background thread ships buffered events to a **partitioned log** (a Kafka-style stream) in batches.
+
+Downstream, a **stream aggregator** rolls events into counts per code per minute (and per country, per referrer), writing to a store built for counters and time ranges — the <a href={`${BASE}sd/lessons/pattern-timeseries/`}>time-series lesson's</a> territory. The dashboard reads the rollups, never the raw events.
+
+<Figure caption="The click pipeline. Everything right of the dashed edge runs at its own pace; if it falls behind, counts are late, never redirects.">
+  <Mermaid code={`flowchart LR
+    RS["Redirect service\n302 first"] -.->|"buffer, then batch"| K[("Click log\npartitioned")]
+    EL["CDN log stream\nonly if edge-cached"] -.-> K
+    K --> AG["Stream aggregator\nper code per minute"]
+    AG --> TS[("Rollups\ncode · minute · country")]
+    K --> RAW[("Raw events\nobject storage")]
+    TS --> DASH["Stats API\nGET /urls/code/stats"]`} />
+</Figure>
+
+**Worked numbers.** 300,000 clicks a second at peak × ~200 B per event (code, time, country, referrer, a hashed client id) ≈ **60 MB/s** into the log — a modest stream cluster. 10B events a day × 200 B ≈ **2 TB a day** raw, which goes to cheap object storage for reprocessing; the rollups are tiny by comparison.
+
+**The hot link, again.** If events are partitioned by code, the celebrity's 50,000 events a second land on one partition. Same disease, same cure: **pre-aggregate on the redirect server** — each server keeps "code → count" for the current second and ships one record per hot code per second instead of one per click. 45 servers send 45 records a second for that code. Per-click detail, if anyone needs it, goes to raw storage partitioned randomly.
+
+**What the counts promise.** Buffering means a crashed redirect server loses its last few hundred milliseconds of events; the log's at-least-once delivery means a retry can count an event twice. So: **approximately exact, minutes late.** If billing depends on clicks, give each event an id and deduplicate in the aggregator. Also filter bots (known crawler user agents, link-preview fetchers in chat apps) before anyone calls the number "clicks" — a chat app's preview fetch is a request, not a human.
+
+<Trace title="Count the clicks" steps={analytics} takeaway="Redirect first, record later: buffer, batch, log, aggregate. Pre-aggregate hot codes on the server. Counts are minutes late and approximately exact — say so." />
+
+**Catch the trap:** `UPDATE links SET clicks = clicks + 1` in the redirect. A synchronous write on the hottest path, one hot row per viral link, and the product now depends on the analytics database being up.
+
+<h2 id="abuse">Chapter 16 · The parcel that was not a parcel</h2>
+
+<Scene chapter="Chapter 16" title="The parcel that was not a parcel" mood="night">
+
+A week after the beta opens, a bank's security team emails Kestrel. A text message is going round: *"Your parcel is held. Pay the £1.99 fee: kst.to/pX7r2Qa."* The link lands on a perfect copy of a delivery company's payment page.
+
+Kestrel's own domain is now the most trustworthy-looking part of a phishing kit. Iris reads the email twice. *"We built a disguise,"* she says, *"and gave it away free."*
+
+</Scene>
+
+**A shortener hides the destination by design.** That makes it an abuse tool by default. Four layers:
+
+1. **Validate on create.** `http` and `https` only — never `javascript:` or `data:`. A length cap (a few KB). Refuse URLs on your own short domain, which create redirect loops and launder other short links.
+2. **Check reputation on create, and again later.** Look the URL up against a threat-intelligence list (Google Safe Browsing is a well-known public one) before issuing the code. Re-check periodically and on report, because **the destination can change after you check it** — a clean page on Monday can be a phishing kit by Wednesday.
+3. **Limit creation.** Per-account and per-IP creation limits at the gateway, tighter for new and anonymous accounts — a token bucket per identity, 429 with Retry-After. The <a href={`${BASE}sd/lessons/rate-limiter/`}>rate limiter walkthrough</a> is that whole design; here it's one sentence. Bulk creation through the API needs a verified account.
+4. **Kill fast.** A takedown sets status `disabled`, deletes the Redis key, waits out (or broadcasts to) the one-second L1 caches, purges the CDN if needed, and serves a **warning page** (or 410) instead of the redirect. This is where Chapter 4 pays off: **you can't purge a browser that cached a 301.**
+
+**An optional interstitial.** For links flagged as suspicious but not confirmed, show a preview page ("You are about to visit … continue?") instead of redirecting. It costs a click for real users, so keep it for the doubtful ones.
+
+<Trace title="Stop the disguise" steps={abuse} takeaway="Validate, check reputation at create and again later, rate-limit creation per identity, and make takedown instant at every cache layer — which 302 makes possible." />
+
+**Catch the trap:** leaving abuse out entirely. For a shortener it isn't an edge case; it is one of the first things that will happen after launch, and a one-minute mention scores well above its cost.
+
+<h2 id="regions">Chapter 17 · A link across an ocean</h2>
+
+<Scene chapter="Chapter 17" title="A link across an ocean" mood="dusk">
+
+Kestrel opens regions in Frankfurt and Mumbai. A seller in Mumbai shortens a listing and pastes it into a chat with a buyer in Frankfurt, who taps it within a second.
+
+Frankfurt has never heard of the code. Replication from Mumbai takes two seconds. The buyer sees a 404, taps again, and sees the 404 again — because Frankfurt cached the miss.
+
+*"The link exists,"* Theo says. *"Every region agrees it exists. Just not yet."*
+
+</Scene>
+
+**Reads go everywhere; writes need a plan.** Links are immutable and read 100× more than written, which is the friendliest possible shape for multi-region: replicate the links table **asynchronously** to every region, and serve every redirect from the nearest one. Geo-routing (anycast or latency-based DNS, the <a href={`${BASE}sd/lessons/load-balancing/#global`}>load-balancing lesson's</a> global tier) sends each click to its closest region.
+
+**Problem 1 — two regions minting the same code.** A conditional insert is atomic *within one copy of the data*. If Mumbai and Frankfurt each mint codes and replicate asynchronously, both can claim `aZ3kQ9x` in the same second, each insert succeeds locally, and replication later picks a "winner" — one link silently points somewhere else. Two fixes:
+
+- **One home region for creates.** Creates are 3,000 a second and tolerate a cross-region round trip (call it 100–200 ms — fine for a create, never for a redirect). Simple, and the default for Kestrel.
+- **Split the code space by region.** Each region mints only codes in its own slice — for example, the first character's value modulo 3 — so a local conditional insert is globally unique. Creates stay local and survive the home region failing. Costs: the code now reveals the region, and each region's slice fills three times faster than the whole space, if traffic is uneven.
+
+**Problem 2 — a new link clicked before it arrives.** On a local miss, don't answer 404 yet: **ask the home region** (or the region that owns the code's slice) before deciding. That costs one cross-region read, only for codes that are both missing locally *and* brand new — rare. Only negative-cache the answer *after* the home region also says "not found". This turns "a second of replication lag" from a broken product into a slightly slower first click.
+
+**Commit:** *"Links replicate asynchronously to all three regions and every redirect is local. Creates go to one home region, so uniqueness stays a single conditional write; a local miss checks the home region before a 404. If creates had to survive the home region failing, I'd give each region its own slice of the code space."*
+
+<Trace title="Cross the ocean" steps={regions} takeaway="Immutable links replicate beautifully. Keep uniqueness in one place — a home region or a per-region slice — and check home before believing a miss." />
+
+<Part n="Part Six" title="Finish the fight">
+
+0:38. Three minutes of wrap-up, then the whole round once more, spoken, on the clock.
+
+</Part>
+
+<h2 id="wrap-up">Chapter 18 · The last three minutes</h2>
+
+<Scene chapter="Chapter 18" title="The last three minutes" mood="dusk">
+
+Dev reads design docs from the bottom up, because, he says, the last section tells him whether the author has ever been paged. *"So,"* he says. *"What pages me first?"*
+
+</Scene>
+
+1. **Recap against the requirements.** "Shorten with an idempotency key; redirect with a 302 in a millisecond or two from cache; aliases and expiry through the same table; 7-character random codes, unique by a conditional write; a partitioned store sized by bytes; clicks counted off the hot path."
+2. **Bottleneck at 10×** (1B links a day, 3M redirects a second). The redirect fleet and the cache scale out linearly, and edge caching becomes the default rather than a lever. **The code length flips:** 1B a day for five years fills 52% of 62⁷, so random codes would need about two draws per link — move to **8 characters** (0.84% full). Storage reaches about 910 TB over five years; partitions grow from ~46 to ~460.
+3. **Failure modes.** Redis loses a shard → L1 and the CDN hold the hot set, the store takes the misses for the cold tail, shed if it can't. The store loses a node → replicas serve; creates need a quorum. The home region goes down → redirects continue everywhere (reads are local); creates pause or fail over. The click pipeline stalls → counts are late, redirects unaffected.
+4. **Monitor.** Redirect p99 and error rate; hit ratio at each layer (L1, Redis, CDN); store reads per second (a rising number means the cache is failing quietly); 404 and 410 rates per IP (scraping); **create retry rate** (rising = the space is filling — the early warning for 8 characters); click-pipeline lag; abuse reports and takedown latency.
+5. **What I'd build next.** Per-user dedup ("you already shortened this"), link previews, the analytics dashboard, private long-token links, and editable destinations with proper invalidation.
+
+**The one-breath version:** *"At 10× the cache and redirect fleet scale out, edge caching becomes default, and codes go to eight characters; I'd watch redirect p99, per-layer hit ratio, and create retries before launch."*
+
+<h2 id="walkthrough">Chapter 19 · The fight, out loud</h2>
+
+<Scene chapter="Chapter 19" title="The fight, out loud" mood="night">
+
+Nine days later, Thursday. Mara sets the phone face-down. *"Design a URL shortener,"* she says, in the flat voice she uses for mocks. *"I won't help you."*
+
+You write **9 · 15 · 25 · 38** in the corner of the board, and pick up the marker.
+
+</Scene>
+
+A 45-minute round, compressed to its spoken lines. Read it aloud once; then fight it cold.
+
+**0:03 · Roadmap and requirements**
+
+> **You:** "Here's how I'd like to use the time: about six minutes on requirements and a few numbers, a couple on entities and the API, a simple design that works, then two or three deep dives, and a short wrap-up. Estimates up front, or as they become relevant?"
+>
+> **Interviewer:** "Up front is fine."
+>
+> **You:** "Functional: users shorten a URL and get a short link; anyone following it is redirected. Two small extras that touch the core: an optional custom alias, and an optional expiry. Click analytics as a stretch — I'll keep the redirect able to emit click events cheaply. Out of scope: the dashboard UI, billing, editing a link's destination. Tell me if you want any of those."
+
+**0:06 · Non-functionals with numbers**
+
+> **You:** "Redirects are the product: p99 under 50 ms server-side and four nines. An acknowledged link is never lost and a code never changes meaning. A second of cross-region lag for a new link is fine. Scale: say 100 million new links a day and about 100 clicks per link."
+>
+> "So: 1,000 creates a second on average, 3,000 at peak. Ten billion redirects a day — 100,000 a second, 300,000 at peak. 500 bytes a link is 50 GB a day, about 91 TB in five years — so partitioned from day one. 182 billion links in five years, so codes must address that with room to spare. Bandwidth is about 150 MB/s — non-issue."
+
+**0:08 · The bridge**
+
+> **You:** "So: shorten and redirect, aliases and expiry, analytics as a stretch; a read-heavy system at 300,000 redirects a second with tight latency and strong durability. Does that match?"
+>
+> **Interviewer:** "Yes."
+
+**0:09 · Core entities**
+
+> **You:** "Link — code, long URL, owner, created, expires, status. User — one-to-many with links. Click — an event for analytics, never an update to the link. Links are immutable after creation, which will make caching easy."
+
+**0:11 · API**
+
+> **You:** "POST /urls with the long URL, optional alias and expiry; the owner comes from the auth token, and an Idempotency-Key header makes retries safe — a retry on a flaky phone shouldn't mint a second link against the user's quota. 201 with the code; 409 if the alias is taken; 429 if creating too fast."
+>
+> "GET slash code returns a **302**, not a 301 — a 301 is cacheable by default, so browsers would skip us on repeat clicks: we'd lose the counts and the ability to disable a link. 404 for unknown, 410 for expired or disabled. Plus a paginated list of my links."
+
+**0:15 · High-level design**
+
+> **You:** "Create: gateway does auth and the creation rate limit; a link service validates, mints a code and writes the link with insert-if-absent into a key-value store partitioned by code, returning 201 once a quorum has it."
+>
+> "Redirect, as a separate service because it's 100 times the traffic with a stricter budget: CDN for TLS, then the redirect service checks a one-second in-process cache, then Redis, then the store, fills on the way back, and returns 302. After responding, it drops a click event into a buffer that ships to a log. Around a millisecond per redirect inside the data centre."
+
+**0:25 · Deep dive 1 — the codes**
+
+> **You:** "Seven base62 characters: 62 to the 7th is 3.5 trillion, so five years of links fills about 5%. Options: hashing the URL and truncating collides like random — a 50% chance of some collision after only 2.2 million links — and makes two users share one code. A counter needs no collision check, but one counter is a single point of failure that can re-issue ids after failover; ranges of 10,000 per server fix that, at 0.3 counter calls a second, and a keyed permutation hides the order. Snowflake is unique but 10 or 11 characters and guessable from the clock."
+>
+> "I'll take random codes from a secure generator, with insert-if-absent and a redraw on conflict: 1.05 draws per link at 5% fill, no coordinator, no visible order, and the same conditional write protects custom aliases. I'd flip to counter ranges if our store made conditional writes expensive. And short codes aren't secrets — one guess in 19 hits a real link — so lookups are rate-limited per IP and private content gets a long token."
+
+**0:31 · Deep dive 2 — the redirect hot path**
+
+> **You:** "The cache is load-bearing: 300,000 a second against a store read budget around 30,000. Key `link:code` holding the URL, expiry and status. TTL 24 hours, capped at the link's remaining life, jittered — it's about memory, since links never change. Invalidation only on disable or delete: delete the key, L1 expires in a second, purge the CDN if edge-cached. Failure: replicas, coalescing, shedding. Working set about 175 GB, so eight nodes, sized by memory. A viral link melts one Redis shard, so the one-second L1 on 45 servers caps it at 45 reads a second. Negative-cache unknown codes briefly. If the fleet cost got silly, I'd let the CDN cache hot redirects for 60 seconds and count those clicks from the CDN's logs."
+
+**0:35 · Deep dive 3 — analytics and expiry**
+
+> **You:** "Clicks never touch the redirect's latency: buffer in memory, batch to a partitioned log, aggregate per code per minute. Hot codes are pre-counted on each server so one partition doesn't melt. Counts are a few minutes late and approximately exact. Expiry is checked on every read, every TTL is capped at the time left, cleanup is lazy — and expired codes are tombstoned, never reused, because old copies of a link live forever."
+
+**0:38 · Wrap-up**
+
+> **You:** "To recap: every requirement is met with a 302 from cache in a millisecond or two, codes unique by one conditional write. At 10×, the fleet and cache scale out, edge caching becomes default, and codes go to eight characters because the space would be half full. I'd monitor redirect p99, hit ratio per layer, store reads, and create retries. Next: multi-region with one home region for creates, abuse checks at creation and on report, and the analytics dashboard."
+
+**0:41.** Mara turns the phone over. *"You never once said 'it scales',"* she says. From her, that is a standing ovation.
+
+**Check the numbers yourself:** 100M ÷ 10⁵ = 1,000/s, × 3 = 3,000/s. 100M × 100 ÷ 10⁵ = 100,000/s, × 3 = 300,000/s. 100M × 500 B × 365 × 5 ≈ 91 TB. 100M × 365 × 5 = 182.5B; ÷ 3.52T ≈ 5.2%; 1 ÷ (1 − 0.052) ≈ 1.05. √(2 × 3.52 × 10¹² × ln 2) ≈ 2.2M. 3,000 ÷ 10,000 = 0.3 counter calls/s. (1 − 0.99) × 300,000 = 3,000/s. 7 × 100M × 250 B = 175 GB ÷ 25 GB ≈ 7–8 nodes. 1B × 365 × 5 ÷ 3.52T ≈ 52%.
+
+<Reveal q="Which step would you most likely have skipped silently — and what would it have cost?">
+
+For most people it's the **status code** sentence and the **"codes aren't secrets"** sentence. Without the first, "how do you count clicks?" arrives as a gotcha — and if you'd said 301, you have to walk it back. Without the second, the interviewer asks "can someone guess other people's links?" and the honest answer ("yes, one in 19") sounds like a flaw you missed rather than a property you designed around.
+
+</Reveal>
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The shortener review" steps={drills} takeaway="302 with a stated cache policy; seven random characters claimed by one conditional write; partition by code; a load-bearing cache with four promises; idempotent creates; clicks off the hot path." />
+
+<Quiz questions={[
+  {
+    q: 'How many 7-character base62 codes are there, and what fraction does Kestrel fill in five years at 100M links a day?',
+    options: [
+      'About 78 billion; it runs out in two years',
+      'About 3.5 trillion; about 5% full',
+      'About 3.5 billion; it runs out in a month',
+      'About 218 trillion; essentially empty'
+    ],
+    answer: 1,
+    why: '62⁷ = 3,521,614,606,208. Five years is 100M × 365 × 5 = 182.5B links, 5.2% of the space. 218 trillion is 62⁸; 3.5 billion confuses the order of magnitude.'
+  },
+  {
+    q: 'Codes are the first 7 base62 characters of SHA-256(longUrl). After roughly how many links is there a 50% chance that two different URLs share a code?',
+    options: ['About 1.76 trillion', 'About 182 billion', 'About 2.2 million', 'Never — SHA-256 does not collide'],
+    answer: 2,
+    why: 'The birthday bound: n ≈ √(2N ln 2) ≈ 1.18 × √(3.52 × 10¹²) ≈ 2.2 million — about half an hour of traffic at Scale B. Truncation, not SHA-256, is what collides.'
+  },
+  {
+    q: 'Why does a single Redis INCR make a risky code generator, even though it is fast and atomic?',
+    options: [
+      'It cannot keep up with 3,000 creates a second',
+      'Its codes are too long',
+      'A failover to a lagging replica can hand out ids already used — and sequential codes leak volume',
+      'INCR is not atomic under load'
+    ],
+    answer: 2,
+    why: 'Throughput is fine. The danger is durability across failover — the counter going backwards re-issues codes — plus enumeration. Range allocation from a durable counter fixes the first; a permutation or random codes fix the second.'
+  },
+  {
+    q: 'Expired links are deleted by a nightly job, and codes are random. What can go wrong months later?',
+    options: [
+      'Nothing — the code is gone',
+      'The minter can draw the same code again, and old copies of the link now open a stranger’s destination',
+      'The cache fills up',
+      'The delete job slows down redirects'
+    ],
+    answer: 1,
+    why: 'Deleting the row frees the code. Leave a tombstone so the conditional insert keeps failing for that code, and serve 410 Gone.'
+  }
+]} />
+
+<h2 id="interview-script">Say it in the room</h2>
+
+<Scene title="The interview room" mood="night">
+
+The Interviewer reads the card — *"Design TinyURL"* — and sits back. You know this is the question everyone has memorised, which means the interviewer will spend the round finding out whether you understand it. You ask one question about scale, write four times in the corner, and start.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "Two verbs — shorten and redirect — with optional aliases and expiry, and click analytics as a stretch. At 100 million links a day and a hundred clicks each, that's 3,000 creates and **300,000 redirects a second at peak**, and about **91 TB over five years**. Codes are **7 base62 characters** — 3.5 trillion, about 5% full after five years — drawn at random from a secure generator and claimed with an **insert-if-absent**, so uniqueness is one atomic write that also protects custom aliases; at 5% fill that's 1.05 draws per link. I'd avoid hash-and-truncate (a 50% chance of a collision after 2.2 million links, and shared codes across users) and a single counter (a failover can re-issue ids — though ranges per server fix that). Links live in a **key-value store partitioned by code**, because the redirect knows only the code. Redirects return **302**, not 301, so every click comes back to us — for analytics and for takedowns. A **load-bearing cache** answers 99%: key `link:code`, TTL 24 hours capped at the link's expiry, invalidated only on delete, with a one-second in-process cache for viral links. Clicks go to a buffer and a log, **never in the redirect's path**. Expired codes are tombstoned, never reused, and creation is rate-limited per account."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · 301 or 302 — and does it really matter?">
+
+It decides who sees the click. A 301 is cacheable by default, so a browser can skip us on the next click: less load, but we lose the count, and if we disable a malicious link, every browser that cached the 301 keeps going there — we can't purge a browser. A 302 isn't cached unless we say so, so every click reaches us. I'd return 302 with `Cache-Control: private, max-age=0`. If analytics didn't matter, a 301 with a bounded max-age is reasonable.
+
+</Reveal>
+
+<Reveal q="2 · Walk me through how you generate the code. Why that length?">
+
+182.5 billion links in five years. 62⁶ is only 56.8 billion, too few; 62⁷ is 3.5 trillion, about 5% full. I draw seven characters from a secure random generator and write with insert-if-absent; on conflict — about one draw in 19 at five years — I redraw, up to five times, and alert if that limit is ever hit. Alternatives: counter ranges (each server reserves 10,000 ids from a durable counter, encoded in base62, scrambled with a keyed permutation so the order doesn't leak) — no retries, but a counter to run. Hashing collides and makes users share codes. Snowflake is 10–11 characters.
+
+</Reveal>
+
+<Reveal q="3 · A celebrity posts a link. What breaks?">
+
+The link hashes to one Redis shard, so that shard takes all of it, and adding shards doesn't help. A one-second in-process cache on each of the 45 redirect servers caps Redis at about 45 reads a second for that code — links don't change, so staleness is free. Concurrent misses on one server are coalesced. If the fleet itself is the cost, the CDN caches the redirect for 60 seconds and we count those clicks from its logs. Analytics has the same hot-partition problem, solved the same way: pre-count per server per second.
+
+</Reveal>
+
+<Reveal q="4 · How do you count clicks without slowing redirects?">
+
+The redirect sends its 302, then appends an event to an in-memory buffer — no I/O on the request. A background thread ships batches to a partitioned log; a stream job rolls them up per code per minute into a counter store, and raw events go to object storage. About 60 MB/s at peak. Counts are minutes late and approximately exact — a crash loses a few hundred milliseconds of buffered events and retries can double-count, so I'd add event ids and dedupe if billing depended on it.
+
+</Reveal>
+
+<Reveal q="5 · Run it in three regions. What changes?">
+
+Links are immutable and read-mostly, so they replicate asynchronously everywhere and every redirect is served locally. Uniqueness is the catch: two regions minting independently could both claim a code, since a conditional insert is atomic only within one copy. So creates go to a home region — a create can afford 150 ms — or each region mints from its own slice of the code space. And a local miss checks the home region before returning 404, so a link clicked a second after creation in another region still works.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "Design a URL shortener" | Shorten + redirect; aliases, expiry small; analytics stretch; redirects are the product |
+| Scale | Writes/s, reads/s at 100:1, storage to 5–10 years, links to the horizon; bandwidth → skip |
+| Code length | Links over horizon vs 62ⁿ: 7 chars = 3.52T; say the fill fraction |
+| Hash + truncate | Birthday: 50% after ~2.2M links; shared codes across users; computable codes |
+| Counter | No collision check; single counter = SPOF + re-issue on failover; ranges per server |
+| Snowflake as code | Unique but 10–11 base62 chars and clock-guessable |
+| Sequential codes leak | Keyed permutation (Feistel + cycle walking; FF1 for real secrecy) or random codes |
+| Random codes | Secure RNG + insert-if-absent; draws = 1 ÷ (1 − fill) |
+| Uniqueness | One conditional write — never check-then-insert |
+| Custom alias | Same table, same conditional insert, 409 if taken, reserved words |
+| 301 vs 302 | 301 cached by browsers → lost clicks, no takedown; 302 + explicit Cache-Control |
+| Storage | KV partitioned by hashed code; user_links side table; sized by bytes |
+| Redirect cache | `link:code`, 24 h capped at expiry, delete on disable, load-bearing |
+| Viral link | 1 s in-process L1, coalescing, then edge caching with CDN logs |
+| Missing codes | Short negative cache, rate-limit 404s per IP |
+| Expiry | Check on read, cap TTLs at time left, lazy cleanup, tombstone — never reuse |
+| Analytics | Buffer → log → aggregate; pre-count hot codes; minutes late, approximately exact |
+| Abuse | Validate scheme, reputation check at create and later, creation rate limits, instant kill |
+| Multi-region | Async replicated reads; home region (or per-region slice) for creates; check home before 404 |
+| 10× | Fleet and cache scale out; edge caching default; 8 characters |
+
+## Five mistakes to leave behind
+
+1. **"301, because links are permanent."** You just gave every browser your analytics and your kill switch.
+2. **"Check if the code exists, then insert."** A race. One conditional write.
+3. **"Hash the URL — collisions are astronomically unlikely."** After 2.2 million links it's a coin flip.
+4. **"Cache the redirects in Redis."** Key, TTL and why, invalidation, failure plan — and the hot link.
+5. **Counting clicks inside the redirect.** The product now waits on the stretch goal.
+
+<Scene title="Mara’s last word" mood="dawn">
+
+Six months later, a pop star posts a kst.to link to her new single. At peak it takes seventy thousand clicks a second.
+
+Nobody is paged. One Redis shard twitches and settles. The click counts on the dashboard run three minutes behind and land within a fraction of a percent of the label's own numbers. In the morning Dev forwards the graph with a single line: *"Flat."*
+
+Iris prints it and pins it beside the Tinylane support queue from the spring. Mara walks past, looks at both, and keeps walking. That, you have learned, is how she says *well done*.
+
+</Scene>
+
+**After this walkthrough:** redo it cold within three days — no notes, all six steps out loud, the four checkpoints in the corner — ideally to the buddy in mock mode. A walkthrough read is worth a fraction of a walkthrough re-fought. Then run the **commit drill** on the four sentences that carry this design: the code-generation choice with its flip condition; the 301-versus-302 sentence; the four promises for the redirect cache; and "codes are names, not secrets".
+
+Related: <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> (the six steps and the clock) · <a href={`${BASE}sd/lessons/estimation/#shortener`}>Estimation</a> (this prompt at two scales) · <a href={`${BASE}sd/lessons/databases/#ids`}>Databases: ID strategies</a> (Snowflake, UUIDv7, sequences) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (the four promises, hot keys, negative caching) · <a href={`${BASE}sd/lessons/load-balancing/`}>Load balancing</a> (the gateway and global routing) · <a href={`${BASE}sd/lessons/blob-cdn/`}>Blob storage & CDN</a> (edge caching, purges, Cache-Control) · <a href={`${BASE}sd/lessons/pattern-partitioning/`}>Partitioning</a> (placing and moving the partitions) · <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a> (conditional writes instead of locks) · <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> (the click log) · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> (the other warm-up, and creation limits) · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a> · <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and races</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- *System Design Interview – An Insider's Guide, Volume 1* (Alex Xu) — chapter 8, "Design a URL Shortener": the hash-versus-counter discussion and the 301/302 question, with diagrams.
+- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 6 (partitioning by key versus by key hash) and chapter 5 (replication lag, read-your-writes), behind Chapters 12 and 17.
+- [RFC 9110: HTTP Semantics](https://www.rfc-editor.org/rfc/rfc9110) — the definitions of 301, 302, 307, 308 and 410, including which are "heuristically cacheable" — and [RFC 9111: HTTP Caching](https://www.rfc-editor.org/rfc/rfc9111) for `max-age` and `s-maxage`.
+- [RFC 9213: Targeted HTTP Cache Control](https://www.rfc-editor.org/rfc/rfc9213) — `CDN-Cache-Control`, for caching a response at the CDN without letting browsers keep it.
+- [Flickr — Ticket Servers: Distributed Unique Primary Keys on the Cheap](https://code.flickr.net/2010/02/08/ticket-servers-distributed-unique-primary-keys-on-the-cheap/) — the classic range/odd-even counter write-up behind Chapter 8.
+- [Birthday problem (Wikipedia)](https://en.wikipedia.org/wiki/Birthday_problem) — the approximation used in Chapter 7, with tables.
+- [Feistel cipher (Wikipedia)](https://en.wikipedia.org/wiki/Feistel_cipher) and [NIST SP 800-38G](https://csrc.nist.gov/pubs/sp/800/38/g/final) — why Feistel networks are invertible, and the standard format-preserving encryption modes (FF1) for real secrecy.
+- [Google Safe Browsing](https://developers.google.com/safe-browsing) — a public threat list for checking URLs at creation and on re-scan.
+
+**Look these up yourself**
+
+- **"Gone in Six Characters: Short URLs Considered Harmful for Cloud Services"** (Georgiev and Shmatikov, 2016) — the research that enumerated real short links and found private cloud documents behind them.
+- **Format-preserving encryption and cycle walking** — how FF1/FF3-1 encrypt a number into the same domain, and why cycle walking keeps the result a permutation.
+- **Bloom filters for "probably taken" pre-checks** — when a local filter of used codes saves store round trips, and why it can never replace the conditional write.
+- **Lightweight transactions / conditional writes in wide-column stores** — what a "compare-and-set" costs in your chosen store, which decides random-versus-counter.
+- **HyperLogLog** — counting *unique* clickers per link in a few kilobytes, the natural next analytics feature.
+- **Link-preview fetchers and bot filtering** — how chat apps fetch links to render previews, and why that inflates naive click counts.
+- **Open redirects** — why a redirect endpoint that accepts arbitrary destinations is a security finding in other products, and what a shortener does differently (ownership, reputation, takedown).

@@ -46,7 +46,7 @@ export const hints: Record<string, [string, string, string]> = {
   slots: [
     'An Iterable can be a lambda that returns a fresh Iterator. Nothing needs to be stored up front.',
     'slots(first, end, step) returns () -> new Iterator<LocalTime>() { ... } holding only the next time and a done flag.',
-    'next() returns the current time, steps forward, and marks done if the new time is not after the current one (it wrapped past midnight) or is not before end.',
+    'next() returns the current time. Before stepping, compare the step with Duration.between(current, end): if the step is at least that, this was the last slot; otherwise add it — an addition that lands before end can never wrap.',
   ],
   exempt: [
     'A new operation over the bill tree. Which existing classes should you need to open?',
@@ -83,7 +83,7 @@ export const hints: Record<string, [string, string, string]> = {
 export const strategy = [
   step('Equal-split of ₹100.00 (10 000 paise) across 3 family members. What must your Strategy get right that naive division misses?', [], 1, [
     ['Use double division for accuracy', '10000 / 3.0 is 3333.333…, which no one can pay. Doubles also bring binary rounding drift into money — the reason you used paise in the first place.'],
-    ['Integer minor-unit division leaves a remainder (3334 + 3333 + 3333 paise) — assign it deterministically so shares sum exactly to the total', 'Right. Money conservation is the hidden invariant graders test with “does it sum back?”. EqualSplit gives the first `total % n` parties one extra paisa.'],
+    ['Integer minor-unit division leaves a remainder (3334 + 3333 + 3333 paise) — assign it deterministically so shares sum exactly to the total', 'Right. Money conservation is the hidden invariant graders test with “does it sum back?”. EqualSplit gives one extra paisa to each of the first (total mod n) parties.'],
     ['Round every share up to be safe', '3334 × 3 = 10 002. Rounding up overcharges the family by 2 paise — the shares no longer sum to the bill.'],
     ['Store shares as percentages instead', 'A percentage still has to become paise at some point, and the same remainder appears then.'],
   ]),
@@ -157,7 +157,7 @@ export const state = [
 ];
 
 export const command = [
-  step('Why does BookAppointment keep the `booked` field — why can’t undo() just be a fresh cancel call built from the request?', [], 1, [
+  step('Why does BookAppointment keep the booked field — why can’t undo() just be a fresh cancel call built from the request?', [], 1, [
     ['Performance — caching avoids a lookup', 'The point is correctness, not speed. A request does not even contain the appointment’s id.'],
     ['The command must remember what its own execution did (the appointment it created, with its id and slot) — undo reverses that specific effect, not a guess rebuilt from inputs', 'Right. Between execute and undo the world moved. Undo targets the exact effect this command produced — and redo re-books that same appointment, same id.'],
     ['Java requires commands to be stateful', 'Java requires nothing of the kind. Commands that never undo can be stateless.'],
@@ -280,7 +280,7 @@ export const iterator = [
     row('Ring', ['T-4', 'T-2', 'T-3'], { 1: 'START' }),
   ], 1, [
     ['T-1, T-2, T-3', 'T-1 was overwritten when T-4 arrived. The buffer keeps the newest three.'],
-    ['T-2, T-3, T-4', 'Right. The iterator starts at `start` — the oldest surviving scan — and walks size elements around the ring.'],
+    ['T-2, T-3, T-4', 'Right. The iterator starts at start — the oldest surviving scan — and walks size elements around the ring.'],
     ['T-4, T-2, T-3', 'That is the raw array order. The iterator hides the ring layout: callers see oldest-first.'],
   ]),
   step('You take an iterator, read one scan, and then the gate adds a new scan. What does the next call to next() do?', [], 0, [
@@ -288,15 +288,15 @@ export const iterator = [
     ['Returns the new scan', 'The iterator cannot know whether the new scan belongs in this pass. Guessing is how you get silently wrong reports.'],
     ['Returns null', 'An iterator never invents a null; it either has a next element or throws.'],
   ]),
-  step('slots(23:00, 23:59, 30 minutes) without the midnight guard: next = next.plus(step) while next.isBefore(end). How many slots come out?', [], 2, [
+  step('slots(23:00, 23:59, 30 minutes) written the naive way: next = next.plus(step) while next.isBefore(end). How many slots come out?', [], 2, [
     ['2 — 23:00 and 23:30', 'That is what the guarded version yields. Look at what 23:30 + 30 minutes is as a LocalTime.'],
     ['3 — 23:00, 23:30 and 00:00', '00:00 is before 23:59, so the loop does not stop there either.'],
-    ['It never stops: 23:30 + 30 min wraps to 00:00, which is before 23:59', 'Right. LocalTime wraps at midnight. The guarded iterator also stops when the next time is not after the current one.'],
+    ['It never stops: 23:30 + 30 min wraps to 00:00, which is before 23:59', 'Right. LocalTime wraps at midnight. The guarded iterator compares the step with the time left before end before adding, so it never adds its way past midnight.'],
   ]),
 ];
 
 export const visitor = [
-  step('describe(Line), describe(Fee) and describe(Pack) are overloads. describeAll loops `for (Line l : pack.lines()) describe(l)`. The pack holds a Fee and a Pack. What does it print?', [], 1, [
+  step('describe(Line), describe(Fee) and describe(Pack) are overloads. describeAll loops for (Line l : pack.lines()) describe(l). The pack holds a Fee and a Pack. What does it print?', [], 1, [
     ['“fee 100” and “pack of 0”', 'That would need the overload to be picked at runtime. Java picks overloads at compile time, from the static type.'],
     ['“some line” twice', 'Right. l’s static type is Line, so describe(Line) is chosen for both. This is why Visitor needs accept(): it turns the runtime type into a second, virtual call.'],
     ['It does not compile', 'It compiles. That is the trap.'],
@@ -306,7 +306,7 @@ export const visitor = [
     ['Both are one new class', 'A new node type needs a new visitXxx method, which every visitor must implement.'],
     ['New operation: edit every node. New node type: one new class', 'That is the cost of putting operations on the nodes themselves — the opposite trade.'],
   ]),
-  step('On Java 17, you replace the visitor with `if (line instanceof Item i) … else if (line instanceof Bundle b) …` over a sealed BillLine. Then someone adds a Discount record. What tells you?', [], 2, [
+  step('On Java 17, you replace the visitor with if (line instanceof Item i) … else if (line instanceof Bundle b) … over a sealed BillLine. Then someone adds a Discount record. What tells you?', [], 2, [
     ['The compiler — sealed types make instanceof chains exhaustive', 'Only switch can be checked for exhaustiveness. An if-chain is never checked.'],
     ['Nothing ever — Discount lines are skipped', 'The final throw in the chain fires at runtime. You find out — just late.'],
     ['Nothing at compile time; the fallback throw at the end fires at runtime. Java 21’s pattern-matching switch would refuse to compile instead', 'Right. Sealed + switch (Java 21) gives the visitor’s compile-time safety without accept(). On 17, the visitor interface is what makes the compiler list every place to update.'],

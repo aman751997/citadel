@@ -73,6 +73,9 @@ Never decorative. Check every number in a figure by hand or by test.
 - `BASE` from `../paths` for internal links: ``<a href={`${BASE}dsa/lessons/heaps/`}>Heaps</a>``.
   Markdown links do NOT interpolate: `[Heaps](${BASE}dsa/…)` renders a broken URL. Always use `<a href={…}>`.
 - Mermaid classDiagram static members: `$` goes after the return type, e.g. `+of(int id) Ticket$`.
+- Mermaid breakers: `;` inside a sequenceDiagram message (it ends the statement), `\n` inside a
+  sequence message (in a JS template literal it becomes a real newline), PlantUML-only arrows such as
+  `+--`. Run `node scripts/check-mermaid.mjs` against a preview to catch render failures.
 - Java fences carry meta for the checker (below): ` ```java id=minWindow `.
 
 ## Correctness machinery (mandatory)

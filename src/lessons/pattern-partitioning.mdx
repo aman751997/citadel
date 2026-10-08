@@ -1,66 +1,1045 @@
 ---
-title: 'Pattern: Partitioning & Consistent Hashing'
-description: 'How data spreads across nodes without reshuffling the world — the backbone of every "design Redis/Dynamo/S3" infra round.'
+title: 'Pattern: Partitioning & Storage Infra'
+description: 'The night Kestrel added an eleventh cache node and lost ninety-one percent of its cache. Hash rings, vnodes, slots and ranges; hot keys and rebalancing; quorums, version vectors, Merkle trees and gossip; then "design Redis" and "design Dynamo" on the clock.'
 module: 9
 order: 1
-minutes: 30
+minutes: 120
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { modN, ring, vnodes, strategies, hotKeys, rebalance, replicas, quorums, conflicts, merkle, gossip, routing, storage, sizing, cacheRound, kvRound, unlocks, drills } from '../data/sd/pattern-partitioning';
+import { BASE } from '../paths';
 
-## The pattern in one sentence
+<PatternHub
+  pattern="sd-pattern-partitioning"
+  start="prologue"
+  logline="When data outgrows one machine you cut it by key across many. How you cut decides what happens the day you add machine eleven, the day machine four dies, and the day one key gets famous. Learn the cut once and you can design a distributed cache, a key-value store, or an object store from a blank page."
+  cast={[
+    { name: 'You', role: 'Four months at Kestrel. You know what a shard is. You have never had to move one while it was serving traffic.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Draws a circle on the whiteboard and asks where the keys go. Never answers first.' },
+    { name: 'Dev Okafor', role: 'SRE. Added the eleventh cache node himself. Narrates what happened next in a very calm voice.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has watched replicas disagree in every way they can.' },
+    { name: 'Iris Tan', role: 'Product lead. Wants a shopping cart that never refuses an item. "Oh, and also…"' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · Where does a key live?', description: 'Why partition, and five ways to map a key to a machine.', links: [['why-partition', 'Too big, too busy'], ['mod-n', 'Node eleven'], ['ring', 'The ring'], ['vnodes', 'Many small arcs'], ['rendezvous', 'Everyone bids'], ['slots', 'Sixteen thousand boxes'], ['ranges', 'Cutting in order']] },
+    { name: 'Part Two · When the load is not fair', description: 'Hot keys, hot partitions, and moving data while it serves.', links: [['hot-keys', 'One disease, four costumes'], ['rebalancing', 'Moving house with the lights on']] },
+    { name: 'Part Three · Copies that disagree', description: 'Replicas per partition, quorums, conflicts, repair, membership.', links: [['replication', 'Three homes per key'], ['quorums', 'Two out of three'], ['conflicts', 'The lamp that vanished'], ['anti-entropy', 'Comparing without copying'], ['gossip', 'Rumours and suspicion']] },
+    { name: 'Part Four · The machine around the keys', description: 'Routing, the storage engine on each node, and sizing.', links: [['routing', 'Who knows the map?'], ['storage-engine', 'What each node writes'], ['sizing', 'The whiteboard sweep']] },
+    { name: 'Part Five · Two rounds on the clock', description: 'Design Redis, design Dynamo, and what else the pattern answers.', links: [['cache-round', 'Design a distributed cache'], ['kv-round', 'Design a key-value store'], ['unlocks', 'Same pattern, other costumes']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → mechanism → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'The calls infra rounds probe, with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="Parts One and Two are one sitting. Part Three is another. Read Part Five out loud, with a timer, before any infra mock."
+/>
 
-When data outgrows one node you split it by key across many — and the *method* of splitting decides what happens on the day you add node 11 to a 10-node cluster, which is the day naive designs die.
+<h2 id="prologue">Prologue · Node eleven</h2>
 
-**Trigger words:** any "design a distributed X" (cache, KV store, object store), "how does it scale horizontally?", "what happens when you add a node?"
+<Scene chapter="Prologue" title="Node eleven" mood="night">
 
-## Why modulo hashing fails
+Dev adds the eleventh cache node at 9:40 p.m., because the dashboards said ten were running hot. It takes him four minutes. At 9:44 the database's read rate goes from twenty thousand a second to a hundred and eighty thousand, and stays there.
 
-`node = hash(key) % N` distributes beautifully — until N changes. Going 10 → 11 nodes changes the answer for **~91% of keys**: nearly every key now lives "somewhere else." For a cache, that's a total cold start (stampede at the DB); for a store, a full data reshuffle. The interviewer's "what happens when you add a node?" is aimed exactly here.
+*"Nothing is broken,"* he types in the incident channel. *"Every cache node is up. Every one of them is empty of the keys people want."*
 
-## Consistent hashing — the fix
+The next morning Mara draws a circle on the whiteboard. She does not explain it. She hands you the marker and asks one question.
 
-Hash node IDs and keys onto the same circular space (the **ring**). A key belongs to the **first node clockwise** from it:
+*"We added one node out of eleven. Why did we lose nine tenths of the cache, and not one tenth?"*
 
-<Mermaid code={`flowchart LR
-    subgraph ring["The ring (0 → 2³² wraps around)"]
-      direction LR
-      A["Node A @ 0.1"] --- K1["key x @ 0.25"] --- B["Node B @ 0.4"] --- K2["key y @ 0.6"] --- C["Node C @ 0.8"]
-    end
-    K1 -->|"clockwise"| B
-    K2 -->|"clockwise"| C`} />
+</Scene>
 
-Add node D at 0.5: only keys in (0.4, 0.5] move — from C to D. **Adding/removing a node moves ~1/N of keys, not ~all.** That single sentence is the pattern's payoff — say it verbatim.
+The cache placed keys with `node = hash(key) mod N`. When N went from 10 to 11, the answer to that formula changed for about 91% of keys. Every one of those keys was still in memory somewhere, on the node the old formula pointed at, and nobody would ever ask for it there again. This lesson is about cutting data across machines so that changing the number of machines moves as little data as possible, and then about everything that comes with it: copies, disagreements, failures, and routing.
 
-**Virtual nodes (the mandatory follow-up):** few physical nodes = lumpy, unfair arc sizes; and a removed node dumps its whole arc onto one neighbor. Fix: each physical node appears at ~100–1000 points on the ring ("vnodes"). Load evens out statistically; a dead node's arcs scatter across *everyone*; and **heterogeneous hardware** gets handled by giving bigger boxes more vnodes. Consistent hashing without vnodes is half an answer — interviewers know it.
+**Trigger words:** any "design a distributed X" (cache, key-value store, object store, counter), "how does it scale horizontally?", "what happens when you add a node?", "what happens when a node dies?"
 
-Who uses it: Dynamo/Cassandra (data placement), Redis-cluster-style caches, Kafka consumer↔partition-ish balancing, sticky routing at LBs (load-balancing lesson). One mechanism, four appearances — pattern recognition again.
+**Why it matters to you.** Module 9 is where the infra classics live: *Design a distributed cache (Redis)* and *Design a key-value store (Dynamo)* are both on your bank as hot, hard and frequent, and *S3 / object storage* leans on this lesson too. They are the rounds where a candidate can't hide behind a box labelled "database", because they *are* the database. Two of your logged gaps meet here. **Decomposition from scratch**: an infra round starts from a blank page with no product to lean on. **Drawing while talking**: the ring, the arcs and the replica walk are things you must draw and narrate at the same time. Every chapter ends with something to say out loud.
 
-## Range partitioning — the other honest option
+<Figure caption="The pattern in one picture. A key picks a partition; the partition map picks the nodes; each partition is copied to several nodes. Every chapter below is about one arrow.">
+  <Mermaid code={`flowchart LR
+    K["key\nuser:42"] -->|"1 · placement\nhash ring, slots, ranges"| P["partition\n(arc, slot, range)"]
+    P -->|"2 · partition map\nwho owns it now"| N1["node E\n(leader or replica)"]
+    P --> N2["node F"]
+    P --> N3["node G"]
+    N1 -.->|"3 · replicas agree?\nquorums, versions, repair"| N2
+    C["client"] -->|"4 · routing\nsmart client, proxy, coordinator"| N1`} />
+</Figure>
 
-Split by key **ranges** (users A–F → node 1) instead of hash. You lose uniform spread but gain **ordered scans**: "all events for March" hits one partition instead of all of them. This is HBase/Bigtable's choice, and why time-series systems lean range.
+<Part n="Part One" title="Where does a key live?">
+
+Five ways to answer one question, and what each costs on the day the cluster changes size.
+
+</Part>
+
+<h2 id="why-partition">Chapter 1 · Too big, too busy</h2>
+
+<Scene chapter="Chapter 1" title="Too big, too busy" mood="dawn">
+
+Iris wants a shopping cart service for Kestrel Market. Theo has a single Postgres box in mind. Mara asks him for three numbers: how much data, how many writes a second, and what happens to the business if that one box is down for an hour.
+
+Theo answers the first two honestly. The third one he answers by going quiet.
+
+</Scene>
+
+**Partitioning** (sharding) splits a dataset by key so that each machine holds and serves only part of it. **Replication** keeps copies of the same part on several machines. They solve different problems, and every system in this lesson does both.
+
+You partition for three reasons, and you should say which one applies:
+
+1. **Capacity.** The data doesn't fit on one machine's disk or in its memory.
+2. **Throughput.** One machine can't take the write rate (replicas scale reads, never writes: every replica replays every write).
+3. **Blast radius.** One machine's failure, slow query or hot key should take down a slice, not everything.
+
+**Worked numbers.** Kestrel's cart and app-state store: 2 billion items × 1 KB = **2 TB** of raw data; peak **200,000 reads/s and 50,000 writes/s**. One machine with a 4 TB disk could hold one copy. It cannot take 50,000 durable writes a second while also serving 200,000 reads, and its failure would stop every cart in the company. So: partition for throughput and blast radius, replicate for survival. Chapter 17 finishes this sizing.
+
+**The rule this lesson keeps returning to:** a partitioning scheme is judged on four days, not one. The normal day (is the load even?), the day you **add a node** (how much data moves?), the day a node **dies** (who takes its load?), and the day one key gets **famous** (can anything spread it?).
+
+<Reveal q="Theo says: 'Why not just buy a bigger box?' When is that the right answer?">
+
+Often. Vertical scaling has no routing, no cross-partition queries, no rebalancing. If the data fits, the write rate fits with headroom, and a replica with fast failover covers the failure case, a bigger box is the senior answer. The <a href={`${BASE}sd/lessons/databases/#capacity`}>databases lesson</a> works through "will it fit?" Partition when the numbers say you must, and say which number forced it.
+
+</Reveal>
+
+**Catch the trap:** "We'll shard it" with no reason attached. Name the number that forced the cut: capacity, write throughput, or isolation.
+
+<h2 id="mod-n">Chapter 2 · Node eleven</h2>
+
+<Scene chapter="Chapter 2" title="Node eleven" mood="night">
+
+Dev replays the incident for you on a whiteboard, slowly. Ten columns, one per node. He writes the numbers 0 to 21 under them by remainder. Then he draws eleven columns and does it again.
+
+*"Zero to nine stayed home,"* he says. *"Ten went from node zero to node ten. Eleven went from node one to node zero. Everything after that is just… somewhere else."*
+
+</Scene>
+
+`node = hash(key) mod N` spreads keys evenly, needs no state, and every client computes the same answer. It is fine as long as N never changes. **When N changes, a key stays put only if its hash leaves the same remainder under both N's.**
+
+**Worked numbers, 10 → 11.** Remainders mod 10 and mod 11 repeat together every 110 values. Within each block of 110, the key stays only when `h mod 10 = h mod 11`, which happens for exactly h = 0…9: 10 values. So **100 of every 110 keys move: 10/11 ≈ 91%**. In general, going from N to N + 1 moves **N/(N + 1)** of the keys, which gets *worse* as the cluster grows.
+
+| Change | Fraction of keys that move | The ideal (the new or dead node's share) |
+|---|---|---|
+| 4 → 5 nodes | 80% | 20% |
+| 10 → 11 | 91% | 9% |
+| 16 → 17 | 94% | 6% |
+| 10 → 9 (one dies) | 90% | 10% |
+| 10 → 20 (doubling) | 50% | 50% |
+
+The lesson's checker computes each row exactly and also measures 91% on 100,000 real hashed keys. The last row is a curiosity worth knowing: doubling moves exactly half the keys (each node sends half its keys to its new partner), which *is* the minimum for doubling. Some systems grow only by doubling for that reason. Everyone else wants to add one node at a time.
+
+**What 91% means.** For a cache, it is a near-total cold start: 91% of reads miss at once, and the miss rate is what the database feels (the <a href={`${BASE}sd/lessons/caching/#why-cache`}>arithmetic of misses</a>). For a store, it is moving 91% of the data over the network to change capacity by 10%.
+
+<Trace title="Count what moves" steps={modN} takeaway="mod N moves N/(N+1) of the keys when you add one node and about 90% when one dies. The ideal is the new or dead node's own share." />
+
+**Catch the trap:** "Use a prime number of nodes" or "rehash in the background". Neither changes the arithmetic. The fix is to stop letting N appear in the formula.
+
+<h2 id="ring">Chapter 3 · The ring</h2>
+
+<Scene chapter="Chapter 3" title="The ring" mood="dawn">
+
+Mara draws the circle again and puts three dots on it. *"Hash the nodes too. Put them on the same circle as the keys. A key belongs to whoever is next, walking clockwise."*
+
+She adds a fourth dot between two others. *"Now. Who lost keys?"*
+
+You look for a long time. Only one of the three.
+
+</Scene>
+
+**Consistent hashing** (Karger and colleagues, 1997) puts keys and nodes into the same hash space and bends that space into a circle, the **ring**. A key's owner is **the first node at or after the key's position, walking clockwise**, wrapping past the top back to the start.
+
+<Figure caption="Positions 0–99. A owns keys in (80, 10], B owns (10, 40], C owned (40, 80]. When D joins at 50, only the gold arc (40, 50] changes hands, from C to D. The key at 45 moves; 25, 60 and 95 don't.">
+  <svg viewBox="0 0 420 340" role="img" aria-label="Hash ring with nodes A at 10, B at 40, D at 50 and C at 80, and keys at 25, 45, 60 and 95. The arc from 40 to 50 is highlighted as the only part that moved, from C to D.">
+    <circle cx="210" cy="170" r="120" fill="none" stroke="#30363d" stroke-width="10" />
+    <path d="M 280.5 267.1 A 120 120 0 0 1 210 290" fill="none" stroke="#e3b341" stroke-width="10" />
+    <text x="210" y="24" fill="#8b949e" font-size="11" text-anchor="middle">0 / 100</text>
+    <circle cx="280.5" cy="72.9" r="10" fill="#58a6ff" /><text x="300" y="56" fill="#58a6ff" font-size="13" font-weight="700">A · 10</text>
+    <circle cx="280.5" cy="267.1" r="10" fill="#58a6ff" /><text x="298" y="293" fill="#58a6ff" font-size="13" font-weight="700">B · 40</text>
+    <circle cx="210" cy="290" r="10" fill="#3fb950" /><text x="210" y="322" fill="#3fb950" font-size="13" font-weight="700" text-anchor="middle">D · 50 (new)</text>
+    <circle cx="95.9" cy="132.9" r="10" fill="#58a6ff" /><text x="72" y="120" fill="#58a6ff" font-size="13" font-weight="700" text-anchor="end">C · 80</text>
+    <rect x="325" y="165" width="10" height="10" fill="#c9d1d9" /><text x="345" y="174" fill="#c9d1d9" font-size="12">25 → B</text>
+    <rect x="242" y="279" width="10" height="10" fill="#e3b341" /><text x="236" y="258" fill="#e3b341" font-size="12" text-anchor="end">45 → D</text>
+    <rect x="134" y="262" width="10" height="10" fill="#c9d1d9" /><text x="120" y="292" fill="#c9d1d9" font-size="12" text-anchor="end">60 → C</text>
+    <rect x="168" y="51" width="10" height="10" fill="#c9d1d9" /><text x="160" y="44" fill="#c9d1d9" font-size="12" text-anchor="end">95 → A</text>
+    <text x="210" y="165" fill="#8b949e" font-size="12" text-anchor="middle">walk clockwise</text>
+    <text x="210" y="183" fill="#8b949e" font-size="12" text-anchor="middle">to the next node</text>
+  </svg>
+</Figure>
+
+**Adding a node.** D lands somewhere on the ring and takes over the slice between its predecessor and itself. That slice came from one node (the old owner, C). Nobody else is touched. With N equal-ish nodes, the new one takes **about 1/(N + 1) of the keys**, the minimum possible. **Removing a node** is the mirror: its arc joins its successor's, and only its own keys move.
+
+**Adding/removing a node moves about 1/N of the keys, not almost all of them.** That sentence is the pattern's payoff. Say it verbatim.
+
+**Who uses it.** Dynamo and Cassandra place data on a token ring. Memcached client libraries in the "ketama" style put servers on a ring so adding a server doesn't flush the cache. Load balancers use relatives of it for sticky routing (the <a href={`${BASE}sd/lessons/load-balancing/`}>load-balancing lesson</a>). Redis Cluster and Kafka use the fixed-slot cousin in Chapter 6. One mechanism, several costumes.
+
+<Trace title="Walk the ring" steps={ring} takeaway="A key belongs to the next node clockwise. A new node takes one arc from one neighbour; a dead node hands its arc to one neighbour. That last part is a problem." />
+
+<Reveal q="The ring fixes movement. What problem does the last trace step reveal?">
+
+Two, really. **Unequal arcs**: three random points on a circle almost never divide it into thirds, so one node owns far more than its share. And **failure dumping**: when B dies, its whole arc goes to one successor, which suddenly carries double load and may fall over next, handing everything to *its* successor. Both have the same fix: the next chapter.
+
+</Reveal>
+
+**Catch the trap:** describing the ring and stopping. Consistent hashing without virtual nodes is half an answer, and interviewers know it.
+
+<h2 id="vnodes">Chapter 4 · Many small arcs</h2>
+
+<Scene chapter="Chapter 4" title="Many small arcs" mood="dusk">
+
+The new ring goes live with ten nodes. A week later Dev posts a chart of disk usage: one node at 29% of the cluster's data, two others under 3%. *"The hash function is uniform,"* he writes. *"Apparently that's not the same as fair."*
+
+Theo replies with one line: *"Ten random points don't cut a circle into ten equal pieces. Give each node a few hundred points."*
+
+</Scene>
+
+**Virtual nodes (vnodes, tokens):** each physical node is placed at **many** points on the ring, typically tens to hundreds. A node owns the sum of many small arcs instead of one large one. That fixes three problems with one mechanism:
+
+1. **Even load.** A sum of many random pieces is much more even than one random piece.
+2. **Failure spreading.** A dead node's arcs have many different successors, so its load spreads across *all* survivors instead of one unlucky neighbour.
+3. **Heterogeneous hardware.** A machine with twice the disk gets twice the tokens.
+
+**Worked numbers: the load-variance argument.** With one token per node, the ring is cut by N random points. The largest of N random gaps averages **H(N) / N** of the circle, where H(N) = 1 + 1/2 + … + 1/N. For N = 10, H₁₀ ≈ 2.93: **the busiest node carries about 2.9× its fair share**. With V tokens per node, each node's share is a sum of V small arcs, and the relative spread of a sum of V independent pieces shrinks like **1/√V**: about 10% at V = 100 and about 6% at V = 256. The busiest of ten nodes then lands roughly 1.5 standard deviations above the mean.
+
+<Figure caption="Busiest node ÷ fair share, 10 nodes, averaged over many random rings. Measured exactly from arc lengths by this lesson's checker.">
+  <svg viewBox="0 0 520 190" role="img" aria-label="Bar chart. 1 token per node: 2.93 times fair share. 10 vnodes: 1.54. 100 vnodes: 1.16. 256 vnodes: 1.09.">
+    <line x1="140" y1="10" x2="140" y2="170" stroke="#8b949e" />
+    <line x1="260" y1="10" x2="260" y2="170" stroke="#3fb950" stroke-dasharray="4 4" />
+    <text x="260" y="185" fill="#3fb950" font-size="11" text-anchor="middle">fair share (1.0×)</text>
+    <text x="130" y="38" fill="#c9d1d9" font-size="12" text-anchor="end">1 token</text>
+    <rect x="140" y="22" width="351.6" height="26" rx="3" fill="#f85149" /><text x="485" y="40" fill="#0d1117" font-size="12" font-weight="700" text-anchor="end">2.93×</text>
+    <text x="130" y="78" fill="#c9d1d9" font-size="12" text-anchor="end">10 vnodes</text>
+    <rect x="140" y="62" width="184.8" height="26" rx="3" fill="#e3b341" /><text x="333" y="80" fill="#e3b341" font-size="12" font-weight="700">1.54×</text>
+    <text x="130" y="118" fill="#c9d1d9" font-size="12" text-anchor="end">100 vnodes</text>
+    <rect x="140" y="102" width="139.2" height="26" rx="3" fill="#58a6ff" /><text x="288" y="120" fill="#58a6ff" font-size="12" font-weight="700">1.16×</text>
+    <text x="130" y="158" fill="#c9d1d9" font-size="12" text-anchor="end">256 vnodes</text>
+    <rect x="140" y="142" width="130.8" height="26" rx="3" fill="#3fb950" /><text x="280" y="160" fill="#3fb950" font-size="12" font-weight="700">1.09×</text>
+  </svg>
+</Figure>
+
+The price of vnodes: a bigger ring to store and gossip (10 nodes × 256 = 2,560 tokens), more, smaller ranges to repair and stream, and, with replication, a node's replicas are spread over many peers so *more* combinations of two simultaneous failures touch some key. Cassandra used 256 tokens per node by default for years; newer versions default to far fewer, paired with a token allocator that places tokens deliberately rather than randomly (check current docs). The same idea in the Dynamo paper's "strategy 3": cut the ring into Q equal fixed partitions and hand those out, which is Chapter 6.
+
+**The ring, in code.** A sorted map from token to node *is* the ring: `ceilingEntry(hash)` finds the next token clockwise, and `firstEntry()` is the wrap-around.
+
+```java id=ring group=partitioning
+import java.nio.charset.StandardCharsets;
+
+/** 64-bit hash: FNV-1a over the UTF-8 bytes, then MurmurHash3's finalizer to scramble similar inputs. */
+static long hash64(String s) {
+    long h = 0xcbf29ce484222325L;                       // FNV-1a offset basis
+    for (byte b : s.getBytes(StandardCharsets.UTF_8)) {
+        h ^= (b & 0xff);
+        h *= 0x100000001b3L;                            // FNV-1a prime
+    }
+    h ^= h >>> 33; h *= 0xff51afd7ed558ccdL;            // fmix64: "node-1#7" and "node-1#8"
+    h ^= h >>> 33; h *= 0xc4ceb93fe53a87cdL;            // must land far apart on the ring
+    h ^= h >>> 33;
+    return h;
+}
+
+/** A consistent-hash ring. Each physical node owns `vnodes` points (tokens); a key belongs to the next token clockwise. */
+static final class ConsistentHashRing {
+    private final int vnodes;
+    private final TreeMap<Long, String> ring = new TreeMap<>();   // token -> physical node, sorted = the ring
+    private final Set<String> nodes = new HashSet<>();
+
+    ConsistentHashRing(int vnodes) {
+        if (vnodes < 1) throw new IllegalArgumentException("need at least one token per node");
+        this.vnodes = vnodes;
+    }
+
+    void addNode(String node) {
+        if (!nodes.add(node)) return;
+        for (int i = 0; i < vnodes; i++) ring.putIfAbsent(hash64(node + "#" + i), node);
+    }
+
+    void removeNode(String node) {
+        if (!nodes.remove(node)) return;
+        for (int i = 0; i < vnodes; i++) ring.remove(hash64(node + "#" + i), node); // only our own tokens
+    }
+
+    /** The owner: first token at or after hash(key), wrapping past the end of the ring to the start. */
+    String nodeFor(String key) {
+        if (ring.isEmpty()) throw new IllegalStateException("no nodes");
+        Map.Entry<Long, String> e = ring.ceilingEntry(hash64(key));
+        return (e != null ? e : ring.firstEntry()).getValue();
+    }
+
+    /** Replicas: keep walking clockwise for one lap, skipping nodes already chosen, until n distinct nodes. */
+    List<String> preferenceList(String key, int n) {
+        List<String> out = new ArrayList<>();
+        long h = hash64(key);
+        for (Collection<String> half : List.of(ring.tailMap(h, true).values(), ring.headMap(h, false).values()))
+            for (String node : half) {
+                if (out.size() == n) return out;
+                if (!out.contains(node)) out.add(node);
+            }
+        return out;                                      // fewer than n nodes exist
+    }
+}
+```
+
+**What the checker proves about this code** (`tests/java/pattern-partitioning/Check.java`): lookups match a brute-force scan of every token on 300 random rings and don't depend on the order nodes were added; adding an 11th node to a 256-vnode ring moved **9.8%** of 100,000 keys (ideal 9.1%), *every one of them to the new node*; removing a node moved *only* that node's keys, and they landed on all 10 survivors; with one token per node, they all landed on exactly one neighbour. `putIfAbsent` and the two-argument `remove(token, node)` make a (vanishingly rare) token collision harmless: a node can only ever remove its own tokens.
+
+**Big-O.** Lookup is O(log T) for T = N × V tokens (a tree search); add or remove is O(V log T). The hash function matters more than it looks: plain FNV on `node-1#7` and `node-1#8` gives nearby values, so tokens would clump. The finalizer scatters them.
+
+<Trace title="Count the arcs" steps={vnodes} takeaway="One token per node: the busiest node carries about H(N) times its share. V tokens: the spread shrinks like 1/√V. Vnodes also scatter a dead node's load and weight bigger machines." />
+
+<Reveal q="With vnodes, a node dies. Its keys spread over everyone. Why is that better than one neighbour inheriting them, beyond load?">
+
+Recovery speed. When a replacement must re-stream the dead node's data, it pulls small ranges from many peers in parallel instead of one huge range from one peer. Ten senders at a throttled rate each finish roughly ten times sooner than one sender, and no single survivor's disk is saturated by the rebuild.
+
+</Reveal>
+
+**Catch the trap:** "vnodes give perfect balance". They shrink the variance like 1/√V; they never remove it. You still monitor per-node load, and a hot *key* is not helped at all (Chapter 8).
+
+<h2 id="rendezvous">Chapter 5 · Everyone bids</h2>
+
+<Scene chapter="Chapter 5" title="Everyone bids">
+
+Theo has a different trick for small clusters, and he describes it like an auction. *"Every node bids on every key. The bid is a hash of the node's name and the key. Highest bid wins. No ring, no tokens."*
+
+You ask what happens when a bidder leaves. He smiles. *"Their keys go to whoever bid second. And the second-highest bidder is different for every key."*
+
+</Scene>
+
+**Rendezvous hashing** (highest random weight, Thaler and Ravishankar): for a key, compute `score = hash(node, key)` for every node and pick the node with the highest score.
+
+- **Adding a node:** a key moves only if the new node outbids the current winner, which happens for about **1/(N + 1)** of keys, all moving *to* the new node.
+- **Removing a node:** only its keys move, each to its own runner-up. Runners-up are independent per key, so the dead node's load **spreads evenly over every survivor, with no vnodes**.
+- **Cost:** a lookup computes N hashes, O(N). Trivial for 20 storage nodes or 50 proxies; too slow per request for 10,000 nodes (use a hierarchy: rendezvous over groups, then within a group).
+- **Replicas:** take the top 3 scores instead of the top 1.
+
+```java id=rendezvous group=partitioning
+/** Rendezvous (highest-random-weight) hashing: every node scores every key; the highest score owns it. */
+static final class Rendezvous {
+    private final List<String> nodes = new ArrayList<>();
+
+    void addNode(String node) { if (!nodes.contains(node)) nodes.add(node); }
+    void removeNode(String node) { nodes.remove(node); }
+
+    String nodeFor(String key) {
+        String best = null;
+        long bestScore = 0;
+        for (String node : nodes) {
+            long score = hash64(node + "|" + key);
+            if (best == null || score > bestScore || (score == bestScore && node.compareTo(best) < 0)) {
+                best = node;
+                bestScore = score;
+            }
+        }
+        if (best == null) throw new IllegalStateException("no nodes");
+        return best;
+    }
+}
+```
+
+The checker compares it with an independent "max by score" oracle and confirms the two properties: adding an 11th node moved **9.1%** of keys, all to the newcomer; removing a node sent its keys to all 10 survivors, each getting its share within 4%.
+
+<h2 id="slots">Chapter 6 · Sixteen thousand boxes</h2>
+
+<Scene chapter="Chapter 6" title="Sixteen thousand boxes" mood="dawn">
+
+Theo crosses out his ring and draws a long row of tiny boxes, numbered 0 to 16,383. *"Same idea, different bookkeeping,"* he says. *"Keys never change box. Boxes change owner."*
+
+</Scene>
+
+**Fixed slot maps** separate two mappings that mod N glued together:
+
+1. **key → slot**, with a fixed number of slots that never changes: `slot = hash(key) mod S`.
+2. **slot → node**, a small table that operators (or a balancer) change.
+
+Growing the cluster changes only the second table, and moves **whole slots**. This is the "pre-split into many fixed logical partitions" idea from the <a href={`${BASE}sd/lessons/databases/#sharding`}>databases lesson</a>.
+
+**Redis Cluster** uses **16,384 slots**: `slot = CRC16(key) mod 16384`. **Hash tags** make related keys share a slot: only the part inside the first `{…}` is hashed, so `{user:42}:cart` and `{user:42}:profile` land together and multi-key commands work on them. When a slot moves, Redis migrates its keys while clients keep working: the old owner answers `ASK` for keys already moved (a one-off redirect), and once the move completes, any node answers `MOVED` (update your map). The <a href={`${BASE}sd/lessons/caching/#clusters`}>caching lesson</a> covers the client side.
+
+**Worked numbers.** 3 primaries hold 5,461, 5,461 and 5,462 slots (16,384 = 3 × 5,461 + 1). Add a 4th and balance evenly: 16,384 ÷ 4 = **4,096 slots** each, so the newcomer takes 4,096 slots, **25% of keys**, the minimum. With 30 primaries, each holds about 546 slots; a 31st takes about 528, **3.2%** of keys.
+
+Other systems in the same family: **Kafka** fixes partitions per topic, and a key's partition is `hash(key) mod partitions`, which is why *adding partitions* to a keyed topic breaks per-key ordering for existing keys: that's mod N again. **Elasticsearch** fixes an index's primary shard count at creation for the same reason. The Dynamo paper's later strategy cuts the ring into Q equal partitions and assigns them to nodes, for simpler bootstrapping and archiving.
+
+| Scheme | Lookup | Add a node moves | A node dies | State to share | Pick when |
+|---|---|---|---|---|---|
+| **mod N** | O(1), no state | ~N/(N+1) of keys | ~90% remap | none | N never changes (or only doubles) |
+| **Ring + vnodes** | O(log T) | ~1/(N+1), from many peers | spread over all | the token list | Leaderless stores; elastic caches |
+| **Rendezvous** | O(N) hashes | ~1/(N+1) | spread evenly | the node list | Small node sets; proxy or replica choice |
+| **Fixed slots** | O(1) table | whole slots, chosen by a balancer | promote that slot's replica | slot → node table | Clusters with leaders per slot; explicit control |
+| **Ranges** (next) | O(log R) | split ranges | promote range replica | range → node table | Ordered scans |
+
+<Trace title="Pick the placement" steps={strategies} takeaway="Rendezvous for small node sets with no bookkeeping; fixed slots when you want explicit, movable units; ranges when the queries scan in order." />
+
+**Catch the trap:** "Redis Cluster uses consistent hashing." It uses a fixed slot map. The effect is the same (adding a node moves only its share), but the mechanism, and the follow-up questions about MOVED and ASK, are different.
+
+<h2 id="ranges">Chapter 7 · Cutting in order</h2>
+
+<Scene chapter="Chapter 7" title="Cutting in order">
+
+Kestrel's device-events team wants "every event from device 7 between nine and ten". On the hash ring that hour is scattered across thirty nodes. Theo draws a library shelf instead. *"A to F on this shelf, G to M on the next. When a shelf fills, you split it. When two get thin, you merge them."*
+
+</Scene>
+
+**Range partitioning** gives each partition a contiguous slice of the **sorted** key space. You lose the hash's even spread and gain **ordered scans**: "all of March" touches one or a few partitions instead of all of them. Bigtable (tablets), HBase (regions), Spanner and CockroachDB (splits and ranges) all work this way.
+
+- **Splits.** When a range grows past a size (say 10 GB) or gets too much traffic, it splits at a middle key into two ranges, and one can move to another node. Splitting is cheap: it's a metadata change, and data moves later or not at all.
+- **Merges.** Adjacent ranges that shrank (after deletes or TTLs) merge, so the map doesn't fill with empty slivers.
+- **Pre-splitting.** A brand-new table is one range on one node; bulk-loading it hammers that node until splits catch up. Pre-split at known boundaries before a big load.
+- **The hot tail.** With monotonically growing keys (timestamps, auto-increment ids) **every new write lands in the last range**. Splitting doesn't help: the new last range is just as hot.
 
 | | Hash | Range |
-|--|------|-------|
-| Load spread | uniform (hash randomizes) | can hotspot (today's writes all land in the newest range) |
-| Range scans | scatter-gather every node | one/few partitions ✅ |
-| Pick when | point lookups dominate (caches, KV) | time/ordered scans dominate (metrics, logs) |
+|---|---|---|
+| Load spread | Even, because the hash scrambles keys | Can hotspot: today's writes all land in the newest range |
+| Range scans | Scatter-gather to every node | One or a few partitions |
+| Rebalance unit | Arc, vnode or slot | Split or merge a range |
+| Pick when | Point lookups dominate (caches, KV) | Ordered scans dominate (metrics, logs, listings) |
 
-The hybrid worth knowing: **compound keys** — hash on a partition key, range-sort within it (`(user_id) → time`). "All of user 42's messages this week" = one partition, one ordered scan. This is literally Cassandra's data model and DynamoDB's PK/SK — one sentence connects three technologies.
+**Compound keys, the hybrid worth knowing.** Hash on a partition key, sort within it by a second key: `(device_id) → timestamp`. "Device 7's events this hour" is one partition and one ordered scan; different devices spread across the cluster. This is exactly Cassandra's partition key plus clustering columns and DynamoDB's partition key plus sort key. One sentence connects three technologies.
 
-## Hot partitions — the recurring disease
+<Reveal q="Metrics are range-partitioned by timestamp so dashboards can scan time windows. All writes hit the newest range. Fix it without losing the scans.">
 
-Every partitioning scheme has the same failure: one key/range takes disproportionate traffic (celebrity user, today's date, viral post). The toolkit, in escalation order:
+Prefix the time with a small hash bucket: key = `(hash(series) mod k, timestamp)`. Current writes spread over k ranges; a time-window read asks k partitions and merges, a fan-out you state out loud ("k = 16, so 16 parallel reads"). Pure hashing would spread writes and kill the scans you partitioned for. The time-series pattern lesson builds a metrics system on exactly this.
 
-1. **Better key** — compose it: `date` → `date#hash(user)%16` splits today's writes 16 ways (at the cost of 16 reads to reassemble — say the cost).
-2. **L1 cache** for hot *reads* (caching lesson's celebrity fix).
-3. **Split the hot partition** — good stores auto-split by load (Bigtable), or you add vnode weight.
+</Reveal>
 
-Note the rhyme: hot partition ≡ hot shard (databases) ≡ hot key (caches) ≡ hot Kafka partition. **One disease, four costumes** — diagnosing it fast on unseen problems is exactly the transfer skill this campaign trains.
+**Catch the trap:** choosing range partitioning for its scans and forgetting that the newest range is the hottest. Say the write pattern of your key before you choose.
 
-## Rebalancing operationally (one breath)
+<Part n="Part Two" title="When the load is not fair">
 
-Data doesn't teleport when the ring changes: the new owner **streams data from the old owner** while traffic continues (serve reads from old until cutover), throttled so the transfer doesn't eat production IO. Meanwhile replication (core-concepts lesson: each arc lives on the next R nodes clockwise → quorum reads/writes) keeps a node death survivable. That connects this lesson to Dynamo's whole design — the KV-store walkthrough composes exactly these pieces.
+Partitioning spreads keys. It does not spread popularity, and it does not move data by magic.
+
+</Part>
+
+<h2 id="hot-keys">Chapter 8 · One disease, four costumes</h2>
+
+<Scene chapter="Chapter 8" title="One disease, four costumes" mood="storm">
+
+A singer with forty million followers posts a photo. One Redis shard goes to 100% CPU while thirty-nine others idle. Iris asks why sharding didn't help. Dev asks whether they should add shards.
+
+Mara writes four words on the board — hot key, hot shard, hot partition, hot Kafka partition — and draws one circle around all of them. *"Same disease,"* she says. *"Different costumes."*
+
+</Scene>
+
+**Every partitioning scheme has the same failure: one key or range takes far more than its share.** A celebrity's profile. Today's date. A viral post's view counter. One tenant who is a hundred times bigger than the rest. Diagnosing it fast, in any costume, on any unseen problem, is the transfer skill this lesson trains.
+
+**Why more nodes don't help:** a key lives in exactly one partition (plus its replicas). Ten more shards spread *other* keys.
+
+The toolkit, in escalation order:
+
+| Fix | For | How | Cost |
+|---|---|---|---|
+| **Cache in front** | Hot reads | A tiny in-process cache (~1 s TTL) on every app server; Redis sees one read per server per second | Bounded staleness (<a href={`${BASE}sd/lessons/caching/#hot-keys`}>caching's celebrity chapter</a>) |
+| **Read from replicas** | Hot reads | Spread reads of that partition over all its replicas | Replica lag; only ×RF |
+| **Key replication** | Hot reads | Store copies `profile:42#0…#7` on different shards, read a random one | Writes must update all copies |
+| **Salting** | Hot writes | Split the key into sub-keys (`views:42#0…#15`), write to a random one | Reads sum all sub-keys, or a roll-up does |
+| **Better key** | Hot ranges | `date` → `date#hash(user) mod 16`: today's writes go 16 ways | 16 reads to reassemble: say the cost |
+| **Split the partition** | Hot ranges | Bigtable-style stores split by load as well as size | Doesn't help one single key |
+| **Isolate** | One giant tenant | Give the biggest tenants their own partitions or nodes, via a directory | A lookup table to run |
+
+**Worked numbers.** A celebrity profile at 400,000 reads/s against shards that serve about 100,000: with 200 app servers each holding a 1-second L1 copy, Redis sees about **200 reads/s** for that key. A view counter at 100,000 increments/s against a partition budget of 10,000 writes/s: salted 16 ways, each sub-key takes **6,250/s**, and the read pays 16 lookups (or a roll-up job writes the total every second).
+
+**Detect it, don't assume it.** Sample the top keys per node (Redis has tooling for this; most stores expose per-partition request rates), alert on a partition far above the median, and know which fix you'd apply before the singer posts.
+
+<Trace title="Spread the famous key" steps={hotKeys} takeaway="A hot key is concentration, not capacity. Cache or replicate hot reads; salt hot writes and pay at read time; isolate giant tenants." />
+
+**Catch the trap:** "add more shards" or "bigger instance" for a hot key. The first spreads other keys; the second raises the ceiling a little and spreads nothing.
+
+<h2 id="rebalancing">Chapter 9 · Moving house with the lights on</h2>
+
+<Scene chapter="Chapter 9" title="Moving house with the lights on" mood="dusk">
+
+The new storage node is racked and ready. Dev asks the obvious question: *"Do I just… add it?"*
+
+Theo tells him about the time someone did. The new node announced itself, every peer started streaming to it at full disk speed, and for forty minutes every read in the cluster was three times slower. *"Data doesn't teleport,"* he says. *"It moves at disk speed, while people are using it."*
+
+</Scene>
+
+When placement changes, **data must physically move while traffic continues**. Four rules make that safe:
+
+1. **Stream, don't stop.** The new owner pulls its ranges from the current owners in the background (bulk files where the engine allows, such as SSTables), while the current owners keep serving.
+2. **Throttle.** Movement is background work with a budget, so foreground latency holds.
+3. **One owner at a time.** The old owner stays authoritative until the new one has the bulk copy **plus** everything written during the copy (a change log, forwarded writes, or a final catch-up pass). Then ownership flips atomically: a new version of the partition map (an **epoch**), so stale clients and stale nodes can be told "you're behind".
+4. **Don't confuse a blip with a departure.** A node missing heartbeats during a GC pause is *temporarily* down: keep writing around it (Chapter 11's hinted handoff) and wait. Moving hundreds of GB for a 40-second pause adds load at the worst time and must then be undone. The Dynamo paper makes permanent membership changes an explicit administrator action for this reason.
+
+<Figure caption="Ownership handoff for one range moving from P to Q. Reads and writes stay on P until the epoch flips.">
+  <Mermaid code={`sequenceDiagram
+    participant M as Partition map
+    participant P as Old owner P
+    participant Q as New owner Q
+    participant C as Client
+    M->>Q: you will own range R (pending)
+    Q->>P: stream range R (throttled)
+    C->>P: write k in R
+    P->>Q: forward / log the change
+    Q-->>M: caught up
+    M->>M: epoch 41 → 42, R owned by Q
+    C->>P: write k (epoch 41 map)
+    P-->>C: moved: R is on Q, epoch 42
+    C->>Q: write k`} />
+</Figure>
+
+Redis Cluster's version of this: the slot is marked `MIGRATING` on the source and `IMPORTING` on the target; keys move a batch at a time; a client asking the source for a key already moved gets `ASK` and asks the target once; when the slot is done, the map changes and clients get `MOVED`. MongoDB's balancer moves chunks between shards on the same principle.
+
+**Worked numbers.** The 30-node store of Chapter 17 holds 6 TB (three replicas of 2 TB). A 31st node takes about 1/31 of it: **6 TB ÷ 31 ≈ 194 GB**. Throttled to 100 MB/s cluster-wide, that's 194,000 MB ÷ 100 MB/s ≈ **1,940 s, about 32 minutes**. Unthrottled at several GB/s it would finish faster and hurt every read for the duration. Plan the throttle from your latency budget, not from the disk's maximum.
+
+<Trace title="Move it safely" steps={rebalance} takeaway="Stream in the background, throttle it, keep one owner until the catch-up is done, flip with an epoch, and never rebalance on a transient failure." />
+
+**Catch the trap:** "the ring changes and the keys move". Say how: streamed, throttled, with one owner at a time, and say who decides that a node is gone for good.
+
+<Part n="Part Three" title="Copies that disagree">
+
+Each partition lives on several machines. Now they have to agree, or at least converge.
+
+</Part>
+
+<h2 id="replication">Chapter 10 · Three homes per key</h2>
+
+<Scene chapter="Chapter 10" title="Three homes per key" mood="dawn">
+
+Theo wants three copies of every cart. Iris wants the cart to accept an item even when a data centre is having a bad day. Mara writes two words, *leader* and *leaderless*, and asks which of them makes Iris's promise easier, and which makes Theo's life easier.
+
+</Scene>
+
+Partitioning chooses *which* data a node holds; replication chooses *how many* nodes hold each partition and *who orders the writes*. (Background: <a href={`${BASE}sd/lessons/core-concepts/#replication`}>core concepts, Copies</a> and <a href={`${BASE}sd/lessons/databases/#replication`}>databases, Leader and followers</a>.)
+
+**Where the replicas live.** On a ring, a key's **preference list** is the next N *distinct physical* nodes clockwise (skip further tokens of a node you already picked; the `preferenceList` method above does exactly that, and the checker verifies each entry against an oracle). In production, also skip nodes in a rack or availability zone you already used, so one zone outage never takes all copies. With slots or ranges, the partition map simply lists N nodes per partition.
+
+**Who orders writes: two families.**
+
+| | Leader per partition | Leaderless (Dynamo-style) |
+|---|---|---|
+| How | One replica of each partition is leader; all writes for it go through the leader, followers replay its log | Any replica (or a coordinator) sends the write to all N replicas; success after W acknowledge |
+| Ordering | One total order per partition | No single order; concurrent writes possible |
+| Compare-and-set, uniqueness | Easy: the leader decides | Hard: needs consensus or a lightweight transaction |
+| Leader dies | Partition unwritable until failover (seconds); with async replication, the tail can be lost | Nothing to fail over; writes continue to other replicas |
+| Examples | Redis Cluster (async), Kafka partitions, Spanner / CockroachDB (a consensus group per range), Amazon DynamoDB the service (per its 2022 paper) | Dynamo (the 2007 paper), Cassandra, Riak |
+| Pick when | You need per-key ordering or CAS; reads must be fresh from the leader | Writes must always be accepted (AP); conflicts can be merged |
+
+Note the name clash: **Dynamo**, the 2007 paper, is leaderless; **DynamoDB**, the AWS service, is described in its own 2022 paper as using a replication group per partition with a leader elected by Multi-Paxos. In an interview, "Dynamo-style" means the paper.
+
+**Leaders per partition spread the leadership.** With 1,000 partitions on 30 nodes, each node leads about 33 partitions and follows about 66 (at RF 3). There is no single "leader node" to overload, and a node failure triggers 33 small, independent failovers.
+
+<Trace title="Place the copies" steps={replicas} takeaway="Replicas are distinct physical nodes, in different zones. Leader per partition gives order and CAS; leaderless gives always-on writes and conflicts to merge." />
+
+**Catch the trap:** "replication factor 3" when two of the three tokens belong to one machine, or all three machines sit in one zone. Say *distinct nodes, distinct zones*.
+
+<h2 id="quorums">Chapter 11 · Two out of three</h2>
+
+<Scene chapter="Chapter 11" title="Two out of three" mood="storm">
+
+A switch in zone B flaps for twenty minutes. Half of zone B's nodes can't be reached; the other half can. Iris's carts keep working. Theo's dashboard shows a number he's never seen before climbing steadily: *hints stored*.
+
+*"The cart was never refused,"* Mara says. *"So where did the writes go?"*
+
+</Scene>
+
+In a leaderless store, each operation goes to the key's N replicas, and the client waits only for some of them:
+
+- **W** = acknowledgements needed for a write to succeed.
+- **R** = replies needed for a read; the read returns the newest version among them (and reconciles, Chapter 12).
+- **If W + R > N, every read set overlaps every write set** in at least one replica, so a read that starts after a write completes sees it. (The full table of N/W/R shapes lives in <a href={`${BASE}sd/lessons/core-concepts/#replication`}>core concepts</a>.)
+
+**Latency is the hidden win.** A quorum waits for the **W-th fastest** reply. With replicas answering in 2 ms, 3 ms and 40 ms (one in a GC pause), a W = 2 write returns in **3 ms**; the slow replica still receives the write. Quorums cut tail latency as well as surviving failures.
+
+**Sloppy quorum and hinted handoff.** What if two of the N home replicas are unreachable? A **strict** quorum fails the write. A **sloppy** quorum (Dynamo's choice, for always-writable carts) writes to the first W *healthy* nodes further along the ring, even if they aren't home replicas. A stand-in stores the write with a **hint**: "this belongs to A". When A comes back, the stand-in **hands off** the write and deletes its copy.
+
+<Figure caption="Sloppy quorum: A and B are unreachable; the write lands on C and on stand-in D, which holds a hint for A and delivers it when A returns.">
+  <Mermaid code={`sequenceDiagram
+    participant Co as Coordinator
+    participant A as A (home, down)
+    participant B as B (home, down)
+    participant C as C (home)
+    participant D as D (stand-in)
+    Co-xA: put k (timeout)
+    Co-xB: put k (timeout)
+    Co->>C: put k
+    Co->>D: put k, hint: for A
+    C-->>Co: ack
+    D-->>Co: ack (W = 2 met)
+    Note over A,D: later, A is back
+    D->>A: hinted handoff: k
+    A-->>D: ack, D drops its copy`} />
+</Figure>
+
+**The catch, which interviewers love:** with a sloppy quorum, the W acknowledgements may come from outside the home set, so **W + R > N no longer guarantees overlap**. A reader that reaches A and B (back up, but before handoff) gets R = 2 replies without the new value. Sloppy quorums trade the overlap guarantee for write availability. And hints are kept only for a window (Cassandra's default is three hours; check current docs); a node down longer needs full repair (Chapter 13).
+
+**Read repair.** When a read sees replicas disagree, the coordinator writes the newest version back to the stale ones. It fixes hot keys quickly and does nothing for keys nobody reads.
+
+<Trace title="Count to a quorum" steps={quorums} takeaway="W + R > N overlaps reads and writes. Quorums wait for the W-th fastest reply. Sloppy quorums keep writes flowing and give up the overlap guarantee until hinted handoff finishes." />
+
+<Reveal q="Does W + R > N make the store linearizable?">
+
+No, and saying so is a senior signal. Sloppy quorums break the overlap; concurrent writes resolved by timestamps lose one write; a write that failed overall may have landed on some replicas, so later reads disagree; and without care in read repair, one reader can see the new value while a later reader sees the old. Quorums give a strong *overlap* guarantee. Linearizability needs a leader with consensus, or careful quorum read-repair rules (<a href={`${BASE}sd/lessons/core-concepts/#consistency`}>the consistency ladder</a>).
+
+</Reveal>
+
+**Catch the trap:** quoting W + R > N while also using sloppy quorums, as if both held at once. Say which one you chose, and why the product needs it.
+
+<h2 id="conflicts">Chapter 12 · The lamp that vanished</h2>
+
+<Scene chapter="Chapter 12" title="The lamp that vanished" mood="night">
+
+A support ticket from a Kestrel Market buyer: *"I added a lamp on my phone and a rug on my laptop, a second apart. The cart has the rug. Where is my lamp?"*
+
+Theo pulls the logs. Both writes were acknowledged. Both had timestamps. The store kept the one with the later timestamp, as configured, and threw the other away without telling anyone.
+
+*"It did what we asked,"* he says. *"We asked for the wrong thing."*
+
+</Scene>
+
+Leaderless writes can be **concurrent**: neither saw the other. The store must decide what to keep.
+
+**Last-write-wins (LWW).** Stamp each write with a timestamp; keep the highest. Cheap, built into Cassandra, and it **silently loses data**:
+
+- Two read-modify-writes from the same starting cart (`{mug}` → `{mug, lamp}` and `{mug}` → `{mug, rug}`): LWW keeps one whole value. The lamp is gone, with perfect clocks.
+- With **clock skew**, the *earlier* write can carry the later timestamp and win. Node clocks drift by milliseconds or more.
+
+LWW is honest when the newest value genuinely supersedes the old: a presence status, a last-seen time, a settings toggle, an immutable value written once. Say *"LWW is fine here because losing the older write is the correct behaviour"*, or don't use it. The <a href={`${BASE}sd/lessons/pattern-sync-collab/`}>sync and collaboration lesson</a> goes deeper on conflict strategies.
+
+**Version vectors (Dynamo called them vector clocks).** Each value carries a map from replica to counter: how many writes coordinated by each replica this version has seen. Compare two vectors counter by counter:
+
+- every counter ≤ the other's, and they differ → **before** (the other one supersedes it; discard);
+- each side is ahead somewhere → **concurrent**: keep **both** as *siblings* and reconcile.
+
+**Worked example: the lamp, saved.**
+
+| Step | What happens | Vector |
+|---|---|---|
+| 1 | Replica A coordinates "create cart `{mug}`" | `{A:1}` |
+| 2 | A coordinates "add bowl" | `{A:2}` |
+| 3 | The phone, having read `{A:2}`, adds a lamp via replica B | `{A:2, B:1}` |
+| 4 | The laptop, also having read `{A:2}`, adds a rug via replica C | `{A:2, C:1}` |
+| 5 | A read finds both: B:1 vs 0 and C:0 vs 1 → **concurrent** | two siblings |
+| 6 | The client merges the carts (union), writes through A with the merged context | `{A:3, B:1, C:1}` |
+
+Step 6's vector is the element-wise max `{A:2, B:1, C:1}`, then A increments its own counter. It dominates both siblings, so they can be dropped. The Dynamo paper's shopping cart worked exactly this way, with one known wrinkle: a union merge can resurrect an item that was deleted on one side. The checker replays this table step by step and tests the comparison on 3,000 random vector pairs against an oracle.
+
+```java id=versions group=partitioning
+enum Order { BEFORE, AFTER, EQUAL, CONCURRENT }
+
+/** A version vector: one counter per replica that coordinated a write. Immutable. */
+static final class VersionVector {
+    private final TreeMap<String, Long> counters;
+
+    VersionVector() { this(new TreeMap<>()); }
+    private VersionVector(TreeMap<String, Long> counters) { this.counters = counters; }
+
+    /** The vector a replica stamps on a new write that it coordinates. */
+    VersionVector increment(String replica) {
+        TreeMap<String, Long> next = new TreeMap<>(counters);
+        next.merge(replica, 1L, Long::sum);
+        return new VersionVector(next);
+    }
+
+    /** Element-wise max: the vector of a value that has seen everything both sides saw. */
+    VersionVector merge(VersionVector other) {
+        TreeMap<String, Long> next = new TreeMap<>(counters);
+        other.counters.forEach((r, c) -> next.merge(r, c, Math::max));
+        return new VersionVector(next);
+    }
+
+    /** BEFORE: every counter here is <= other's and they differ. CONCURRENT: each side has something the other lacks. */
+    Order compare(VersionVector other) {
+        boolean less = false, greater = false;
+        Set<String> all = new TreeSet<>(counters.keySet());
+        all.addAll(other.counters.keySet());
+        for (String r : all) {
+            long a = counters.getOrDefault(r, 0L), b = other.counters.getOrDefault(r, 0L);
+            if (a < b) less = true;
+            if (a > b) greater = true;
+        }
+        if (less && greater) return Order.CONCURRENT;
+        if (less) return Order.BEFORE;
+        if (greater) return Order.AFTER;
+        return Order.EQUAL;
+    }
+
+    long get(String replica) { return counters.getOrDefault(replica, 0L); }
+
+    @Override public String toString() { return counters.toString(); }
+}
+```
+
+**Practical notes.** Vectors grow with the number of coordinating replicas; Dynamo truncated the oldest entries past a threshold (10 in the paper), accepting rare false "concurrent" verdicts. The client must send back the **context** (the vector it read) with its write, which is why Dynamo's API is `get(key) → (values, context)` and `put(key, context, value)`. Riak later refined this into *dotted* version vectors to avoid sibling explosion.
+
+**The third option: CRDTs.** Instead of keeping siblings for a human or app to merge, choose data types whose merge is automatic and order-independent: a counter that sums per-replica counts, a set with add-wins semantics. Chapter 20 builds a counter; the <a href={`${BASE}sd/lessons/pattern-sync-collab/`}>sync and collaboration lesson</a> covers the family.
+
+<Trace title="Who wins?" steps={conflicts} takeaway="LWW silently drops concurrent writes. Version vectors detect concurrency; siblings plus a merge keep both. CRDTs make the merge automatic." />
+
+**Catch the trap:** "we'll resolve conflicts with timestamps" for anything users add to. Say what is lost, or say version vectors.
+
+<h2 id="anti-entropy">Chapter 13 · Comparing without copying</h2>
+
+<Scene chapter="Chapter 13" title="Comparing without copying" mood="dusk">
+
+Node 14 was down for six hours, past the hint window. It's back, and it's missing some writes. Nobody knows which. Dev proposes copying all 400 GB from a peer to be safe.
+
+Theo shakes his head. *"Most of it is already identical. Find out which parts aren't, and copy those."* He draws a tree of hashes.
+
+</Scene>
+
+**Anti-entropy** is the background process that makes replicas converge for *all* keys, not just the ones read (read repair) or written during a short outage (hinted handoff). Comparing two replicas key by key means shipping every key; a **Merkle tree** ships hashes instead.
+
+**How it works.** Each replica hashes its keys into a fixed number of **buckets** for a key range. Each bucket's hash covers its keys and values. Each parent's hash covers its two children. Two replicas compare **roots**: equal means the whole range agrees. Otherwise they compare the two children and **descend only into subtrees whose hashes differ**. At the leaves, they exchange just the keys in differing buckets.
+
+<Figure caption="Eight buckets, one differing key (in bucket 5). Seven comparisons: the root, then both children at each level along the path. Grey subtrees matched and were never opened.">
+  <Mermaid code={`flowchart TD
+    R["root ≠"] --> L["0–3 ="]
+    R --> RR["4–7 ≠"]
+    L -.- L1["(skipped)"]
+    RR --> A["4–5 ≠"]
+    RR --> B["6–7 ="]
+    A --> B4["bucket 4 ="]
+    A --> B5["bucket 5 ≠\nexchange its keys"]
+    style R fill:#f85149,color:#0d1117
+    style RR fill:#f85149,color:#0d1117
+    style A fill:#f85149,color:#0d1117
+    style B5 fill:#e3b341,color:#0d1117
+    style L fill:#3fb950,color:#0d1117
+    style B fill:#3fb950,color:#0d1117
+    style B4 fill:#3fb950,color:#0d1117`} />
+</Figure>
+
+**Worked numbers.** With 2^d buckets and one differing key, the walk does **1 + 2d** comparisons: the root, then two children at each of d levels. Eight buckets (d = 3): **7**. About a million buckets (d = 20): **41**, instead of 1,048,576 bucket comparisons, and then only one bucket's keys cross the network. When many buckets differ, the walk opens more of the tree, never more than its 2^(d+1) − 1 nodes. The checker counts exactly 7 and 41, and compares the diff with a bucket-by-bucket oracle on 1,000 random replica pairs.
+
+```java id=merkle group=partitioning
+/** A Merkle tree over a fixed number of key buckets (a power of two). Leaves hash their bucket; parents hash children. */
+static final class MerkleTree {
+    final int buckets;
+    final long[] tree;            // heap layout: tree[1] is the root, children of i are 2i and 2i+1, leaves at buckets..2*buckets-1
+
+    MerkleTree(Map<String, String> data, int buckets) {
+        if (buckets < 1 || Integer.bitCount(buckets) != 1) throw new IllegalArgumentException("buckets must be a power of two");
+        this.buckets = buckets;
+        List<List<String>> rows = new ArrayList<>();
+        for (int b = 0; b < buckets; b++) rows.add(new ArrayList<>());
+        for (Map.Entry<String, String> e : new TreeMap<>(data).entrySet())        // sorted: same data, same hash
+            rows.get(bucketOf(e.getKey(), buckets)).add(e.getKey() + "=" + e.getValue());
+        tree = new long[2 * buckets];
+        for (int b = 0; b < buckets; b++) tree[buckets + b] = hash64(String.join("\n", rows.get(b)));
+        for (int i = buckets - 1; i >= 1; i--) tree[i] = hash64(tree[2 * i] + ":" + tree[2 * i + 1]);
+    }
+
+    static int bucketOf(String key, int buckets) { return (int) Long.remainderUnsigned(hash64(key), buckets); }
+
+    /** Walk both trees from the root, descending only where hashes differ. Returns the differing buckets. */
+    List<Integer> diff(MerkleTree other, int[] comparisons) {
+        if (other.buckets != buckets) throw new IllegalArgumentException("trees must have the same shape");
+        List<Integer> out = new ArrayList<>();
+        ArrayDeque<Integer> todo = new ArrayDeque<>(List.of(1));
+        while (!todo.isEmpty()) {
+            int i = todo.poll();
+            comparisons[0]++;
+            if (tree[i] == other.tree[i]) continue;              // whole subtree agrees: skip it
+            if (i >= buckets) out.add(i - buckets);              // a leaf: this bucket's keys must be exchanged
+            else { todo.add(2 * i); todo.add(2 * i + 1); }
+        }
+        Collections.sort(out);
+        return out;
+    }
+}
+```
+
+**In real stores.** Trees are kept per key range (per vnode range or partition), because two replicas only share ranges, not whole node contents. Building a tree means reading the range, so repair is scheduled and throttled like streaming. Cassandra runs it as `nodetool repair`; operators schedule it on a cadence.
+
+**The three repair paths, together:** **hinted handoff** for short outages, **read repair** for keys that are read, **Merkle anti-entropy** for everything else. Name all three when asked "how do replicas converge?"
+
+<Trace title="Walk the tree" steps={merkle} takeaway="Compare roots; descend only where hashes differ; exchange only differing buckets. Comparisons grow with depth, about 1 + 2d for one difference." />
+
+**Catch the trap:** "replicas sync in the background" with no mechanism. Say Merkle trees per range, and say what read repair and hints already cover.
+
+<h2 id="gossip">Chapter 14 · Rumours and suspicion</h2>
+
+<Scene chapter="Chapter 14" title="Rumours and suspicion" mood="night">
+
+With thirty nodes, Dev wonders aloud who keeps the list of which nodes exist and which are alive. *"A central registry?"* Theo asks back: *"And when the registry is the thing that's down?"*
+
+Mara writes two words. *Gossip* for who exists. *Suspicion* for who's alive. *"Neither is a fact,"* she says. *"Both are good enough."*
+
+</Scene>
+
+**Gossip membership.** Each node keeps a table of every node it knows about: address, tokens, status, and a heartbeat counter it increments for itself. Every second, each node picks a random peer and they exchange tables, keeping the newer entry for each node. Information spreads like a rumour.
+
+**Worked numbers.** With **push** gossip (each informed node tells one random peer per round), a fact reaches all of N nodes in about **log₂ N + ln N** rounds: the informed set roughly doubles until most know, then a few more rounds catch the stragglers. For 1,000 nodes that's 10 + 7 ≈ **17 rounds**; a simulation averaged 18. **Push-pull** (both sides exchange) about halves it: about 9 rounds in the same simulation. At one round per second, membership news crosses a 1,000-node cluster in under 20 seconds, with no central server and every node sending one message a second. Dynamo and Cassandra gossip membership and token ownership this way; seed nodes help new nodes join and prevent the cluster splitting into islands.
+
+**Failure detection: suspicion, not proof.** A fixed timeout ("dead after 3 missed heartbeats") is wrong on both sides: too short convicts every GC pause, too long leaves real failures unnoticed. The <a href={`${BASE}sd/lessons/core-concepts/#liveness`}>core concepts lesson</a> covers why you can't tell dead from slow. **Phi-accrual detection** (Hayashibara and colleagues) outputs a *suspicion level* instead of a verdict:
+
+- Keep the recent history of heartbeat inter-arrival times.
+- For the current silence, compute **φ = −log₁₀(probability that a live node would be this late)**. φ = 1 means a 10% chance it's just late; φ = 2, 1%; φ = 3, 0.1%.
+- Each consumer picks its own threshold.
+
+**Worked numbers.** Model gaps as exponential with mean m (a simplification Cassandra uses): P(silence > t) = e^(−t/m), so **φ = 0.434 × t/m**. With 1-second heartbeats, 5 s of silence gives φ ≈ 2.2. Cassandra's default conviction threshold is **φ = 8** (check current docs), reached at t = 8 ÷ 0.434 ≈ **18.4 seconds** of silence. The adaptive part: when the network gets jittery, observed gaps grow, the mean grows, and the conviction deadline stretches by itself instead of a fixed timeout firing on every blip.
+
+<Trace title="Spread the word" steps={gossip} takeaway="Gossip spreads membership in about log₂ N + ln N rounds with no centre. Phi accrual turns silence into a suspicion level that adapts to the network." />
+
+<Reveal q="Gossip says node 7 is down. Does that trigger re-replication of node 7's data?">
+
+No. "Down" in gossip means *route around it*: coordinators stop sending to it, sloppy quorums use stand-ins, hints accumulate. Permanent removal (and streaming its ranges elsewhere) is a separate, deliberate decision, usually an operator's, because a transient failure that triggers hundreds of GB of movement makes the outage worse. Chapter 9's fourth rule.
+
+</Reveal>
+
+**Catch the trap:** "a heartbeat with a timeout" as the whole failure-detection story. Say suspicion, say adaptive, and say that "suspected down" is not "removed".
+
+<Part n="Part Four" title="The machine around the keys">
+
+How a request finds its node, what that node writes to disk, and how many nodes you need.
+
+</Part>
+
+<h2 id="routing">Chapter 15 · Who knows the map?</h2>
+
+<Scene chapter="Chapter 15" title="Who knows the map?">
+
+A request arrives for `cart:9913`. Somebody has to know which node owns it. Mara asks the room who that somebody should be: the client, a box in the middle, or whichever node the request happens to hit. Three engineers give three answers. All three are used in production.
+
+</Scene>
+
+| Routing | How | Hops | Strengths | Costs |
+|---|---|---|---|---|
+| **Partition-aware client** | The client library caches the partition map and goes straight to the owner; a wrong guess gets a redirect (`MOVED`) and a map refresh | 1 | Lowest latency; no middle tier | Fat clients in every language; map staleness handled by redirects |
+| **Proxy / router tier** | Clients talk to a stateless proxy that knows the map (twemproxy and mcrouter for caches, MongoDB's mongos) | 2 | Dumb clients; one place to change routing, pool connections, add metrics | One more hop and one more tier to scale and keep available |
+| **Any-node coordinator** | Client hits any node (often via a load balancer); that node coordinates the request with the owners (Dynamo, Cassandra) | 1–2 | Simple clients, no extra tier; every node knows the ring via gossip | Usually one extra internal hop; coordinators carry fan-out load |
+
+**Where the map lives.** Either in a strongly consistent coordination store (ZooKeeper or etcd: HBase, Kafka's older controllers, many sharded SQL setups), with clients watching for changes, or **gossiped** among nodes (Dynamo, Cassandra, Redis Cluster's cluster bus). Coordination stores give one authoritative map with epochs; gossip avoids a dependency and converges in seconds. Either way, **version the map** so a node can say "you're behind" instead of silently serving the wrong range.
+
+**Token-aware load balancing** combines the first and third: Cassandra drivers can pick a replica of the key as the coordinator, removing the extra hop.
+
+<Trace title="Find the owner" steps={routing} takeaway="Smart clients for one hop; proxies for dumb clients; any-node coordinators for simplicity. MOVED updates the map; ASK doesn't." />
+
+**Catch the trap:** drawing a "router" box and moving on. Say where its map comes from, how it learns of changes, and what happens when it's stale.
+
+<h2 id="storage-engine">Chapter 16 · What each node writes</h2>
+
+<Scene chapter="Chapter 16" title="What each node writes" mood="dawn">
+
+Each node in the cart store takes thirty thousand small writes a second, all over its key space. Theo shows a graph of the disk under a B-tree prototype: pinned. Under an LSM prototype: a calm line with occasional humps. *"The humps are compaction,"* he says. *"We pay later, in big sequential gulps."*
+
+</Scene>
+
+Dynamo-style stores almost always sit on an **LSM-tree** (Cassandra, ScyllaDB, RocksDB-backed stores; Dynamo itself had pluggable engines). The full comparison with B-trees is in the <a href={`${BASE}sd/lessons/databases/#storage-engines`}>databases lesson</a>; the recap:
+
+1. A write appends to a **commit log** (durability) and inserts into the **memtable** (sorted, in memory). Sequential I/O only.
+2. A full memtable is flushed as an immutable sorted file, an **SSTable**.
+3. **Compaction** merges SSTables in the background, keeping the newest version of each key.
+4. A read checks the memtable, then SSTables newest first; a **Bloom filter** per SSTable skips files that definitely don't hold the key.
+
+**Three ways the engine meets this lesson:**
+
+- **Streaming is cheap.** SSTables are immutable sorted files, so rebalancing can ship whole files (or slices) instead of re-inserting rows.
+- **Deletes are tombstones**, which compaction eventually purges. If a replica missed the delete and repair doesn't run before the tombstone is purged, the next repair sees the old value on the lagging replica, treats it as missing elsewhere, and copies it everywhere: **zombie data**. Rule: run full repair more often than tombstones are kept (Cassandra's `gc_grace_seconds`, ten days by default).
+- **LWW timestamps live here.** Compaction keeps the version with the highest timestamp, so LWW is the engine's natural merge, which is exactly why it's the default and why Chapter 12 matters.
+
+**Worked numbers.** In Chapter 17's cluster, each node holds 2 billion × 3 ÷ 30 = **200 million** items. Bloom filters at about 10 bits per key give about a 1% false-positive rate: 200 million × 10 bits = **250 MB of memory per node**, which is why Bloom-filter memory belongs in node sizing.
+
+<Trace title="Write it down" steps={storage} takeaway="LSM engines turn random writes into appends and pay in compaction. Tombstones must outlive the repair interval, or deleted data comes back." />
+
+<h2 id="sizing">Chapter 17 · The whiteboard sweep</h2>
+
+<Scene chapter="Chapter 17" title="The whiteboard sweep" mood="dusk">
+
+Mara gives you the marker and five minutes. *"Two billion carts and settings, a kilobyte each. Two hundred thousand reads a second, fifty thousand writes. Three replicas. How many machines, and which number decided it?"*
+
+</Scene>
+
+**Assumptions:** 2 billion items × 1 KB; peak 200,000 reads/s at R = 2 and 50,000 writes/s at N = 3 (every replica receives every write; W only says how many we wait for); disks kept under 50% full for compaction headroom; a node comfortably serves about **20,000 replica operations per second** (an assumption: benchmark your engine and hardware); 2 TB disks.
+
+| Quantity | Arithmetic | Result |
+|---|---|---|
+| Raw data | 2 × 10⁹ × 1 KB | 2 TB |
+| With 3 replicas | 2 TB × 3 | 6 TB |
+| Disk with 50% headroom | 6 TB × 2 | 12 TB |
+| Nodes for capacity | 12 TB ÷ 2 TB | **6** |
+| Replica reads/s | 200,000 × 2 | 400,000 |
+| Replica writes/s | 50,000 × 3 | 150,000 |
+| Nodes for throughput | 550,000 ÷ 20,000 | 27.5 → **about 28–30** |
+| Data per node at 30 nodes | 12 TB ÷ 30 | 400 GB of disk |
+| Items per node | 2 × 10⁹ × 3 ÷ 30 | 200 million |
+| Adding a 31st node moves | 6 TB ÷ 31 | ≈ 194 GB (≈ 32 min at 100 MB/s) |
+
+**Throughput, not capacity, sets the node count**: the data fits on 6 nodes; the request rate needs about 30. Say that sentence. Then partitions: 30 nodes × 16 vnodes = 480 tokens (or, with a slot map, a few thousand fixed partitions so each node holds dozens and moves are fine-grained).
+
+<Trace title="Size the cluster" steps={sizing} takeaway="Count replica operations, not client requests. Compute both the capacity floor and the throughput floor; the larger one wins, and say which it was." />
+
+**Catch the trap:** sizing only by storage. A store that fits on 6 nodes but needs 30 for throughput is the common case, and the interviewer wants to hear you notice.
+
+<Part n="Part Five" title="Two rounds on the clock">
+
+Everything above, used in the order the interview asks for it. Read each round aloud with a timer.
+
+</Part>
+
+<h2 id="cache-round">Chapter 18 · Design a distributed cache</h2>
+
+<Scene chapter="Chapter 18" title="Design Redis" mood="night">
+
+Friday. Mara sets the phone face-down. *"Design a distributed in-memory cache. Like Redis or Memcached. I won't help you."*
+
+You write the four checkpoints in the corner — **9 · 15 · 25 · 38** — and pick up the marker. This is the weekend mock your notes have been pointing at for a month.
+
+</Scene>
+
+A 45-minute round using the <a href={`${BASE}sd/lessons/delivery-framework/`}>delivery framework</a> budget: intro 3, requirements 6, entities 2, API 4, high-level 10, deep dives 13, wrap-up 3, questions 4.
+
+**0:03 · Roadmap and requirements**
+
+> **You:** "About six minutes on requirements and scale, a couple on entities and API, a simple design that works, then two or three deep dives, and a short wrap-up. Estimates up front or as needed?"
+>
+> **Interviewer:** "As needed."
+>
+> **You:** "One question shapes everything: is this a pure cache — every value can be rebuilt from a source of truth, so losing recent writes on a failure is acceptable — or something teams rely on to keep data?"
+>
+> **Interviewer:** "A cache."
+>
+> **You:** "Then functional: get, set with an optional TTL, delete, and an atomic increment for counters. Values are opaque bytes up to, say, 1 MB. Clients are our own services. Out of scope: rich data structures, pub/sub, persistence beyond optional warm restarts, cross-region replication. Tell me if you want any of those."
+
+**0:06 · Non-functionals with numbers**
+
+> **You:** "Target 2 million operations a second at peak, 90% reads, p99 under 1 ms inside a data centre. About a billion keys at 1 KB average: 1 TB of values, plus per-key overhead — call it 1.1 TB. Highly available: losing a node must not cold-start a big slice of the cache, because the databases behind it can't take the misses. Consistency: eventual; a failover may lose the last moments of writes."
+>
+> "Two numbers decide things. At 50 GB usable per node, capacity needs 22 primaries. At about 100,000 simple operations a second per primary, kept at 70%, throughput needs 2 million ÷ 70,000 ≈ 29 — call it 30 primaries, each with a replica. Throughput wins. Network is easy: 2 million × 1 KB is 2 GB/s across 30 nodes, about half a gigabit each."
+
+**0:09 · Core entities**
+
+> **You:** "Entry: key, value, expiry, and access metadata for eviction. Slot: one of a fixed 16,384. Node: a primary or a replica, owning a set of slots. And the slot map: slot to primary and replicas, with an epoch number. The slot map is the interesting entity — it's the only thing that changes when we scale."
+
+**0:11 · API**
+
+> **You:** "Client library calls: get(key) returns bytes or a miss; set(key, value, ttl); delete(key); incr(key, delta) returns the new value. On the wire, a simple binary protocol over long-lived TCP connections. Errors the client must handle: MOVED, meaning update your slot map; ASK, meaning try this other node once; and timeouts, which the application treats as a miss."
+
+**0:15 · High-level design**
+
+> **You:** "Keys map to slots by CRC16 mod 16,384 — fixed forever. Slots map to 30 primaries, about 546 each. A smart client library holds the slot map and talks directly to the owning primary: one hop. Each primary has a replica in another zone, fed asynchronously. Inside a node: one hash table, an event loop, values in memory, a per-node memory limit with eviction. The slot map lives in the cluster itself and is gossiped, with epochs so stale maps are detected; a coordination store like etcd would also work."
+>
+> "A get: client hashes the key, finds slot 3999, sends to that primary, gets the value. Wrong primary because the map is stale: the node replies MOVED with the right address; the client updates its map and retries."
+
+**0:25 · Deep dive 1 — partitioning and resharding**
+
+> **You:** "Why slots and not mod N: going from 30 to 31 primaries with mod N would move 30/31 — 97% — of keys: a cold cache and a database stampede. With slots, the 31st primary takes about 528 slots, 3.2% of keys. Moving a slot: mark it migrating on the source and importing on the target, move keys in throttled batches; a client asking the source for a key already moved gets ASK and asks the target once; when the slot is done the map's epoch advances and everyone gets MOVED. Related keys that need multi-key operations share a hash tag — the braces in `{user:42}:cart` — so they share a slot."
+
+**0:30 · Deep dive 2 — memory, eviction and hot keys**
+
+> **You:** "Each node evicts when full. Approximate LRU by sampling — pick a few random keys, evict the least recently used — so we don't keep a linked list across a billion keys; LFU if scans pollute the cache. Expiry is lazy on access plus a periodic sampler, so expired keys don't sit in memory. The other memory problem is popularity. One celebrity key at 400,000 reads a second exceeds any single primary, and more shards don't help: one key, one slot. The client library gets an optional L1: a tiny in-process cache with a 1-second TTL for keys flagged hot, so 200 app servers send about 200 reads a second for it. Hot writes, like a counter, get salted into sub-keys."
+
+**0:34 · Deep dive 3 — replication and failover**
+
+> **You:** "Replicas are async, so a write is acknowledged after the primary has it. When a primary stops answering, a majority of the other primaries must agree it has failed; its replica then wins an election among them and is promoted with a new, higher epoch. A cache accepts losing the last moments of writes; I'd say that explicitly. The epoch fences the old primary if it comes back. While a slot's primary is gone, reads for those slots can be served by the replica if the caller accepts staleness. And the thing I'd watch: if a whole zone fails, 30 replicas promote at once — the remaining zone must have headroom, which is why we run at 70%."
+
+**0:38 · Wrap-up**
+
+> **You:** "Recap: a 30-primary cluster, 16,384 slots, smart clients, async replicas in another zone, sampled eviction, hot-key L1. At 10× scale the first limits are per-primary operations — more primaries, which slots make cheap — and the slot map's gossip traffic. I'd monitor hit ratio, per-slot ops to find hot keys, eviction rate, replica lag, and memory fragmentation. Next: optional snapshotting for warm restarts, and cross-region invalidation if we go multi-region."
+
+**0:41.** Mara turns the phone over. *"You said 'throughput wins' before I asked,"* she says. *"Keep that."*
+
+**Check the numbers yourself:** 1.1 TB ÷ 50 GB = 22. 2,000,000 ÷ (100,000 × 0.7) ≈ 28.6 → 30. 16,384 ÷ 30 ≈ 546; 16,384 ÷ 31 ≈ 528 (3.2%). 2,000,000 × 1 KB = 2 GB/s = 16 Gbit/s, ÷ 30 ≈ 0.53 Gbit/s. mod N 30 → 31 moves 30/31 ≈ 97%.
+
+<Trace title="The cache round" steps={cacheRound} takeaway="Ask cache-or-store first. Then size both ways, and let throughput set the node count." />
+
+<h2 id="kv-round">Chapter 19 · Design a key-value store</h2>
+
+<Scene chapter="Chapter 19" title="Design Dynamo" mood="storm">
+
+A week later, a sixty-minute slot. Mara reads the prompt flatly: *"Design a distributed key-value store."* Then, in Iris's voice: *"Oh, and also. It holds shopping carts. It must never refuse an add-to-cart."*
+
+You write **12 · 20 · 32 · 52** in the corner.
+
+</Scene>
+
+A 60-minute round: intro 5, requirements 7, entities 3, API 5, high-level 12, deep dives 20, wrap-up 3, questions 5.
+
+**0:05 · Requirements**
+
+> **You:** "Functional: put a value for a key, get it, delete it. Keys are strings up to a few hundred bytes, values opaque up to about 1 MB, typically 1 KB. No range queries or secondary indexes — tell me if you want them, because they'd change partitioning. Non-functional: always writable, even during a zone outage — that makes this an AP system with conflicts to handle; single-digit-millisecond p99 within a region; tunable consistency per request; durable — an acknowledged write survives a node loss."
+>
+> "Scale: 2 billion items, 2 TB raw. Peak 200,000 reads and 50,000 writes a second. Three replicas across three zones."
+
+**0:12 · Core entities**
+
+> **You:** "Item: key, value, version vector. Node, with its tokens on the ring. A key's preference list: three distinct nodes in three zones. A hint: a write held for a node that's down. And per key range, a Merkle tree for repair."
+
+**0:15 · API**
+
+> **You:** "get(key, consistency) returns a list of values plus an opaque context — a list because concurrent versions can exist. put(key, value, context, consistency): the context is the version vector the writer read, so the store knows what this write supersedes. delete is a put of a tombstone. Consistency levels: ONE, QUORUM, ALL — default QUORUM. Over HTTP: GET and PUT on `/kv/{key}`, context in a header."
+
+**0:20 · High-level design**
+
+> **You:** "No master. Every node is equal. Keys and nodes sit on a consistent-hash ring with vnodes — 16 to 256 tokens per node — so load is even, a dead node's work spreads over everyone, and bigger machines get more tokens. A request reaches any node through a load balancer, or a token-aware client picks a replica directly; that node coordinates. It finds the key's preference list — the next three distinct nodes clockwise, one per zone — sends to all three, and waits for W = 2 acks on writes, R = 2 replies on reads. Two plus two is more than three, so normal reads overlap the latest write. Each node stores data in an LSM engine: commit log, memtable, SSTables, Bloom filters. Membership travels by gossip."
+>
+> "Sizing: 6 TB with replicas, 12 TB of disk with compaction headroom — six nodes for capacity. But 400,000 replica reads plus 150,000 replica writes is 550,000 operations a second; at 20,000 per node that's about 30 nodes. Throughput sets the count; each holds about 400 GB."
+
+**0:32 · Deep dive 1 — partitioning and replication**
+
+> **You:** "Adding a 31st node takes about 1/31 of the data, 194 GB, streamed as SSTable slices from many peers in parallel, throttled to about 100 MB/s cluster-wide — about half an hour — with old owners serving until the new one catches up. Removing a node is an explicit operator action, never a reaction to a timeout. Without vnodes, one neighbour would inherit a dead node's whole arc; with 256 tokens the busiest node sits about 10% above average instead of nearly 3×."
+
+**0:38 · Deep dive 2 — conflicts**
+
+> **You:** "Because we never refuse a write, two writes to one cart can happen concurrently — a phone and a laptop. Last-write-wins would silently drop one: the lamp vanishes. So each value carries a version vector. On read, if one version dominates, return it; if they're concurrent, return both siblings with a merged context; the cart service unions them and writes back, and the new vector dominates both. I'd allow LWW per table where it's correct, like a last-seen timestamp. Union has one known wart — a deleted item can come back — which we can fix with a cart CRDT that tracks removals."
+
+**0:43 · Deep dive 3 — failures and repair**
+
+> **You:** "Three layers. Short outages: a sloppy quorum — if a home replica is down, the coordinator writes to the next healthy node with a hint, and hands it off when the node returns. That's what makes add-to-cart always succeed — and I'll say the cost: during that window, W + R > N no longer guarantees overlap. Reads: read repair writes the newest version back to stale replicas. Everything else: Merkle-tree anti-entropy per key range in the background — with a million buckets, finding one bad key takes about 41 hash comparisons, and only that bucket moves. Failure detection: gossip carries heartbeats; phi-accrual turns silence into suspicion — at φ = 8 with 1-second heartbeats, about 18 seconds — and suspicion only reroutes traffic, it never moves data."
+
+**0:48 · Deep dive 4 — the storage engine and deletes**
+
+> **You:** "LSM because writes dominate per node and turn into appends. Deletes are tombstones, and they must live longer than our repair cycle — say tombstones kept ten days, repair every seven — or a replica that missed the delete resurrects the item. Bloom filters cost about 10 bits per key: 200 million keys per node is 250 MB of memory, part of node sizing."
+
+**0:52 · Wrap-up**
+
+> **You:** "Recap: a leaderless ring of 30 nodes, three zones, N = 3, W = R = 2 by default, sloppy quorums with hinted handoff for always-on writes, version vectors with sibling merge, three repair paths. At 10×, the first limits are hot keys — salting and client caching — and repair cost, which pushes us toward incremental repair. I'd monitor p99 per coordinator, hints pending, sibling counts, repair lag versus the tombstone window, and per-node load. If you wanted compare-and-set, I'd add a consensus path per key — or choose a leader-per-partition design instead."
+
+**0:55.** Five minutes for questions. Mara writes one word on her notepad, and you can read it upside down: *"Owned."*
+
+**Check the numbers yourself:** 2 × 10⁹ × 1 KB = 2 TB; × 3 = 6 TB; × 2 = 12 TB; ÷ 2 TB = 6 nodes. 200,000 × 2 + 50,000 × 3 = 550,000; ÷ 20,000 = 27.5. 6 TB ÷ 31 ≈ 194 GB; ÷ 100 MB/s ≈ 32 min. 1 + 2 × 20 = 41. 8 ÷ 0.434 ≈ 18.4 s. 200 M × 10 bits = 250 MB.
+
+<Trace title="The Dynamo round" steps={kvRound} takeaway="Always-writable means leaderless, sloppy quorums, and reconciling siblings. Name all three repair paths." />
+
+<Reveal q="The interviewer changes one requirement: 'Strong consistency, and we need compare-and-set.' What changes?">
+
+The replication family. Keep partitioning (ranges or slots work well), but give each partition a **leader elected by consensus** (Raft or Paxos per partition, as Spanner, CockroachDB and the DynamoDB service do). Writes go through the leader and are committed when a majority of replicas have them; CAS is a local check on the leader; reads from the leader (with a lease) are linearizable. You lose "always writable": a partition whose majority is unreachable refuses writes. That's CP, and saying "this flips the round from AP to CP, so sloppy quorums and siblings disappear" is the answer.
+
+</Reveal>
+
+<h2 id="unlocks">Chapter 20 · Same pattern, other costumes</h2>
+
+<Scene chapter="Chapter 20" title="Same pattern, other costumes" mood="dawn">
+
+On Monday Iris has two new requests. Photo originals are outgrowing the blob vendor's bill, so could Kestrel run its own object store? And likes need to keep counting in all three regions, even when the regions can't talk.
+
+Mara doesn't draw anything new. She points at the ring, the slot row and the shelf of ranges still on the board. *"Which of these?"* she asks.
+
+</Scene>
+
+**S3-like object storage.** Two partitioned layers with different shapes:
+
+- **Metadata** (bucket, key → size, version, chunk locations): needs `LIST` by prefix in order, so it is **range-partitioned on (bucket, key)**, with ranges split automatically by size and by load. A hot prefix gets split; that's why object stores document request rates *per prefix* and why spreading keys across prefixes once mattered (AWS documents per-prefix limits; check current docs). Metadata wants strong consistency (read-after-write on a new object), so each range has a consensus-replicated leader.
+- **Data** (the bytes): immutable chunks placed by **hash** of the chunk id onto **placement groups** (a fixed slot map: Ceph, for example, maps objects to placement groups and then uses its CRUSH algorithm to map groups to disks). Durability comes from **erasure coding** rather than three copies: 6 data + 3 parity chunks survive any 3 losses for **1.5×** storage, against 3× for replication. 10 PB of objects is 15 PB raw instead of 30 PB. The <a href={`${BASE}sd/lessons/blob-cdn/#durability`}>blob storage lesson</a> covers durability, multipart uploads and versioning.
+
+**Distributed counters.** Two different problems:
+
+- **One hot counter in one region** (100,000 increments/s on a viral post): salting into 16 sub-keys, 6,250/s each, reads sum them or a roll-up stores the total. Also batch: a server accumulates 100 increments and writes +100. The <a href={`${BASE}sd/lessons/pattern-timeseries/`}>time-series pattern lesson</a> builds this out.
+- **A counter written in several regions that may be partitioned:** a **G-counter** CRDT. Each region increments only its own entry; merge takes the per-region max; the value is the sum. Worked: `{US:120, EU:75, AP:40}` = 235. During a partition, US counts 5 more (`US:125`) and EU 3 more (`EU:78`). Merging in either order gives `{US:125, EU:78, AP:40}` = **243 = 235 + 8**: no increment lost. LWW on a single integer would have kept one region's total; incrementing one integer in place in both regions would have double-counted the base. Unlikes need a second G-counter of decrements (a **PN-counter**).
+
+**What else this lesson answers on your bank:**
+
+| Bank question | How the pattern applies |
+|---|---|
+| **Distributed cache (Redis)** | Chapter 18: slots, smart clients, async replicas, eviction, hot-key L1 (plus <a href={`${BASE}sd/lessons/caching/`}>Caching</a>) |
+| **Key-value store (Dynamo)** | Chapter 19: ring + vnodes, quorums, version vectors, gossip, Merkle repair |
+| **S3 / object storage** | Range-partitioned metadata, hash-placed erasure-coded data |
+| **URL shortener** | A KV store keyed by code: hash partitioning, a cache in front, no scans |
+| **YouTube view counts, likes** | Salted counters; G-counters across regions |
+| **Metrics / Datadog** | Range by (series bucket, time) with salted prefixes against the hot tail |
+| **Chat message history** | Compound key (conversation_id → time): hash on the conversation, sort within |
+| **Distributed lock / scheduler** | Not this pattern: needs consensus and fencing (<a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a>) |
+
+<Trace title="Name the costume" steps={unlocks} takeaway="Listings mean ranges; immutable bytes mean hash placement; multi-region counters mean CRDTs; one hot counter means salting." />
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice says what it would break.
+
+<Trace title="The partitioning review" steps={drills} takeaway="Movement: 1/N, not N/(N+1). Balance: vnodes. Hot spots: cache, salt, split. Agreement: W + R > N, version vectors, three repair paths." />
 
 <Quiz questions={[
   {
@@ -89,15 +1068,136 @@ Data doesn't teleport when the ring changes: the new owner **streams data from t
     q: 'Metrics system: partition by metric timestamp for time-range scans, but all writes hammer the newest partition. Standard fix?',
     options: [
       'Switch to pure hash partitioning',
-      'Compound key — hash prefix spreads current writes across k partitions (time#hash(series)%k), range-sorted within; reads fan to k partitions instead of 1, a stated cost',
+      'Compound key — hash prefix spreads current writes across k partitions (hash(series)%k, then time), range-sorted within; reads fan to k partitions instead of 1, a stated cost',
       'Buffer writes in a queue',
       'Bigger node for the current partition'
     ],
     answer: 1,
     why: 'Pure hash (option 1) kills the range scans you partitioned for; the compound key keeps both, trading a bounded read fan-out. Naming that trade is the senior move. This exact trick reappears in the Datadog walkthrough.'
-  }
+  },
+  {
+    q: 'With a sloppy quorum (N = 3, W = 2, R = 2), does every read still see the latest acknowledged write?',
+    options: [
+      'Yes — W + R > N always guarantees it',
+      'No — during an outage W can be met by stand-in nodes outside the home set, so a read of the home replicas can miss the write until hinted handoff completes',
+      'Only if clocks are synchronised',
+      'Only with LWW conflict resolution'
+    ],
+    answer: 1,
+    why: 'Sloppy quorums buy write availability by giving up the overlap guarantee for the duration of the outage. Say both halves.'
+  },
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: whiteboard-narrate consistent hashing from a blank page in 5 minutes — ring, placement, node-add, vnodes, replication arcs — as if the interviewer asked "how would your cache scale?" Drawing-while-talking is your logged decomposition gap; this is its purest rep. Weekend mock: **distributed cache**.
+<Scene title="The interview room" mood="night">
+
+The Interviewer has a cache box on the whiteboard and asks, almost lazily: *"And how does that scale?"* A year ago you would have said "we shard it". Today you draw a circle while you talk, and you don't stop talking while you draw.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "I'd partition by key. Not hash mod N — going from 10 to 11 nodes would move about 91% of keys, a near-total cold start. I'd either use a consistent-hash ring, where adding a node moves only about 1/N of keys from its neighbours, or a fixed slot map like Redis Cluster's 16,384 slots, where keys never change slot and growing the cluster moves whole slots. On a ring, each machine gets many virtual nodes — with one token each, the busiest of ten nodes carries about three times its share; with a couple of hundred it's about 10% over — and a dead node's load spreads over everyone. Each partition lives on three distinct nodes in three zones. If we need per-key ordering, each partition has a leader; if writes must always succeed, it's leaderless with quorums — W = 2, R = 2 of 3 — sloppy quorums and hinted handoff during failures, version vectors for concurrent writes, and Merkle trees to repair in the background. Rebalancing streams data, throttled, with one owner at a time. And hot keys don't spread with more nodes: I'd cache hot reads in-process and salt hot writes."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · What exactly happens when you add a node?">
+
+On a ring with vnodes, the new node's tokens each take over one small arc from that arc's current owner, so it receives about 1/(N + 1) of the data from many peers. It streams those ranges in the background, throttled; the old owners keep serving until it has caught up, including writes made during the copy; then the partition map's epoch advances and requests go to the new owner. No other key moves.
+
+</Reveal>
+
+<Reveal q="2 · Why virtual nodes? Isn't the hash uniform already?">
+
+The hash makes each position uniform; it doesn't make the gaps between N random positions equal. With one token per node the largest arc averages H(N) / N, about 2.9× fair share for 10 nodes. With V tokens, each node's share is a sum of V arcs and its spread shrinks like 1/√V. Vnodes also scatter a dead node's load over all survivors, and let bigger machines take more tokens.
+
+</Reveal>
+
+<Reveal q="3 · One key gets 500,000 requests a second. Now what?">
+
+More nodes won't help: a key lives in one partition. Reads: an in-process cache with a ~1 s TTL on each app server, reads spread across replicas, or the key copied under N suffixes. Writes: salt into sub-keys and sum on read (or roll up). And detect it with per-partition and top-key metrics rather than waiting for the page.
+
+</Reveal>
+
+<Reveal q="4 · Two replicas of a node die. What happens to reads and writes?">
+
+With N = 3 and strict quorums of 2, keys whose preference list included both dead nodes can't reach W or R: they become unavailable. With sloppy quorums, writes go to the next healthy nodes with hints and succeed; reads might miss the newest value until handoff. Either way, failure detection only reroutes; re-replicating to new nodes is a deliberate step once the nodes are declared gone, and Merkle repair finishes the job.
+
+</Reveal>
+
+<Reveal q="5 · Two clients write the same key at the same time. Who wins?">
+
+Depends on what I chose, and I'd say it per table. Last-write-wins keeps the higher timestamp and silently drops the other, which is fine for a last-seen time and wrong for a cart. For carts, version vectors detect that neither write saw the other; the store keeps both as siblings and the application merges them, or the value is a CRDT that merges itself. If the requirement is "exactly one winner", like a username, that needs a leader or consensus, not a quorum.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "How does it scale horizontally?" | Partition by key; name the number (capacity, throughput, isolation) that forced it |
+| `hash mod N` | Adding one node moves N/(N+1); one dying moves ~90%. Only doubling is cheap |
+| "What happens when you add a node?" | Ring or slots: ~1/N moves, streamed and throttled, one owner at a time, epoch flip |
+| A ring with one token per node | Busiest ≈ H(N) × fair share (2.9× at 10); vnodes: spread ∝ 1/√V; dead node's load scatters |
+| Small node set, no bookkeeping | Rendezvous: highest hash(node, key) wins; O(N) per lookup |
+| Redis Cluster | 16,384 slots, CRC16 mod 16384, hash tags `{…}`, MOVED vs ASK |
+| Ordered scans, listings, time ranges | Range partitioning with splits and merges; watch the hot tail |
+| Scans and spread both needed | Compound key: hash the partition key, sort within (Cassandra, DynamoDB) |
+| One key melts one node | Hot key: L1 cache, replica reads, key copies; salt hot writes |
+| Node silent for 40 s | Suspected, not removed: route around it, hints; move data only on an explicit decision |
+| Need CAS / uniqueness | Leader per partition with consensus |
+| Must always accept writes | Leaderless, sloppy quorum + hinted handoff, version vectors |
+| N, W, R | W + R > N overlaps (strict quorums only); waits for the W-th fastest reply |
+| Concurrent writes | LWW loses one; version vectors keep siblings; CRDTs merge |
+| Replicas drifted | Hinted handoff (short outages), read repair (read keys), Merkle anti-entropy (everything) |
+| Who's alive? | Gossip (~log₂ N + ln N rounds); phi accrual: suspicion that adapts |
+| Routing | Smart client (1 hop), proxy (dumb clients), any-node coordinator |
+| Per-node storage | LSM; tombstones must outlive the repair interval |
+| Sizing | Capacity floor vs throughput floor (replica ops); the larger wins, say which |
+| S3-like | Range-partitioned metadata + hash-placed, erasure-coded chunks |
+| Multi-region counter | G-counter / PN-counter CRDT |
+
+## Five mistakes to leave behind
+
+1. **`hash mod N` with no comment.** Say what adding one node moves, or don't use it.
+2. **A ring without vnodes.** Uneven arcs and a dead node's whole load on one neighbour.
+3. **"Add more shards" for a hot key.** One key, one partition. Cache, replicate or salt.
+4. **W + R > N quoted next to sloppy quorums.** You get one or the other during an outage.
+5. **Last-write-wins for anything users add to.** Version vectors or CRDTs, or say what's lost.
+
+<Scene title="Mara’s last word" mood="dusk">
+
+The circle is still on the whiteboard at the end of the quarter, with thirty-one nodes now, each drawn as a scatter of tiny ticks. Dev has added a small note in the corner: *"Node 11 incident: never again."*
+
+Mara reads it, then adds one line under it. *"Next time someone asks how it scales, start here."*
+
+</Scene>
+
+**Keep it warm:** with the buddy, whiteboard-narrate consistent hashing from a blank page in **5 minutes** — ring, placement, adding a node, vnodes, replica walk — as if the interviewer had just asked "how would your cache scale?" Drawing while talking is your logged decomposition gap, and this is its purest rep. Then the weekend mock: **distributed cache** (Chapter 18, cold, 45 minutes), and a week later the **key-value store** (Chapter 19, 60 minutes). Log where the clock went.
+
+Related: <a href={`${BASE}sd/lessons/core-concepts/`}>Core concepts</a> (replication, CAP, the consistency ladder, leases) · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> (sharding basics, storage engines) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (eviction, Redis Cluster, hot keys) · <a href={`${BASE}sd/lessons/blob-cdn/`}>Blob storage & CDN</a> · <a href={`${BASE}sd/lessons/pattern-sync-collab/`}>Sync & collaboration</a> (CRDTs, OT) · <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series</a> (sharded counters) · <a href={`${BASE}sd/lessons/load-balancing/`}>Load balancing</a> · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- [Dynamo: Amazon's Highly Available Key-value Store](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf) (SOSP 2007) — the source of Chapter 19: rings with virtual nodes, preference lists, sloppy quorums, hinted handoff, vector clocks, Merkle anti-entropy, gossip. Read sections 4 and 6.
+- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 6 (partitioning: rebalancing, request routing) and chapter 5 (leaderless replication, quorums, concurrent writes and version vectors).
+- [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/) — hash slots, hash tags, MOVED and ASK, slot migration, failover.
+- *Bigtable: A Distributed Storage System for Structured Data* (OSDI 2006) — range partitioning into tablets, splits, and a master that assigns them.
+- *Amazon DynamoDB: A Scalable, Predictably Performant, and Fully Managed NoSQL Database Service* (USENIX ATC 2022) — how the service differs from the paper: leader per partition, Multi-Paxos, adaptive capacity for hot partitions.
+- [Consistent hashing](https://en.wikipedia.org/wiki/Consistent_hashing) and [Rendezvous hashing](https://en.wikipedia.org/wiki/Rendezvous_hashing) (Wikipedia) — history, variants, and the load-balance analysis.
+- [Merkle tree](https://en.wikipedia.org/wiki/Merkle_tree) and [Conflict-free replicated data type](https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type) (Wikipedia) — the structures behind Chapters 13 and 20.
+- *The φ Accrual Failure Detector* (Hayashibara, Défago, Yared, Katayama, 2004) — the paper behind Chapter 14's suspicion levels.
+
+**Look these up yourself**
+
+- **Jump consistent hash** (Lamping and Veach) — a tiny, stateless algorithm with perfect balance when nodes are numbered and only appended; why it can't remove an arbitrary node.
+- **Maglev hashing** — Google's lookup-table consistent hashing for load balancers: faster lookups, near-perfect balance, slightly more movement.
+- **Bounded-load consistent hashing** — capping each node at (1 + ε) × average and spilling to the next node; a tool against hot spots in caches.
+- **SWIM** — a membership protocol that replaces all-to-all heartbeats with indirect probes and piggybacked gossip; scales to large clusters.
+- **Dotted version vectors** — how Riak fixed sibling explosion when many clients write through one coordinator.
+- **Hybrid logical clocks** — timestamps that respect causality while staying close to wall time; used by stores that need LWW without skew surprises.
+- **Copysets** — choosing replica sets deliberately so that a few simultaneous failures are much less likely to lose all copies of some partition.
+- **Incremental repair** — repairing only data written since the last repair, and why it makes tombstone windows easier to meet.

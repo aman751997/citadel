@@ -185,7 +185,7 @@ test('chapter 5 to 8 trace numbers', () => {
   assert.deepEqual(edge, [[3, 1]]);
   const safe = relax(g, edge, (r, c) => g[r][c] === 1);
   assert.equal(g.flat().filter((v, i) => v === 1 && safe.flat()[i] === -1).length, 3);
-  assert.match(correct(surrounded[2]), /3 Os flip/);
+  assert.match(surrounded[2].choices[surrounded[2].answer].feedback, /3 Os flip/);
   const h = [[1, 2, 3], [8, 9, 4], [7, 6, 5]];
   assert.deepEqual(pacific[0].rows.map(r => cells(r).map(Number)), h);
   const both = forwardPacific(h);

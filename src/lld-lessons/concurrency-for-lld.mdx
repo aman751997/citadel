@@ -1,106 +1,1334 @@
 ---
 title: 'Java Concurrency for LLD Rounds'
-description: 'Visibility, locks, atomics, executors, and the four classic thread-safe builds — bounded queue, LRU, rate limiter, singleton — that machine-coding rounds escalate into.'
+description: 'The week Copperline opened a second gate. Races, the memory model, locks, atomics, executors, futures and coordinators — then the five thread-safe builds every machine-coding round escalates into, each stress-tested with real threads.'
 module: 3
 order: 1
-minutes: 40
+minutes: 150
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import HintLadder from '../components/HintLadder.astro';
+import Quiz from '../components/Quiz.astro';
+import { races, visibility, locks, rlocks, atomics, maps, publication, pools, futures, coord, queues, deadlock, lru, limiter, turns, lot, drills, hints } from '../data/lld/concurrency-for-lld';
+import { turn } from '../data/lld/labels';
+import { BASE } from '../paths';
 
-## Why this module sits here
+<PatternHub
+  pattern="lld-concurrency"
+  start="prologue"
+  logline="Every machine-coding round has a stage two: “now make it thread-safe.” Name the race before you fix it, reach for the cheapest tool that closes it, and prove it with real threads."
+  cast={[
+    { name: 'You', role: 'Newest engineer at the Gearhouse. Your parking-lot code passes every test. Every test runs on one thread.' },
+    { name: 'Wren Adeyemi', role: 'Lead engineer and your mentor. Her reviews still begin “what changes next?” — this month the answer is “the number of threads”.' },
+    { name: 'Bram', role: 'Owns the Copperline Garage. His small change this week: a second entry gate. Then an app. Then four gates.' },
+    { name: 'Oona', role: 'QA engineer. Has built a rig that fires 32 threads at anything you write, and keeps a jar of sticky notes labelled “lost”.' },
+    { name: 'The Interviewer', role: 'Appears between chapters with the stage-two question, a timer, and no patience for “I’d just add synchronized”.' },
+  ]}
+  parts={[
+    { name: 'Part One · Why threads betray you', description: 'The two diseases: steps that interleave, and writes nobody sees.', links: [['races', 'The counter that lost cars'], ['visibility', 'The gate that never closed']] },
+    { name: 'Part Two · Locks', description: 'Mutual exclusion, what to lock on, and when synchronized is not enough.', links: [['synchronized', 'One key per bay'], ['explicit-locks', 'The gate that would not wait']] },
+    { name: 'Part Three · Without locks', description: 'Atomics, concurrent maps, immutable values and confinement.', links: [['atomics', 'Compare, then set'], ['concurrent-maps', 'The safe map that lied'], ['immutability', 'Nothing to guard']] },
+    { name: 'Part Four · Threads as a budget', description: 'Pools, queues, rejection, sizing, futures that compose.', links: [['executors', 'Never raw threads'], ['futures', 'The quote that waited for loyalty']] },
+    { name: 'Part Five · Waiting for each other', description: 'Latches, barriers, semaphores, producer-consumer, and deadlock.', links: [['coordination', 'Three gates, one bell'], ['producer-consumer', 'The printer that fell behind'], ['deadlock', 'Two wallets, two threads']] },
+    { name: 'Part Six · The classic builds', description: 'What the stage-two question actually asks you to write.', links: [['build-lru', 'Counter and LRU'], ['build-limiter', 'The token bucket'], ['build-turns', 'Take turns'], ['build-lot', 'Four gates, one lot']] },
+  ]}
+  extensions={[['sq-per-client', 'One bucket per app'], ['sq-exit-once', 'Two exits, one ticket'], ['sq-dashboard', 'The dashboard that disagreed']]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'The race → the diagnosis → the cheapest fix → the stress test' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Name the race, choose the tool, with feedback on every choice' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="Two sittings at least: Parts One–Three, then Four–Six. Every Java block on this page compiles on Java 17 and is stress-tested with real threads (8–32 threads, thousands of operations, repeated runs, a timeout on every wait). The messes are tested too — the checker proves they really break."
+/>
 
-Every machine-coding round has a stage-two question: **"now make it thread-safe."** Your parking lot works; two threads park into the same spot. Your rate limiter works; two requests both pass the check. This lesson is the toolkit for that moment, ordered from cheapest to heaviest — and the grading rule is: **reach for the cheapest tool that closes the race, and name the race before you fix it.**
+<h2 id="prologue">Prologue · Two gates, one bay</h2>
 
-## First, name the two diseases
+<Scene chapter="Prologue" title="Two gates, one bay" mood="dawn">
 
-1. **Atomicity failure** — check-then-act with a gap: `if (spot.isFree()) spot.assign(v)` — both threads see free, both assign. The read and write must be one indivisible step.
-2. **Visibility failure** — a write one thread makes is *never seen* by another: no `synchronized`/`volatile`/atomic means the JVM may cache the field per-thread indefinitely. `boolean running = false` set by thread A can leave thread B spinning forever.
+Bram's small change this week is a second entry gate on the north side of Copperline. "Same software," he says. "Just two of them."
 
-Every fix below closes one or both. Saying which disease you're treating is the senior-signal sentence.
+On Friday morning two cars are waved into bay 7 at the same second. Both tickets say *Bay 7*. Both drivers are polite about it, for a while.
 
-## The ladder — cheapest tool first
+Oona has already reproduced it by the time you arrive. Her rig runs your `park()` from 32 threads. It is wrong more often than it is right.
 
-### Rung 0: no shared mutable state
+You open the code. It has not changed. It has been right for six months.
 
-Immutable objects (records, final fields) need no synchronization — safe to share by construction. Confinement (each thread its own object) likewise. Say this rung exists before you lock anything: "can I make this immutable instead?"
+Wren reads it over your shoulder. *"What changes next?"* she asks, the way she always does, and then answers herself for once: *"The number of threads. Now tell me — what is shared, who can see it, and what has to stay true between two steps?"*
 
-### Rung 1: `volatile` — visibility only
+</Scene>
 
-```java
-private volatile boolean shutdown = false;   // writer thread sets; worker loops read
-```
+Every machine-coding round has a stage-two question: **"now make it thread-safe."** Your parking lot works; two threads park into the same spot. Your rate limiter works; two requests both pass the check. This lesson is the toolkit for that moment — and the grading rule is: **reach for the cheapest tool that closes the race, and name the race before you fix it.**
 
-`volatile` guarantees every read sees the latest write (and forbids the reordering that breaks double-checked locking). It does **not** make `count++` safe — that's read-modify-write, three steps. Flags and publish-once references: yes. Counters and check-then-act: no.
+Wren's three questions are the whole method, and every chapter asks them:
 
-### Rung 2: atomics — lock-free single-variable updates
+1. **What is shared?** State that more than one thread can reach. If nothing is shared and mutable, there is no bug to fix.
+2. **Who can see it?** Whether a write made by one thread is guaranteed to be seen by another — the *visibility* question.
+3. **What must stay true between two steps?** The invariant (one car per bay, `free + occupied == capacity`). If two steps must happen together to keep it, they must be one indivisible step — the *atomicity* question.
 
-```java
-private final AtomicInteger freeSpots = new AtomicInteger(40);
+**The two diseases.** Every concurrency bug you will be asked about in a round is one or both of these:
 
-boolean tryReserve() {
-    while (true) {
-        int cur = freeSpots.get();
-        if (cur == 0) return false;
-        if (freeSpots.compareAndSet(cur, cur - 1)) return true;  // CAS: succeed only if unchanged
-    }
+1. **Atomicity failure** — check-then-act or read-modify-write with a gap: `if (spot.isFree()) spot.assign(v)` — both threads see free, both assign. The read and the write must be one indivisible step.
+2. **Visibility failure** — a write one thread makes is *never seen* by another: with no `synchronized`, `volatile` or atomic, the JVM may keep using a stale value indefinitely. `boolean running = false` set by thread A can leave thread B spinning forever.
+
+Every fix below closes one or both. **Saying which disease you're treating is the senior-signal sentence.**
+
+<Figure caption="The ladder: cheapest rung first. Go up only when the rung below cannot hold the invariant.">
+  <Mermaid code={`flowchart TB
+    R0["Rung 0 · no shared mutable state\nimmutable values, confinement"] --> R1
+    R1["Rung 1 · volatile\nvisibility of one variable"] --> R2
+    R2["Rung 2 · atomics\none variable, read-modify-write"] --> R3
+    R3["Rung 3 · locks\ninvariants across fields or steps"] --> R4
+    R4["Rung 4 · concurrent library\nmaps, queues, executors, latches"]`} />
+</Figure>
+
+Rung 4 is not "heavier" than rung 3 in cost — it is *other people's* rung 3, already debugged. In an interview, the order you climb shows judgement: **"can I make this immutable? If not, is it one variable? If not, what does the lock guard?"** Then you name the JDK class that already does it, and — when the interviewer asks — build it yourself.
+
+<Part n="Part One" title="Why threads betray you">
+
+The two diseases, seen up close: steps that interleave, and writes nobody sees.
+
+</Part>
+
+<h2 id="races">Chapter 1 · The counter that lost cars</h2>
+
+<Scene chapter="Chapter 1" title="The counter that lost cars">
+
+The display above the entrance says *412 cars today*. The barrier log says 431.
+
+Oona's sticky note is short: *8 threads × 100,000 cars in. Counter says 134,774. Ran it again: 186,384. Again: 800,000. Pick one.*
+
+You look at the counter class. It is three lines long. There is nothing in it to get wrong.
+
+Wren writes `carsIn++` on the whiteboard, then rewrites it underneath as three lines.
+
+*"How many steps is that?"*
+
+</Scene>
+
+**The mess.** A counter shared by every gate thread:
+
+```java id=racyCounter
+class GateCounter {
+    private int carsIn = 0;          // shared by every gate thread, guarded by nothing
+
+    void carEntered() { carsIn++; }  // read carsIn, add 1, write carsIn: three steps
+    int carsIn() { return carsIn; }
 }
 ```
 
-That loop is the **CAS retry pattern** — optimistic, no blocking, and the shape behind `AtomicLong.incrementAndGet`, `LongAdder`, and every lock-free structure. Explain CAS in one sentence: *"compare-and-set updates only if the value is still what I read; on failure I re-read and retry — I never block, I just may loop."* Under heavy write contention, `LongAdder` beats `AtomicLong` (it stripes the counter); one sentence, free points.
+`carsIn++` is **read-modify-write**: load the value, add one, store it. Two gates can both load 41, both compute 42, both store 42. Two cars, one increment — a **lost update**.
 
-### Rung 3: `synchronized` / `ReentrantLock` — compound invariants
+<Figure caption="The interleaving that loses a car. Each step is fine on its own; the bug lives in the gap between them.">
+  <Mermaid code={`sequenceDiagram
+    participant A as Gate A
+    participant M as carsIn
+    participant B as Gate B
+    A->>M: read 41
+    B->>M: read 41
+    A->>M: write 42
+    B->>M: write 42
+    Note over M: two cars, one increment`} />
+</Figure>
 
-When the invariant spans **multiple fields or steps**, you need mutual exclusion:
+The checker for this page runs 8 threads × 100,000 increments and requires at least one run (out of up to 20) to come up short; it reliably does. One honest detail: some runs come out *exactly right*. Once the JIT compiles the hot loop it is allowed to keep `carsIn` in a register and write it back once, so a thread may finish its whole loop before the next one starts. **A race that sometimes doesn't show is still a race** — "it passed on my laptop" proves nothing about concurrency.
 
-```java
+**The second shape: check-then-act.** The bay from the opening scene:
+
+```java id=spotMess
 class Spot {
-    private Vehicle occupant;
-    synchronized boolean tryAssign(Vehicle v) {     // check-then-act made atomic — one method, one lock
-        if (occupant != null) return false;
-        occupant = v;
+    private String occupant;                       // null while the bay is free
+
+    boolean isFree() { return occupant == null; }
+    void assign(String plate) { occupant = plate; }
+    String occupant() { return occupant; }
+}
+
+boolean park(Spot spot, String plate) {            // the gate's logic
+    if (spot.isFree()) {                           // check ...
+        spot.assign(plate);                        // ... then act: another gate can slip in between
         return true;
     }
+    return false;
 }
 ```
 
-Design rules that get graded: **lock the smallest object that owns the invariant** (the spot, not the lot — or all parking serializes); **never call foreign code while holding a lock** (listener callbacks under lock = deadlock bait); **document the lock's guard set** ("this lock guards occupant").
+Both gates check, both see free, both assign, both return `true`. Each method on `Spot` is individually fine; **the invariant ("one car per bay") spans two calls, and nothing makes the two calls one step.** The checker races two threads on 200,000 bays, released together each round, and counts bays where *both* gates were told "parked" — in our runs, well over half of them.
 
-`ReentrantLock` over `synchronized` when you need: `tryLock(timeout)` (deadlock avoidance, back-pressure), interruptible waits, fairness, or multiple `Condition`s (see the bounded queue below). Otherwise `synchronized` — less code, harder to leak (no forgotten `unlock()`; and when you do use locks: `lock(); try { ... } finally { unlock(); }`, always).
+The two shapes have one cure: **make the steps that protect an invariant indivisible** — a lock around them (Chapter 3), or a single atomic instruction that does both (Chapter 5).
 
-### Rung 4: concurrent collections — outsource the locking
+**Vocabulary interviewers like.** A **race condition** is a correctness bug that depends on timing — both examples above. A **data race** is the memory-model term: two threads access the same variable, at least one writes, and nothing orders the accesses (no *happens-before*, Chapter 2). They overlap but aren't the same: the `Spot` race stays a race condition even if every method is `synchronized` and `park` doesn't hold the lock across both calls — no data race, still a bug.
 
-```java
-// The lazy-init race the production codebase actually shipped (inventory finding #2):
-if (!map.containsKey(k)) map.put(k, create(k));        // two threads: both miss, both create
+<Trace title="Count the steps" steps={races} takeaway="Read-modify-write and check-then-act are both two-step operations on shared state. If an invariant depends on both steps, they must become one." />
 
-// The fix is one atomic method:
-cache.computeIfAbsent(k, this::create);                 // ConcurrentHashMap does it under the hood
+<Reveal q="Would making carsIn an int local variable inside carEntered() fix the race?">
+
+It would remove the race and also the counter: a local variable lives on one thread's stack, so it is never shared — and never counts anything across calls. That is the point of the question: **the cheapest fix is no sharing at all** (rung 0). When sharing is the whole purpose, as with a counter every gate updates, you need rung 2 or 3.
+
+</Reveal>
+
+**Catch the trap:** *"The race is impossible — `++` is a single operator."* It is a single *operator* in source, and three operations in the JVM (`getfield`, `iadd`, `putfield`). Atomicity is a property of what the machine does, not of how short the line is.
+
+**Say it aloud:** *"carsIn++ is read-modify-write, so two gates can lose an update. I'll make it one atomic step — an AtomicInteger, or LongAdder if it's hot."*
+
+<h2 id="visibility">Chapter 2 · The gate that never closed</h2>
+
+<Scene chapter="Chapter 2" title="The gate that never closed" mood="night">
+
+At midnight the control room presses *Stop polling* on the exit sensors. The button sets `stopRequested = true`. The poller thread checks that flag in a loop.
+
+At 3 a.m. the poller is still running. The flag is `true` — the debugger says so. The loop doesn't care.
+
+Oona has written *how???* on a sticky note and stuck it to the server rack.
+
+Wren doesn't look at the loop. She looks at the field declaration. *"Who promised the poller it would ever see that write?"*
+
+</Scene>
+
+**The mess.**
+
+```java id=stopFlagMess
+class ExitPoller {
+    private boolean stopRequested;                 // plain field: no happens-before between the two threads
+
+    void requestStop() { stopRequested = true; }   // called by the control-room thread
+
+    long pollUntilStopped() {                      // runs on the poller thread
+        long polls = 0;
+        while (!stopRequested) polls++;            // the JIT may read the field once and loop forever
+        return polls;
+    }
+}
 ```
 
-`ConcurrentHashMap` (+ `computeIfAbsent`/`merge`/`putIfAbsent`), `CopyOnWriteArrayList` (read-heavy listener lists — the Observer lesson used it), `BlockingQueue` (below). The graded insight: **a thread-safe map does not make your two-step logic safe** — safety composes at the operation level, not the data-structure level. `map.get` then `map.put` is still a race on a `ConcurrentHashMap`.
+Nothing in this code tells the JVM that two threads share `stopRequested`. So the JIT compiler is allowed to treat the loop as if one thread owned it — read the field once, notice the loop body never writes it, and turn `while (!stopRequested)` into `while (true)`. That is a legal optimisation, not a bug in the JVM. On the checker's machine (HotSpot, Java 17) the poller was still spinning a second after the stop. **That is permitted, not guaranteed**, so the checker reports what it saw and treats this mess as illustrative; it *does* assert that the fixed version stops.
 
-For multi-field swaps, production used [copy-on-write: build new maps, swap both references in one atomic assignment](/citadel/lld/war/patterns-why/#15-copy-on-write-registry--two-maps-that-must-swap-together).
+**The fix is one word:**
 
-## Executors — never raw threads
+```java id=stopFlag
+class ExitPoller {
+    private volatile boolean stopRequested;        // a volatile write is seen by every later volatile read
 
-```java
-ExecutorService pool = new ThreadPoolExecutor(
-    4, 8,                          // core, max
-    60, TimeUnit.SECONDS,          // idle keep-alive for the extra 4
-    new ArrayBlockingQueue<>(100), // BOUNDED queue — unbounded queues turn overload into OOM
-    new ThreadPoolExecutor.CallerRunsPolicy());  // rejection = back-pressure, not silent drop
+    void requestStop() { stopRequested = true; }
+
+    long pollUntilStopped() {
+        long polls = 0;
+        while (!stopRequested) polls++;            // must re-read the field on every iteration
+        return polls;
+    }
+}
 ```
 
-Interview sentences that matter: **bound the queue** (an unbounded queue means "max threads" never triggers and overload becomes memory death); **choose the rejection policy out loud** (`CallerRunsPolicy` = the submitter does the work, natural throttle); sizing heuristic — CPU-bound ≈ cores, IO-bound ≈ cores × (1 + wait/compute). And the trap from the structural lesson: thread pools drop `ThreadLocal` context — [the decorator dossier bug](/citadel/lld/war/patterns-why/#5-decorator--the-bug-threadlocals-cause-at-thread-boundaries) — capture context before submit, restore inside the task.
+<h3 id="jmm">The Java Memory Model, at interview depth</h3>
 
-## The four classic builds
+The Java Memory Model (JLS chapter 17) doesn't promise that threads see each other's writes in any particular order — unless the two actions are connected by a **happens-before** edge. If action X *happens-before* action Y, then Y sees everything X (and everything before X in X's thread) wrote. The edges you need to know:
 
-These four cover ~90% of "make it concurrent" escalations. Build each once for real.
+| Edge | X happens-before Y when… |
+|---|---|
+| **Program order** | X comes before Y in the same thread |
+| **Monitor** | X is unlocking a monitor (leaving `synchronized`), Y is a later lock of the *same* monitor |
+| **Volatile** | X is a write to a `volatile` field, Y is a later read of that field |
+| **Thread start / join** | X is `t.start()`, Y is anything in `t`; or X is anything in `t`, Y is after `t.join()` returns |
+| **`java.util.concurrent`** | X puts into a concurrent collection / submits to an executor / releases a `Lock`, `Semaphore`, `CountDownLatch`; Y takes / runs / acquires / returns from `await` or `Future.get()` |
+| **Transitivity** | X hb Y and Y hb Z, so X hb Z |
 
-### 1. Bounded blocking queue (producer-consumer) — the king
+<Figure caption="Why the volatile flag works — and why it also publishes everything written before it.">
+  <Mermaid code={`flowchart LR
+    subgraph control ["Control room thread"]
+      W1["tariff = newTariff"] --> W2["stopRequested = true\n(volatile write)"]
+    end
+    subgraph poller ["Poller thread"]
+      R1["reads stopRequested == true\n(volatile read)"] --> R2["reads tariff:\nguaranteed new"]
+    end
+    W2 -- happens-before --> R1`} />
+</Figure>
 
-```java
+A program in which every pair of conflicting accesses is ordered by happens-before has **no data races**, and the JMM promises such a program behaves as if its steps simply interleaved (*sequential consistency*). Every tool in this lesson is a way of adding the edges.
+
+**What `volatile` gives you — and what it doesn't.**
+
+- **Visibility:** every read sees the latest write to that variable.
+- **Ordering:** writes made *before* a volatile write are visible to a thread that later reads the volatile and sees the new value (the figure above). This is what makes double-checked locking work, below.
+- **Atomic 64-bit access:** plain `long` and `double` writes may be split into two 32-bit halves (JLS 17.7); `volatile` ones may not.
+- **Not atomicity of compound actions.** `count++` on a volatile is still read, add, write:
+
+```java id=volatileCounterMess
+class VolatileGateCounter {
+    private volatile int carsIn = 0;
+    void carEntered() { carsIn++; }   // each step is visible; the three steps are still not one
+    int carsIn() { return carsIn; }
+}
+```
+
+The checker runs 8 threads × 100,000 increments on this one too — it loses most of them, every run. **Flags and publish-once references: `volatile`. Counters and check-then-act: no.**
+
+<h3 id="safe-lazy">The safe lazy singleton</h3>
+
+The creational lesson said: enum or holder idiom, and double-checked locking (DCL) needs `volatile`. You can now say *why*. Without `volatile`, the write of the reference can become visible before the writes inside the constructor — another thread can see a non-null reference to a **half-built object**. That is disease 2, a visibility and reordering failure, not a mutual-exclusion one.
+
+```java group=lazy
+class Lazy<T> {                                    // double-checked locking, done right
+    private final Supplier<T> factory;
+    private final Object lock = new Object();
+    private volatile T value;                      // volatile: no thread sees a half-built T
+
+    Lazy(Supplier<T> factory) { this.factory = factory; }
+
+    T get() {
+        T v = value;                               // one volatile read on the fast path
+        if (v == null) {
+            synchronized (lock) {
+                v = value;                         // check again: another thread may have built it
+                if (v == null) value = v = factory.get();
+            }
+        }
+        return v;
+    }
+}
+
+class TariffRegistry {                             // the holder idiom: class initialisation is the lock
+    private static class Holder {
+        static final Map<String, Long> RATES = Map.of("CAR", 20L, "BIKE", 10L);
+    }
+    static Map<String, Long> rates() { return Holder.RATES; }   // Holder loads on first call, exactly once
+}
+```
+
+The checker fires 32 threads at one `Lazy` and asserts the factory ran exactly once and everyone got the same instance. The holder idiom needs no `volatile` and no lock in your code because the JVM guarantees class initialisation runs once and happens-before any use of the class. A one-element `enum` is the third option and also survives serialisation.
+
+You've seen this one in production: the War Room's <a href={`${BASE}lld/war/inventory/#2-a-lazily-built-strategy-map--data-race`}>lazily-built strategy map</a> is a non-volatile field set by an unsynchronised `if (map == null)`. Both threads building it is harmless; a thread seeing a half-built `HashMap` is not. The real fix there was to **stop being lazy** — build it in the constructor, `final`, `Map.copyOf`. Most lazy-init bugs are eager-init opportunities.
+
+<Trace title="Who promised the poller?" steps={visibility} takeaway="volatile gives visibility and ordering for one variable — never atomicity of a compound action. Happens-before is the only promise threads get." />
+
+**Catch the trap:** *"`volatile` makes a variable thread-safe."* It makes single reads and writes of it visible and ordered. Anything that reads, decides, then writes — `++`, `if (x == null) x = …`, `if (balance >= n) balance -= n` — is still two steps.
+
+**Say it aloud:** *"This flag is written by one thread and read by another, with no other synchronisation, so it needs volatile for visibility. The counter is read-modify-write, so volatile isn't enough there — that needs an atomic."*
+
+<Part n="Part Two" title="Locks">
+
+Mutual exclusion, what to lock on, and when the built-in lock is not enough.
+
+</Part>
+
+<h2 id="synchronized">Chapter 3 · One key per bay</h2>
+
+<Scene chapter="Chapter 3" title="One key per bay">
+
+Wren takes a ring of keys off the hook by the door — the old manual garage still has one key per bay.
+
+"Before the gates were automatic," she says, "you parked a car by taking the key off the hook. If the key wasn't there, the bay was taken. Nobody ever double-parked."
+
+She hangs the keys back, one by one.
+
+*"Your Spot class needs a hook. Which object is the key — and who else is allowed to touch it?"*
+
+</Scene>
+
+`synchronized` is Java's built-in **intrinsic lock** (a *monitor*): every object has one. A `synchronized` method locks `this`; a `synchronized (x)` block locks `x`. Only one thread holds a given monitor at a time, and it gives you both cures at once: **mutual exclusion** (atomicity) and, through the monitor happens-before edge, **visibility** of everything written inside.
+
+**The refactor:** put check and act inside one lock, in the object that owns the invariant:
+
+```java group=spots
+class Spot {
+    private final int number;
+    private String occupant;                       // guarded by this Spot's lock
+
+    Spot(int number) { this.number = number; }
+
+    synchronized boolean tryAssign(String plate) { // check-then-act, made one indivisible step
+        if (occupant != null) return false;
+        occupant = plate;
+        return true;
+    }
+
+    synchronized boolean release(String plate) {
+        if (!plate.equals(occupant)) return false; // only the car in the bay can free it
+        occupant = null;
+        return true;
+    }
+
+    synchronized String occupant() { return occupant; }   // reads lock too: that's what makes them see the writes
+    int number() { return number; }                        // final field: safe without a lock
+}
+```
+
+The method name changed from `isFree` + `assign` to `tryAssign` — **the API itself no longer offers a gap.** The checker runs 32 threads × every bay and asserts each bay was won exactly once. The plain counter gets the same treatment:
+
+```java group=counters
+class SyncGateCounter {
+    private int carsIn;                            // guarded by this
+    synchronized void carEntered() { carsIn++; }
+    synchronized int carsIn() { return carsIn; }   // the read needs the lock too, for visibility
+}
+```
+
+Design rules that get graded:
+
+- **Lock the smallest object that owns the invariant** — the spot, not the lot, or all parking serialises.
+- **Never call foreign code while holding a lock.** A listener callback under your lock can take another lock in the opposite order — deadlock bait (Chapter 12) — or simply run for a second while every gate waits.
+- **Document the guard set** — "this lock guards `occupant`". Every access to a guarded field, reads included, takes that lock.
+
+<h3 id="reentrancy">Reentrancy</h3>
+
+Intrinsic locks are **reentrant**: a thread that holds a monitor can take it again (a hold count goes up and down). Without that, a synchronized method calling another synchronized method on the same object — or an override calling `super` — would deadlock on itself:
+
+```java group=spots
+class TicketLog {
+    private final List<String> lines = new ArrayList<>();    // guarded by this
+
+    synchronized void add(String line) { lines.add(line); }
+
+    synchronized void addAll(List<String> batch) {
+        for (String line : batch) add(line);                  // re-enters the lock this thread already holds
+    }
+
+    synchronized int size() { return lines.size(); }
+}
+```
+
+<h3 id="what-to-lock-on">What to lock on</h3>
+
+`Spot` is an internal class nobody else holds, so `synchronized` methods (locking `this`) are fine. **A public class is different: anyone holding a reference can `synchronized (yourObject)` and stall you** — by accident, in their own code, for as long as they like. Lock a private object instead:
+
+```java group=spots
+public class OccupancyBoard {                       // public API: outsiders hold references to it
+    private final Object lock = new Object();      // nobody outside can synchronize on this
+    private int free, occupied;                    // guarded by lock; invariant: free + occupied == capacity
+
+    public OccupancyBoard(int capacity) { this.free = capacity; }
+
+    public boolean carIn() {
+        synchronized (lock) {
+            if (free == 0) return false;
+            free--;
+            occupied++;
+            return true;
+        }
+    }
+
+    public boolean carOut() {
+        synchronized (lock) {
+            if (occupied == 0) return false;
+            occupied--;
+            free++;
+            return true;
+        }
+    }
+
+    public int[] snapshot() {
+        synchronized (lock) { return new int[] { free, occupied }; }
+    }
+}
+```
+
+Three lock targets that look fine and aren't:
+
+```java fragment
+synchronized ("gate-lock") { ... }     // string literals are interned: every class using "gate-lock" shares this lock
+private Boolean busy = false;
+synchronized (busy) { ... }            // Boolean.FALSE is one object for the whole JVM
+private Integer count = 0;
+synchronized (count) { count++; }      // count++ points the field at a NEW Integer: the next thread locks a different object
+```
+
+The last one is worth seeing fail, so it compiles here:
+
+```java id=boxedLockMess
+class PlateCounter {
+    private Integer count = 0;
+
+    void increment() {
+        synchronized (count) {                     // locks whichever Integer count points to right now...
+            count++;                               // ...then repoints count at a different Integer
+        }
+    }
+
+    int count() { return count; }
+}
+```
+
+Two threads lock two different objects and both "own the lock". The checker's 8 × 100,000 increments lose updates every run. **Lock on a `private final` field that never changes, holding a plain object you created for the purpose.** (Small `Integer` values are also cached and shared JVM-wide, so even a non-changing boxed lock may be shared with strangers.)
+
+<Trace title="Which key?" steps={locks} takeaway="One lock per invariant, held across every step of it — reads included. Lock a private final object you own; never a string, a boxed value, or a public this." />
+
+**Your turn.** Oona finds the board can show `free = 0, occupied = 0` for a 40-bay level. The old code used two `AtomicInteger`s — `free.decrementAndGet()` then `occupied.incrementAndGet()`. Why can a reader see that, and what does `OccupancyBoard` above do differently?
+
+<HintLadder hints={hints.board} labels={turn}>
+
+The invariant `free + occupied == capacity` spans **two** variables. Two atomics make each update atomic, but a reader between the decrement and the increment sees one done and the other not — and with a cap check on `free` before the decrement, two gates can even both pass. `OccupancyBoard` keeps both fields under **one** lock: the check (`free == 0`), both updates, and the reader's `snapshot()` all hold `lock`, so no thread ever sees half an update. The checker runs 16 threads of `carIn`/`carOut` against readers and asserts every snapshot sums to the capacity and `free` never goes negative. (Side quest 3 shows the lock-free alternative: one immutable value, one atomic reference.)
+
+</HintLadder>
+
+**Catch the trap:** *"I made every method `synchronized`, so the class is thread-safe."* Each method is atomic; a *sequence* of calls is not. `if (spot.isFree()) spot.assign(p)` is a race even when both methods are synchronized. Thread safety is about the invariant, not about adjectives on methods.
+
+**Say it aloud:** *"Spot owns occupancy, so the check and the assignment are one synchronized method, tryAssign. The board is public, so it locks a private final object, not this."*
+
+<h2 id="explicit-locks">Chapter 4 · The gate that would not wait</h2>
+
+<Scene chapter="Chapter 4" title="The gate that would not wait" mood="dusk">
+
+The barrier at the north gate takes a lock while its motor runs its weekly self-test. The self-test takes forty seconds.
+
+For forty seconds, every car at the north gate waits behind a thread that is waiting behind a lock. The queue reaches the street. Someone honks in a rhythm Oona says is Morse for something rude.
+
+"It should just say *busy, use the south gate*," says Bram.
+
+Wren nods. *"Then the gate has to be able to give up. Can `synchronized` give up?"*
+
+</Scene>
+
+It can't. A thread blocked entering `synchronized` waits forever and ignores interrupts. **`ReentrantLock`** (in `java.util.concurrent.locks`) is the same mutual exclusion and the same happens-before edge, plus the controls `synchronized` lacks:
+
+```java group=gate
+class BarrierGate {
+    private final ReentrantLock lock = new ReentrantLock();   // new ReentrantLock(true) asks for fairness
+    private int opened = 0;                                     // guarded by lock
+
+    boolean tryOpen(long timeout, TimeUnit unit) throws InterruptedException {
+        if (!lock.tryLock(timeout, unit)) return false;         // busy: tell the driver, don't hang the lane
+        try {
+            opened++;
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    void openWhenFree() throws InterruptedException {
+        lock.lockInterruptibly();                               // a shutdown can interrupt this wait
+        try {
+            opened++;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    void service(Runnable selfTest) {                           // holds the gate for maintenance
+        lock.lock();
+        try {
+            selfTest.run();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    int opened() {
+        lock.lock();
+        try { return opened; } finally { lock.unlock(); }
+    }
+}
+```
+
+The checker holds the gate in `service` and confirms `tryOpen(100 ms)` gives up in roughly that time, `openWhenFree` throws `InterruptedException` when interrupted while waiting, and 16 threads × 5,000 opens count exactly 80,000.
+
+**`ReentrantLock` over `synchronized` when you need:**
+
+| You need | `ReentrantLock` gives |
+|---|---|
+| Give up after a while (deadlock avoidance, back-pressure) | `tryLock(timeout, unit)` |
+| Cancel a waiting thread | `lockInterruptibly()` |
+| Arrival-order fairness | `new ReentrantLock(true)` — lower throughput; and untimed `tryLock()` still barges in even on a fair lock |
+| Several wait conditions on one lock | `newCondition()` — the bounded queue, Chapter 11 |
+
+Otherwise use `synchronized` — less code, and impossible to leak. **With a `Lock`, the shape is always `lock(); try { … } finally { unlock(); }`**: lock *before* the `try` (if `lock()` threw inside it, `finally` would unlock a lock you don't hold), unlock in `finally` so an exception can't leave the gate locked forever.
+
+<h3 id="read-write">Read-mostly state: ReadWriteLock and StampedLock</h3>
+
+The rate book is read on every exit and written twice a year. A plain lock makes readers queue behind each other for no reason. A **`ReadWriteLock`** lets many readers in at once, or one writer alone:
+
+```java group=rates
+class RateBook {                                    // read on every exit, written twice a year
+    private final Map<String, Long> perHour = new HashMap<>();     // guarded by rw
+    private final ReadWriteLock rw = new ReentrantReadWriteLock();
+
+    Long rateFor(String type) {
+        rw.readLock().lock();                       // many readers at once
+        try { return perHour.get(type); } finally { rw.readLock().unlock(); }
+    }
+
+    Map<String, Long> snapshot() {
+        rw.readLock().lock();
+        try { return Map.copyOf(perHour); } finally { rw.readLock().unlock(); }
+    }
+
+    void setRates(Map<String, Long> rates) {        // replace the whole table as one step
+        rw.writeLock().lock();                      // one writer, no readers
+        try {
+            perHour.clear();
+            perHour.putAll(rates);
+        } finally {
+            rw.writeLock().unlock();
+        }
+    }
+}
+```
+
+The checker flips the table between two complete rate sets while readers snapshot it, and asserts every snapshot is exactly one set or the other — never a mix. Three facts that come up in follow-ups:
+
+- **No upgrade.** A thread holding the read lock that asks for the write lock waits for all readers to leave — including itself. It deadlocks. (Downgrading — take write, take read, release write — is allowed.)
+- **Starvation is possible.** The JDK docs warn a continuously contended non-fair lock may indefinitely postpone some readers or writers; the fair mode trades throughput for arrival order.
+- **It only pays when reads are long or very frequent.** A read-write lock costs more per acquisition than a plain lock; for a 50-nanosecond `get`, a plain lock or an immutable snapshot (Chapter 7) is often faster.
+
+**`StampedLock` intuition: read without locking, then check nobody wrote.** An *optimistic read* takes no lock at all — just a version stamp. You copy the fields into locals, then `validate(stamp)`: if a writer got in meanwhile, the copies may be torn, so you fall back to a real read lock.
+
+```java group=stamped
+class LevelDisplay {                                // read by every screen, many times a second
+    private final StampedLock sl = new StampedLock();
+    private final int capacity;
+    private int free, occupied;                     // invariant: free + occupied == capacity
+
+    LevelDisplay(int capacity) { this.capacity = capacity; this.free = capacity; }
+
+    void carIn() {
+        long stamp = sl.writeLock();
+        try { if (free > 0) { free--; occupied++; } } finally { sl.unlockWrite(stamp); }
+    }
+
+    void carOut() {
+        long stamp = sl.writeLock();
+        try { if (occupied > 0) { occupied--; free++; } } finally { sl.unlockWrite(stamp); }
+    }
+
+    int[] read() {
+        long stamp = sl.tryOptimisticRead();        // no lock: just a version number
+        int f = free, o = occupied;                 // copy into locals; they may be torn
+        if (!sl.validate(stamp)) {                  // a writer got in: fall back to a real read lock
+            stamp = sl.readLock();
+            try { f = free; o = occupied; } finally { sl.unlockRead(stamp); }
+        }
+        return new int[] { f, o };                  // use the copies only after validate
+    }
+}
+```
+
+The checker runs writers against optimistic readers and asserts every read sums to the capacity. `StampedLock` is **not reentrant** and has no conditions; it is a performance tool for tiny read-mostly sections, not a default.
+
+<Trace title="Give up, or wait?" steps={rlocks} takeaway="ReentrantLock when you need to time out, be interrupted, be fair, or wait on conditions; synchronized otherwise. Read-write locks pay only for long or very frequent reads, and never upgrade." />
+
+**Catch the trap:** *"Fair locks prevent starvation, so always use them."* Fairness grants the lock in roughly arrival order and costs throughput — often a lot. And `tryLock()` without a timeout ignores fairness entirely. Choose fairness when you have measured starvation, not by reflex.
+
+**Say it aloud:** *"The self-test can hold the gate for forty seconds, so drivers use tryLock with a timeout and get 'busy' instead of a frozen lane. Lock before try, unlock in finally."*
+
+<Part n="Part Three" title="Without locks">
+
+Atomic instructions, concurrent maps, immutable values and confinement — the rungs below the lock.
+
+</Part>
+
+<h2 id="atomics">Chapter 5 · Compare, then set</h2>
+
+<Scene chapter="Chapter 5" title="Compare, then set" mood="dawn">
+
+The lot has a single number on its sign: free spots. Four gates and an app all change it.
+
+You wrap it in a lock. It works. Oona's rig says the lock is now the busiest object in the building: 32 threads queue to change one integer.
+
+Wren takes a whiteboard marker and writes: *if it's still 40, make it 39.*
+
+*"One instruction,"* she says. *"The processor can do that without asking anyone to wait. What do you do when the answer is 'it isn't 40 any more'?"*
+
+</Scene>
+
+**Compare-and-set (CAS)** is a single atomic hardware instruction: *"set this to `new` only if it still holds `expected`; tell me whether it worked."* The `java.util.concurrent.atomic` classes expose it. When it fails, someone else changed the value first — so you re-read and try again:
+
+```java group=atomics
+class SpotCounter {
+    private final int capacity;
+    private final AtomicInteger freeSpots;
+
+    SpotCounter(int capacity) {
+        this.capacity = capacity;
+        this.freeSpots = new AtomicInteger(capacity);
+    }
+
+    boolean tryReserve() {
+        while (true) {
+            int cur = freeSpots.get();
+            if (cur == 0) return false;
+            if (freeSpots.compareAndSet(cur, cur - 1)) return true;  // CAS: succeed only if unchanged
+        }
+    }
+
+    void release() {
+        while (true) {
+            int cur = freeSpots.get();
+            if (cur == capacity) throw new IllegalStateException("release without a reservation");
+            if (freeSpots.compareAndSet(cur, cur + 1)) return;
+        }
+    }
+
+    boolean tryReserveShort() {                    // the same loop, written by the JDK
+        return freeSpots.getAndUpdate(n -> n > 0 ? n - 1 : n) > 0;
+    }
+
+    int free() { return freeSpots.get(); }
+}
+```
+
+That loop is the **CAS retry pattern** — optimistic, no blocking, and the shape behind `AtomicLong.incrementAndGet`, `LongAdder`, and every lock-free structure. Explain CAS in one sentence: *"compare-and-set updates only if the value is still what I read; on failure I re-read and retry — I never block, I just may loop."* The checker sends 32 threads × 1,000 reservation attempts at a 100-spot counter: exactly 100 succeed, never 101, and mixed reserve/release traffic keeps `0 ≤ free ≤ capacity`.
+
+`getAndUpdate`, `updateAndGet` and `accumulateAndGet` run that loop for you. **The function you pass may run more than once** under contention, so it must be side-effect-free — no logging a reservation inside it.
+
+```java group=atomics
+class DailyRecord {
+    private final AtomicLong highestFee = new AtomicLong();
+    void offer(long fee) { highestFee.accumulateAndGet(fee, Math::max); }   // a running max, lock-free
+    long highest() { return highestFee.get(); }
+}
+```
+
+<h3 id="hot-counters">Counters, and the hot ones</h3>
+
+```java group=counters
+class AtomicGateCounter {
+    private final AtomicInteger carsIn = new AtomicInteger();
+    void carEntered() { carsIn.incrementAndGet(); }   // one atomic step
+    int carsIn() { return carsIn.get(); }
+}
+
+class HotGateCounter {
+    private final LongAdder carsIn = new LongAdder(); // striped cells: threads rarely collide
+    void carEntered() { carsIn.increment(); }
+    long carsIn() { return carsIn.sum(); }            // adds the cells up: not a snapshot while writes continue
+}
+```
+
+Under heavy write contention, CAS on one variable degrades: every thread keeps failing and retrying on the same cache line. **`LongAdder` spreads the count over several cells** and only adds them up when you call `sum()` — far faster to update, slower and only approximate to read while updates continue. Use it for metrics and hit counters; use `AtomicLong` when you need the exact value as part of a decision (like `tryReserve`). One sentence, free points. The checker runs all three counters through 8 × 100,000 increments and asserts every one of them is exact.
+
+<h3 id="aba">The ABA problem, in one paragraph</h3>
+
+CAS checks that the value is *equal* to what you read, not that *nothing happened*. If one thread reads A, another changes A → B → A, the first thread's CAS succeeds as though nothing changed. For a counter that's harmless — the number is all that matters. It bites in lock-free linked structures: a lock-free stack pops node A, someone pops A and B and pushes A back, and your CAS installs a `next` pointer to B, which is gone. Garbage collection makes this rarer in Java (a node you still reference can't be recycled) but not impossible if you reuse nodes. The JDK's answer is to CAS a reference *plus* a version: `AtomicStampedReference` (reference + int stamp) or `AtomicMarkableReference` (reference + boolean).
+
+<Trace title="Compare, then set" steps={atomics} takeaway="One variable, read-modify-write: an atomic with a CAS loop (or updateAndGet with a pure function). Hot counter, approximate reads: LongAdder. Two variables with one invariant: not an atomic each — one lock, or one immutable value." />
+
+**Catch the trap:** *"Atomics are always faster than locks."* Uncontended, both are cheap. Under heavy contention a CAS loop can spin and waste CPU; that's why `LongAdder` exists. And atomics compose no better than synchronized methods: two `AtomicInteger`s are two separate atomic steps.
+
+**Say it aloud:** *"Free spots is a single number, so a CAS loop on an AtomicInteger: read, bail at zero, compareAndSet, retry on failure. No lock, and it can't go below zero."*
+
+<h2 id="concurrent-maps">Chapter 6 · The safe map that lied</h2>
+
+<Scene chapter="Chapter 6" title="The safe map that lied" mood="dusk">
+
+The app counts visits per number plate for the loyalty scheme. Somebody already thought about threads: the map is a `ConcurrentHashMap`.
+
+Oona's rig: 16 threads record 2,000 visits each for one plate. The loyalty screen says 4,117.
+
+"It's a *concurrent* hash map," you say. "It's in the name."
+
+Wren nods slowly. *"The map is safe. Is your sentence?"*
+
+</Scene>
+
+**The mess.**
+
+```java id=visitsMess
+class PlateVisits {
+    private final ConcurrentHashMap<String, Integer> visits = new ConcurrentHashMap<>();
+
+    void record(String plate) {
+        Integer n = visits.get(plate);                      // two atomic calls...
+        visits.put(plate, n == null ? 1 : n + 1);           // ...are not one atomic action
+    }
+
+    int visits(String plate) { return visits.getOrDefault(plate, 0); }
+}
+```
+
+`get` is atomic and `put` is atomic, but `get`-then-`put` is read-modify-write across two calls — Chapter 1's lost update, wearing a thread-safe costume. The checker runs 16 threads × 2,000 visits on one plate and requires the total to come up short; it does. **A thread-safe map does not make your two-step logic safe — safety composes at the operation level, not the data-structure level.**
+
+**The fix: one call that does the whole read-modify-write.** `ConcurrentHashMap`'s `compute`, `computeIfAbsent`, `computeIfPresent` and `merge` run atomically for their key:
+
+```java group=visits
+class PlateVisits {
+    private final ConcurrentHashMap<String, Integer> visits = new ConcurrentHashMap<>();
+    void record(String plate) { visits.merge(plate, 1, Integer::sum); }   // read-modify-write, atomic per key
+    int visits(String plate) { return visits.getOrDefault(plate, 0); }
+}
+
+class HotPlateVisits {                                  // a very hot key: a LongAdder per plate
+    private final ConcurrentHashMap<String, LongAdder> visits = new ConcurrentHashMap<>();
+    void record(String plate) { visits.computeIfAbsent(plate, k -> new LongAdder()).increment(); }
+    long visits(String plate) {
+        LongAdder count = visits.get(plate);
+        return count == null ? 0 : count.sum();
+    }
+}
+```
+
+Both are exact under the checker's 16 threads.
+
+**The lazy-init race, again.** The production codebase shipped this one (the War Room's inventory, finding #2, in a slightly different form):
+
+```java id=templatesMess
+class ReceiptTemplates {                            // expensive to build, one per garage
+    private final ConcurrentHashMap<String, String> cache = new ConcurrentHashMap<>();
+    private final Function<String, String> build;
+    ReceiptTemplates(Function<String, String> build) { this.build = build; }
+
+    String forGarage(String garage) {
+        if (!cache.containsKey(garage)) cache.put(garage, build.apply(garage));   // both miss, both build
+        return cache.get(garage);
+    }
+}
+```
+
+The fix is one atomic method:
+
+```java group=visits
+class ReceiptTemplates {
+    private final ConcurrentHashMap<String, String> cache = new ConcurrentHashMap<>();
+    private final Function<String, String> build;
+    ReceiptTemplates(Function<String, String> build) { this.build = build; }
+
+    String forGarage(String garage) { return cache.computeIfAbsent(garage, build); }   // built once per key
+}
+```
+
+The checker gives both versions a deliberately slow builder and 16 threads: the mess builds the same template several times; `computeIfAbsent` builds each exactly once.
+
+**Rules for the function you pass to `compute*`/`merge`:**
+
+- **Keep it short.** Other updates to the map (at least to the same key, possibly neighbours) can block while it runs. Building a template is fine; calling a remote service is not — load outside, then `putIfAbsent`.
+- **Never touch other keys of the same map inside it.** The docs forbid it; depending on timing it can throw `IllegalStateException` ("Recursive update") or deadlock.
+- **`null` means absent.** `ConcurrentHashMap` rejects `null` keys and values; a `compute` function returning `null` removes the entry.
+
+**Other contracts worth one line each:** `size()` and `isEmpty()` are estimates while updates are in flight; iterators are *weakly consistent* — they never throw `ConcurrentModificationException` and may or may not show updates made during iteration. **`CopyOnWriteArrayList`** copies the whole array on every write, so iteration needs no lock: ideal for listener lists that are read on every event and changed once a week (the behavioral lesson's Observer used it), terrible for anything written often. **`BlockingQueue`** gets its own chapter.
+
+<Trace title="The safe map that lied" steps={maps} takeaway="Thread-safe structure ≠ thread-safe usage. Collapse every read-modify-write into one atomic call — merge, compute, computeIfAbsent, putIfAbsent — and keep the function short." />
+
+**Catch the trap:** *"I'll check `containsKey` first, then `putIfAbsent`, to be safe."* The `containsKey` adds nothing — `putIfAbsent` (or `computeIfAbsent`) is already the atomic check-and-act. Two calls are never safer than one.
+
+**Say it aloud:** *"counts.put(k, counts.get(k) + 1) is a race even on a ConcurrentHashMap — two atomic calls aren't one. merge(k, 1, Integer::sum) makes it a single atomic operation per key."*
+
+<h2 id="immutability">Chapter 7 · Nothing to guard</h2>
+
+<Scene chapter="Chapter 7" title="Nothing to guard" mood="dawn">
+
+Twice a year Bram changes the tariff. Every exit reads it, thousands of times an hour.
+
+Your first version guards it with a read-write lock. Your second guards it with `StampedLock`. Wren reads both and asks a question that sounds like a joke.
+
+*"What if nobody could change it?"*
+
+"Bram changes it twice a year."
+
+*"No. What if nobody could change* that one*?"*
+
+</Scene>
+
+Rung 0 on the ladder. **An immutable object needs no synchronisation at all** — threads can share it freely because there is nothing to race on. JCiP's recipe: its state can't change after construction; all fields are `final`; it is *properly constructed* (`this` does not escape the constructor); and any mutable input is copied, not kept.
+
+When the tariff "changes", you don't change it. You **build a new one and swap a single reference**:
+
+```java group=tariffs
+record Tariff(long carPerHour, long bikePerHour, Map<String, Long> surcharges) {
+    Tariff {
+        if (carPerHour < 0 || bikePerHour < 0) throw new IllegalArgumentException("negative rate");
+        surcharges = Map.copyOf(surcharges);         // defensive copy: the caller keeps no handle on our state
+    }
+}
+
+class TariffBoard {
+    private final AtomicReference<Tariff> current;
+
+    TariffBoard(Tariff initial) { current = new AtomicReference<>(initial); }
+
+    Tariff current() { return current.get(); }       // readers never lock, never see half an update
+    void publish(Tariff next) { current.set(next); }  // one reference write publishes every field at once
+
+    Tariff raiseCarRate(long by) {                    // read-modify-write on the whole value: a CAS loop inside
+        return current.updateAndGet(t -> new Tariff(t.carPerHour() + by, t.bikePerHour(), t.surcharges()));
+    }
+}
+```
+
+The checker has 16 threads raise the car rate by 1, 1,000 times each, and the final rate is exactly 16,000 higher; it also checks that editing the caller's map after construction changes nothing, and that the record's map refuses writes. A record gives you `final` fields, but **only shallow immutability** — without `Map.copyOf`, a caller who keeps the map could still change your tariff.
+
+<h3 id="safe-publication">Safe publication</h3>
+
+An object is only as safe as the way other threads get hold of it. *Publishing* it safely means giving the reader a happens-before edge to the end of its construction. The four idioms (JCiP §3.5):
+
+1. Initialise it from a **static initialiser** (the holder idiom).
+2. Store the reference in a **`volatile` field or an `AtomicReference`** (`TariffBoard`).
+3. Store it in a **`final` field** of a properly constructed object.
+4. Store it in a field **guarded by a lock**, or put it in a **concurrent collection**.
+
+`final` fields have one extra guarantee (JLS 17.5): a thread that sees a reference to a properly constructed object sees its `final` fields fully initialised — even if the reference reached it through a data race. That is why immutable objects are safe *however* you share them, and why letting `this` escape breaks the promise:
+
+```java fragment
+class GateMonitor {
+    private final int gate;
+    GateMonitor(int gate, EventBus bus) {
+        bus.register(this);   // 'this' escapes: the bus's thread may call onEvent() and see gate == 0
+        this.gate = gate;
+    }
+}
+```
+
+Register from a factory method *after* the constructor returns.
+
+**Two values that must agree** get the same treatment — the War Room's <a href={`${BASE}lld/war/patterns-why/#15-copy-on-write-registry--two-maps-that-must-swap-together`}>copy-on-write registry</a> had two lookup maps that must never be seen half-refreshed. Production built both, then swapped one reference:
+
+```java group=tariffs
+record Lookups(Map<String, Integer> spotByPlate, Map<Integer, String> plateBySpot) {
+    Lookups {
+        spotByPlate = Map.copyOf(spotByPlate);
+        plateBySpot = Map.copyOf(plateBySpot);
+    }
+}
+
+class LookupCache {
+    private volatile Lookups lookups = new Lookups(Map.of(), Map.of());
+
+    Lookups read() { return lookups; }               // read once, then use that one consistent pair
+
+    void refresh(Map<String, Integer> spots) {       // build both maps, then publish them together
+        Map<Integer, String> inverse = new HashMap<>();
+        spots.forEach((plate, spot) -> inverse.put(spot, plate));
+        lookups = new Lookups(spots, inverse);
+    }
+}
+```
+
+The checker refreshes between two layouts while readers check that every plate's spot maps back to that plate — always true. (Readers must call `read()` **once** and use the result; calling it twice could give you one pair from each refresh.) The War Room's <a href={`${BASE}sd/war/concurrency-and-races/#race-3--a-half-updated-cache`}>concurrency dossier</a> states the rule: *when two pieces of state share an invariant, don't guard them with a lock — merge them into one value and swap the pointer.*
+
+<h3 id="confinement">Thread confinement</h3>
+
+The other way to need no lock: **only one thread ever touches the object.**
+
+- **Stack confinement.** Local variables live on one thread's stack. A `StringBuilder` created inside a method needs no lock. (This is also why `SimpleDateFormat` in a shared `static` field is a classic bug — it's mutable — while `DateTimeFormatter` is immutable and safe to share.)
+- **`ThreadLocal`.** One copy per thread. Useful, and dangerous on pools: pool threads are reused, so a value left behind leaks into the next task, and a value set on the submitting thread is simply absent on the pool thread. That is the War Room's <a href={`${BASE}lld/war/patterns-why/#5-decorator--the-bug-threadlocals-cause-at-thread-boundaries`}>decorator dossier bug</a>: writes landing under a default tenant. Capture context before submit, restore inside the task, clear in `finally`.
+- **Single writer.** One thread owns the state; others send it messages through a queue (Chapter 11). Event loops and actors are built on this.
+
+<Trace title="Nothing to guard" steps={publication} takeaway="Immutable values need no lock; change them by swapping one reference. Publish through volatile, AtomicReference, final, a lock or a concurrent collection — and never let this escape a constructor." />
+
+**Catch the trap:** *"A record is immutable, so it's thread-safe."* A record's fields are final; the objects they point to may not be. A record holding a `List` you didn't copy is one `list.add` away from a data race.
+
+**Say it aloud:** *"The tariff is an immutable record. A change builds a new one and swaps an AtomicReference, so thousands of readers never lock and never see half a tariff."*
+
+<Part n="Part Four" title="Threads as a budget">
+
+Pools, bounded queues, rejection, sizing — and futures that compose without blocking.
+
+</Part>
+
+<h2 id="executors">Chapter 8 · Never raw threads</h2>
+
+<Scene chapter="Chapter 8" title="Never raw threads" mood="storm">
+
+The app goes live on a Saturday. Each request starts a `new Thread` to check the plate against the stolen-car service, which is slow today.
+
+By 11 a.m. the server has 9,000 threads. By 11:04 it has an `OutOfMemoryError: unable to create native thread`, and Copperline's barriers stop lifting at all.
+
+Wren reads the stack trace on her phone in the queue for coffee.
+
+*"How many threads did you decide to allow?"*
+
+"I didn't decide."
+
+*"Yes,"* she says. *"That's the bug."*
+
+</Scene>
+
+A raw `new Thread()` per task has no limit, no reuse, no queue and no policy for overload. An **executor** separates *submitting work* from *how it runs*, and makes every one of those choices explicit. In an interview, build the pool yourself so the choices are visible:
+
+```java group=pools
+ThreadPoolExecutor gatePool() {
+    return new ThreadPoolExecutor(
+        4, 8,                                       // core, max
+        60, TimeUnit.SECONDS,                       // idle keep-alive for the extra 4
+        new ArrayBlockingQueue<>(100),              // BOUNDED queue: unbounded turns overload into OOM
+        named("gate-worker"),                       // names you can read in a thread dump
+        new ThreadPoolExecutor.CallerRunsPolicy()); // rejection = back-pressure, not silent drop
+}
+
+ThreadFactory named(String prefix) {
+    AtomicInteger n = new AtomicInteger();
+    return task -> new Thread(task, prefix + "-" + n.incrementAndGet());
+}
+```
+
+**How a `ThreadPoolExecutor` decides, in order** — and the order surprises people:
+
+1. Fewer than **core** threads running? Start a new thread, even if others are idle.
+2. Otherwise **queue** the task.
+3. Queue full? Start a thread, up to **max**.
+4. At max and queue full? **Reject** — hand the task to the rejection policy.
+
+So the extra threads only appear when the queue is *full*. With the pool above and tasks that block: tasks 1–4 start core threads, tasks 5–104 wait in the queue, tasks 105–108 start threads 5–8, and **task 109 is rejected** — under `CallerRunsPolicy`, it runs on the submitting thread. The checker submits exactly that sequence and asserts every number: pool size 4 after four tasks, queue 1 after the fifth, pool 8 and queue 100 after 108, and task 109 ran on the caller.
+
+| Rejection policy | What happens to the rejected task | Use when |
+|---|---|---|
+| `AbortPolicy` (default) | `RejectedExecutionException` | The caller can handle "too busy" (return 503) |
+| `CallerRunsPolicy` | Runs on the submitting thread | Natural throttle: the producer slows to the pool's pace |
+| `DiscardPolicy` | Dropped silently | Almost never — losing work silently is how incidents start |
+| `DiscardOldestPolicy` | Drops the oldest queued task, retries | Only the latest value matters (a sensor reading) |
+
+**The `Executors` factory methods hide those choices** — read their source once and you'll stop using some of them in production:
+
+| Factory | What it builds | The trap |
+|---|---|---|
+| `newFixedThreadPool(n)` | n threads, **unbounded** `LinkedBlockingQueue` | Overload queues forever: memory, not back-pressure (the checker confirms the queue's capacity is `Integer.MAX_VALUE`) |
+| `newCachedThreadPool()` | 0 core, **unbounded max**, `SynchronousQueue`, 60 s idle | Overload creates threads without limit — the Saturday outage |
+| `newSingleThreadExecutor()` | 1 thread, unbounded queue | Ordered execution; same unbounded queue |
+| `newScheduledThreadPool(n)` | n threads, delayed tasks | See below |
+
+Interview sentences that matter: **bound the queue** (an unbounded queue means "max threads" never triggers and overload becomes memory death); **choose the rejection policy out loud**; **name your threads**.
+
+<h3 id="sizing">How many threads?</h3>
+
+The sizing heuristic from *Java Concurrency in Practice*:
+
+- **CPU-bound** work: about **one thread per core** (JCiP suggests cores + 1). More threads only add context switches.
+- **IO-bound** work: **threads ≈ cores × (1 + wait / compute)**. While a thread waits on the network, a core is free for another.
+
+```java group=pools
+int threadsFor(int cores, double waitMs, double computeMs) {   // cores x (1 + wait/compute)
+    return (int) Math.round(cores * (1 + waitMs / computeMs));
+}
+```
+
+Worked numbers: the stolen-car check spends 90 ms waiting and 10 ms computing per request; on 8 cores that is 8 × (1 + 90/10) = **80** threads (checked). Two caveats to say out loud: the downstream service has its own limit — 80 threads hammering a service that handles 20 is a bulkhead you forgot; and Little's law (in-flight = arrival rate × time in system) gives the same answer from the other side — the <a href={`${BASE}sd/lessons/estimation/`}>estimation lesson</a> covers it. Measure, then tune.
+
+<h3 id="shutdown">Always shut down</h3>
+
+Pool threads are non-daemon by default: forget to shut the pool down and the JVM never exits. The JDK's own recommended shape:
+
+```java group=pools
+void shutdownGracefully(ExecutorService pool, long timeout, TimeUnit unit) {
+    pool.shutdown();                                    // stop accepting; queued tasks still run
+    try {
+        if (!pool.awaitTermination(timeout, unit)) {
+            pool.shutdownNow();                         // interrupt running tasks, drop the queue
+            pool.awaitTermination(timeout, unit);
+        }
+    } catch (InterruptedException e) {
+        pool.shutdownNow();
+        Thread.currentThread().interrupt();             // keep the interrupt for our caller
+    }
+}
+```
+
+(`ExecutorService` became `AutoCloseable` in Java 19, so on 19+ `try (var pool = …)` does a version of this for you. On 17, you write it.)
+
+**Exceptions disappear in two different ways.** A task given to `execute()` that throws kills its worker thread and goes to the thread's uncaught-exception handler (printed to stderr by default). A task given to `submit()` that throws is captured in its `Future` — and **if nobody calls `get()`, it is never seen at all.**
+
+**Scheduled tasks die quietly.** `scheduleAtFixedRate` stops the task forever after the first run that throws ("subsequent executions are suppressed"); the checker confirms it. Guard the body:
+
+```java group=pools
+ScheduledFuture<?> every(ScheduledExecutorService timer, long periodMs, Runnable tick) {
+    return timer.scheduleAtFixedRate(() -> {
+        try {
+            tick.run();
+        } catch (RuntimeException e) {                  // one throw would cancel every future run
+            System.err.println("tick failed, will retry next period: " + e);
+        }
+    }, 0, periodMs, TimeUnit.MILLISECONDS);
+}
+```
+
+(`scheduleAtFixedRate` keeps a steady *rate* — a late run is followed quickly by the next, never concurrently; `scheduleWithFixedDelay` keeps a steady *gap* after each run ends.)
+
+And the trap from the structural lesson: thread pools drop `ThreadLocal` context — <a href={`${BASE}lld/war/patterns-why/#5-decorator--the-bug-threadlocals-cause-at-thread-boundaries`}>the decorator dossier bug</a> — capture context before submit, restore inside the task, clear in `finally`.
+
+<h3 id="virtual-threads">A look ahead: virtual threads (Java 21)</h3>
+
+Everything above assumes platform threads: one OS thread each, about a megabyte of stack reserved, thousands at most. Java 21 (JEP 444) made **virtual threads** final: threads scheduled by the JVM onto a few carrier threads, so cheap that you can have a million. When a virtual thread blocks on IO, it unmounts and its carrier runs another one. This page targets Java 17, so this block is not compiled:
+
+```java fragment
+// Java 21+: one cheap thread per task, no pool to size
+try (ExecutorService perTask = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (String plate : plates) perTask.submit(() -> stolenCars.check(plate));   // blocking IO is fine here
+}
+```
+
+What changes in an interview answer: for **IO-bound** work you stop sizing pools (the formula above) and **limit the downstream with a `Semaphore`** instead (Chapter 10) — don't pool virtual threads. What doesn't change: races, visibility and locks are exactly the same; CPU-bound work gains nothing; and on Java 21 a virtual thread that blocks *inside* `synchronized` stays pinned to its carrier (JDK 24's JEP 491 removed that limitation), which is one more reason `ReentrantLock` appears in code written for 21.
+
+<Trace title="The pool decides" steps={pools} takeaway="Bounded queue, named threads, an explicit rejection policy, sized from wait/compute — and always shut it down. Threads beyond core appear only when the queue is full." />
+
+**Catch the trap:** *"I set max = 50, so under load it grows to 50 threads."* Not with an unbounded queue — the queue never fills, so it never grows past core. `newFixedThreadPool` and an unbounded `LinkedBlockingQueue` with a bigger max are the same pool.
+
+**Say it aloud:** *"A ThreadPoolExecutor with a bounded ArrayBlockingQueue and CallerRunsPolicy, so overload slows the producers instead of eating memory. It's IO-bound — 90 ms waiting per 10 ms of work — so about cores × 10 threads, capped by what the downstream can take. And I shut it down in a finally."*
+
+<h2 id="futures">Chapter 9 · The quote that waited for loyalty</h2>
+
+<Scene chapter="Chapter 9" title="The quote that waited for loyalty" mood="dusk">
+
+The exit screen shows a price before the barrier lifts. To compute it, the app asks the tariff service for the fee and the loyalty service for a discount. One after the other.
+
+The tariff service answers in 40 milliseconds. The loyalty service answers in 40 milliseconds on a good day, and on a bad day in nine seconds, or never.
+
+On a bad day, nobody leaves Copperline.
+
+Wren draws two arrows side by side instead of end to end. *"Why is the second call waiting for the first? And why is the barrier waiting for a discount?"*
+
+</Scene>
+
+A `Future` is a handle to a result that isn't ready yet; `get()` blocks for it (always give it a timeout). **`CompletableFuture`** lets you say what to do *when* it's ready — combine, chain, fall back — without blocking a thread to wait:
+
+```java group=quotes
+interface Tariffs { long feeFor(String plate); }                    // a remote call
+interface Loyalty { long discountFor(String plate); }               // a slower, flakier one
+interface Payments { String charge(String plate, long amount); }
+
+class QuoteService {
+    private final Tariffs tariffs;
+    private final Loyalty loyalty;
+    private final Payments payments;
+    private final ExecutorService io;                                // our pool, not the common pool
+
+    QuoteService(Tariffs tariffs, Loyalty loyalty, Payments payments, ExecutorService io) {
+        this.tariffs = tariffs;
+        this.loyalty = loyalty;
+        this.payments = payments;
+        this.io = io;
+    }
+
+    CompletableFuture<Long> quote(String plate) {
+        CompletableFuture<Long> fee = CompletableFuture.supplyAsync(() -> tariffs.feeFor(plate), io);
+        CompletableFuture<Long> discount = CompletableFuture
+            .supplyAsync(() -> loyalty.discountFor(plate), io)
+            .completeOnTimeout(0L, 200, TimeUnit.MILLISECONDS)       // slow loyalty: no discount, no waiting
+            .exceptionally(e -> 0L);                                 // broken loyalty: no discount, no error
+        return fee.thenCombine(discount, (f, d) -> Math.max(0, f - d));   // both calls run at once
+    }
+
+    CompletableFuture<String> checkout(String plate) {
+        return quote(plate)
+            .thenCompose(amount -> CompletableFuture.supplyAsync(() -> payments.charge(plate, amount), io))
+            .handle((ref, e) -> e == null ? "PAID " + ref : "FAILED " + rootCause(e).getMessage());
+    }
+
+    private Throwable rootCause(Throwable e) {
+        while ((e instanceof CompletionException || e instanceof ExecutionException) && e.getCause() != null)
+            e = e.getCause();
+        return e;
+    }
+}
+```
+
+With fakes, the checker confirms: fee 60 and discount 20 quote **40**; a loyalty service that sleeps two seconds still quotes 60 in well under a second; one that throws quotes 60; a tariff failure surfaces from `join()` as a `CompletionException` whose cause is the original; and a declined card turns `checkout` into `FAILED card declined`.
+
+<Figure caption="The quote: two calls in parallel, a fallback on the flaky branch, then a dependent call composed on the result.">
+  <Mermaid code={`flowchart LR
+    Q["quote(plate)"] --> F["fee\nsupplyAsync"]
+    Q --> D["discount\nsupplyAsync"]
+    D --> T["completeOnTimeout 0\nexceptionally 0"]
+    F --> C["thenCombine\nmax(0, fee - discount)"]
+    T --> C
+    C --> P["thenCompose\ncharge(amount)"]
+    P --> H["handle\nPAID or FAILED"]`} />
+</Figure>
+
+The vocabulary, matched to what each does:
+
+| Method | Use it when |
+|---|---|
+| `thenApply(f)` | Transform the result: `T → U` |
+| `thenCompose(f)` | The next step is itself async: `T → CompletableFuture<U>` (flat-map; `thenApply` would give you a future of a future) |
+| `thenCombine(other, f)` | Two independent futures, one result |
+| `allOf(...)` / `anyOf(...)` | Wait for all / the first of many (`allOf` gives `Void`; read each future after it) |
+| `exceptionally(f)` | Recover from failure with a value |
+| `handle((value, error) -> …)` | See both outcomes, return a new value — success or failure |
+| `whenComplete((value, error) -> …)` | Observe (log, metrics) without changing the outcome — a failure stays a failure |
+| `orTimeout` / `completeOnTimeout` | Fail / fall back after a deadline (Java 9+) |
+
+**Exception handling, precisely.** `join()` throws an unchecked `CompletionException`; `get()` throws a checked `ExecutionException`; both wrap the real cause. Inside `exceptionally` or `handle` the throwable you receive is often a `CompletionException` too — when `supplyAsync`'s function throws, the future is completed with a `CompletionException` wrapping it (the checker asserts this) — so unwrap with `getCause()` before you inspect it, as `rootCause` does.
+
+**Three traps, one line each.** Without an executor argument, `supplyAsync` runs on `ForkJoinPool.commonPool()`, shared by the whole JVM and sized for CPU work — **blocking IO there starves everyone**; pass your own pool. `completeOnTimeout` gives you a value but **does not stop the slow call** — it still occupies a pool thread until it returns, so the underlying client needs its own timeout. And `cancel(true)` on a `CompletableFuture` does not interrupt the running task (the docs say the flag "has no effect").
+
+<Trace title="Compose, don't wait" steps={futures} takeaway="Independent calls in parallel with thenCombine; dependent calls with thenCompose; fallbacks with exceptionally or completeOnTimeout; your own executor for IO; unwrap CompletionException before you look at the cause." />
+
+<Reveal q="Why not just call fee.get() and discount.get() one after the other — they're already running in parallel?">
+
+They are running in parallel, so the total wait is roughly the slower of the two, which is fine — but the calling thread is **blocked** for that time, and on a bad day `discount.get()` without a timeout blocks forever. With a timeout you've rebuilt `completeOnTimeout` by hand, plus exception unwrapping, on every call site. Composition keeps the thread free, puts the fallback next to the call it protects, and lets the caller decide whether to block (`join()`), or keep composing.
+
+</Reveal>
+
+**Catch the trap:** *"`whenComplete` handles the error."* It observes it. The future it returns is still failed with the same exception. Recover with `exceptionally` or `handle`.
+
+**Say it aloud:** *"Fee and discount are independent, so they run in parallel and combine. Loyalty is optional, so it gets completeOnTimeout and exceptionally to fall back to zero. Payment depends on the amount, so that's thenCompose. All on our IO pool, not the common pool."*
+
+<Part n="Part Five" title="Waiting for each other">
+
+Latches, barriers, semaphores, producer-consumer — and the day two threads waited for each other forever.
+
+</Part>
+
+<h2 id="coordination">Chapter 10 · Three gates, one bell</h2>
+
+<Scene chapter="Chapter 10" title="Three gates, one bell" mood="dawn">
+
+At six every morning the three gates run their self-checks. Copperline opens when all three report healthy — not before.
+
+At midnight, the night audit closes the books: each gate tallies its own takings, then somebody adds them up. Every night. And there are three EV chargers and, on a good evening, eleven electric cars.
+
+Wren lists the three problems on the whiteboard: *wait for N things once; meet at a line every night; share 3 of something among 11.*
+
+*"Three problems,"* she says. *"The JDK has a class for each. Don't you dare write a while loop."*
+
+</Scene>
+
+```java group=coord
+boolean openWhenAllGatesReady(ExecutorService pool, List<Runnable> selfChecks,
+                              long timeout, TimeUnit unit) throws InterruptedException {
+    CountDownLatch ready = new CountDownLatch(selfChecks.size());
+    for (Runnable check : selfChecks) {
+        pool.execute(() -> {
+            check.run();                           // throws if the gate is broken...
+            ready.countDown();                     // ...so a broken gate never counts down
+        });
+    }
+    return ready.await(timeout, unit);            // false: some gate never reported; stay closed
+}
+
+class NightAudit {
+    private final LongAdder tonight = new LongAdder();
+    final List<Long> nights = Collections.synchronizedList(new ArrayList<>());
+    private final CyclicBarrier allGatesIn;
+
+    NightAudit(int gates) {
+        allGatesIn = new CyclicBarrier(gates, () -> nights.add(tonight.sumThenReset()));
+        // the barrier action runs once per night, after the last gate arrives, before anyone leaves
+    }
+
+    void gateClosed(long takings) throws InterruptedException, BrokenBarrierException, TimeoutException {
+        tonight.add(takings);
+        allGatesIn.await(5, TimeUnit.SECONDS);    // wait for the other gates; then the barrier resets
+    }
+}
+
+class ChargerBank {
+    private final Semaphore chargers;
+
+    ChargerBank(int count) { chargers = new Semaphore(count, true); }   // fair: first come, first charged
+
+    boolean charge(Runnable session, long timeout, TimeUnit unit) throws InterruptedException {
+        if (!chargers.tryAcquire(timeout, unit)) return false;          // all busy: don't wait forever
+        try {
+            session.run();
+            return true;
+        } finally {
+            chargers.release();                                         // in finally, and only after a successful acquire
+        }
+    }
+}
+```
+
+The checker: three healthy gates open the lot, a broken one keeps it closed after the timeout; three gates × 50 nights produce 50 correct totals in order; and 20 cars on 3 chargers never have more than 3 sessions running at once (and do reach 3).
+
+| Class | Shape | Reusable? | Classic use |
+|---|---|---|---|
+| `CountDownLatch(n)` | Waiters block until `countDown()` has been called n times | No — one-shot | Start when N services are ready; wait for N tasks to finish |
+| `CyclicBarrier(n, action)` | n threads wait for each other at a line; optional action runs once per round | Yes — resets each round | Phased computation: everyone finishes round k before anyone starts k+1 |
+| `Semaphore(permits)` | `acquire` takes a permit, `release` returns one | Yes | Bound access to N resources: chargers, DB connections, calls to a fragile service |
+
+Details that come up:
+
+- **A broken barrier breaks for everyone.** If one party times out or is interrupted, the others get `BrokenBarrierException` — useful: nobody waits forever for a dead gate.
+- **Semaphore permits aren't owned.** Any thread can `release`, and releasing more than you acquired *creates* permits — four chargers on a three-charger bank. Release only in the `finally` of a successful acquire, as above.
+- **The happens-before edges come free:** everything before `countDown()` is visible after `await()` returns; everything before `barrier.await()` is visible in the barrier action and after.
+
+<Trace title="Pick the coordinator" steps={coord} takeaway="Wait for N things once: CountDownLatch. Meet at a line every round: CyclicBarrier. Share K resources among many: Semaphore — acquire with a timeout, release in finally." />
+
+**Catch the trap:** *"I'll limit concurrency to the downstream with a fixed thread pool of 3."* That works only if every call goes through that pool. A `Semaphore(3)` around the call limits it no matter which thread — or, on Java 21, which of a million virtual threads — makes it.
+
+**Say it aloud:** *"Three chargers is a Semaphore with three permits. Drivers tryAcquire with a timeout so the app can say 'all busy', and release is in a finally."*
+
+<h2 id="producer-consumer">Chapter 11 · The printer that fell behind</h2>
+
+<Scene chapter="Chapter 11" title="The printer that fell behind" mood="night">
+
+Four gates print tickets on one thermal printer. The gates queue print jobs in a list; the printer thread drains it.
+
+On a rainy Monday the printer jams for an hour. The gates keep adding jobs. By the time someone clears the jam the list holds 1.4 million tickets and the server is swapping.
+
+"The queue should have *told* the gates to slow down," says Oona.
+
+Wren writes two words on a sticky note and hands it to you: *bounded* and *blocks*.
+
+*"Now the interviewer says: build that queue yourself."*
+
+</Scene>
+
+**Producer-consumer** decouples the threads that make work from the threads that do it. The JDK's `BlockingQueue` is the whole pattern: `put` waits while full, `take` waits while empty. **Bounded** — `ArrayBlockingQueue(capacity)` — is the point: a full queue blocks producers, which is **back-pressure**: the system slows down instead of falling over.
+
+```java group=spooler
+class PrintSpooler {
+    private static final String POISON = new String("no more tickets");  // compared by identity, never printed
+    private final BlockingQueue<String> jobs;
+    private final List<String> printed = new ArrayList<>();             // only the printer thread touches it
+    private final ExecutorService printer = Executors.newSingleThreadExecutor();
+    private final Future<List<String>> done;
+
+    PrintSpooler(int capacity) {
+        jobs = new ArrayBlockingQueue<>(capacity);                     // bounded: a jam can't bury the server
+        done = printer.submit(() -> {
+            for (String job = jobs.take(); job != POISON; job = jobs.take()) printed.add(job);
+            return printed;
+        });
+    }
+
+    void print(String ticket) throws InterruptedException { jobs.put(ticket); }   // blocks while full
+
+    List<String> close(long timeout, TimeUnit unit) throws Exception {
+        jobs.put(POISON);                                              // queued behind every real job
+        try {
+            return done.get(timeout, unit);                            // get() makes the list safe to read here
+        } finally {
+            printer.shutdownNow();
+        }
+    }
+}
+```
+
+The *poison pill* is a sentinel the consumer recognises as "stop"; it's queued behind every real job, so nothing is lost. (With several consumers, send one pill each.) The checker runs 8 gates × 1,000 tickets through a 16-slot spooler: every ticket printed exactly once, and each gate's tickets in the order that gate sent them.
+
+| Operation | Full / empty queue | Use |
+|---|---|---|
+| `put` / `take` | Block until possible | Producer must slow down; consumer has nothing else to do |
+| `offer(e, t, unit)` / `poll(t, unit)` | Wait up to a timeout, then `false` / `null` | Back-pressure with a deadline ("printer busy") |
+| `offer(e)` / `poll()` | Return immediately | Drop or do something else |
+| `add(e)` / `remove()` | Throw | Rarely what you want |
+
+<h3 id="wait-notify">Building it: wait and notifyAll (once)</h3>
+
+The interviewer asks you to build the queue. The oldest tool is the object's own monitor: `wait()` releases the monitor and sleeps until notified; `notifyAll()` wakes every waiter. Both must be called while holding the monitor.
+
+```java id=monitorQueue
+class MonitorQueue<T> {
+    private final Queue<T> items = new ArrayDeque<>();   // guarded by this
+    private final int capacity;
+
+    MonitorQueue(int capacity) { this.capacity = capacity; }
+
+    synchronized void put(T item) throws InterruptedException {
+        while (items.size() == capacity) wait();         // WHILE: re-check after every wake-up
+        items.add(item);
+        notifyAll();                                      // wakes producers AND consumers; the wrong ones sleep again
+    }
+
+    synchronized T take() throws InterruptedException {
+        while (items.isEmpty()) wait();
+        T item = items.remove();
+        notifyAll();
+        return item;
+    }
+}
+```
+
+**Why `while` and never `if`:** a waiting thread can wake up when the condition is not true — (1) **spurious wakeups**: the `Object.wait` documentation says a thread can wake without being notified, and that waits "should always occur in loops"; (2) **stolen wakeups**: you were woken because an item arrived, but between the wake-up and getting the monitor back, another consumer took it. Only re-checking the condition is safe.
+
+**Why `notifyAll` and not `notify` here:** producers and consumers wait on the *same* monitor. `notify` wakes one arbitrary waiter — a consumer's `notify` can wake another consumer while every producer sleeps, and the program stalls. `notifyAll` is correct but wakes everyone to re-fight for the lock. That waste is why the real version uses two conditions.
+
+<h3 id="bounded-queue">Classic build 1 · The bounded blocking queue — the king</h3>
+
+```java group=queue
 class BoundedQueue<T> {
     private final Queue<T> items = new ArrayDeque<>();
     private final int capacity;
@@ -108,14 +1336,22 @@ class BoundedQueue<T> {
     private final Condition notFull  = lock.newCondition();
     private final Condition notEmpty = lock.newCondition();
 
+    BoundedQueue(int capacity) {
+        if (capacity <= 0) throw new IllegalArgumentException("capacity must be positive");
+        this.capacity = capacity;
+    }
+
     void put(T item) throws InterruptedException {
         lock.lock();
         try {
             while (items.size() == capacity) notFull.await();   // WHILE, never if — spurious wakeups
-            items.add(item);                                    // + another consumer may beat you
-            notEmpty.signal();
-        } finally { lock.unlock(); }
+            items.add(item);                                    // + another producer may beat you
+            notEmpty.signal();                                  // wake one consumer, not every thread
+        } finally {
+            lock.unlock();
+        }
     }
+
     T take() throws InterruptedException {
         lock.lock();
         try {
@@ -123,51 +1359,798 @@ class BoundedQueue<T> {
             T item = items.poll();
             notFull.signal();
             return item;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    boolean offer(T item, long timeout, TimeUnit unit) throws InterruptedException {
+        long nanos = unit.toNanos(timeout);
+        lock.lock();
+        try {
+            while (items.size() == capacity) {
+                if (nanos <= 0) return false;                   // still full at the deadline
+                nanos = notFull.awaitNanos(nanos);              // returns the time left
+            }
+            items.add(item);
+            notEmpty.signal();
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    int size() {
+        lock.lock();
+        try { return items.size(); } finally { lock.unlock(); }
+    }
+}
+```
+
+The three graded lines: **`while` around `await`** (spurious wakeups + stolen wakeups make `if` a bug), **two conditions** (producers and consumers wake only their counterparts — with one condition or `wait/notifyAll` everyone wakes and re-fights), **`finally { unlock() }`**. Then the closer: *"in production I'd use `ArrayBlockingQueue` — this is what's inside it"* (one `ReentrantLock` with exactly these two conditions; `LinkedBlockingQueue` uses separate put and take locks).
+
+<Figure caption="One lock, two waiting rooms. A put wakes one waiting consumer; a take wakes one waiting producer.">
+  <Mermaid code={`classDiagram
+    class BoundedQueue~T~ {
+      -Queue items
+      -int capacity
+      -ReentrantLock lock
+      -Condition notFull
+      -Condition notEmpty
+      +put(T item)
+      +take() T
+      +offer(T item, long timeout, TimeUnit unit) boolean
+      +size() int
+    }`} />
+</Figure>
+
+The checker hammers it: 8 producers and 8 consumers move 80,000 items through a capacity-4 queue while an observer thread samples `size()` and asserts it never exceeds 4; every item arrives exactly once; one producer and one consumer see strict FIFO; a `put` on a full queue is still blocked after 100 ms and completes as soon as a `take` frees a slot; `offer` with a 50 ms timeout on a full queue returns `false`. The same harness runs `MonitorQueue`.
+
+**And the `if` version really breaks.** This is the bug graders plant:
+
+```java id=ifQueueMess
+class IfQueue<T> {
+    private final Queue<T> items = new ArrayDeque<>();
+    private final int capacity;
+    private final ReentrantLock lock = new ReentrantLock();
+    private final Condition notFull = lock.newCondition(), notEmpty = lock.newCondition();
+
+    IfQueue(int capacity) { this.capacity = capacity; }
+
+    void put(T item) throws InterruptedException {
+        lock.lock();
+        try {
+            if (items.size() == capacity) notFull.await();     // IF: no re-check after waking
+            items.add(item);
+            notEmpty.signal();
+        } finally { lock.unlock(); }
+    }
+
+    T take() throws InterruptedException {
+        lock.lock();
+        try {
+            if (items.isEmpty()) notEmpty.await();
+            T item = items.poll();                             // may be null: someone else took it
+            notFull.signal();
+            return item;
         } finally { lock.unlock(); }
     }
 }
 ```
 
-The three graded lines: **`while` around `await`** (spurious wakeups + stolen wakeups make `if` a bug), **two conditions** (producers and consumers wake only their counterparts — with one condition or `wait/notifyAll` everyone wakes and re-fights), **`finally { unlock() }`**. Then the closer: "in production I'd use `ArrayBlockingQueue` — this is what's inside it."
+`ReentrantLock` lets a newly arriving thread grab the lock ahead of one that was just signalled (*barging*), so stolen wakeups are routine. With 4 producers and 8 consumers on a capacity-2 queue, the checker sees `take()` return `null` — an item that was never put — on the first run, usually within milliseconds.
 
-### 2. Thread-safe LRU cache
+<Trace title="Producers and consumers" steps={queues} takeaway="Bounded queue = back-pressure. Wait in a while loop, signal the other side's condition, unlock in finally — and in production, use ArrayBlockingQueue." />
 
-Single-threaded LRU = `LinkedHashMap` with `accessOrder=true` + `removeEldestEntry`, or hand-rolled HashMap + doubly-linked list (the DSA version). Concurrency options, in answer order: (1) coarse lock around the whole thing — correct, contended, say it first; (2) segment/stripe the locks; (3) production answer: Caffeine-style — `ConcurrentHashMap` for the data plus a lossy queue of access events applied asynchronously, trading *exact* LRU order for throughput. Naming that trade-off is the gold move.
+**Your turn.** The interviewer adds: *"`take` should give up after a timeout and return `null`."* Write `poll(timeout, unit)` for `BoundedQueue`.
 
-### 3. Token-bucket rate limiter
+<HintLadder hints={hints.queue} labels={turn}>
 
-```java
-class TokenBucket {
-    private final long capacity, refillPerSec;
-    private double tokens; private long lastRefillNanos;
-    synchronized boolean tryAcquire() {
-        long now = System.nanoTime();
-        tokens = Math.min(capacity, tokens + (now - lastRefillNanos) / 1e9 * refillPerSec);
-        lastRefillNanos = now;
-        if (tokens < 1) return false;
-        tokens -= 1; return true;
+```java fragment
+T poll(long timeout, TimeUnit unit) throws InterruptedException {
+    long nanos = unit.toNanos(timeout);
+    lock.lock();
+    try {
+        while (items.isEmpty()) {
+            if (nanos <= 0) return null;          // still empty at the deadline
+            nanos = notEmpty.awaitNanos(nanos);   // time left; may be <= 0 on return
+        }
+        T item = items.poll();
+        notFull.signal();
+        return item;
+    } finally {
+        lock.unlock();
     }
 }
 ```
 
-Lazy refill (compute on access — no timer thread), `synchronized` because tokens+timestamp is a compound invariant. Per-key limiting: `ConcurrentHashMap<ClientId, TokenBucket>` + `computeIfAbsent` — which is the lazy-init race done *right*, closing the loop with rung 4. (Your SD wing has the distributed version; this is its in-process little sibling.)
+It is `offer`'s mirror image: same `awaitNanos` loop, the other condition, the other signal. (Shown as a fragment because it slots into the class above; `offer`, which the checker does test, is the same loop.) A `null` return is unambiguous because the queue, like every `BlockingQueue`, refuses `null` items — worth adding `Objects.requireNonNull(item)` to `put`.
 
-### 4. Safe lazy singleton
+</HintLadder>
 
-Covered in creational: enum or holder idiom; DCL needs `volatile`. In this module you can now say *why*: DCL without volatile is a **visibility + reordering** failure — disease 2.
+**Catch the trap:** *"I used `signal`, so I don't need `while`."* `signal` wakes one waiter, but doesn't hand it the lock: any other thread can get in first and change the state. And spurious wakeups happen regardless of who signalled. The loop is mandatory.
 
-## Deadlock — the one question you must not fumble
+**Say it aloud:** *"One ReentrantLock, two conditions: producers wait on notFull, consumers on notEmpty. Every await is in a while loop because of spurious and stolen wakeups. Unlock in finally. That's ArrayBlockingQueue's design."*
 
-Four conditions (mutual exclusion, hold-and-wait, no preemption, circular wait); you break **circular wait** with a **global lock order**:
+<h2 id="deadlock">Chapter 12 · Two wallets, two threads</h2>
 
-```java
-// transfer(a, b) and transfer(b, a) on two threads = classic deadlock.
-Account first  = a.id() < b.id() ? a : b;      // total order on lock acquisition
-Account second = a.id() < b.id() ? b : a;
-synchronized (first) { synchronized (second) { ledger.move(a, b, amt); } }
+<Scene chapter="Chapter 12" title="Two wallets, two threads" mood="storm">
+
+Copperline's app lets members gift parking credit to each other. Asha sends Ben 50. At the same instant, Ben sends Asha 20.
+
+Both requests hang. So does every later transfer touching Asha or Ben. CPU is at zero. Nothing is in the logs, because nothing is happening.
+
+Oona takes a thread dump and highlights two lines in yellow. Thread 14: *BLOCKED, waiting to lock wallet 2, holding wallet 1.* Thread 15: *BLOCKED, waiting to lock wallet 1, holding wallet 2.*
+
+Wren looks at the two lines for a long time. *"Each of them is doing exactly what you told it to. Which instruction was wrong?"*
+
+</Scene>
+
+**The mess.**
+
+```java id=transferMess
+class Wallet {
+    final int id;
+    long balance;                          // guarded by this wallet's monitor
+    Wallet(int id, long balance) { this.id = id; this.balance = balance; }
+}
+
+void transfer(Wallet from, Wallet to, long amount) {
+    synchronized (from) {                  // thread 1 holds Asha, wants Ben
+        synchronized (to) {                // thread 2 holds Ben, wants Asha
+            from.balance -= amount;
+            to.balance += amount;
+        }
+    }
+}
 ```
 
-Alternatives to name: `tryLock` with timeout + retry (livelock-aware), or a single coarser lock. Detection: thread dump shows two threads each `BLOCKED` on the other's monitor.
+`transfer(asha, ben)` and `transfer(ben, asha)` on two threads = classic deadlock. The checker runs exactly that pair in a loop and finds the deadlock with `ThreadMXBean.findDeadlockedThreads()` within milliseconds — then abandons those two threads (they will never finish) and moves on.
+
+**A deadlock needs all four Coffman conditions at once.** Break any one and it can't happen:
+
+| Condition | Meaning | How you'd break it |
+|---|---|---|
+| **Mutual exclusion** | A lock is held by one thread at a time | Don't lock: immutable values, atomics, one owner thread |
+| **Hold and wait** | Holding one lock while waiting for another | Take all locks at once, or one coarser lock |
+| **No preemption** | Nobody can take a lock away | `tryLock` with a timeout: give up what you hold and retry |
+| **Circular wait** | A cycle of threads each waiting for the next | **A global lock order** — the standard fix |
+
+<Figure caption="The cycle. Order the locks and the arrow from thread 2 can never point backwards.">
+  <Mermaid code={`flowchart LR
+    T1["Thread 1\ntransfer(Asha, Ben)"] -- holds --> A["Asha's lock"]
+    T1 -. waits for .-> B["Ben's lock"]
+    T2["Thread 2\ntransfer(Ben, Asha)"] -- holds --> B
+    T2 -. waits for .-> A`} />
+</Figure>
+
+**Fix 1: a total order on lock acquisition.** Always lock the lower id first, whichever direction the money moves:
+
+```java group=wallets
+class Wallet {
+    final int id;                          // unique: the lock order depends on it
+    private long balance;                  // guarded by this wallet's monitor
+    Wallet(int id, long balance) { this.id = id; this.balance = balance; }
+    synchronized long balance() { return balance; }
+}
+
+boolean transfer(Wallet from, Wallet to, long amount) {
+    if (from == to || amount <= 0) return false;
+    Wallet first  = from.id < to.id ? from : to;   // total order on lock acquisition
+    Wallet second = from.id < to.id ? to : from;
+    synchronized (first) {
+        synchronized (second) {
+            if (from.balance < amount) return false;
+            from.balance -= amount;
+            to.balance += amount;
+            return true;
+        }
+    }
+}
+```
+
+The order must be **total and stable**: unique ids work; `System.identityHashCode` can collide, which is why JCiP adds a third "tie-breaking" lock for that case.
+
+**Fix 2: give up and retry.** `tryLock` breaks *no preemption*: if you can't get the second lock, release the first and try again after a random pause:
+
+```java group=lockWallets
+enum Outcome { DONE, INSUFFICIENT, TIMED_OUT }
+
+class Wallet {
+    final int id;
+    final ReentrantLock lock = new ReentrantLock();
+    long balance;                          // guarded by lock
+    Wallet(int id, long balance) { this.id = id; this.balance = balance; }
+}
+
+Outcome transfer(Wallet from, Wallet to, long amount, long timeout, TimeUnit unit) {
+    long deadline = System.nanoTime() + unit.toNanos(timeout);
+    while (true) {
+        if (from.lock.tryLock()) {
+            try {
+                if (to.lock.tryLock()) {
+                    try {
+                        if (from.balance < amount) return Outcome.INSUFFICIENT;
+                        from.balance -= amount;
+                        to.balance += amount;
+                        return Outcome.DONE;
+                    } finally {
+                        to.lock.unlock();
+                    }
+                }
+            } finally {
+                from.lock.unlock();                // couldn't get both: let go of the first
+            }
+        }
+        if (System.nanoTime() >= deadline) return Outcome.TIMED_OUT;
+        LockSupport.parkNanos(ThreadLocalRandom.current().nextLong(1_000, 50_000));   // random backoff
+    }
+}
+```
+
+The checker runs both fixes with 16 threads × 20,000 random transfers among 10 wallets, both directions: every thread finishes inside its timeout, no balance ever goes negative, and the total money is exactly what it started as.
+
+**Livelock and starvation — the two cousins.** The random pause in fix 2 matters: two threads that back off for the *same* fixed time can collide, back off, and collide again forever — **livelock**: everyone busy, nobody progressing. Random jitter breaks the lock-step. **Starvation** is one thread never getting a turn while others do: an unfair lock that keeps letting newcomers barge in, a read-write lock whose readers never all leave, a low-priority thread. Fair locks and bounded waiting are the cures, at a throughput cost.
+
+**Diagnosis, out loud.** `jstack <pid>` (or `kill -3`) prints every thread's state, and HotSpot appends "Found one Java-level deadlock" with the cycle. In code, `ThreadMXBean.findDeadlockedThreads()` finds cycles over monitors and `java.util.concurrent` locks. The thread dump shows two threads each `BLOCKED` on the other's monitor; with `ReentrantLock` they show as `WAITING (parking)`.
+
+<Trace title="Two wallets" steps={deadlock} takeaway="Four conditions, all required. Break circular wait with a global lock order, or no-preemption with tryLock + random backoff. Diagnose with a thread dump." />
+
+**Catch the trap:** *"The JVM detects deadlocks and throws."* It doesn't. Deadlocked threads stay blocked forever; the only signals are a stuck feature and a thread dump. Nor does `synchronized` time out — that's what `tryLock` is for.
+
+**Say it aloud:** *"transfer(a, b) and transfer(b, a) take the same two locks in opposite orders — circular wait. I'll always lock the lower wallet id first. If ordering isn't possible, tryLock with a timeout and random backoff."*
+
+<Part n="Part Six" title="The classic builds">
+
+The stage-two questions as they are actually asked. Each one compiles and survives Oona's rig.
+
+</Part>
+
+<h2 id="build-lru">Chapter 13 · Counter and LRU</h2>
+
+<Scene chapter="Chapter 13" title="The cache that forgot the wrong plate" mood="dusk">
+
+The plate-recognition camera is slow. You put a small cache in front of it: the 1,000 most recently seen plates.
+
+It works on one thread. On four gates it throws `ConcurrentModificationException` from inside `get` — a method that, as far as you know, only reads.
+
+Wren raises an eyebrow. *"In an LRU cache,"* she says, *"is* get *a read?"*
+
+</Scene>
+
+**Classic build 2a · the thread-safe counter** is done: `AtomicInteger`/`AtomicLong` when the exact value feeds a decision, `LongAdder` for hot metrics, `synchronized` when the count shares an invariant with other fields (Chapters 3 and 5).
+
+**Classic build 2b · the thread-safe LRU cache.** Single-threaded LRU = `LinkedHashMap` with `accessOrder = true` + `removeEldestEntry`, or the hand-rolled HashMap + doubly linked list from the DSA wing. In access order, **every `get` moves the entry to the tail — `get` is a write.** That's why a read-write lock with `get` under the *read* lock is a classic wrong answer: several "readers" relink the list at once and corrupt it.
+
+```java group=lru
+class LruCache<K, V> {
+    private final int capacity;
+    private final LinkedHashMap<K, V> map;              // guarded by lock
+    private final ReentrantLock lock = new ReentrantLock();
+
+    LruCache(int capacity) {
+        if (capacity <= 0) throw new IllegalArgumentException("capacity must be positive");
+        this.capacity = capacity;
+        this.map = new LinkedHashMap<>(16, 0.75f, true) {             // true = access order
+            @Override protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+                return size() > LruCache.this.capacity;               // evict the least recently used
+            }
+        };
+    }
+
+    V get(K key) {
+        lock.lock();                                    // exclusive: get reorders the list
+        try { return map.get(key); } finally { lock.unlock(); }
+    }
+
+    void put(K key, V value) {
+        lock.lock();
+        try { map.put(key, value); } finally { lock.unlock(); }
+    }
+
+    int size() {
+        lock.lock();
+        try { return map.size(); } finally { lock.unlock(); }
+    }
+
+    List<K> keysOldestFirst() {
+        lock.lock();
+        try { return new ArrayList<>(map.keySet()); } finally { lock.unlock(); }
+    }
+}
+```
+
+The checker compares it with an independent list-based LRU on 5,000 random single-threaded operations (same hits, same eviction order), then runs 16 threads × 20,000 mixed gets and puts: no exceptions, `size()` never above capacity, and the final key list consistent with the size.
+
+**Concurrency options, in answer order:**
+
+1. **One coarse lock** around the whole thing — correct, contended; *say it first*.
+2. **Stripe the locks:** N independent LRU segments, chosen by `hash(key) % N`. Contention drops by about N; the eviction order becomes per-segment, so the cache is only approximately LRU overall.
+3. **The production answer:** `ConcurrentHashMap` for the data, plus recording reads in a lossy buffer that a single thread replays into the eviction policy in batches. That is roughly how Caffeine works (its eviction policy is W-TinyLFU, not strict LRU). It trades *exact* recency order for throughput — and naming that trade-off is the gold move.
+
+<Trace title="Is get a read?" steps={lru} takeaway="In an access-ordered LRU, get mutates — so it needs the exclusive lock. Coarse lock first, then stripes, then name the Caffeine-style trade: approximate recency for throughput." />
+
+**Your turn.** The camera client wants `getOrLoad(plate, loader)`: return the cached value, or call the slow camera and cache the answer. Where does the slow call go — inside the lock, or outside?
+
+<HintLadder hints={hints.lru} labels={turn}>
+
+Outside. Holding the cache's only lock across a 300 ms camera call serialises every gate behind one plate. The shape: `get` under the lock; on a miss, **release**, call the loader, then `put` under the lock. Two gates missing on the same plate at once may both call the camera — usually acceptable for a cache, and you should say so. If duplicate loads are expensive, keep a `ConcurrentHashMap<K, CompletableFuture<V>>` of loads in flight and `computeIfAbsent` the future, so the second caller waits on the first caller's future instead of calling again (that is how loading caches deduplicate).
+
+</HintLadder>
+
+**Catch the trap:** *"`Collections.synchronizedMap(new LinkedHashMap<>(…, true))` is a thread-safe LRU."* Each call is, but iterating it is not (the docs require you to lock the map yourself while iterating), and any check-then-act across calls still races. It's the coarse lock, with the lock hidden from you.
+
+**Say it aloud:** *"LinkedHashMap in access order with removeEldestEntry, behind one lock — and the lock is exclusive even for get, because get reorders the list. If that's the bottleneck, stripe it, and in production use Caffeine, which gives up exact LRU order for throughput."*
+
+<h2 id="build-limiter">Chapter 14 · The token bucket</h2>
+
+<Scene chapter="Chapter 14" title="Five tickets a second" mood="night">
+
+The ticket printer melts if it prints more than five tickets in a burst, and it can only cool down enough for two more every second.
+
+Bram wants the app to obey that rule. The app has four gates, a kiosk and a phone integration, all of them threads.
+
+Oona's rig fires 32 threads at your limiter at once, with the clock frozen. *"How many got through?"* she asks.
+
+You hope the answer is five.
+
+</Scene>
+
+**Classic build 3 · the token-bucket rate limiter.** A bucket holds up to `capacity` tokens and refills at `refillPerSec`; each request spends one token or is refused. Bursts up to capacity are allowed; the long-run rate can't exceed the refill rate.
+
+```java group=limiter
+class TokenBucket {
+    private final long capacity, refillPerSec;
+    private final LongSupplier nanoClock;              // System::nanoTime in production; a fake in tests
+    private double tokens;                             // guarded by this
+    private long lastRefillNanos;                      // guarded by this
+
+    TokenBucket(long capacity, long refillPerSec, LongSupplier nanoClock) {
+        this.capacity = capacity;
+        this.refillPerSec = refillPerSec;
+        this.nanoClock = nanoClock;
+        this.tokens = capacity;                        // start full
+        this.lastRefillNanos = nanoClock.getAsLong();  // nanoTime has no fixed origin: read it, don't assume 0
+    }
+
+    TokenBucket(long capacity, long refillPerSec) { this(capacity, refillPerSec, System::nanoTime); }
+
+    synchronized boolean tryAcquire() {
+        long now = nanoClock.getAsLong();
+        tokens = Math.min(capacity, tokens + (now - lastRefillNanos) / 1e9 * refillPerSec);   // lazy refill
+        lastRefillNanos = now;
+        if (tokens < 1) return false;
+        tokens -= 1;
+        return true;
+    }
+}
+```
+
+**Lazy refill** — compute the refill on access, so there's no timer thread. **`synchronized`** because `tokens` and `lastRefillNanos` are a compound invariant: refilling from one timestamp and spending against another would mint tokens. The injected clock (Clock as a dependency — the SOLID lesson's DIP chapter) makes it testable.
+
+The checker, with capacity 5 and refill 2 per second: five immediate passes, then a refusal; 500 ms later exactly one more pass; ten seconds later, five passes, not twenty (the cap). With the clock frozen, 32 threads × 1,000 attempts get **exactly 5** passes between them. With a fake clock advanced by a separate thread, total passes never exceed capacity + rate × elapsed; and the same bound holds on the real `System.nanoTime`.
+
+Two honest notes. The `double` accumulates rounding error over many tiny refills; production limiters often count in integer nanoseconds of credit instead (or use GCRA). And a refusal here returns `false` immediately; a caller that wants to wait needs a computed sleep (`(1 - tokens) / refillPerSec` seconds), not a spin.
+
+Per-key limiting — one bucket per client — is Side quest 1. Your SD wing has the distributed version (the <a href={`${BASE}sd/lessons/rate-limiter/`}>rate limiter lesson</a>); this is its in-process little sibling.
+
+<Trace title="How many got through?" steps={limiter} takeaway="Two fields, one invariant: one lock (or one immutable value swapped by CAS). Refill lazily from an injected clock; start full; cap at capacity." />
+
+<Reveal q="Could you make TokenBucket lock-free?">
+
+Yes: put `tokens` and `lastRefillNanos` in one immutable record and `compareAndSet` an `AtomicReference` to a new record — the copy-on-write move from Chapter 7, applied to a hot path. It's correct, because the pair is updated as one value. Whether it's faster depends on contention: under heavy contention CAS retries allocate a new record per attempt. Say "synchronized first; CAS on an immutable state record if the profile says the lock is hot."
+
+</Reveal>
+
+**Your turn.** Without peeking: why does the constructor read the clock instead of setting `lastRefillNanos = 0`?
+
+<HintLadder hints={hints.limiter} labels={turn}>
+
+`System.nanoTime()` measures elapsed time from an arbitrary origin — it can be any value, including negative. With `lastRefillNanos = 0`, the first call computes `now - 0`: a huge refill if `now` is large (harmless only because of the cap), or a large *negative* refill if `now` is negative — the bucket starts thousands of tokens in debt and refuses everything for hours. The checker builds a bucket on a fake clock that starts at a negative value and confirms it still allows the first burst.
+
+</HintLadder>
+
+**Say it aloud:** *"Token bucket with lazy refill on each call, from an injected nano clock. tokens and the last-refill time form one invariant, so tryAcquire is synchronized. Under 32 threads with a frozen clock exactly capacity requests pass."*
+
+<h2 id="build-turns">Chapter 15 · Take turns</h2>
+
+<Scene chapter="Chapter 15" title="Take turns" mood="dawn">
+
+The new barrier has three motors that must start in order: lock release, then arm lift, then light. Each is driven by its own thread. Started in the wrong order, the arm tries to lift a locked bar.
+
+Then the display has two threads, one printing *IN* and one printing *OUT*, which must alternate.
+
+Then, because the Interviewer is in the building today, four threads print FizzBuzz.
+
+*"Same question three times,"* says Wren. *"Whose turn is it, who decides, and how does the next one find out?"*
+
+</Scene>
+
+**Classic build 4 · coordination puzzles** (LeetCode's concurrency set: Print in Order, Print FooBar Alternately, Fizz Buzz Multithreaded). Each is a *happens-before* puzzle: make step k+1 wait for a signal step k sends.
+
+```java group=turns
+class InOrder {                                        // first, second, third — on three threads, any start order
+    private final CountDownLatch firstDone = new CountDownLatch(1);
+    private final CountDownLatch secondDone = new CountDownLatch(1);
+
+    void first(Runnable printFirst) {
+        printFirst.run();
+        firstDone.countDown();
+    }
+
+    void second(Runnable printSecond) throws InterruptedException {
+        firstDone.await();
+        printSecond.run();
+        secondDone.countDown();
+    }
+
+    void third(Runnable printThird) throws InterruptedException {
+        secondDone.await();
+        printThird.run();
+    }
+}
+
+class PingPong {                                       // foo, bar, foo, bar... on two threads
+    private final int n;
+    private final Semaphore fooTurn = new Semaphore(1);   // foo goes first
+    private final Semaphore barTurn = new Semaphore(0);
+
+    PingPong(int n) { this.n = n; }
+
+    void foo(Runnable printFoo) throws InterruptedException {
+        for (int i = 0; i < n; i++) {
+            fooTurn.acquire();                         // wait for my turn
+            printFoo.run();
+            barTurn.release();                         // hand the turn over
+        }
+    }
+
+    void bar(Runnable printBar) throws InterruptedException {
+        for (int i = 0; i < n; i++) {
+            barTurn.acquire();
+            printBar.run();
+            fooTurn.release();
+        }
+    }
+}
+
+class FizzBuzz {                                       // four threads, one sequence 1..n
+    private final int n;
+    private int current = 1;                           // guarded by lock
+    private final ReentrantLock lock = new ReentrantLock();
+    private final Condition turnChanged = lock.newCondition();
+
+    FizzBuzz(int n) { this.n = n; }
+
+    void fizz(Runnable printFizz) throws InterruptedException { run(i -> i % 3 == 0 && i % 5 != 0, i -> printFizz.run()); }
+    void buzz(Runnable printBuzz) throws InterruptedException { run(i -> i % 5 == 0 && i % 3 != 0, i -> printBuzz.run()); }
+    void fizzbuzz(Runnable printFizzBuzz) throws InterruptedException { run(i -> i % 15 == 0, i -> printFizzBuzz.run()); }
+    void number(IntConsumer printNumber) throws InterruptedException { run(i -> i % 3 != 0 && i % 5 != 0, printNumber); }
+
+    private void run(IntPredicate mine, IntConsumer print) throws InterruptedException {
+        lock.lock();
+        try {
+            while (true) {
+                while (current <= n && !mine.test(current)) turnChanged.await();   // not my number: wait
+                if (current > n) return;                                          // sequence finished
+                print.accept(current);
+                current++;
+                turnChanged.signalAll();               // four kinds of waiter share one condition: wake them all
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+}
+```
+
+The checker starts the threads in every permutation (and in reverse) over hundreds of runs, each with a join timeout so a lost signal fails rather than hangs: always first-second-third; always `foo bar` × n; always exactly the single-threaded FizzBuzz sequence for n = 1, 15 and 100.
+
+**One idea, three tools.** A *one-shot* "this has happened" is a latch. A *token passed back and forth* is a pair of semaphores — one permit in circulation, so exactly one thread holds the turn. A *shared state machine* with several roles is a lock + condition + a `while` guard, and `signalAll` because one condition holds four different kinds of waiter (`signal` could wake the wrong one, which would just wait again, and the right one would never be woken).
+
+<Trace title="Whose turn?" steps={turns} takeaway="One-shot event: latch. A turn passed between two threads: two semaphores. Many roles over one shared counter: lock + condition + while + signalAll." />
+
+**Your turn.** *Print Zero Even Odd*: three threads print `0 1 0 2 0 3 …` — a zero thread, an odd thread, an even thread. Sketch it with semaphores.
+
+<HintLadder hints={hints.fizzbuzz} labels={turn}>
+
+```java fragment
+Semaphore zeroTurn = new Semaphore(1), oddTurn = new Semaphore(0), evenTurn = new Semaphore(0);
+
+void zero(IntConsumer print) throws InterruptedException {
+    for (int i = 1; i <= n; i++) {
+        zeroTurn.acquire();
+        print.accept(0);
+        (i % 2 == 1 ? oddTurn : evenTurn).release();   // hand the turn to whoever prints i
+    }
+}
+void odd(IntConsumer print) throws InterruptedException {
+    for (int i = 1; i <= n; i += 2) { oddTurn.acquire(); print.accept(i); zeroTurn.release(); }
+}
+void even(IntConsumer print) throws InterruptedException {
+    for (int i = 2; i <= n; i += 2) { evenTurn.acquire(); print.accept(i); zeroTurn.release(); }
+}
+```
+
+One permit circulates, so exactly one thread can print at any moment, and whoever holds it decides who goes next. It's `PingPong` with a three-way switch.
+
+</HintLadder>
+
+**Say it aloud:** *"The order constraint is a chain of happens-before edges. Two threads alternating is two semaphores passing one permit; FizzBuzz is a shared counter under a lock where each thread waits in a while loop for a number it owns, and signalAll after each step."*
+
+<h2 id="build-lot">Chapter 16 · Four gates, one lot</h2>
+
+<Scene chapter="Chapter 16" title="Four gates, one lot" mood="storm">
+
+Bram has four gates now. Fifty bays on the ground floor. And Oona has found her favourite weird input: one car whose plate is read by two gates at the same moment, because it hesitated, reversed and drove to the other lane.
+
+Her rig: 32 threads, a pool of plates, park and unpark at random, for ten thousand rounds. The invariants are written on a sticky note at the top of her screen.
+
+*No bay holds two cars. No car holds two bays. Nobody gets a bay that doesn't exist.*
+
+The Interviewer slides the same page across the table. *"Stage two. Make park thread-safe."*
+
+</Scene>
+
+**Classic build 5 · the parking lot's `tryPark`.** The classic-problems lesson builds the single-threaded lot; this is its stage two. The order graders want: **coarse lock first, say why it's correct, then narrow it.**
+
+**Version 1: one lock.** Correct, simple, and every gate waits for every other gate:
+
+```java group=lotCoarse
+class ParkingLot {
+    private final String[] occupant;                          // guarded by this
+    private final Map<String, Integer> spotOf = new HashMap<>();   // guarded by this
+
+    ParkingLot(int spots) { occupant = new String[spots]; }
+
+    synchronized OptionalInt tryPark(String plate) {
+        if (spotOf.containsKey(plate)) return OptionalInt.empty();   // the same car can't be inside twice
+        for (int i = 0; i < occupant.length; i++) {
+            if (occupant[i] == null) {
+                occupant[i] = plate;
+                spotOf.put(plate, i);
+                return OptionalInt.of(i);
+            }
+        }
+        return OptionalInt.empty();                                  // full
+    }
+
+    synchronized boolean unpark(String plate) {
+        Integer spot = spotOf.remove(plate);
+        if (spot == null) return false;
+        occupant[spot] = null;
+        return true;
+    }
+
+    synchronized int parked() { return spotOf.size(); }
+}
+```
+
+**Version 2: push locking down to the invariant owners.** Bay occupancy belongs to the bay — one CAS. "One car, one bay" belongs to the plate — one atomic set insertion:
+
+```java group=lot
+class Spot {
+    final int number;
+    private final AtomicReference<String> occupant = new AtomicReference<>();
+    Spot(int number) { this.number = number; }
+
+    boolean tryAssign(String plate) { return occupant.compareAndSet(null, plate); }   // check and act: one CAS
+    void release() { occupant.set(null); }                   // only the lot calls this, after it owns the plate's claim
+    String occupant() { return occupant.get(); }
+}
+
+class ParkingLot {
+    private final List<Spot> spots;
+    private final ConcurrentHashMap<String, Spot> spotOf = new ConcurrentHashMap<>();
+    private final Set<String> inside = ConcurrentHashMap.newKeySet();   // plates parked or being parked
+
+    ParkingLot(int count) {
+        List<Spot> all = new ArrayList<>();
+        for (int i = 0; i < count; i++) all.add(new Spot(i));
+        spots = List.copyOf(all);
+    }
+
+    OptionalInt tryPark(String plate) {
+        if (!inside.add(plate)) return OptionalInt.empty();   // atomic claim: one car at two gates parks once
+        for (Spot spot : spots) {
+            if (spot.tryAssign(plate)) {                      // two gates can't both win this bay
+                spotOf.put(plate, spot);
+                return OptionalInt.of(spot.number);
+            }
+        }
+        inside.remove(plate);                                 // full: give the claim back
+        return OptionalInt.empty();
+    }
+
+    boolean unpark(String plate) {
+        Spot spot = spotOf.remove(plate);                     // atomic: only one unpark gets the bay
+        if (spot == null) return false;
+        spot.release();
+        inside.remove(plate);
+        return true;
+    }
+
+    int parked() { return spotOf.size(); }
+}
+```
+
+The checker runs both lots through the same rig: 32 threads × 3,000 operations, each thread parking and unparking its own plates plus a few plates *shared* by every thread (the car at two gates). Every time `tryPark` returns a bay, the rig claims that bay in its own independent table with a CAS — a second claim on a bay already held would be a double allocation and fails the check. At the end: no plate in two bays, no bay with two plates, parked count ≤ 50, and the lot's parked count equals both the cars the threads believe are still inside and the bays the rig still has claimed. A separate round of 64 threads parking the *same* plate at once gets exactly one bay.
+
+<Figure caption="Each invariant guarded where it lives: the bay guards its occupant, the set guards the plate.">
+  <Mermaid code={`classDiagram
+    class ParkingLot {
+      -List spots
+      -ConcurrentHashMap spotOf
+      -Set inside
+      +tryPark(String plate) OptionalInt
+      +unpark(String plate) boolean
+    }
+    class Spot {
+      +int number
+      -AtomicReference occupant
+      +tryAssign(String plate) boolean
+      +release()
+    }
+    ParkingLot *-- Spot : 50`} />
+</Figure>
+
+**Catch the bug.** An earlier draft released with `occupant.compareAndSet(plate, null)` — "only free it if this plate holds it". It looks safer and it's a bug: **`compareAndSet` on an `AtomicReference` compares references with `==`, not `equals`.** The plate string arriving at the exit gate is a different `String` object from the one that parked, the CAS fails silently, and the bay stays taken forever. Here the lot owns the claim (it removed `spotOf`'s entry atomically), so `release()` can simply clear it.
+
+**Trade-offs to say.** Version 2 scans from bay 0, so under heavy contention every gate fights over the first free bays; a free-list (`ConcurrentLinkedQueue<Spot>`, where `poll()` atomically hands each bay to one caller) makes allocation O(1). Between `spot.release()` and `inside.remove(plate)` the same plate is briefly "still inside" — a car that unparks and instantly re-enters can be refused for a microsecond, which you should state rather than hide. And if allocation needs a *policy* across bays ("nearest to the lift, by vehicle size"), a lock per floor is often the honest answer.
+
+<Trace title="Four gates, one lot" steps={lot} takeaway="Coarse lock first — correct and easy to defend. Then give each invariant its own atomic owner: CAS on the bay, an atomic claim on the plate. And remember CAS compares references." />
+
+**Your turn.** The lot gets a `free()` count for the sign at the entrance. Add it to version 2 without a lock — and say what the sign is allowed to show.
+
+<HintLadder hints={hints.lot} labels={turn}>
+
+Keep an `AtomicInteger free` initialised to the spot count; `decrementAndGet()` after a successful `tryAssign`, `incrementAndGet()` after `release()`. Each update is atomic, but the counter and the bays are two separate things updated in two steps, so **a reader may see the sign one car behind the bays** for an instant. For a display, that's fine — say so. If the count had to be exact *as part of a decision* ("refuse entry when free is 0"), reserve with Chapter 5's `SpotCounter.tryReserve()` *before* scanning, release it on failure, and the bays and the counter can never disagree in the direction that matters (you can never assign a bay you didn't reserve).
+
+</HintLadder>
+
+**Say it aloud:** *"First a synchronized lot — correct, but every gate serialises. Then each invariant at its owner: a bay is claimed with compareAndSet(null, plate), and a plate can be inside once because of an atomic add to a concurrent set. I stress-tested both with 32 threads and an independent claim table to catch double allocation."*
+
+<Part n="Part Seven" title="Bram changes one requirement">
+
+Side quests. Same garage, one changed rule each. Name the race before you write a line.
+
+</Part>
+
+<Scene title="Three index cards" mood="dusk">
+
+On Friday Bram brings three index cards and lays them out like a hand of cards.
+
+*One bucket per app.* *Two exit gates, one ticket.* *The dashboard says 300 cars and 5,980 rupees. Cars pay 20. Explain.*
+
+Wren puts her green pen down next to them.
+
+*"For each one,"* she says, *"tell me what's shared and what has to stay true — before you touch the keyboard."*
+
+</Scene>
+
+<h2 id="sq-per-client">Side quest 1 · One bucket per app</h2>
+
+**The card says:** *"Each partner app gets its own limit: 10 requests in a burst, 5 a second. One noisy app must not use up another's."*
+
+**What's shared:** a map from client to bucket, created on first use. **The race:** two first requests from one client both see no bucket and both create one — two buckets, double the limit. This is the lazy-init race done *right*, closing the loop with Chapter 6.
+
+<HintLadder hints={hints.perClient} labels={turn}>
+
+```java group=limiter
+class ClientLimiter {
+    private final ConcurrentHashMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
+    private final long capacity, refillPerSec;
+    private final LongSupplier nanoClock;
+
+    ClientLimiter(long capacity, long refillPerSec, LongSupplier nanoClock) {
+        this.capacity = capacity;
+        this.refillPerSec = refillPerSec;
+        this.nanoClock = nanoClock;
+    }
+
+    boolean allow(String client) {
+        TokenBucket bucket = buckets.computeIfAbsent(client,
+            c -> new TokenBucket(capacity, refillPerSec, nanoClock));   // exactly one bucket per client
+        return bucket.tryAcquire();                                     // outside compute: keep that function short
+    }
+}
+```
+
+With a frozen clock, 16 threads × 500 requests spread over 4 clients get exactly 10 passes **per client**. `tryAcquire` runs *after* `computeIfAbsent` returns, so the map isn't held while the bucket locks.
+
+</HintLadder>
+
+**Transfer test:** this map grows forever — one bucket per client ever seen. How would you evict idle buckets without letting a client get a fresh, full bucket in the middle of a burst? (Look at `compute` with a last-used timestamp, or a cache with expire-after-access.)
+
+<h2 id="sq-exit-once">Side quest 2 · Two exits, one ticket</h2>
+
+**The card says:** *"A driver waved their ticket at the east exit, panicked, and drove to the west exit. Both gates charged them."*
+
+**What's shared:** the ticket's state. **The invariant:** a ticket is paid exactly once. **The race:** check-then-act — both gates see `OPEN`, both charge. The cure is to make the *state transition* the atomic step, before any money moves.
+
+<HintLadder hints={hints.exitOnce} labels={turn}>
+
+```java group=exitOnce
+interface Charger { void charge(String ticketId, long amount); }
+
+class ExitTicket {
+    enum State { OPEN, CLOSING, CLOSED }
+
+    private final String id;
+    private final AtomicReference<State> state = new AtomicReference<>(State.OPEN);
+
+    ExitTicket(String id) { this.id = id; }
+
+    boolean close(long fee, Charger charger) {
+        if (!state.compareAndSet(State.OPEN, State.CLOSING)) return false;   // the second gate loses here
+        try {
+            charger.charge(id, fee);
+            state.set(State.CLOSED);
+            return true;
+        } catch (RuntimeException e) {
+            state.set(State.OPEN);                                           // payment failed: the ticket can be retried
+            throw e;
+        }
+    }
+
+    State state() { return state.get(); }
+}
+```
+
+32 threads race to close each of 1,000 tickets: exactly one `close` per ticket returns `true` and exactly one charge is made. A charger that throws leaves the ticket `OPEN`, and a retry succeeds. (`CompareAndSet` on enum constants is safe because each constant is a single object — `==` is exactly right here, unlike the plate strings in Chapter 16.)
+
+</HintLadder>
+
+**Transfer test:** the two exits are now on two *servers*. An `AtomicReference` can't help. What plays its role? (The SD wing's answer: a conditional update in the database — `UPDATE … SET state = 'CLOSING' WHERE id = ? AND state = 'OPEN'` and check the row count — the same compare-and-set, one level down.)
+
+<h2 id="sq-dashboard">Side quest 3 · The dashboard that disagreed</h2>
+
+**The card says:** *"The dashboard says 300 cars and 5,980 rupees. Every car pays 20."*
+
+**What's shared:** two counters. **The invariant:** `revenue == 20 × cars`. Two `AtomicLong`s make each update atomic, but a reader between the two increments sees a car without its money:
+
+```java id=dashboardMess
+class Dashboard {
+    private final AtomicLong cars = new AtomicLong(), revenue = new AtomicLong();
+    void carPaid(long fee) {
+        cars.incrementAndGet();              // a reader here sees the car...
+        revenue.addAndGet(fee);              // ...without its fee
+    }
+    long[] read() { return new long[] { cars.get(), revenue.get() }; }
+}
+```
+
+The checker runs 4 writers against 4 readers and requires at least one reader to see a mismatched pair; it happens on the first run every time we have tried it.
+
+<HintLadder hints={hints.dashboard} labels={turn}>
+
+```java group=dashboard
+record Totals(long cars, long revenue) {}
+
+class Dashboard {
+    private final AtomicReference<Totals> totals = new AtomicReference<>(new Totals(0, 0));
+
+    void carPaid(long fee) {
+        totals.updateAndGet(t -> new Totals(t.cars() + 1, t.revenue() + fee));   // one value, one CAS
+    }
+
+    Totals read() { return totals.get(); }   // cars and revenue always from the same moment
+}
+```
+
+Same writers, same readers: every `Totals` a reader sees satisfies `revenue == 20 × cars`, and the final totals are exact. Chapter 7's rule again — **two values with one invariant become one immutable value behind one reference.** (A lock around both counters, as in `OccupancyBoard`, is the equally correct alternative.)
+
+</HintLadder>
+
+**Transfer test:** the dashboard also wants "average fee". Do you add a third field, or compute it from the two you have? What does each choice mean for the invariant?
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Every wrong choice explains what it would break.
+
+<Trace title="The stage-two review" steps={drills} takeaway="Name the race (atomicity or visibility), find the invariant's owner, and pick the cheapest rung that holds it: immutability, volatile, an atomic, one lock, or the JDK class that already does it." />
+
+**The original checkpoint**, kept as it was:
 
 <Quiz questions={[
   {
@@ -190,7 +2173,7 @@ Alternatives to name: `tryLock` with timeout + retry (livelock-aware), or a sing
       'if would not compile with Condition',
     ],
     answer: 1,
-    why: 'await() can return without a signal (spurious), and signal order does not guarantee the woken thread wins the race back to the lock. The predicate loop is mandatory; "if" is the textbook bug graders plant.',
+    why: 'await() can return without a signal (spurious), and signal order does not guarantee the woken thread wins the race back to the lock. The predicate loop is mandatory; "if" is the textbook bug graders plant — and this page’s checker watches the if-version return null thousands of times.',
   },
   {
     q: 'Your parking lot: 200 spots, one ReentrantLock on the whole lot around park(). Correct but slow. Best next move?',
@@ -216,6 +2199,119 @@ Alternatives to name: `tryLock` with timeout + retry (livelock-aware), or a sing
   },
 ]} />
 
-## Hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-Toolkit loaded. Final module: **the machine-coding playbook** — the 90-minute protocol that turns all four modules into a finished, running, tested submission.
+<Scene title="The interview room" mood="night">
+
+Minute seventy. Your parking lot demo runs. The Interviewer leans back.
+
+*"Four gates now. Make it thread-safe — and tell me how you know it is."*
+
+A month ago you would have typed `synchronized` in front of every method and hoped. Today you pick up the marker first.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "First, what's shared: the bays and the map of which plate is where. Two races: check-then-act on a bay — two gates both see it free — and the same car at two gates getting two bays. The cheapest correct fix is one lock around park and unpark; I'd ship that first, because it's obviously right. If it's the bottleneck, I push each invariant down to its owner: a bay is claimed with `compareAndSet(null, plate)`, so two gates can't both win it, and a plate claims its place with an atomic add to a concurrent set, so it parks once. Counters that only feed a display are `LongAdder`s; a capacity check that feeds a decision is a CAS loop on an `AtomicInteger`. Anything that changes rarely, like the tariff, is an immutable record behind an `AtomicReference`. Work that blocks — payment, the camera — runs on a bounded pool with an explicit rejection policy, composed with `CompletableFuture` and timeouts. I avoid holding a lock while calling out, and where I need two locks I take them in a fixed order. And I've tested it with real threads: 32 threads park and unpark while an independent table catches any double allocation, with a timeout on every join so a deadlock fails the test instead of hanging it."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · Why not just make every method synchronized?">
+
+Each method becomes atomic, but the race is usually *across* calls — `isFree()` then `assign()`. And it serialises everything on one object even where invariants are independent. I lock around the invariant, at the object that owns it, and I make the API offer `tryAssign` instead of a check and an act.
+
+</Reveal>
+
+<Reveal q="2 · What does volatile guarantee, exactly?">
+
+Visibility and ordering for that variable: a write happens-before every later read that sees it, so the reader also sees everything the writer did before the write; and 64-bit reads and writes are atomic. It does not make compound actions atomic — `count++` on a volatile still loses updates. I use it for flags and publish-once references.
+
+</Reveal>
+
+<Reveal q="3 · How do you size the thread pool?">
+
+CPU-bound: about the number of cores. IO-bound: cores × (1 + wait/compute) — 8 cores, 90 ms waiting per 10 ms computing, about 80. Then cap it by what the downstream can take, bound the queue, pick a rejection policy out loud, and measure. On Java 21 for IO-bound work I'd use virtual threads and limit the downstream with a semaphore instead.
+
+</Reveal>
+
+<Reveal q="4 · How would you find a deadlock in production?">
+
+A thread dump — `jstack` or `kill -3` — shows each thread's state and the locks it holds and wants; HotSpot prints the cycle as "Found one Java-level deadlock". Programmatically, `ThreadMXBean.findDeadlockedThreads()`. To prevent it: a global lock order, or `tryLock` with a timeout and random backoff, and never calling foreign code while holding a lock.
+
+</Reveal>
+
+<Reveal q="5 · How do you test concurrent code?">
+
+Real threads, many of them, started together with a latch so they actually overlap; thousands of operations; repeated runs; invariants checked independently of the code under test (an independent claim table, a conserved total, a max-size observer); and a timeout on every join and await so a deadlock is a failure, not a hang. Passing proves less than failing does, so I also run the naive version and check the test catches it. For memory-model-level bugs, there's OpenJDK's jcstress.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | The race | Reach for… |
+|---|---|---|
+| `x++`, `total += fee` on shared state | Read-modify-write (atomicity) | `AtomicInteger`/`AtomicLong`; `LongAdder` if hot and read rarely |
+| `if (free) assign` / `if (absent) create` | Check-then-act (atomicity) | One method under one lock (`tryAssign`), a CAS, `computeIfAbsent`/`putIfAbsent` |
+| A flag set by one thread, read in another's loop | Visibility | `volatile` |
+| Lazy singleton | Visibility + reordering | Eager `final`; holder idiom; enum; DCL with `volatile` |
+| Two fields with one invariant | Torn reads, lost updates | One lock for both — or one immutable record + `AtomicReference` |
+| `map.get` then `map.put` on a `ConcurrentHashMap` | Read-modify-write across calls | `merge`, `compute`, `computeIfAbsent` (short functions) |
+| Read-mostly config | Contended reads | Immutable value + `AtomicReference`/`volatile`; `ReadWriteLock` for long reads |
+| Need to give up or be cancelled while waiting | `synchronized` can't | `ReentrantLock.tryLock(timeout)`, `lockInterruptibly` |
+| `new Thread()` per task | Unbounded threads | `ThreadPoolExecutor`: bounded queue, named threads, explicit rejection, shutdown |
+| Two remote calls, then a third that needs both | Blocking waits | `supplyAsync(…, ownPool)`, `thenCombine`, `thenCompose`, `completeOnTimeout`/`exceptionally` |
+| Wait for N things once / every round / share K | Coordination | `CountDownLatch` / `CyclicBarrier` / `Semaphore` |
+| Fast producer, slow consumer | Unbounded backlog | Bounded `BlockingQueue`; build: lock + two conditions + `while` |
+| Two locks taken in either order | Deadlock | Global lock order; `tryLock` + random backoff |
+| An access-ordered LRU | `get` mutates | Exclusive lock even for `get`; stripes; Caffeine |
+| CAS on an object | `==`, not `equals` | CAS on identity you own (enum constants, the same reference) |
+
+## Five mistakes to leave behind
+
+1. **Fixing without naming.** Say "atomicity" or "visibility", say the invariant, *then* pick the tool.
+2. **"Thread-safe class, so thread-safe code."** Safety composes at the operation level. Two atomic calls are not one.
+3. **`volatile` for counters.** It's for flags and publication. `++` needs an atomic or a lock.
+4. **Unbounded anything.** Unbounded queues, unbounded pools, waits without timeouts. Every buffer needs a bound and every wait needs a deadline.
+5. **Testing on one thread.** Concurrency code is only tested by many real threads, started together, with invariants checked independently and a timeout on every join — and the broken version should fail the same test.
+
+<Scene title="Oona's jar" mood="dusk">
+
+At the end of the month Oona's rig runs all night against your lot, your queue and your limiter. In the morning there is a sticky note on your monitor.
+
+*32 threads × 10 hours. Nothing lost.*
+
+She puts the empty jar on your desk. On the lid, in Wren's green pen: *What changes next?*
+
+You know the answer now. Someone will add a fifth gate, or a thread, or a server. You write it on a sticky note of your own — *what's shared, who can see it, what must stay true* — and stick it to the jar.
+
+</Scene>
+
+**Keep it warm:** with `/interview-buddy`, run the **"stage two" drill**: take any classic problem you've built single-threaded (parking lot, LRU, rate limiter, elevator), set a 20-minute timer, and make it thread-safe out loud — name each race and its disease, give the coarse fix, then the fine one, then describe the stress test that would catch the naive version. Score yourself on whether you named the race *before* typing.
+
+Related: <a href={`${BASE}lld/lessons/solid/`}>SOLID</a> (the injected clock that made the token bucket testable) · <a href={`${BASE}lld/lessons/behavioral-patterns/`}>Behavioral patterns</a> (Observer with `CopyOnWriteArrayList`) · <a href={`${BASE}lld/lessons/structural-patterns/`}>Structural patterns</a> (the rate-limiting decorator around this lesson's `TokenBucket`) · <a href={`${BASE}lld/lessons/classic-problems/`}>Classic problems</a> (the single-threaded lot this lesson makes thread-safe) · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter (SD)</a> · War Room: <a href={`${BASE}sd/war/concurrency-and-races/`}>concurrency and races</a>, <a href={`${BASE}lld/war/inventory/#flagged-findings`}>flagged findings</a>, <a href={`${BASE}lld/war/patterns-why/#15-copy-on-write-registry--two-maps-that-must-swap-together`}>copy-on-write registry</a>, <a href={`${BASE}lld/war/patterns-why/#5-decorator--the-bug-threadlocals-cause-at-thread-boundaries`}>ThreadLocals at thread boundaries</a>.
+
+Toolkit loaded. Final module: <a href={`${BASE}lld/lessons/machine-coding-protocol/`}>the machine-coding playbook</a> — the 90-minute protocol that turns all four modules into a finished, running, tested submission.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- Brian Goetz et al., *Java Concurrency in Practice* (2006) — still the book: safe publication (ch. 3), building blocks (ch. 5), executors and pool sizing (ch. 6, 8), deadlock and lock ordering (ch. 10), explicit locks and conditions (ch. 13–14).
+- [The Java Language Specification, chapter 17: Threads and Locks](https://docs.oracle.com/javase/specs/jls/se17/html/jls-17.html) — happens-before (17.4.5), final field semantics (17.5), non-atomic `long`/`double` (17.7).
+- [`java.util.concurrent` package summary](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/util/concurrent/package-summary.html) — the "Memory Consistency Properties" section lists every happens-before edge the library gives you.
+- Aleksey Shipilёv, [Close Encounters of The Java Memory Model Kind](https://shipilev.net/blog/2016/close-encounters-of-jmm-kind/) — the memory model's myths, tested.
+- [JEP 444: Virtual Threads](https://openjdk.org/jeps/444) — what changes on Java 21, including pinning.
+- [Caffeine's design notes](https://github.com/ben-manes/caffeine/wiki/Design) — the production version of Chapter 13's third option.
+- LeetCode's concurrency set: [Print in Order](https://leetcode.com/problems/print-in-order/), [Print FooBar Alternately](https://leetcode.com/problems/print-foobar-alternately/), [Print Zero Even Odd](https://leetcode.com/problems/print-zero-even-odd/), [Fizz Buzz Multithreaded](https://leetcode.com/problems/fizz-buzz-multithreaded/), [Building H2O](https://leetcode.com/problems/building-h2o/), [The Dining Philosophers](https://leetcode.com/problems/the-dining-philosophers/).
+
+**Look these up yourself**
+
+- **jcstress** (OpenJDK) — a harness for testing memory-model-level behaviour that ordinary stress tests can't reliably provoke.
+- **`VarHandle` access modes** (plain, opaque, release/acquire, volatile) — the finer-grained orderings beneath `volatile` and the atomics.
+- **False sharing and `@Contended`** — why two "independent" counters on one cache line slow each other down, and why `LongAdder` pads its cells.
+- **`ForkJoinPool` and work stealing** — the pool behind parallel streams and `CompletableFuture`'s default, built for divide-and-conquer CPU work.
+- **`Phaser` and `Exchanger`** — the coordination classes this page skipped: a reusable barrier with a changing number of parties, and a two-thread swap point.
+- **Structured concurrency and scoped values** (preview APIs after Java 21) — treating a group of subtasks as one unit with shared cancellation, and a `ThreadLocal` replacement for virtual threads.
+- **The LMAX Disruptor** — a ring-buffer alternative to `BlockingQueue` built around single writers and mechanical sympathy.
+- **Michael–Scott queue** — the classic lock-free queue behind `ConcurrentLinkedQueue`, and where ABA would bite without garbage collection.

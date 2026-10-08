@@ -1,97 +1,1200 @@
 ---
 title: 'Walkthrough: Design a Rate Limiter'
-description: 'Full 45-minute fight — requirements to wrap-up, with the algorithm tradeoff (fixed vs sliding vs token bucket) done properly.'
+description: 'The night one partner’s retry loop took Kestrel’s API down, and the 45-minute fight that designs the fix. All six steps on the clock, five algorithms with tested Java, Redis races and Lua, hot keys, fail-open, multi-region, and the whole round out loud.'
 module: 3
 order: 2
-minutes: 35
+minutes: 100
 ---
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import Mermaid from '../components/Mermaid.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
 import Quiz from '../components/Quiz.astro';
+import { scoping, contract, placement, windows, buckets, chooseAlgorithm, races, keys, hybrid, failure, regions, drills } from '../data/sd/rate-limiter';
+import { BASE } from '../paths';
 
-> **How to use walkthroughs:** attempt each phase yourself first — say your answer out loud, *then* scroll. Reading a walkthrough cold is theory; fighting each phase before revealing is a rep. The section breaks are your pause points.
+<PatternHub
+  pattern="sd-rate-limiter"
+  start="prologue"
+  logline="A rate limiter is a promise about fairness, kept under a five-millisecond deadline: who gets how much, counted where, by whose clock, and what happens when the counter goes dark. Fight it once in the six-step order and every warm-up round after it is a variation."
+  cast={[
+    { name: 'You', role: 'Two months at Kestrel. A design round in two weeks. Tonight’s outage is about to become your practice problem.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Plays the interviewer, with her phone face-down on the table as the clock.' },
+    { name: 'Dev Okafor', role: 'SRE. Was paged at 3:12 a.m. by a partner’s retry loop. Would like that not to happen again.' },
+    { name: 'Iris Tan', role: 'Product lead. Sells the API in three plans and has opinions about who may be cut off.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has seen a rate limiter lose a race, and remembers the date.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · Scope it (steps 1–3)', description: 'Requirements with numbers, the nouns, and the contract a rejected client sees.', links: [['requirements', 'Who gets how much'], ['entities-api', 'The contract']] },
+    { name: 'Part Two · Draw it (step 4)', description: 'Where the limiter stands, and the simplest design that works.', links: [['placement', 'Where the gate stands'], ['high-level', 'Boxes that earn their place']] },
+    { name: 'Part Three · Deep dive: the algorithm', description: 'Five ways to count, each with its timeline, its Java and its failure.', links: [['fixed-window', 'The midnight double'], ['sliding-log', 'A ledger of every knock'], ['sliding-counter', 'Most of last minute'], ['token-bucket', 'A bucket that refills'], ['leaky-gcra', 'The leak and the schedule'], ['choose', 'Pick one and say why']] },
+    { name: 'Part Four · Deep dive: many gateways, one count', description: 'Races, Lua, keys and clocks, hot keys, failure, regions.', links: [['races', 'Two gateways, one token'], ['keys', 'Names, slots and clocks'], ['hybrid', 'The celebrity key'], ['failure', 'The night Redis died'], ['regions', 'Three regions, one promise']] },
+    { name: 'Part Five · Finish the fight', description: 'Wrap-up, then the whole round on the clock.', links: [['wrap-up', 'The last three minutes'], ['walkthrough', 'The fight, out loud']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → requirement → algorithm → race → decision' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'The calls interviewers probe, with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="A walkthrough is a fight, not a read. At every chapter break, say your answer out loud before you scroll. Parts One and Two are one sitting; each deep dive is another."
+/>
 
-## Phase 1 — Requirements (0–5 min)
+<h2 id="prologue">Prologue · Forty thousand a second</h2>
 
-**Functional:**
-- Limit requests **per API key** and **per endpoint** (both granularities)
-- Unauthenticated traffic → fall back to **per-IP** limits
-- On breach: **hard reject** — HTTP 429 + `Retry-After` + `X-RateLimit-*` headers
-- Limits configurable per plan (Free/Pro/Enterprise) via admin portal, **hot-reload** without deploy
+<Scene chapter="Prologue" title="Forty thousand a second" mood="night">
 
-**Non-functional:**
-- Sits in the request path of everything → latency budget **p99 < 5 ms**, hard ceiling 10 ms
-- Scale: **1M QPS** peak across the gateway fleet, ~50K API keys + 200 internal services
-- **Fail-open**: if the limiter breaks, traffic flows (availability over enforcement) — with an audit log so we know it happened
-- Accuracy: near-exact; small over-admission at window edges is acceptable if we say so
+Dev's message lands at 3:12 a.m.: *"Search p99 is 30 seconds. One API key is sending forty thousand requests a second."*
 
-> Fail-open vs fail-closed is a **product** decision, not a technical one — for a public API, blocking all customers because your limiter died is worse than briefly over-serving. Say the tradeoff, pick, move on. (For a login-brute-force limiter you'd flip to fail-closed — security-critical paths invert the preference.)
+It's a partner's integration. Their client hit a timeout and retried immediately. The retry timed out too, and retried, and every worker in their fleet did the same. Nothing at Kestrel said no. The gateway forwarded everything, the search cluster queued everything, and every other partner's requests waited behind a single customer's panic. At 3:40 Dev revokes the key by hand.
 
-## Phase 2 — Estimation (5–10 min)
+At ten the next morning Mara puts her phone face-down on the table. *"We need a rate limiter,"* she says. *"And you have a design round in two weeks where this is a favourite warm-up question. So you design it, and I'll be the interviewer. Forty-five minutes."*
 
-The only two numbers that change decisions here:
+She writes four numbers in the corner of the board — **9 · 15 · 25 · 38** — and hands you the marker.
 
-**Latency:** 1M QPS with a 5 ms budget → the check must be a **single round-trip to something in-memory**. Disk-backed anything is dead on arrival. → Redis-class store, or local memory.
+</Scene>
 
-**Memory (working set):**
+A **rate limiter** decides, for every request, whether this caller may have one more right now. It exists for four reasons, and you should say which ones apply:
+
+1. **Protect capacity.** One caller must not be able to consume what everyone shares (last night).
+2. **Fairness.** Each customer gets what their plan says, no matter what the others do.
+3. **Cost.** Some requests cost real money — an SMS, a call to a paid upstream API, a GPU-second of an LLM.
+4. **Abuse and security.** Password guessing, scraping, card testing, sign-up spam.
+
+**Where it shows up in interviews.** As a warm-up question on its own — it is one of the most frequently asked easy-to-medium designs — and as a component inside nearly every other design ("the gateway rate-limits per API key"). The second use is why this walkthrough matters more than its size suggests: once you can defend a limiter in depth, that one sentence in every other design stops being a hand-wave.
+
+**Why this one is personal.** It hits four entries in your gap register at once:
+
+- **Pacing.** The algorithms are the fun part, and candidates spend twenty minutes on them before drawing a box. You will do requirements in six minutes and reach the algorithm at 0:25, like the clock says.
+- **Silent skips.** You'll say out loud what you are *not* covering — volumetric DDoS, billing, the admin UI — so nobody wonders.
+- **The cache hand-wave.** The counters live in Redis. "Counters in Redis" without the key shape, the TTL and the failure plan is the same red flag as "cache it in Redis", and Chapter 12 retires it.
+- **Layer conflation.** "Rate limiting" means different things at the edge, the gateway and inside a service. Ask which one, then answer.
+
+**How to use this walkthrough.** Attempt each step yourself first — say your answer out loud, *then* scroll. Reading a walkthrough cold is theory; fighting each step before the reveal is a rep. The part breaks are your pause points.
+
+<Figure caption="The six steps from the delivery framework, with this lesson’s chapters under each. The four checkpoints for a 45-minute round are the moments you must be leaving requirements, drawing, diving, and wrapping up.">
+  <Mermaid code={`flowchart LR
+    R["1 · Requirements\nCh 1 · leave by 0:09"] --> E["2 · Entities\nCh 2"]
+    E --> A["3 · API\nCh 2 · leave by 0:15"]
+    A --> H["4 · High-level\nCh 3–4 · leave by 0:25"]
+    H --> D["5 · Deep dives\nCh 5–15 · leave by 0:38"]
+    D --> W["6 · Wrap-up\nCh 16"]`} />
+</Figure>
+
+The lesson teaches each step in depth — far more than fits in 45 minutes, so that you have choices in the room. Chapter 17 then compresses it back into the round you would actually speak, with timestamps.
+
+<Part n="Part One" title="Scope it (steps 1–3)">
+
+Six minutes of requirements, two of nouns, four of API. The numbers you write down here decide every box later.
+
+</Part>
+
+<h2 id="requirements">Chapter 1 · Who gets how much</h2>
+
+<Scene chapter="Chapter 1" title="Who gets how much" mood="dawn">
+
+Iris joins the mock uninvited, coffee in hand. *"Whatever you build, it has to understand plans. Free keys get a taste. Pro keys pay for real volume. And Enterprise customers —"* she points the cup at you *"— must never be cut off in the middle of a campaign. They pay for overage."*
+
+Mara doesn't look up from her phone. *"That's three requirements and a contract. Limit by what? How much is 'real volume'? And what does 'never cut off' mean when their script goes wrong at 3 a.m.?"*
+
+</Scene>
+
+**Functional requirements** — what the limiter does:
+
+1. **Limit requests per API key, and per key per endpoint.** A plan sets the overall rate; expensive endpoints (creating listings, search) get their own tighter rules.
+2. **Unauthenticated traffic falls back to per-IP limits**, using the client address your own edge recorded — never one the client sent you (Chapter 3).
+3. **On breach, reject cleanly**: HTTP 429 with `Retry-After` and rate-limit headers, before any backend work is done.
+4. **Limits are configurable per plan** (Free, Pro, Enterprise) through an admin portal, and changes apply within seconds, without a deploy.
+
+**Out of scope, said out loud:** volumetric DDoS at the network layer (absorbed upstream by the network and CDN provider, before requests are even HTTP), the billing pipeline that charges overage, the admin UI, and cost-weighted limits (an LLM call that "costs" 500 tokens). *"Tell me if you want any of those."*
+
+**The identity you limit by** matters more than the algorithm:
+
+| Identity | Use when | Weakness |
+|---|---|---|
+| **API key** | Authenticated partners — the main case | A leaked key is shared by whoever stole it |
+| **User id** | Logged-in end users of your own app | Needs auth first; one user may hold many keys |
+| **IP address** | Unauthenticated traffic, floods | Many honest users share one IP behind an office NAT or mobile carrier; attackers rotate IPs cheaply |
+| **Account / phone number / card** | Abuse-sensitive actions (login, OTP, payments) | Only the service that understands the action knows it |
+
+**The plans, as numbers.** Each rule has a **sustained rate** (the long-run average) and a **burst** (how many may arrive at once). Chapter 8 shows why these are two separate knobs.
+
+| Plan | Sustained | Burst | Mode |
+|---|---|---|---|
+| Unauthenticated (per IP) | 30 / min (0.5 / s) | 10 | Hard |
+| Free | 60 / min (1 / s) | 10 | Hard |
+| Pro | 600 / min (10 / s) | 100 | Hard |
+| Enterprise | 6,000 / min (100 / s) | 1,000 | **Soft** up to 2× plan, then hard |
+| Write endpoints (e.g. create listing) | one tenth of the plan's rate | one tenth of the plan's burst | Hard |
+
+**Hard vs soft limits.** A **hard** limit rejects with 429. A **soft** limit lets the request through but *signals* it: a warning header, an overage counter for billing, an alert to the account team. Iris's "never cut off" is a soft limit — and a soft limit still needs a hard **ceiling** (here 2× plan), because the search cluster has a capacity even when the contract is generous. A third option, **throttling** (delaying requests in a queue instead of rejecting them), suits background traffic that can wait; Chapter 9 shows why it is usually wrong for API callers.
+
+**Non-functional requirements, each with a number or a choice:**
+
+| Quality | The requirement | What it decides |
+|---|---|---|
+| **Latency** | The check adds **p99 under 5 ms**, hard ceiling 10 ms | One round trip to something in memory; nothing on disk |
+| **Scale** | **1M requests/s** at peak across the gateway fleet (today about 100K — design for 10×); ~50K API keys + 200 internal services | Shared state must be sharded for throughput |
+| **Availability** | If the limiter breaks, traffic still flows (**fail-open**) with an audit trail — except security limits, which fail closed | Timeouts, a circuit breaker, a local fallback (Chapter 14) |
+| **Accuracy** | Near-exact; a small, *stated* over-admission (about 1%) is acceptable | Which algorithm, and whether hot keys may be counted locally |
+| **Config freshness** | A plan change applies within seconds | Config cached locally, pushed on change |
+
+**Accuracy vs cost** is the tradeoff under the whole design. An *exact global* count means every check touches one shared counter: a network round trip per request and a hot spot per busy key. An *approximate* count lets gateways decide locally and reconcile later: microseconds instead of milliseconds, at the price of a bounded error. Say which one each rule gets. "Login attempts: exact. Search requests: approximate, within 1%."
+
+**Scale numbers — only the ones that decide something** (the estimation habit from the delivery framework: a few numbers inside requirements, more when a deep dive needs them):
+
+- **Latency:** 1M checks a second with a 5 ms budget means **a single round trip to something in memory**. Disk-backed anything is dead on arrival. → A Redis-class store, or local memory.
+- **Memory:** 50K keys × ~10 tracked limits each × ~100 B per counter (key, a couple of numbers, store overhead — an assumption to measure) = **50 MB**. Per-IP state for ~1M recently active IPs × 100 B = **100 MB**. Conclusion: *it fits in one Redis node many times over; any cluster we build is for throughput and availability, not capacity.*
+- **Throughput:** 1M checks a second is far beyond one Redis node (very roughly 100K simple operations a second — benchmark it). → **Shard by key** across a cluster; each decision touches one shard.
+
+**The bridge**, in the delivery framework's shape: *"So: per-key and per-endpoint limits by plan, per-IP for anonymous traffic, 429 with Retry-After on breach, soft limits with a ceiling for Enterprise; under 5 ms at a million checks a second, failing open except for security limits. Does that match what you had in mind?"*
+
+<Trace title="Scope the limiter" steps={scoping} takeaway="Say what you limit by, which rules are hard or soft, and the latency budget — then let the numbers pick the store." />
+
+<Reveal q="The interviewer asks: “What about DDoS?” Do you design for it?">
+
+Say where it lives, and park it. A volumetric attack — millions of packets per second, SYN floods, reflection — is stopped at the network layer by the hosting or CDN provider (anycast, scrubbing, SYN cookies) long before a request becomes HTTP. An application-layer limiter can't help with that; it would be overwhelmed before it ran. What this design *does* cover is the L7 version: one key or one IP sending far more valid HTTP requests than it should, which is exactly last night's incident. *"Volumetric DDoS is upstream and out of scope; per-IP limits at the edge handle the HTTP-level floods."*
+
+</Reveal>
+
+**Catch the trap:** "Limit each user to 100 requests per minute." Per *what* identity? Over what window, with what burst? Hard or soft? Which endpoints? A limit is a sentence with five blanks; a number alone fills one of them.
+
+<h2 id="entities-api">Chapter 2 · The contract</h2>
+
+<Scene chapter="Chapter 2" title="The contract">
+
+Theo reads the partner's retry code from last night's incident aloud, slowly, the way he reads post-mortems. The loop catches a timeout and retries at once. There is no backoff. There is nothing to back off *from*: Kestrel never told the client to slow down.
+
+*"They weren't malicious,"* he says. *"They were uninformed. What would we have said to them, if we'd had a way to say anything?"*
+
+</Scene>
+
+**Core entities — two minutes, names and relationships:**
+
+- **Plan** — Free, Pro, Enterprise.
+- **ApiKey** — belongs to one plan (and a customer).
+- **LimitRule** — for a plan, an endpoint pattern (or "all"), a sustained rate, a burst, a mode (hard / soft + ceiling).
+- **Bucket state** — the live counter for *one key under one rule*: tokens and a timestamp.
+
+Run the cardinality habit from your mock log on each pair. A plan has many keys; a key has one plan: **one-to-many**. A plan has many rules: **one-to-many**. And a key is governed by many rules while each rule governs many keys — **many-to-many**, and the relationship *carries data* (the tokens and the timestamp). So the relationship is an entity: **bucket state is the join of ApiKey × LimitRule.** That is the shape you got wrong for Role ↔ Permission; here it is again, wearing different clothes.
+
+<Figure caption="Bucket state is the many-to-many between keys and rules, and it carries data — so it is an entity. It lives in Redis; everything else is small config in Postgres.">
+  <Mermaid code={`erDiagram
+    PLAN ||--o{ API_KEY : "has"
+    PLAN ||--o{ LIMIT_RULE : "defines"
+    API_KEY ||--o{ BUCKET_STATE : "is counted in"
+    LIMIT_RULE ||--o{ BUCKET_STATE : "is enforced by"`} />
+</Figure>
+
+**The config model** (Postgres, owned by the admin portal) is tiny and read-heavy:
+
+```text
+plans(id, name)                                        -- Free / Pro / Enterprise
+limit_rules(plan_id, endpoint, rate_per_sec, burst, mode, ceiling_multiplier)
+api_keys(key_id, plan_id, customer_id, ...)
 ```
-50K keys × ~10 tracked endpoints × ~100 B per counter ≈ 50 MB
-```
-Conclusion: trivially fits one Redis node — **clustering will be for availability and throughput, not capacity**. 1M QPS is beyond one Redis node (~100K ops/s realistic) → shard by key across a small cluster; hash(key) routing keeps each decision on one shard.
 
-## Phase 3 — API + Data Model (10–15 min)
+Every gateway caches all of it in memory (a few MB) and refreshes when the admin portal publishes a change, with a periodic poll as a backstop in case a message is lost. That is the hot-reload requirement, met with zero network hops per request. **Counter state lives in Redis, not Postgres** — Chapter 12 designs its keys.
 
-The limiter is middleware, not a public API — its "API" is an internal check:
+**The API.** The limiter is not a public service; its API is an internal check that the gateway calls on every request:
 
-```
-ALLOW? (apiKey, endpoint) → { allowed: bool, remaining, resetAt }
+```text
+check(identity, route, cost = 1)
+  → { allowed, remaining, limit, resetAfterSec, retryAfterSec, overage }
 ```
 
-Response headers on every response (not just 429s): `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`; on rejection add `Retry-After`.
+`cost` is 1 for ordinary requests; it lets the same machinery limit weighted work later (an LLM call priced in tokens). The admin side is ordinary REST: `PUT /plans/{plan}/rules/{endpoint}` with the rate, burst and mode.
 
-**Config model (Postgres, admin-portal owned):**
-```
-plans(id, name)                         -- Free / Pro / Enterprise
-limits(plan_id, endpoint, window_sec, max_requests)
-api_keys(key_id, plan_id, ...)
-```
-Config is read-heavy and tiny → each gateway node caches it in memory, refreshed via pub/sub on admin change (hot-reload requirement) with a periodic poll as backstop.
+**What the client sees.** This is the part last night's partner never got:
 
-**Counter state lives in Redis, not Postgres** — key design comes in the deep dive.
+```text
+HTTP/1.1 429 Too Many Requests
+Retry-After: 1
+X-RateLimit-Limit: 600
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 10
+Content-Type: application/json
 
-## Phase 4 — High-Level Design (15–30 min)
-
-```
-client → API Gateway (limiter middleware) → backend services
-              │
-              ├── local config cache  ←─ pub/sub ─ admin portal → Postgres (plans/limits)
-              └── Redis cluster (counters, sharded by api_key)
+{"error": "rate_limited", "message": "Pro plan: 600 requests/min. Retry after 1 s."}
 ```
 
-Trace the flow: request hits gateway → middleware resolves key + plan from local config cache (0 network hops) → one Redis call executes the counting algorithm atomically → allow (attach headers) or 429. Redis timeout (say, 3 ms) → **fail-open**: allow, emit audit event to a queue.
+- **429 Too Many Requests** (RFC 6585) means *this client* exceeded *its* allowance. When the server itself is overloaded and is shedding load from clients that are within their limits, the honest status is **503 Service Unavailable** — overload is not the client's fault. Both may carry `Retry-After`. (gRPC's equivalent of 429 is `RESOURCE_EXHAUSTED`.) Real APIs are not uniform here — some use 403 for rate limits — so document yours.
+- **`Retry-After`** (RFC 9110) is either a whole number of seconds or an HTTP date. A token bucket's true wait might be 0.05 s; you send **1**, because you always round *up*.
+- **`X-RateLimit-Limit / -Remaining / -Reset`** are a de facto convention, not a standard, and their meaning varies: some APIs send `Reset` as a Unix timestamp (GitHub documents epoch seconds), others as seconds remaining. Pick one and document it. For a token bucket, `Remaining` is the whole tokens left, and `Reset` is the time until the bucket is full again (here 100 tokens ÷ 10/s = 10 s).
+- **A standard is on its way.** The IETF HTTP APIs working group has a draft that standardises `RateLimit` and `RateLimit-Policy` header fields. Its exact syntax has changed across versions and it was still a draft at the time of writing — mention it, and check its current status before relying on it.
+- **Send the headers on every response, not just on 429s.** A `Remaining: 3` on a 200 lets a good client slow down *before* it hits the wall.
+- **A 429 from the gateway is always safe to retry**, even for a non-idempotent `POST`: the limiter rejected it before any backend work happened. Say this; it is a property of placing the check first.
+- **Soft limits** pass the request and add a warning (a custom header such as `X-RateLimit-Overage: true`) plus an overage counter that billing reads later.
 
-Every box justified: gateway middleware because limits must apply before backend work is spent; Redis because counters need shared state across gateway nodes at in-memory latency; Postgres only for config because config is small, relational, and admin-edited.
+**The client's half of the contract:** honour `Retry-After`, add random **jitter** on top (otherwise ten thousand rejected clients all return in the same second), and back off exponentially if rejected again. A client SDK that does this by default is the cheapest rate limiter you will ever ship.
 
-## Phase 5 — Deep Dive: the algorithm (30–42 min)
+<Trace title="Write the contract" steps={contract} takeaway="429 for the client’s own limit, 503 for your overload. Retry-After in whole seconds, rounded up. Headers on every response." />
 
-The dive every interviewer wants. Four candidates, one table:
+**Catch the trap:** "Return an error when they're over the limit." Which status, which headers, what wait — and on which responses? The partner from the prologue would have stopped at the first 429 with a `Retry-After`, if anyone had sent one.
 
-| Algorithm | How | Memory/key | Edge behavior | Verdict |
-|-----------|-----|-----------|---------------|---------|
-| **Fixed window** | counter per `[key, window]`, reset each window | ~8 B | ❌ **2× burst at boundary** — 100 req at 11:59:59 + 100 at 12:00:00 all pass | fine for rough internal limits |
-| **Sliding window log** | store timestamp of *every* request, count last N sec | ~8 B × every request | exact | ❌ memory blows up at 1M QPS |
-| **Sliding window counter** | current + previous window counters, weighted overlap | ~16 B | approximate but no 2× burst | ✅ strong default |
-| **Token bucket** | bucket refills at rate r, request takes a token | ~16 B (tokens + last-refill) | allows controlled bursts up to bucket size | ✅ strong default, burst-friendly |
+<Part n="Part Two" title="Draw it (step 4)">
 
-**Commit:** token bucket. Reasons said out loud: (1) constant 16 B memory per key regardless of traffic — our 50 MB estimate holds, (2) burst tolerance is *configurable product behavior* (bucket size) instead of an accident (fixed-window edge), (3) refill math is lazy — compute tokens from `last_refill` timestamp on each request, no background jobs.
+Place the limiter, then draw the smallest design that meets every functional requirement, and trace a request through it.
 
-**Atomicity sub-dive** (expect the follow-up): read-modify-write from concurrent gateway nodes races — two nodes both read "1 token left" and both admit. Fix: the whole check-refill-decrement runs as a **Lua script in Redis** — single-threaded execution makes it atomic, one round trip keeps the 5 ms budget. (Alternative answers: `INCR`+`EXPIRE` works for fixed window only; CAS-retry loops burn the latency budget.)
+</Part>
 
-**Second dive if time — hot-key / celebrity key:** one Enterprise key doing 200K QPS melts its shard. Options: local pre-aggregation on each gateway node (batch-decrement every 100 ms — trades exactness for shard survival) vs splitting the key's bucket across shards (exact-ish, complex). Commit to pre-aggregation; over-admission of a few hundred requests at this scale is inside the stated accuracy tolerance.
+<h2 id="placement">Chapter 3 · Where the gate stands</h2>
 
-## Phase 6 — Wrap-Up (42–45 min)
+<Scene chapter="Chapter 3" title="Where the gate stands" mood="dusk">
 
-- **Bottleneck at 10×:** Redis cluster ops/s → more shards; config cache already local so it doesn't move.
-- **Monitor:** fail-open events (top alert — silent fail-open = no limits and nobody knows), Redis p99, 429 rates per plan (product signal).
-- **What I'd build next:** per-customer overrides, gradual throttling tier before hard 429, anomaly detection on IP-fallback traffic.
+Theo has a story about the last limiter Kestrel built, years ago. It went live on a Tuesday and immediately blocked half of Delhi. Every request appeared to come from the same three addresses — Kestrel's own load balancers.
+
+*"It counted perfectly,"* he says. *"It just counted the wrong thing, in the wrong place."* He draws the path of one request, phone to database, and puts the marker down. *"Where would you put it? And what can it see from there?"*
+
+</Scene>
+
+A limiter can sit at many points on the request path. **Each point sees different information**, and that decides what it can limit by:
+
+<Figure caption="Every hop could host a limiter. Left of the gateway nobody knows the API key; right of it, each service sees only its own slice of traffic.">
+  <Mermaid code={`flowchart LR
+    C["Client SDK\nself-throttle"] --> EDGE["Edge · CDN / WAF\nraw IP, coarse floods"]
+    EDGE --> LB["Load balancer"]
+    LB --> GW["API gateway\nkey, plan, route\n★ main limiter"]
+    GW --> S1["Search service\nin-process middleware"]
+    GW --> S2["OTP service\nper phone number"]
+    S1 --> SC["Sidecar\nservice-to-service"]
+    SC --> DB[("Search cluster")]`} />
+</Figure>
+
+| Where | Sees | Good for | Blind to |
+|---|---|---|---|
+| **Client SDK** | Only its own requests | Being polite: pacing, honouring Retry-After | Everyone else; attackers don't use your SDK |
+| **Edge (CDN / WAF)** | Raw client IP, path, headers, before your servers | Cheap drops of per-IP floods and scrapers | The API key's plan (usually not authenticated yet) |
+| **API gateway** | Authenticated key, plan, route, every endpoint | **Per-key, per-plan, per-endpoint limits** — the main case | Business meaning inside the body (which phone number?) |
+| **In-service middleware** | The business action: "send SMS to +44…", "export report" | Abuse-sensitive and cost-sensitive limits | Traffic to other services |
+| **Sidecar (service mesh)** | One service's inbound and outbound calls | Limits between internal services, language-agnostic | Plans and customers |
+| **In front of a dependency** | Calls to one database or upstream API | Concurrency limits and bulkheads protecting that dependency | Who the end customer was |
+
+**The answer is usually layered** — and saying so is the senior move. Per-IP flood control at the edge; per-key, per-plan limits at the gateway (this design); per-action limits inside the services that understand the action; and a concurrency limit in front of fragile dependencies. Then **say which layer the question is about**: that is your layer-conflation rule, and "rate limiting" is one of the words it was written for (<a href={`${BASE}sd/lessons/core-concepts/`}>Core concepts</a> lists it).
+
+**The Delhi bug, precisely.** Behind a load balancer, the connection's source address is the load balancer. The real client address travels in `X-Forwarded-For` (or the standard `Forwarded` header) — and a client can send a fake one of its own. Limit by the address **your own edge wrote** (the right-most entry your trusted proxies added), never the left-most value a client could forge. <a href={`${BASE}sd/lessons/networking/#proxies`}>Networking</a> has the full story.
+
+<Trace title="Place the gate" steps={placement} takeaway="The edge knows the IP, the gateway knows the key and plan, the service knows the business action. Limit each thing where it is visible." />
+
+<Reveal q="Should Kestrel’s 200 internal services be rate-limited too?">
+
+Yes. A retry storm from an internal service is one of the most common self-inflicted outages — last night's partner could just as easily have been Kestrel's own recommendations job. Give each calling service an identity (a service key, or the mesh's mTLS identity) and a limit at the gateway or sidecar, sized from its normal traffic with headroom. Pair it with **concurrency limits** in front of fragile dependencies: a rate limit caps requests per second, while a concurrency limit caps requests *in flight*, which is what actually protects a slow database.
+
+</Reveal>
+
+**Catch the trap:** "Put a rate limiter in front of the API." In front of which hop, keyed by what? An answer without a layer and an identity is two blanks short.
+
+<h2 id="high-level">Chapter 4 · Boxes that earn their place</h2>
+
+<Scene chapter="Chapter 4" title="Boxes that earn their place" mood="dawn">
+
+You start drawing: a limiter service, a queue, a stream processor for analytics, a dashboard. Mara points at the queue. *"What's in it?"*
+
+You hesitate. *"Rejected requests?"*
+
+*"Rejected requests get a 429 and go home,"* she says, and erases it. *"First requirement first. A request arrives. Show me the fewest boxes that let it in or keep it out."*
+
+</Scene>
+
+**One functional requirement at a time, traced out loud.** The request path, numbered:
+
+<Figure caption="The high-level design. Numbers trace one request; the config path (letters) runs only when an admin changes a plan. Nothing here exists without a requirement behind it.">
+  <Mermaid code={`flowchart LR
+    C["Client"] -->|"1 · request + API key"| GW["API gateway × N\nlimiter middleware\nconfig cached in memory"]
+    GW -->|"2 · one script call\ncheck + spend"| R[("Redis cluster\nbucket state\nsharded by key")]
+    GW -->|"3a · allowed + headers"| S["Backend services"]
+    GW -.->|"3b · 429 + Retry-After"| C
+    GW -.->|"fail-open audit event"| Q["Audit queue"]
+    AP["Admin portal"] -->|"A · write rule"| PG[("Postgres\nplans · rules · keys")]
+    AP -->|"B · publish change"| GW`} />
+</Figure>
+
+> **You:** "A request arrives at the gateway with an API key. The limiter middleware resolves the key's plan and the matching rules from its in-memory config — no network hop. It makes **one call to Redis**: a script that refills, checks and spends from every bucket this request touches, atomically. If allowed, the gateway attaches the rate-limit headers and forwards the request. If not, it returns 429 with Retry-After, and the backend never sees it. If Redis doesn't answer within 3 ms, we fail open, allow the request and emit an audit event."
+>
+> "Config: the admin portal writes rules to Postgres and publishes a change; gateways reload in seconds, and poll every minute in case a message is lost."
+
+**Every box earns one sentence:**
+
+- **Limiter as gateway middleware** — limits must apply before any backend work is spent, and the gateway is where the key and plan are known.
+- **Redis** — 200 gateway instances need one shared count per key, at in-memory latency.
+- **Postgres** — config is small, relational and admin-edited; it is never on the request path.
+- **Audit queue** — fail-open must never be silent (Chapter 14), and the gateway can't wait on a database write to record it.
+
+**Library in the gateway, or a separate rate-limit service?** A separate service (Envoy's global rate-limit service works this way) centralises the logic and serves gateways written in any language — but adds a network hop *before* the Redis hop. A library inside the gateway calls Redis directly. With a 5 ms budget, **commit to the library**, and say the flip condition: *"If we had many gateway technologies, I'd centralise it as a service and pay the extra hop."*
+
+**Worked numbers for the path.** A same-datacentre round trip is about 0.5 ms (<a href={`${BASE}sd/lessons/core-concepts/`}>Core concepts</a>); a short Redis script runs in microseconds. So a check costs roughly **0.5–1 ms at the median and a couple of milliseconds at p99** under load — inside the 5 ms budget. Bandwidth: a check and its reply are about 150 B, so 1M checks/s is about 150 MB/s (~1.2 Gbit/s) spread across the whole cluster — a few MB/s per node. Say "non-issue, skipping" and move on.
+
+<Reveal q="Why not count in each gateway’s memory and skip Redis entirely?">
+
+Because the gateways don't share memory. With 200 instances behind a round-robin load balancer, each one would enforce the full limit on its own slice: a Pro key allowed 10/s could get up to 200 × 10 = 2,000/s. Dividing the limit by 200 breaks the other way — a client whose requests happen to bunch on a few gateways gets throttled at a fraction of its plan. Local counting *can* work if the load balancer routes each key to one gateway (consistent hashing on the key), or for very hot keys with leasing (Chapter 13) — but the default needs one shared count.
+
+</Reveal>
+
+**Catch the trap:** drawing the limiter *behind* the services ("each service checks Redis"), so a rejected request has already cost a hop, authentication and parsing — or drawing a "rate-limiter service" box without saying what it costs in latency.
+
+<Part n="Part Three" title="Deep dive: the algorithm">
+
+0:25 on the clock. *"The hard part here is clearly how we count — let me go deep on it."* Five candidates, each with its timeline, its memory and its failure, then one decision.
+
+</Part>
+
+<h2 id="fixed-window">Chapter 5 · The midnight double</h2>
+
+<Scene chapter="Chapter 5" title="The midnight double" mood="night">
+
+Dev pulls up a graph from a different company's outage, one he keeps for teaching. A client limited to 100 requests a minute. A flat line, then at exactly 11:59:59 a spike of 100, and one second later at 12:00:00, a second spike of 100.
+
+*"Two hundred requests in about one second,"* he says. *"And the limiter's logs say it never once exceeded 100 a minute. Both of those statements are true."*
+
+</Scene>
+
+**Fixed window counter.** Cut time into aligned windows — minute 11:59, minute 12:00 — and keep one counter per key per window. A request increments the counter; if it would exceed the limit, reject. When a new window starts, the counter starts at zero.
+
+- **Memory:** one small counter per key per window (old windows simply expire).
+- **Cost:** one atomic increment. In Redis it is a single `INCR` on a key that includes the window number.
+- **The flaw:** the counter forgets everything at the boundary.
+
+<Figure caption="Fixed windows, limit 100 per minute. 100 requests at 11:59:59 fill the 11:59 window; at 12:00:00 a fresh counter admits 100 more. Each window is within its limit; the client got 200 in about one second.">
+  <svg viewBox="0 0 760 200" role="img" aria-label="Two adjacent one-minute windows. 100 requests at 11:59:59 and 100 at 12:00:00 both pass, 200 within about one second.">
+    <text x="380" y="22" fill="#f85149" font-size="13" font-weight="700" text-anchor="middle">200 admitted within about 1 second — 2 × the limit</text>
+    <path d="M367 44 V34 H393 V44" stroke="#f85149" stroke-width="2" fill="none" />
+    <rect x="40" y="50" width="340" height="100" rx="6" fill="#1b2330" stroke="#58a6ff" />
+    <rect x="380" y="50" width="340" height="100" rx="6" fill="#1b2330" stroke="#a371f7" />
+    <text x="190" y="95" fill="#8b949e" font-size="12" text-anchor="middle">idle until 11:59:59</text>
+    <text x="560" y="95" fill="#8b949e" font-size="12" text-anchor="middle">full at 12:00:00 — rejects until 12:01</text>
+    <rect x="367" y="62" width="12" height="70" rx="2" fill="#e3b341" />
+    <rect x="381" y="62" width="12" height="70" rx="2" fill="#e3b341" />
+    <text x="360" y="120" fill="#e3b341" font-size="12" font-weight="700" text-anchor="end">100</text>
+    <text x="400" y="120" fill="#e3b341" font-size="12" font-weight="700" text-anchor="start">100</text>
+    <text x="190" y="140" fill="#c9d1d9" font-size="12" text-anchor="middle">window 11:59 · count 100 / 100</text>
+    <text x="560" y="140" fill="#c9d1d9" font-size="12" text-anchor="middle">window 12:00 · count 100 / 100</text>
+    <text x="40" y="172" fill="#8b949e" font-size="11" text-anchor="middle">11:59:00</text>
+    <text x="380" y="172" fill="#8b949e" font-size="11" text-anchor="middle">12:00:00</text>
+    <text x="720" y="172" fill="#8b949e" font-size="11" text-anchor="middle">12:01:00</text>
+  </svg>
+</Figure>
+
+**The boundary burst, stated exactly.** Any span of time one window long overlaps at most two aligned windows, so a fixed window admits **at most 2 × limit in any window-length span — and it can reach that bound in two adjacent seconds**. That is the property that matters: the limiter's job was to stop a spike, and the worst case *is* a spike.
+
+```java id=fixedWindow group=limiters
+import java.util.function.LongSupplier;
+
+/** One counter per aligned window. Simple and cheap — and it admits 2 × limit across a boundary. */
+static final class FixedWindowCounter {
+    private final long limit;
+    private final long windowNanos;
+    private final LongSupplier clock;       // injected: System::nanoTime in production, a fake in tests
+    private long window = Long.MIN_VALUE;   // which window `count` belongs to
+    private long count;
+
+    FixedWindowCounter(long limit, long windowNanos, LongSupplier clock) {
+        if (limit < 1 || windowNanos < 1) throw new IllegalArgumentException("limit and window must be positive");
+        this.limit = limit;
+        this.windowNanos = windowNanos;
+        this.clock = clock;
+    }
+
+    synchronized boolean tryAcquire() {
+        long w = Math.floorDiv(clock.getAsLong(), windowNanos);
+        if (w != window) { window = w; count = 0; }   // a new window: forget everything
+        if (count >= limit) return false;
+        count++;
+        return true;
+    }
+}
+```
+
+Every limiter in this lesson takes its **clock as a parameter** (`LongSupplier`): `System::nanoTime` in production, a hand-moved fake in tests. That is how the checker for this page asserts exact behaviour at boundaries — 100 admitted at 59 s, 100 more at 60 s — instead of sleeping and hoping. `synchronized` makes each check-and-increment one atomic step per limiter; Chapter 11 is the distributed version of the same problem.
+
+**When fixed window is the right answer:** rough internal quotas ("about 1,000 exports an hour per team"), daily caps, anything where a 2× edge burst hurts nobody. It is one Redis command and a few bytes. Picking it *deliberately* — "the boundary burst is fine for a daily quota" — is a better answer than reaching for a fancier algorithm by reflex.
+
+<h2 id="sliding-log">Chapter 6 · A ledger of every knock</h2>
+
+<Scene chapter="Chapter 6" title="A ledger of every knock">
+
+Theo's fix for the midnight double is the one every careful engineer reaches for first. *"Don't count per window. Remember when each request happened. At any moment, count the ones in the last sixty seconds."*
+
+Mara nods. *"Exact. Now tell me what it costs for a Pro key at full speed."*
+
+</Scene>
+
+**Sliding window log.** Keep the timestamp of every admitted request. To check a new request at time `now`: drop timestamps at or before `now − window`, count what remains, and admit if the count is below the limit.
+
+**Why it works:** whenever the log admits a request at time `s`, at most `limit − 1` earlier admissions are in `(s − W, s]`. For any later moment `t ≥ s`, the span `(t − W, s]` is inside `(s − W, s]`, so no window-length span ever holds more than `limit` admissions. **Exact, with no boundary.** At 12:00:00 it still sees the 100 from 11:59:59 and admits nothing.
+
+**What it costs:** memory proportional to the limit. **Worked numbers:** Pro keys allow 600 a minute. 50,000 keys at full use × 600 timestamps × ~100 B per entry in a Redis sorted set (an assumption — measure with `MEMORY USAGE`) = **3 GB**, against **5 MB** for one 100-byte counter per key. **600 times more memory** for the same promise, plus a sorted-set write and trim on every request.
+
+```java id=slidingLog group=limiters
+/** Exact: remembers the time of every admitted request in the last window. Memory grows with the limit. */
+static final class SlidingWindowLog {
+    private final int limit;
+    private final long windowNanos;
+    private final LongSupplier clock;                              // must be monotonic (System::nanoTime)
+    private final ArrayDeque<Long> admitted = new ArrayDeque<>();  // timestamps, oldest first
+
+    SlidingWindowLog(int limit, long windowNanos, LongSupplier clock) {
+        if (limit < 1 || windowNanos < 1) throw new IllegalArgumentException("limit and window must be positive");
+        this.limit = limit;
+        this.windowNanos = windowNanos;
+        this.clock = clock;
+    }
+
+    synchronized boolean tryAcquire() {
+        long now = clock.getAsLong();
+        // Evict everything that has slid out: keep only timestamps in (now - window, now].
+        while (!admitted.isEmpty() && now - admitted.peekFirst() >= windowNanos) admitted.pollFirst();
+        if (admitted.size() >= limit) return false;
+        admitted.addLast(now);
+        return true;
+    }
+}
+```
+
+Comparing `now - t >= window` rather than `t <= now - window` is deliberate: `System.nanoTime` values can be any number, including negative, and differences are the overflow-safe way to compare them.
+
+**A design choice to say out loud:** this version logs only *admitted* requests. Some implementations log every attempt, so a client that keeps hammering stays blocked until it stops — stricter, and the log then grows with abuse instead of with the limit. Either is defensible; choose one.
+
+**When the log is the right answer:** low limits that must be exact and auditable — "5 password attempts per account per 15 minutes", "3 payouts per day". Small limits mean small logs, and exactness is the requirement.
+
+<h2 id="sliding-counter">Chapter 7 · Most of last minute</h2>
+
+<Scene chapter="Chapter 7" title="Most of last minute" mood="dusk">
+
+Mara draws two boxes side by side: last minute and this minute. Over them, she slides a third box, one minute wide, that overlaps the end of the first and the start of the second.
+
+*"You don't know when last minute's requests happened,"* she says. *"You only kept the count. If you had to guess how many of them are still inside the sliding box — what would you guess?"*
+
+</Scene>
+
+**Sliding window counter.** Keep only two counters per key: the previous window's count and the current window's count. Estimate the sliding window by assuming the previous window's requests were **spread evenly**, and counting the fraction of it that the sliding window still overlaps:
+
+```text
+estimate = previous × (W − elapsed) / W + current          admit while estimate < limit
+```
+
+<Figure caption="Limit 100 per minute, 15 seconds into the current minute. The sliding minute still covers 45 of the previous minute’s 60 seconds, so 80 × 45/60 = 60 of its requests are assumed to be inside. 60 + 30 = 90: allowed, and exactly 10 more fit.">
+  <svg viewBox="0 0 760 210" role="img" aria-label="Previous minute with 80 requests, current minute with 30, sliding window covering the last 45 seconds of the previous minute and the first 15 of the current. Estimate 90.">
+    <text x="285" y="32" fill="#e3b341" font-size="12" font-weight="700" text-anchor="middle">the sliding minute: last 45 s of the previous + first 15 s of this one</text>
+    <path d="M135 56 V44 H435 V56" stroke="#e3b341" stroke-width="2" fill="none" />
+    <rect x="60" y="64" width="300" height="64" rx="6" fill="#1b2330" stroke="#8b949e" />
+    <rect x="135" y="64" width="225" height="64" fill="#58a6ff" fill-opacity="0.22" />
+    <rect x="360" y="64" width="300" height="64" rx="6" fill="#1b2330" stroke="#a371f7" />
+    <rect x="360" y="64" width="75" height="64" fill="#a371f7" fill-opacity="0.28" />
+    <text x="210" y="92" fill="#c9d1d9" font-size="12" text-anchor="middle">previous minute</text>
+    <text x="210" y="111" fill="#c9d1d9" font-size="12" font-weight="700" text-anchor="middle">80 admitted</text>
+    <text x="548" y="92" fill="#c9d1d9" font-size="12" text-anchor="middle">current minute</text>
+    <text x="548" y="111" fill="#c9d1d9" font-size="12" font-weight="700" text-anchor="middle">30 so far</text>
+    <text x="60" y="148" fill="#8b949e" font-size="11" text-anchor="middle">0 s</text>
+    <text x="135" y="148" fill="#8b949e" font-size="11" text-anchor="middle">15 s</text>
+    <text x="360" y="148" fill="#8b949e" font-size="11" text-anchor="middle">60 s</text>
+    <text x="435" y="148" fill="#e3b341" font-size="11" text-anchor="middle">75 s · now</text>
+    <text x="660" y="148" fill="#8b949e" font-size="11" text-anchor="middle">120 s</text>
+    <text x="380" y="184" fill="#3fb950" font-size="13" font-weight="700" text-anchor="middle">estimate = 80 × 45/60 + 30 = 60 + 30 = 90 &lt; 100 → allow (10 more fit)</text>
+  </svg>
+</Figure>
+
+**Worked numbers at the boundary.** After 100 requests at 11:59:59: at 12:00:00 the estimate is 100 × 60/60 + 0 = 100 — nothing passes. At 12:00:01 it is 100 × 59/60 ≈ 98.3, so **two** requests fit (98.3 + 1 = 99.3 &lt; 100; 98.3 + 2 = 100.3 does not). The fixed window let 100 through in that second; the sliding counter lets 2. **The boundary spike is gone.**
+
+**The error, honestly.** The estimate is exact when the previous window's traffic was evenly spread. If it wasn't, the error at `elapsed` seconds into the window is bounded by the previous count times the misjudged fraction: the true count can be **higher by at most previous × elapsed / W** (previous traffic bunched at its end) or **lower by at most previous × (W − elapsed) / W** (bunched at its start). Right after a boundary the possible over-count is near zero, which is why there is no spike. In a pathological pattern — the previous window's 100 requests all in its last instant, then the current window's traffic spread evenly — the true trailing-minute count can creep toward 2 × limit near the end of the window; it can never arrive as a burst. (The checker for this page constructs exactly that case.) On real traffic the approximation is very close: Cloudflare described running this scheme across their network and reported a tiny error rate — see Further study.
+
+```java id=slidingCounter group=limiters
+/** Two counters per key. Estimates the sliding window by weighting the previous window by its overlap. */
+static final class SlidingWindowCounter {
+    private final long limit;
+    private final long windowNanos;
+    private final LongSupplier clock;
+    private long window = Long.MIN_VALUE;   // index of the current aligned window
+    private long current;                   // admitted in the current window
+    private long previous;                  // admitted in the window before it
+
+    SlidingWindowCounter(long limit, long windowNanos, LongSupplier clock) {
+        if (limit < 1 || windowNanos < 1) throw new IllegalArgumentException("limit and window must be positive");
+        Math.multiplyExact(2 * limit, windowNanos);   // the integer comparison below must not overflow
+        this.limit = limit;
+        this.windowNanos = windowNanos;
+        this.clock = clock;
+    }
+
+    synchronized boolean tryAcquire() {
+        long now = clock.getAsLong();
+        long w = Math.floorDiv(now, windowNanos);
+        if (w != window) {
+            previous = (w == window + 1) ? current : 0;   // skipped a whole window? nothing recent remains
+            current = 0;
+            window = w;
+        }
+        long into = now - w * windowNanos;               // 0 .. windowNanos - 1
+        // estimate = previous × (W − into) / W + current; admit while estimate < limit.
+        // Multiplied through by W so the arithmetic stays exact in integers.
+        if (previous * (windowNanos - into) + current * windowNanos >= limit * windowNanos) return false;
+        current++;
+        return true;
+    }
+}
+```
+
+Two details the checker pins down: **multiplying through by W** keeps the comparison exact (no floating-point "99.99999 &lt; 100" surprises at the boundary), and **a skipped window resets `previous` to zero** — if the key was idle for a whole minute, the minute before that is not "previous".
+
+<Trace title="Count the window" steps={windows} takeaway="Fixed window: cheap, 2× at the boundary. Log: exact, memory grows with the limit. Counter: two numbers, no spike, a small bounded error." />
+
+<h2 id="token-bucket">Chapter 8 · A bucket that refills</h2>
+
+<Scene chapter="Chapter 8" title="A bucket that refills" mood="dawn">
+
+Iris has a complaint from a real customer. Their mobile app opens and fires twelve requests at once — profile, feed, settings, badges — then nothing for a minute. Under a strict "1 per second" limit, eleven of the twelve fail on every launch.
+
+*"They're not abusing anything,"* she says. *"They're just bursty. Can a limit be generous for a moment and strict over time?"*
+
+</Scene>
+
+**Token bucket.** Each key has a bucket that holds at most **B tokens** (the burst). Tokens drip in at **r per second** (the sustained rate). A request takes one token; with no token, it is rejected. A full bucket stops filling.
+
+<Figure caption="Two knobs, set independently: capacity is how big a burst may be, refill rate is the long-run average. Over any span of T seconds, at most B + r·T requests pass.">
+  <Mermaid code={`flowchart LR
+    R["Refill\n10 tokens / s"] -->|"drip"| B[("Bucket\nat most 100 tokens")]
+    Q["Request"] --> D{"At least\none token?"}
+    B -.-> D
+    D -->|"yes"| A["Take one\nserve + headers"]
+    D -->|"no"| X["429\nRetry-After"]`} />
+</Figure>
+
+For Iris's customer: B = 20, r = 1/s. The twelve-request launch passes; a client sending steadily faster than 1/s still drains the bucket and gets throttled. **Over any span of T seconds, at most B + r·T requests pass** — a burst, then the rate.
+
+**Lazy refill — no timer thread.** You never run a job that adds tokens. Store two numbers per bucket: `tokens` and `lastRefill`. On each request, compute what the elapsed time earned:
+
+```text
+tokens = min(B, tokens + (now − lastRefill) × r)        then spend one if tokens ≥ 1
+```
+
+**Worked numbers:** the Pro bucket (B = 100, r = 10/s) holds 3 tokens at 12.40 s. The next request arrives at 12.85 s. Refill: 3 + 0.45 × 10 = 7.5. Spend one: **6.5**. Memory is two numbers per key regardless of traffic — the 50 MB estimate from Chapter 1 holds at any request rate.
+
+**The headers fall out of the state:** `Remaining` = whole tokens left. `Retry-After` = time until one token exists = (1 − tokens) / r, rounded up to a whole second. `Reset` = time until the bucket is full = (B − tokens) / r.
+
+```java id=tokenBucket group=limiters
+/** Holds up to `capacity` tokens and earns one every `periodNanos`. A request spends one token. */
+static final class TokenBucket {
+    private final long capacity;
+    private final long periodNanos;   // 1 / refill rate: 100 ms means 10 tokens per second
+    private final LongSupplier clock;
+    private long tokens;
+    private long lastRefill;          // time up to which refill has been credited
+
+    TokenBucket(long capacity, long periodNanos, LongSupplier clock) {
+        if (capacity < 1 || periodNanos < 1) throw new IllegalArgumentException("capacity and period must be positive");
+        this.capacity = capacity;
+        this.periodNanos = periodNanos;
+        this.clock = clock;
+        this.tokens = capacity;                // a new client starts full and may burst
+        this.lastRefill = clock.getAsLong();
+    }
+
+    synchronized boolean tryAcquire() {
+        refill(clock.getAsLong());
+        if (tokens == 0) return false;
+        tokens--;
+        return true;
+    }
+
+    /** Tokens left right now: the X-RateLimit-Remaining value. */
+    synchronized long available() {
+        refill(clock.getAsLong());
+        return tokens;
+    }
+
+    /** How long until one token exists: the Retry-After value (round up to whole seconds for HTTP). */
+    synchronized long nanosUntilNextToken() {
+        long now = clock.getAsLong();
+        refill(now);
+        return tokens > 0 ? 0 : periodNanos - (now - lastRefill);
+    }
+
+    // Lazy refill: no timer thread. Credit the whole tokens earned since lastRefill, and keep the
+    // partial progress towards the next one by advancing lastRefill only by whole periods.
+    private void refill(long now) {
+        if (tokens == capacity) {                          // full: idle time is not banked
+            lastRefill = Math.max(lastRefill, now);
+            return;
+        }
+        long elapsed = now - lastRefill;
+        if (elapsed < periodNanos) return;                 // not one whole token yet (or the clock went backwards)
+        long earned = elapsed / periodNanos;
+        if (earned >= capacity - tokens) {                 // full: time beyond that is not banked
+            tokens = capacity;
+            lastRefill = now;
+        } else {
+            tokens += earned;
+            lastRefill += earned * periodNanos;
+        }
+    }
+}
+```
+
+**Why it works — what stays true:** the bucket's real level is always `tokens` whole tokens plus a partial token worth `(now − lastRefill) / period`, capped at the capacity. The Java keeps whole tokens in a `long` so every decision is exact, and keeps the partial token in the *timestamp*. Two consequences the checker tests:
+
+- **Full means full.** While the bucket is full, time passing earns nothing, so `lastRefill` follows `now`. Without that line, a bucket that sat full for 8 seconds and then spent one token would "remember" those 8 seconds and hand back the next token early. (This lesson's first draft had exactly that bug; the random tests against an independent model caught it.)
+- **A clock that steps backwards earns nothing** (`elapsed < period` returns early). Use `System.nanoTime`, which is monotonic; wall-clock time (`System.currentTimeMillis`) can jump backwards when NTP corrects it.
+
+**Catch the bug.** You've seen this shape in code reviews — it looks harmless:
+
+```java fragment
+long earned = (now - lastRefill) / periodNanos;   // whole tokens only
+tokens = Math.min(capacity, tokens + earned);
+lastRefill = now;                                  // BUG: throws away the partial token every call
+```
+
+A client polling every 90 ms against a 100 ms refill earns 0 whole tokens per call, and `lastRefill = now` erases the 90 ms of progress each time. The bucket **never refills while the client keeps polling**. The checker runs exactly this: over 9 seconds of 90 ms retries, the buggy bucket admits 0 and the correct one admits 90 (9 s × 10/s). The fix is either to advance `lastRefill` by whole periods (above) or to store the level at a finer grain (the Redis script in Chapter 11 keeps credit in milliseconds).
+
+**Many keys in one process.** A map from key to bucket, created exactly once:
+
+```java id=keyed group=limiters
+/** One bucket per key, created exactly once even when the first requests for a key race. */
+static final class KeyedLimiter {
+    private final ConcurrentHashMap<String, TokenBucket> buckets = new ConcurrentHashMap<>();
+    private final Function<String, TokenBucket> newBucket;
+
+    KeyedLimiter(Function<String, TokenBucket> newBucket) { this.newBucket = newBucket; }
+
+    boolean tryAcquire(String key) {
+        return buckets.computeIfAbsent(key, newBucket).tryAcquire();   // atomic create-if-missing
+    }
+
+    int trackedKeys() { return buckets.size(); }
+}
+```
+
+`computeIfAbsent` is the whole point: the tempting `if (!map.containsKey(k)) map.put(k, new TokenBucket(...))` lets two threads each create a bucket for a brand-new key, and each bucket hands out a full burst — double the limit on exactly the first, busiest second. The checker hammers 50 new keys from 12 threads and asserts one bucket and exactly 20 admissions per key. In production, also **evict idle buckets** (a cache with expire-after-access, such as Caffeine) or the map grows with every IP that ever visited.
+
+<h2 id="leaky-gcra">Chapter 9 · The leak and the schedule</h2>
+
+<Scene chapter="Chapter 9" title="The leak and the schedule" mood="night">
+
+Theo has been quiet. *"You know the token bucket has a twin,"* he says. *"Telecom engineers built it to police ATM cells. It stores one number instead of two, and it never refills anything."*
+
+He writes TAT on the board and underlines it. *"Theoretical arrival time. When this client is back on schedule."*
+
+</Scene>
+
+**The leaky bucket has two meanings — say which one you mean.**
+
+- **As a queue (a traffic shaper).** Requests pour into a bucket that holds at most B; they leak out to the backend at a constant rate r. A full bucket rejects. The output is perfectly smooth — and every queued request **waits**. A full queue of 100 draining at 10/s makes the newest request wait **10 seconds**. Right for outgoing calls to a strict third party (a payment provider that rejects anything over 50/s) or background jobs; usually wrong for an API caller, who would rather get a fast 429 than a slow answer. NGINX's `limit_req` is documented as this kind of leaky bucket, with a `burst` queue and a `nodelay` option.
+- **As a meter.** Don't queue; just check whether this request *would* overflow a bucket that leaks at rate r, and reject if so. That is the token bucket seen from the other side — water level instead of tokens remaining.
+
+<Figure caption="Same name, two machines. The queue spends latency to smooth output; the meter rejects instead, and is equivalent to a token bucket.">
+  <Mermaid code={`flowchart LR
+    subgraph SHAPER["Leaky bucket as a queue"]
+      direction LR
+      I1["Requests"] --> Q1[["Queue ≤ 100"]] -->|"exactly 10 / s"| O1["Backend"]
+    end
+    subgraph METER["Leaky bucket as a meter = token bucket"]
+      direction LR
+      I2["Request"] --> M2{"Would it\noverflow?"}
+      M2 -->|"no"| O2["Serve now"]
+      M2 -->|"yes"| X2["429"]
+    end`} />
+</Figure>
+
+**GCRA — the generic cell rate algorithm** — is the meter with the cleverest bookkeeping. Instead of tokens and a timestamp, store one time: **TAT**, the theoretical arrival time at which the client is exactly back on schedule. Let **T** = 1 / r (the time one request "costs") and **τ = (B − 1) × T** (how far ahead of schedule a client may run — the burst, expressed as time).
+
+```text
+on request at now:
+    if TAT − now > τ:  reject            (Retry-After = TAT − τ − now)
+    else:              TAT = max(TAT, now) + T;  allow
+```
+
+<Figure caption="GCRA for the Pro plan: T = 100 ms, burst 100, so τ = 9.9 s. Five requests at 12.0 s booked slots up to TAT = 12.5 s. A request is allowed whenever now ≥ TAT − τ; this one is 0.5 s ahead of schedule, well within 9.9 s.">
+  <svg viewBox="0 0 760 170" role="img" aria-label="Timeline from 0 to 14 seconds. Before TAT minus tau (2.6 s) requests are rejected; from 2.6 s onward they are allowed. Now is 12.0 s, TAT is 12.5 s.">
+    <rect x="40" y="62" width="125" height="26" fill="#f85149" fill-opacity="0.25" />
+    <rect x="165" y="62" width="547" height="26" fill="#3fb950" fill-opacity="0.22" />
+    <line x1="40" y1="75" x2="712" y2="75" stroke="#8b949e" stroke-width="2" />
+    <text x="102" y="56" fill="#f85149" font-size="11" text-anchor="middle">too early: reject</text>
+    <text x="400" y="56" fill="#3fb950" font-size="11" text-anchor="middle">now anywhere here: allow</text>
+    <line x1="165" y1="58" x2="165" y2="96" stroke="#e3b341" stroke-width="2" />
+    <text x="165" y="112" fill="#e3b341" font-size="11" text-anchor="middle">TAT − τ = 2.6 s</text>
+    <line x1="616" y1="58" x2="616" y2="96" stroke="#58a6ff" stroke-width="2" />
+    <text x="600" y="50" fill="#58a6ff" font-size="11" font-weight="700" text-anchor="middle">now 12.0 s</text>
+    <line x1="640" y1="58" x2="640" y2="96" stroke="#a371f7" stroke-width="2" />
+    <text x="668" y="112" fill="#a371f7" font-size="11" font-weight="700" text-anchor="middle">TAT 12.5 s</text>
+    <path d="M165 130 V138 H640 V130" stroke="#e3b341" stroke-width="1.5" fill="none" />
+    <text x="402" y="156" fill="#e3b341" font-size="11" text-anchor="middle">τ = (100 − 1) × 100 ms = 9.9 s</text>
+    <text x="40" y="112" fill="#8b949e" font-size="10" text-anchor="middle">0 s</text>
+  </svg>
+</Figure>
+
+**Why it is the token bucket in disguise.** At any moment the bucket holds `B − (TAT − now) / T` tokens (or B, if TAT is in the past). "At least one token" means `B − (TAT − now) / T ≥ 1`, which rearranges to `TAT − now ≤ (B − 1) × T = τ` — exactly GCRA's test. **Worked numbers:** after the request in the figure, TAT = 12.6 s. If the stored TAT were 22.0 s at 12.0 s, the client would be 10.0 s ahead, more than τ = 9.9 s: rejected, Retry-After 0.1 s — and indeed 100 − 10.0 / 0.1 = 0 tokens. The checker doesn't take this on faith: it drives the token bucket, GCRA and an independent continuous-bucket model with thousands of random request sequences and asserts they make **the same decision, and report the same wait, every time**.
+
+```java id=gcra group=limiters
+/** GCRA: the same limiter as TokenBucket, stored as a single number — the theoretical arrival time. */
+static final class Gcra {
+    private final long periodNanos;      // T: the time one request "costs" (1 / rate)
+    private final long toleranceNanos;   // τ = (burst − 1) × T: how far ahead of schedule a client may run
+    private final LongSupplier clock;
+    private long tat;                    // theoretical arrival time: when the client is back on schedule
+
+    Gcra(long burst, long periodNanos, LongSupplier clock) {
+        if (burst < 1 || periodNanos < 1) throw new IllegalArgumentException("burst and period must be positive");
+        this.periodNanos = periodNanos;
+        this.toleranceNanos = Math.multiplyExact(burst - 1, periodNanos);
+        this.clock = clock;
+        this.tat = clock.getAsLong();    // on schedule: the full burst is available
+    }
+
+    synchronized boolean tryAcquire() {
+        long now = clock.getAsLong();
+        if (tat - now > toleranceNanos) return false;     // too far ahead of schedule
+        tat = Math.max(tat, now) + periodNanos;           // book this request's slot
+        return true;
+    }
+
+    /** Retry-After: how long until the request would conform. */
+    synchronized long nanosUntilAllowed() {
+        return Math.max(0, tat - toleranceNanos - clock.getAsLong());
+    }
+}
+```
+
+**One number means lock-free is easy.** The whole state fits in an `AtomicLong`, so a compare-and-set loop replaces the lock:
+
+```java id=atomicGcra group=limiters
+/** GCRA's whole state is one long, so it can be lock-free: compare-and-set the TAT, retry on a race. */
+static final class AtomicGcra {
+    private final long periodNanos;
+    private final long toleranceNanos;
+    private final LongSupplier clock;
+    private final AtomicLong tat;
+
+    AtomicGcra(long burst, long periodNanos, LongSupplier clock) {
+        if (burst < 1 || periodNanos < 1) throw new IllegalArgumentException("burst and period must be positive");
+        this.periodNanos = periodNanos;
+        this.toleranceNanos = Math.multiplyExact(burst - 1, periodNanos);
+        this.clock = clock;
+        this.tat = new AtomicLong(clock.getAsLong());
+    }
+
+    boolean tryAcquire() {
+        while (true) {
+            long now = clock.getAsLong();
+            long current = tat.get();
+            if (current - now > toleranceNanos) return false;
+            long next = Math.max(current, now) + periodNanos;
+            if (tat.compareAndSet(current, next)) return true;   // lost a race? re-read and decide again
+        }
+    }
+}
+```
+
+A retry loop is fine *inside one process*, where a lost race costs nanoseconds. The same idea across the network — read, compute, compare-and-set in Redis, retry on conflict — costs a round trip per retry, which is why Chapter 11 uses a script instead. The checker runs 16 threads against every limiter in this lesson with a frozen clock and asserts **exactly** the limit is admitted — not one more — and with a moving clock asserts the B + r·T bound.
+
+<Trace title="Fill, leak and schedule" steps={buckets} takeaway="Capacity is the burst, refill is the rate, refill is computed lazily. GCRA is the same limiter with one number; a leaky queue spends latency to smooth." />
+
+<h2 id="choose">Chapter 10 · Pick one and say why</h2>
+
+<Scene chapter="Chapter 10" title="Pick one and say why" mood="dusk">
+
+You have five algorithms on the board and twelve minutes on the clock. Mara folds her arms. *"They're all fine,"* she says. *"That's what makes this the part people lose. Pick one, for this API, and give me the reasons in one breath."*
+
+</Scene>
+
+| Algorithm | State per key | Burst behaviour | Accuracy | Best for |
+|---|---|---|---|---|
+| **Fixed window** | 1 counter | **2× limit at the boundary** | Approximate | Rough quotas, daily caps; one `INCR` |
+| **Sliding window log** | 1 timestamp **per request** | None | **Exact** | Small, strict, auditable limits (logins, payouts) |
+| **Sliding window counter** | 2 counters | No boundary spike | Close; bounded error | A strong default when limits are "N per window" |
+| **Token bucket** | tokens + timestamp | **Configurable**: up to B, then r | Exact for its model | **Public APIs with bursty clients** — the usual answer |
+| **GCRA** | 1 timestamp (TAT) | Same as token bucket | Same as token bucket | Token bucket with less state; lock-free friendly |
+| **Leaky bucket (queue)** | A queue | None — output is smooth | Exact rate | Shaping outgoing traffic that can wait |
+
+**Commit — and say the reasons out loud:** *"Token bucket — implemented as GCRA or as tokens-plus-timestamp, same behaviour. Three reasons. One: constant state per key, so our 50 MB estimate holds at any traffic level. Two: burst tolerance becomes configurable product behaviour — the bucket size per plan — instead of an accident at a window edge. Three: the refill is lazy, computed from a timestamp on each request, so there are no background jobs. The flip condition: for login attempts, where the limit is tiny and must be exact and auditable, I'd use a sliding log."*
+
+<Trace title="Choose the counter" steps={chooseAlgorithm} takeaway="Token bucket for bursty APIs, a log for small exact limits, a queue for traffic that can wait, a fixed window when rough is enough." />
+
+<Reveal q="The interviewer: “Why not just use the sliding window counter? It’s simpler to explain.”">
+
+It is a good answer too, and you should say so. The sliding counter speaks in "N per window", which matches how plans are often sold, and it has no boundary spike. The token bucket wins here for one product reason: **burst and rate are separate knobs**. Iris's customer needs to fire twelve requests at launch under a 1/s plan; with a window counter you would have to raise the whole per-minute limit to allow that. If plans were sold strictly as "600 per minute, evenly", the sliding counter would be the simpler choice. That is the flip condition.
+
+</Reveal>
+
+**Catch the trap:** listing the algorithms and stopping. The table is not the answer; the commitment with its reasons and its flip condition is.
+
+<Part n="Part Four" title="Deep dive: many gateways, one count">
+
+The algorithm is chosen. Now 200 gateways must share one bucket per key, under 5 ms, at a million checks a second — and survive when the store that holds the buckets doesn't.
+
+</Part>
+
+<h2 id="races">Chapter 11 · Two gateways, one token</h2>
+
+<Scene chapter="Chapter 11" title="Two gateways, one token" mood="storm">
+
+Theo remembers the date. A limiter that read the counter from Redis, decided in the gateway, and wrote the new value back. In testing, with one gateway, it was perfect. In production, with forty, a customer limited to 100 a minute was measured at 140.
+
+*"Every line of code was correct,"* he says. *"The lines just ran on different machines at the same time."*
+
+</Scene>
+
+**The race: read-then-write from many machines.** Two gateways serve the same key in the same millisecond:
+
+<Figure caption="Both gateways read 99, both admit, both write 100. One increment is lost and 101 requests got through. At 1M checks a second, this isn’t rare — it is constant.">
+  <Mermaid code={`sequenceDiagram
+    participant A as Gateway A
+    participant R as Redis
+    participant B as Gateway B
+    A->>R: GET rl:k42 → 99
+    B->>R: GET rl:k42 → 99
+    Note over A,B: both see room under 100
+    A->>R: SET rl:k42 100
+    B->>R: SET rl:k42 100
+    Note over A,B: 101 admitted, counter says 100`} />
+</Figure>
+
+Redis executes each command atomically, but **a sequence of commands from different clients interleaves**. Three fixes, in increasing power — and the ones not to reach for.
+
+**1 · One atomic command.** For a fixed window, `INCR` returns the new count atomically — decide *after* incrementing: allow if the result ≤ limit. The key needs an expiry so old windows disappear, and that is a second command — which brings its own race:
+
+```text
+INCR   rl:{k42}:m:29437891          → 101      (the window number is in the key)
+EXPIRE rl:{k42}:m:29437891 120
+```
+
+If the gateway dies between the two, the key never expires. **With the window number in the key, that leaks a little memory.** With a key that has no window in its name — `rl:k42`, "reset by the TTL" — it is far worse: the count never resets, and once it passes the limit **that customer is blocked forever**. Make the pair atomic: wrap them in `MULTI`/`EXEC` (no decision is needed between them, so a transaction suffices), use a tiny script (`INCR`, and `EXPIRE` only when the result is 1), or on Redis 7 and later use `EXPIRE … NX`, which sets a TTL only if the key has none.
+
+**2 · A Lua script for anything that decides.** A token bucket must read, compute the refill, decide, and write. Redis runs a Lua script **to completion before executing any other command**, so the whole read-refill-decide-write is atomic and costs **one round trip**:
+
+```lua
+-- Token bucket, atomic. KEYS[1] = bucket key
+-- ARGV[1] = capacity (tokens), ARGV[2] = refill period (ms per token), ARGV[3] = cost (tokens)
+local capacity = tonumber(ARGV[1])
+local period   = tonumber(ARGV[2])
+local cost     = tonumber(ARGV[3])
+local full     = capacity * period       -- credit is kept in milliseconds: one token = `period` ms
+
+local t   = redis.call('TIME')           -- the server's clock, one per key: { seconds, microseconds }
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+
+local s      = redis.call('HMGET', KEYS[1], 'credit', 'ts')
+local credit = tonumber(s[1]) or full    -- a missing key is a full bucket
+local ts     = tonumber(s[2]) or now
+
+if now > ts then                         -- lazy refill; a clock that stepped back earns nothing
+  credit = math.min(full, credit + (now - ts))
+  ts = now
+end
+
+local allowed, retry_ms = 0, 0
+if credit >= cost * period then
+  credit = credit - cost * period
+  allowed = 1
+else
+  retry_ms = cost * period - credit      -- time until enough credit exists
+end
+
+redis.call('HSET', KEYS[1], 'credit', credit, 'ts', ts)
+redis.call('PEXPIRE', KEYS[1], full - credit + 1000)   -- refilled to full = same as no key; let it go
+return { allowed, math.floor(credit / period), retry_ms }
+```
+
+How to read it: the bucket's level is kept as **milliseconds of credit** (one token = `period` ms; Pro is 100 ms per token, capacity 100, so 10,000 ms when full). Every number stays a whole number, so there is no floating-point drift in the comparison, and the refill is simply "add the elapsed milliseconds". It returns `allowed`, the whole tokens remaining (for `X-RateLimit-Remaining`), and the milliseconds until enough credit exists (round up to seconds for `Retry-After`). `cost` must not exceed `capacity`, or the request can never pass — validate it in config. Load the script once with `SCRIPT LOAD` and call it by hash with `EVALSHA` (Redis 7 also offers named Functions for the same purpose). Calling `TIME` inside a script that then writes is allowed on Redis 5 and later, which replicate a script's effects rather than re-running it.
+
+This script was executed for this lesson in a Lua VM against a mock Redis and an independent model of the bucket — 3,000 random sequences, including clock steps backwards — and matched on every decision, remaining count and retry time. It has not been run against a live Redis; treat it as the starting point for your own integration test.
+
+**Several limits, one call.** A request usually touches two buckets: the key's overall plan limit and the endpoint's limit. Pass both keys to one script, check both, and spend from both **only if both allow** — otherwise a request rejected by the endpoint limit would still burn a token from the plan limit. One script, one round trip, all-or-nothing. (In Redis Cluster that requires both keys in the same slot — Chapter 12.)
+
+**A sliding log in Redis** is a sorted set per key, scored by timestamp, inside a script: `ZREMRANGEBYSCORE key -inf <now−W>` (inclusive, so it drops every score ≤ now − W), `ZCARD key`, then `ZADD key <now> <member>` if under the limit, and `PEXPIRE key <W>`. One trap: **sorted-set members are unique**, so two requests in the same millisecond with `member = now` collapse into one entry and the second is never counted. Make the member unique (the timestamp plus a request id).
+
+**3 · What not to reach for.**
+
+| Fix | Why not here |
+|---|---|
+| **Distributed lock (e.g. Redlock)** around read-modify-write | Two extra round trips per request, plus a new failure mode when a lock holder stalls |
+| **WATCH / MULTI / EXEC with retry** (optimistic) | Correct, but hot keys conflict constantly, and retries make the tail latency unbounded — exactly when traffic peaks |
+| **Postgres row with `SELECT … FOR UPDATE`** | Disk-backed, lock-heavy, and nowhere near a million checks a second |
+
+<Trace title="Lose no updates" steps={races} takeaway="Each Redis command is atomic; sequences are not. INCR for counting, MULTI or EXPIRE NX for the TTL, a Lua script for anything that decides." />
+
+<Reveal q="Redis is single-threaded. So how can there be a race at all?">
+
+Each *command* runs alone, so a single `INCR` can never lose an update. But "GET, compute in the gateway, SET" is separate commands, and Redis happily runs another client's commands between them. Single-threaded execution gives you atomic commands and atomic scripts — not atomic conversations. The fix is to move the whole decision into one command: `INCR` when counting is enough, a script when the logic needs to read before it writes.
+
+</Reveal>
+
+**Catch the trap:** "We use Redis, so it's atomic." Say *which* operation is atomic and why: "the check-refill-spend is one Lua script, so no other gateway can interleave."
+
+<h2 id="keys">Chapter 12 · Names, slots and clocks</h2>
+
+<Scene chapter="Chapter 12" title="Names, slots and clocks" mood="dawn">
+
+Mara has a sentence from your mock log taped to the edge of the whiteboard: *"Cache in Redis — no key shape, TTL rationale, or invalidation strategy."*
+
+*"Counters are no different,"* she says. *"Key, expiry, failure. And one more, for a limiter: whose clock?"*
+
+</Scene>
+
+**Key shape.** Namespace, identity, rule, and — for windowed algorithms — the window number:
+
+```text
+rl:{k_8f3a}:all                       token bucket: key k_8f3a, overall plan limit
+rl:{k_8f3a}:ep:search                 token bucket: same key, search endpoint
+rl:{ip:203.0.113.7}:anon              per-IP bucket for unauthenticated traffic
+rl:{k_8f3a}:all:m:29437891            fixed window: minute number = floor(unix seconds / 60)
+```
+
+A design doc might write the pattern as `rl:{tenant}:{user}:{window}`, with braces meaning "fill this in". **In Redis Cluster, braces are not decoration.** The text inside the first non-empty pair of `{…}` is the **hash tag**: only that part is hashed (CRC16, modulo 16,384 slots). So:
+
+- `rl:{k_8f3a}:all` and `rl:{k_8f3a}:ep:search` share a slot — which is what lets one atomic script check both (Cluster rejects a script whose keys live in different slots).
+- `rl:{tenant42}:{user7}:…` hashes only `tenant42`. Every user of that tenant lands in **one slot** (slot 14,826, as it happens), and a big tenant becomes a hot shard. Put the tag on exactly what must be co-located — one key's or one user's limits — so different keys still spread across the cluster.
+
+**TTL, and why that number.** For a token bucket: **the time to refill completely, plus a little slack.** Once the bucket would be full again, the stored state says exactly what a missing key says ("full"), so expiring it loses nothing and garbage-collects every IP that visited once. The script above sets it on every call. Too short a TTL — a key expiring while the bucket is half empty — is a bug: the missing key is read as full and hands out free tokens. For a fixed window: the window length plus slack. For a sliding log: the window length.
+
+**Memory, measured.** About 100 B per small hash in Redis is the planning number used throughout (two fields plus per-key overhead); confirm with `MEMORY USAGE` on a real key before you size a cluster on it.
+
+**Whose clock?** If each gateway computes the refill with its own clock, the elapsed time between two requests served by different gateways includes their **clock skew**. Gateways with clocks 50 ms apart, on a key refilling at 1,000 tokens a second, can mint **up to 50 free tokens** each time the key's traffic moves to the gateway whose clock runs ahead. (A gateway whose clock runs behind earns nothing, thanks to the `now > ts` guard.) **Use the Redis server's clock inside the script** — `redis.call('TIME')` — so each key is measured by one clock: the primary that owns its slot. After a failover the new primary's clock may differ slightly; the guard makes a backwards step cost a moment of refill rather than mint tokens.
+
+<Trace title="Name it, expire it, time it" steps={keys} takeaway="Hash-tag exactly what must share a slot. Expire buckets when they would be full. Measure time with the store’s clock, not the gateways’." />
+
+**Catch the trap:** "Counters in Redis." Say the key, the hash tag, the TTL and its reason, and whose clock — in one breath. That sentence is the limiter's version of your four cache promises.
+
+<h2 id="hybrid">Chapter 13 · The celebrity key</h2>
+
+<Scene chapter="Chapter 13" title="The celebrity key" mood="storm">
+
+Dev runs a load test at the design target. Twenty-nine of the thirty Redis primaries idle along at two-thirds of their planned load. One is pinned at 100%.
+
+It's Kestrel's own mobile backend — one of the 200 internal services, calling the listings API under a single service key at 200,000 requests a second. *"We sharded,"* Iris says. *"Why doesn't sharding help?"*
+
+Theo answers before Mara can. *"Because a key is a key. It lives in one place."*
+
+</Scene>
+
+**Worked numbers first.** The design target is 1M checks a second. Assume a Redis primary handles about **50,000 script calls a second** — a deliberately conservative planning number (a short script does several operations; simple `GET`s run faster); benchmark it. Run primaries at about 70% so a failover or a burst has room: 1,000,000 ÷ (50,000 × 0.7) ≈ 29 → **about 30 primaries**, each with a replica. (At today's 100K: 100,000 ÷ 35,000 ≈ 3 primaries.) Capacity needed one node; throughput and availability needed thirty. That's the sentence.
+
+Now the celebrity: 200,000 checks a second **on one key**, which lives on one shard that tops out near 50,000. The key alone needs four shards' worth of throughput, and **no amount of sharding splits one key**. It is the same concentration problem as a hot cache key. The fix is to stop sending every request for that key to Redis.
+
+| Approach | How | Redis calls for the 200K/s key | Error |
+|---|---|---|---|
+| **Per-request script** (the default) | Every check is one script call | 200,000 / s — **impossible on one shard** | None |
+| **Local counting, periodic sync** | Each gateway admits locally from the last global value it saw; every 100 ms it pushes its count and reads the global one | 200 gateways × 10 syncs = 2,000 / s | **Over-admits** up to one sync interval of traffic: 200,000 × 0.1 s = **20,000** requests when the bucket runs dry |
+| **Token leasing** | Each gateway takes tokens from the global bucket in batches of 100 (one script call with `cost = 100`, granting what is available) and spends them locally | 200,000 ÷ 100 = **2,000 / s** | **Never over-admits**; up to 200 × 100 = 20,000 leased tokens can sit unused on gateways, so the key may see a few early 429s right at its limit |
+| **Sticky routing** | The load balancer sends each key to one gateway (consistent hashing); count in memory there | 0 | Exact-ish, but the hot key now overloads *one gateway*, and resizing the fleet resets buckets |
+
+<Figure caption="Leasing: one Redis call buys a batch of tokens; the next hundred requests on this gateway are decided in local memory. The global bucket is always spent before it is used, so it can’t be overdrawn.">
+  <Mermaid code={`sequenceDiagram
+    participant C as Clients (key svc-mobile)
+    participant G as Gateway 17
+    participant R as Redis
+    C->>G: request 1
+    G->>R: script: take up to 100 tokens
+    R-->>G: granted 100
+    G-->>C: allowed (local: 99 left)
+    C->>G: requests 2 … 100
+    G-->>C: allowed from local lease
+    C->>G: request 101
+    G->>R: script: take up to 100 tokens
+    R-->>G: granted 37 (bucket nearly dry)
+    G-->>C: allowed (local: 36 left)`} />
+</Figure>
+
+The leasing script is the Chapter 11 script with one change: when `cost` tokens aren't all available, grant the whole tokens that are (and return how many) instead of rejecting.
+
+**Commit:** *"Per-request scripts for the long tail of keys. Each gateway counts requests per key locally, and a key above about 500 requests a second on one gateway switches to leasing, with the batch size shrinking as the global bucket runs low so fewer tokens are stranded. That takes the 200K key from 200,000 Redis calls a second to 2,000, never over-admits, and costs at most 20,000 stranded tokens — 0.08 s of that key's 250K/s limit."*
+
+Your old card committed to the sync-and-reconcile version and called the error "a few hundred requests". The arithmetic says otherwise: when the bucket runs dry, nobody knows until the next sync, so **a whole interval of traffic** gets through — 20,000 for this key. That can still be acceptable (it is a tenth of one second of this key's traffic), but say the real number. Leasing moves the error to the safe side.
+
+<Trace title="Cool the hot key" steps={hybrid} takeaway="One key lives on one shard. Count hot keys locally: lease tokens to stay under the limit, or sync deltas and accept one interval of over-admission." />
+
+**Catch the trap:** "Add more Redis shards." Shards spread *keys*. Say whether the load is many keys (shard) or one key (count locally), with the number that tells you which.
+
+<h2 id="failure">Chapter 14 · The night Redis died</h2>
+
+<Scene chapter="Chapter 14" title="The night Redis died" mood="night">
+
+Three months later, a bad config push restarts the limiter's Redis cluster. Dev is on call. For four minutes, every rate-limit check times out.
+
+Nobody outside Kestrel notices. The gateways kept serving, the dashboards lit up with one red line labelled FAIL-OPEN, and the audit queue recorded every unlimited request. Dev's post-mortem is two paragraphs long. The second paragraph is about the login service — which, he notes, *did* stop letting people try passwords, on purpose.
+
+</Scene>
+
+**Fail open or fail closed depends on what the limiter protects** — not on taste:
+
+| The limiter protects… | Example | When the store is down | Why |
+|---|---|---|---|
+| **Capacity and fairness** | Per-key API limits | **Fail open**, to a coarse local limit, with a loud alert | Blocking every paying customer because a protection layer died is worse than briefly over-serving |
+| **Security** | Password attempts, OTP verification | **Fail closed**, or to a strict local limit | Failing open means unlimited guessing for as long as the outage lasts |
+| **Money** | Sending SMS, calls to a paid upstream API | **Fail closed** (or a strict local cap) | Each request costs real money; SMS pumping fraud exploits exactly this |
+
+**Fail open, done properly:**
+
+1. **A tight timeout.** The Redis call gets 3 ms. Beyond that the answer is too late to be useful.
+2. **A circuit breaker.** Without one, *every* request waits the full 3 ms for a dead Redis, which eats most of the 5 ms budget. The breaker opens after repeated failures, skips Redis entirely, and lets a trickle of probe calls test for recovery.
+3. **A coarse local fallback, not "unlimited".** Each gateway keeps an in-memory bucket per key at, say, ten times its fair share: a Pro key's 10/s ÷ 200 gateways × 10 = 0.5/s per gateway, 100/s across the fleet. Honest clients rarely notice uneven load balancing with 10× headroom; a retry storm like the prologue's (40,000/s) is cut to 100/s — **400 times less**.
+4. **A per-gateway load-shedding limit that never depends on Redis**, protecting the backends no matter what the per-key layer is doing.
+5. **Never silent.** Every fail-open decision emits an audit event (asynchronously, through the queue), and the fail-open rate is the **top alert on the limiter's dashboard**. A silent fail-open is "no limits, and nobody knows".
+
+**And when Redis comes back?** Replication is asynchronous, so a failover can lose the latest writes — some buckets go back to an older, fuller state, and a key with no stored state reads as a *full* bucket. Expect a brief over-admission after a failover or a cold restart, and say so: *"At most about one burst per key, which is inside our stated accuracy."*
+
+<Figure caption="The check path with its failure plan. The breaker turns a dead store into a fast local decision instead of a 3 ms wait on every request.">
+  <Mermaid code={`flowchart LR
+    REQ["Request"] --> BR{"Breaker\nclosed?"}
+    BR -->|"yes"| RS["Redis script\n3 ms timeout"]
+    RS -->|"answer"| DEC["Allow / 429"]
+    RS -->|"timeout or error"| FB["Local fallback bucket\n10× fair share"]
+    BR -->|"open"| FB
+    FB --> DEC
+    FB -.-> AUD["Audit event\n+ fail-open alert"]`} />
+</Figure>
+
+<Trace title="Fail on purpose" steps={failure} takeaway="Capacity limits fail open to a coarse local limit, loudly. Security and money limits fail closed. A breaker keeps a dead store from taxing every request." />
+
+**Catch the trap:** "If Redis is down we fail open." Fail open *to what*, for *which* limits, and *how would anyone know*? Each missing clause is a follow-up question you'll be asked.
+
+<h2 id="regions">Chapter 15 · Three regions, one promise</h2>
+
+<Scene chapter="Chapter 15" title="Three regions, one promise" mood="dusk">
+
+Kestrel opens data centres in the EU and Asia. Iris's Enterprise contracts say 6,000 requests a minute — not 6,000 per region.
+
+*"So which region holds the count?"* she asks. Theo, Mara and Dev give three different answers at once, and all three are defensible.
+
+</Scene>
+
+A cross-region round trip costs **tens of milliseconds to well over a hundred**, so no request can wait on another region within a 5 ms budget. Every option counts locally; they differ in how regions learn about each other.
+
+| Option | How | Cost | Error |
+|---|---|---|---|
+| **One global counter** in one region | Every region calls it | A cross-region round trip per request; that region becomes everyone's dependency | None — and unusable here |
+| **Static split** | 6,000 / 3 = 2,000 per region | Nothing | **Unfair when traffic is uneven**: a customer with 90% of traffic in the EU wants 5,400/min there and is throttled at 2,000 while paying for 6,000 |
+| **Weighted split, rebalanced** | Shares follow each region's recent traffic, recomputed every few seconds | A small background sync | Briefly unfair after a sudden shift |
+| **Local buckets + async sync** | Each region enforces the global limit using its own count plus the others' counts as of the last sync | A background sync every second | **Over-admits** by at most (regions − 1) × (burst + rate × lag): 2 × (1,000 + 100 × 1) = **2,200** extra requests, once, for an Enterprise key |
+
+Where the bound comes from: each region sees its own spending exactly, so what it can't see is the other regions' spending during the last sync lag — and no region can spend more than its burst plus rate × lag in that time.
+
+<Figure caption="Each region decides locally in about a millisecond. The sync carries counts between regions in the background, so the global limit is enforced with a lag — and the lag is the error you state.">
+  <Mermaid code={`flowchart LR
+    subgraph US["us-east"]
+      GU["Gateways"] --> RU[("Redis")]
+    end
+    subgraph EU["eu-west"]
+      GE["Gateways"] --> RE[("Redis")]
+    end
+    subgraph AP["ap-south"]
+      GA["Gateways"] --> RA[("Redis")]
+    end
+    RU <-.->|"counts, every 1 s"| RE
+    RE <-.->|"counts, every 1 s"| RA
+    RA <-.->|"counts, every 1 s"| RU`} />
+</Figure>
+
+**Commit:** *"Most keys are served almost entirely from one region, because geo-routing sends a customer to their nearest region. So: per-region enforcement with shares weighted by each region's recent traffic, rebalanced every few seconds. If a contract truly needs one global number, local buckets with async sync — and I'd state the bound: at most two regions' worth of burst plus one second of rate, once."*
+
+<Trace title="Count across oceans" steps={regions} takeaway="Never put a cross-region hop in the check. Split the limit by traffic, or sync asynchronously and state the over-admission bound." />
+
+<Part n="Part Five" title="Finish the fight">
+
+0:38. Three minutes of wrap-up, then the whole round once more, spoken, on the clock.
+
+</Part>
+
+<h2 id="wrap-up">Chapter 16 · The last three minutes</h2>
+
+<Scene chapter="Chapter 16" title="The last three minutes" mood="dusk">
+
+Dev reads design docs from the bottom up. *"The last section tells me if the author has ever been paged,"* he says, as he says about every design. Then, about this one: *"Tell me what pages me first."*
+
+</Scene>
+
+1. **Recap against the contract.** "Per-key, per-endpoint and per-IP limits by plan; 429 with Retry-After and headers; soft limits with a ceiling for Enterprise; one Redis script per check, about a millisecond; fail open to a local limit for API limits, fail closed for security limits."
+2. **Bottleneck at 10× the design (10M checks a second).** Redis throughput, first: more primaries — about 300 at our planning number — and a lower threshold for switching keys to leasing, so fewer checks reach Redis at all. Config is already local and doesn't move. Gateway CPU next.
+3. **Failure modes.** Redis down → fail open (or closed) as above, with the breaker. A failover → brief over-admission, about one burst per key. A bad config push (a plan set to 0) → every customer rejected — so config changes are validated, staged, and can be rolled back in one click.
+4. **Monitor.** Fail-open events (the top alert — a silent fail-open means no limits and nobody knows), Redis p99 and error rate, 429 rate per plan and per endpoint (a product signal as much as an ops one: a plan whose customers hit 429 constantly is mispriced), the hottest keys, and leasing activity.
+5. **What I'd build next.** Per-customer overrides on top of plan defaults, a gradual throttling tier before the hard 429 (warn, then slow, then reject), anomaly detection on per-IP fallback traffic, and cost-weighted limits for expensive calls (an LLM request priced in tokens — the same bucket, a different currency).
+
+**The one-breath version:** *"At 10× the bottleneck is Redis ops per second, so more primaries and more keys on local leases; I'd want the fail-open alert, Redis p99, and 429s per plan on a dashboard before launch."*
+
+<h2 id="walkthrough">Chapter 17 · The fight, out loud</h2>
+
+<Scene chapter="Chapter 17" title="The fight, out loud" mood="night">
+
+Two weeks later, Friday. Mara sets the phone face-down. *"Design a rate limiter for a public API,"* she says, in the flat voice she uses for mocks. *"I won't help you."*
+
+You write **9 · 15 · 25 · 38** in the corner of the board, and pick up the marker.
+
+</Scene>
+
+A 45-minute round, compressed to its spoken lines. Read it aloud once; then fight it cold.
+
+**0:03 · Roadmap and requirements**
+
+> **You:** "Here's how I'd like to use our time: about six minutes on requirements and scale, a couple on the core entities and the API, a simple design that works, then two or three deep dives on the hardest parts, and a short wrap-up. Would you like capacity estimates up front, or as they become relevant?"
+>
+> **Interviewer:** "As relevant."
+>
+> **You:** "First — which layer? A gateway limiter for API customers, or a limit inside one service?"
+>
+> **Interviewer:** "The gateway."
+>
+> **You:** "Functional: limit requests per API key and per key per endpoint, by plan — Free, Pro, Enterprise; unauthenticated traffic is limited per IP; over the limit we return 429 with Retry-After and rate-limit headers, before any backend work; plan limits are configurable and apply within seconds. Enterprise gets a soft limit — overage passes, is flagged and billed — up to a hard ceiling at 2×. Out of scope: volumetric DDoS, which the network provider absorbs before it's HTTP; billing; the admin UI. Tell me if you want any of those."
+
+**0:06 · Non-functionals with numbers**
+
+> **You:** "The check is on every request, so it must add under 5 ms at p99. Design for a million requests a second at peak across the gateway fleet — ten times today — with about 50,000 API keys and 200 internal services. If the limiter fails, API traffic keeps flowing: fail open, loudly — but security limits like login attempts fail closed. Accuracy: near-exact; I'll accept about 1% over-admission and say where it comes from."
+>
+> "Two numbers decide things. A million checks a second under 5 ms means one round trip to something in memory. And memory is small: 50,000 keys times about ten limits times 100 bytes is 50 MB, plus 100 MB for active IPs. So any cluster we build is for throughput and availability, not capacity."
+
+**0:08 · The bridge**
+
+> **You:** "So: per-key, per-endpoint and per-IP limits by plan, 429s with Retry-After, soft limits with a ceiling, under 5 ms at a million checks a second, failing open except for security limits. Does that match?"
+>
+> **Interviewer:** "Yes."
+
+**0:09 · Core entities**
+
+> **You:** "Plan; ApiKey — many keys per plan; LimitRule — a plan has many, each with an endpoint, a rate, a burst and a mode. The live state is a bucket per key per rule. Keys and rules are many-to-many, and the relationship carries data — tokens and a timestamp — so bucket state is its own entity. Config lives in Postgres; bucket state in Redis."
+
+**0:11 · API**
+
+> **You:** "Internally, the gateway calls check with the identity, the route and a cost — normally 1 — and gets back allowed, remaining, reset and retry-after. Externally: on every response, X-RateLimit-Limit, Remaining and Reset; on rejection, 429 with Retry-After in whole seconds, rounded up. 503, not 429, if we're shedding load from clients within their limits. A 429 is always safe to retry, even for a POST, because nothing ran. Admin side: PUT a rule per plan and endpoint."
+
+**0:15 · High-level design**
+
+> **You:** "The limiter lives in the API gateway, as middleware, because that's where the key and plan are known and it runs before any backend work. Edge per-IP limits handle floods earlier; services keep their own business limits, like SMS per phone number — I'll focus on the gateway."
+>
+> "A request arrives; the middleware resolves the plan and rules from config cached in memory — zero hops. One Redis script call checks and spends from the key's buckets atomically. Allowed: forward with headers. Rejected: 429. Redis slower than 3 ms: fail open and emit an audit event. Config: the admin portal writes Postgres and publishes a change; gateways reload in seconds, with a poll as backstop. A check costs about a millisecond: one same-datacentre round trip."
+
+**0:25 · Deep dive 1 — the algorithm**
+
+> **You:** "The hard part is how we count. Fixed window is one INCR but lets 2× the limit through at a boundary — 100 at 11:59:59 and 100 at 12:00:00. A sliding log is exact but stores every timestamp: 600 per Pro key, 3 GB instead of 5 MB. A sliding counter fixes the boundary with two numbers and a small error. I'll take a token bucket: constant state per key, so the 50 MB holds; burst size becomes a product setting per plan instead of an accident; and the refill is computed lazily from a timestamp, so no background jobs. For login attempts I'd use a sliding log — small, exact, auditable."
+
+**0:31 · Deep dive 2 — correctness across 200 gateways**
+
+> **You:** "If gateways read the bucket, decide, and write it back, two of them can both spend the last token — a lost update. So the whole refill-check-spend runs as one Lua script in Redis: Redis runs a script to completion, so it's atomic, in one round trip. The script uses Redis's own clock, so gateway clock skew can't mint tokens. Keys look like `rl:{k_8f3a}:all` and `rl:{k_8f3a}:ep:search` — the hash tag keeps one key's buckets in one slot, so one script checks both and spends only if both allow. Each key's TTL is its time to refill completely; after that, a missing key means a full bucket anyway."
+>
+> "Throughput: at a conservative 50,000 script calls a second per primary and 70% utilisation, a million checks needs about 30 primaries, each with a replica. One problem sharding can't fix: a single internal key at 200,000 a second lives on one shard. For hot keys, gateways lease tokens in batches of 100 — 2,000 Redis calls a second instead of 200,000, and never over the limit."
+
+**0:35 · Deep dive 3 — failure**
+
+> **You:** "When Redis is down, what we do depends on what the limiter protects. API limits fail open — to a local per-gateway bucket at ten times each gateway's fair share, so a runaway client is still cut 400-fold — behind a circuit breaker so a dead Redis doesn't add 3 ms to every request, with fail-open as the top alert. Login and SMS limits fail closed. After a failover we can briefly over-admit, about one burst per key."
+
+**0:38 · Wrap-up**
+
+> **You:** "To recap: every limit we listed is enforced at the gateway in about a millisecond, with clean 429s. At 10×, Redis ops per second is the first bottleneck — more primaries and more keys on leases. I'd monitor fail-open events first, then Redis p99, 429s per plan, and the hottest keys. Next I'd build per-customer overrides, a warn-then-slow tier before hard rejection, and cost-weighted limits for expensive calls."
+
+**0:41.** Mara turns the phone over. *"Four minutes for questions,"* she says. That's all. From her, it is a lot.
+
+**Check the numbers yourself:** 50,000 × 10 × 100 B = 50 MB; 1,000,000 × 100 B = 100 MB. 50,000 × 600 × 100 B = 3 GB vs 50,000 × 100 B = 5 MB (600×). 1,000,000 ÷ (50,000 × 0.7) ≈ 28.6 → about 30 primaries. 200,000 ÷ 100 = 2,000 lease calls a second. 40,000 ÷ (0.5 × 200) = 400. Pro bucket: 3 + 0.45 × 10 − 1 = 6.5.
+
+<Reveal q="Which step would you most likely have skipped silently — and what would it have cost?">
+
+For most people it is the **identity** sentence — "per API key, falling back to per IP from the header our edge sets" — and the **failure plan for security limits**. Without the first, the interviewer asks "limit by what?" and you've lost the initiative. Without the second, "fail open" sounds like a reflex rather than a decision, and the follow-up ("so attackers get unlimited password guesses when Redis is down?") lands as a gotcha instead of something you already covered.
+
+</Reveal>
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The limiter review" steps={drills} takeaway="Scope by identity and mode, count with a bucket, decide atomically in one script, hash-tag what must share a slot, fail by what the limiter protects, and say why the cluster exists." />
 
 <Quiz questions={[
   {
@@ -112,7 +1215,7 @@ The dive every interviewer wants. Four candidates, one table:
     why: 'Fixed window resets the counter at the boundary, so back-to-back windows each admit a full quota. This is THE standard rate-limiter follow-up question.'
   },
   {
-    q: 'Two gateway nodes concurrently check a bucket with 1 token and both admit. The 5ms-budget-respecting fix is:',
+    q: 'Two gateway nodes concurrently check a bucket with 1 token and both admit. The 5 ms-budget-respecting fix is:',
     options: [
       'Distributed lock (Redlock) around the check',
       'Postgres row lock on the counter',
@@ -120,14 +1223,14 @@ The dive every interviewer wants. Four candidates, one table:
       'Retry loop with compare-and-swap'
     ],
     answer: 2,
-    why: 'Redis executes Lua single-threaded: atomicity for free, one round trip. Locks add round trips and a failure mode; Postgres is disk-latency-class; CAS retries have unbounded tail latency.'
+    why: 'Redis runs a Lua script to completion before anything else: atomicity for free, one round trip. Locks add round trips and a failure mode; Postgres is disk-latency-class; CAS retries over the network have unbounded tail latency.'
   },
   {
     q: 'Memory estimate said 50 MB, yet we run a Redis cluster. An interviewer asks why. Best answer:',
     options: [
       'Standard practice for production Redis',
       'The estimate is probably wrong at peak',
-      'Capacity needs one node; 1M QPS of operations and surviving node failure need a cluster — throughput- and availability-driven, not capacity-driven',
+      'Capacity needs one node; 1M checks/s and surviving node failure need a cluster — throughput- and availability-driven, not capacity-driven',
       'Cluster mode enables Lua scripts'
     ],
     answer: 2,
@@ -135,6 +1238,116 @@ The dive every interviewer wants. Four candidates, one table:
   }
 ]} />
 
-## After this walkthrough
+<h2 id="interview-script">Say it in the room</h2>
 
-Redo it cold in 35 minutes within 3 days — no notes, all six phases out loud, ideally to the buddy in mock mode. A walkthrough read is worth 20% of a walkthrough re-fought.
+<Scene title="The interview room" mood="night">
+
+The Interviewer reads the prompt — *"Design a rate limiter"* — and adds nothing. The silence is the question. A month ago you would have said "token bucket in Redis" and waited. Today you ask one question, say a few sentences, and pick up the marker.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "First, which layer — a gateway limiter for API customers, or something inside one service? … Gateway, then. I'd limit **per API key and per endpoint by plan**, with **per-IP** limits for anonymous traffic read from the header our edge sets, and soft limits with a hard ceiling for Enterprise. Over the limit: **429 with Retry-After**, rate-limit headers on every response. The check must add under **5 ms at p99** at about **a million checks a second**, so the counters live in **Redis**, one round trip per check. The algorithm is a **token bucket** — constant state per key, burst size as a plan setting, lazy refill with no background jobs. Correctness across 200 gateways comes from doing refill-check-spend in **one Lua script**, using Redis's clock; keys like `rl:{key}:all` hash-tag one key's buckets into one slot, with a TTL equal to the time to refill. Memory is about **50 MB**, so the cluster — about **30 primaries** — is for throughput and availability, not capacity. **Hot keys** lease tokens in batches so one key can't melt one shard. If Redis fails, API limits **fail open to a local limit, loudly**; login and SMS limits **fail closed**."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · What is the boundary problem with fixed windows, and how do the others avoid it?">
+
+A fixed window resets at the boundary, so 100 requests at 11:59:59 and 100 at 12:00:00 both pass a 100-per-minute limit: 2× in about a second. A sliding log has no boundary — it counts the actual last 60 seconds — at the cost of a timestamp per request. A sliding counter weights the previous window by its overlap, so right after the boundary the previous minute still counts almost fully. A token bucket never had windows: at most B at once, then r per second.
+
+</Reveal>
+
+<Reveal q="2 · Two gateways check the same bucket at the same time. What goes wrong, and what’s your fix?">
+
+Read-decide-write from two machines is a lost update: both read one token, both admit, both write zero. Each Redis command is atomic but the sequence isn't. I run refill, check and spend as one Lua script — Redis executes it to completion before any other command — in one round trip. For a plain fixed window, `INCR` alone is enough, with the expiry made atomic too (`MULTI`, a script, or `EXPIRE NX`). Not a distributed lock (extra round trips) and not optimistic retries (unbounded tail latency on hot keys).
+
+</Reveal>
+
+<Reveal q="3 · Redis is down. What happens?">
+
+It depends on what the limiter protects. API capacity limits fail open: a circuit breaker stops waiting on Redis, each gateway falls back to a local bucket at about ten times its fair share so a runaway client is still stopped, every fail-open decision is audited, and fail-open is the top alert. Login and SMS limits fail closed or to a strict local cap, because there the limiter is the protection. After recovery, expect a brief over-admission — failover loses recent writes, and a missing key reads as a full bucket.
+
+</Reveal>
+
+<Reveal q="4 · One key sends 200,000 requests a second. What breaks, and what do you do?">
+
+The key lives on one Redis shard, which handles roughly 50,000 script calls a second, so it saturates and more shards don't help. I count that key locally: each gateway leases tokens in batches of 100, so Redis sees 2,000 calls a second instead of 200,000 and the global bucket can never be overdrawn; the cost is up to 20,000 stranded tokens near the limit. Gateways detect hot keys with local counters and switch them to leasing automatically.
+
+</Reveal>
+
+<Reveal q="5 · How do you enforce one limit across three regions?">
+
+Not with a cross-region call — that's tens to hundreds of milliseconds per check. Most customers are served from one region anyway, so I split each limit across regions by recent traffic share and rebalance every few seconds. If a contract needs one exact global number, each region counts locally and syncs counts asynchronously every second; the worst case is (regions − 1) × (burst + rate × lag) extra — 2,200 for an Enterprise key — and I'd state that bound.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "Design a rate limiter" | Which layer? Then identity, plans, hard/soft, 5 ms, 1M/s, fail-open/closed |
+| "Limit by what?" | API key → user → IP (from the header your edge sets); phone/account for abuse limits |
+| Customer must not be cut off | Soft limit: pass, flag, bill — up to a hard ceiling |
+| Rejected response | 429 + Retry-After (whole seconds, rounded up) + headers on every response; 503 for overload |
+| Bursty clients | Token bucket: capacity = burst, refill = rate; B + r·T over any T |
+| Small, strict, auditable limit | Sliding window log |
+| "N per window", simple | Sliding window counter (two counters, no spike) |
+| Rough quota | Fixed window: `INCR` + atomic expiry; 2× at the boundary |
+| Traffic that can wait | Leaky bucket queue (shaping); costs latency |
+| One number of state | GCRA: TAT, τ = (B − 1) × T; lock-free with CAS |
+| Many gateways, one count | One Lua script: refill-check-spend atomically, one round trip |
+| Two limits per request | Hash-tag both keys into one slot; spend only if both allow |
+| Whose clock? | Redis `TIME` inside the script |
+| TTL for a bucket | Time to refill completely + slack |
+| One key melts one shard | Lease tokens in batches (no over-admission) or sync deltas (one interval over) |
+| "Why a cluster?" | Throughput and availability, not capacity (50 MB) |
+| Redis down | API limits fail open to a local cap, loudly; login/SMS fail closed; breaker |
+| Multi-region | Never a cross-region hop; split by traffic or sync async and state the bound |
+
+## Five mistakes to leave behind
+
+1. **"Limit to 100 per minute."** Per what identity, which window and burst, hard or soft, which endpoints?
+2. **The fixed-window boundary, unmentioned.** Name it before the interviewer does — 2× in a second.
+3. **"Redis is atomic."** Commands are; GET-then-SET isn't. One script.
+4. **"Add shards" for a hot key.** One key lives on one shard. Count it locally.
+5. **"Fail open," full stop.** To what local limit, for which limits, and which alert fires?
+
+<Scene title="Mara’s last word" mood="dusk">
+
+A month later, a new partner launches. Their integration has a bug, and at 2:50 a.m. it starts retrying in a tight loop, exactly like the one in the prologue.
+
+Nobody is paged. The partner's dashboard fills with 429s, each with a Retry-After, and their client — built on Kestrel's SDK, which honours them — backs off on its own. In the morning, Dev forwards the graph to the team without comment. Mara replies with one word: *"Boring."*
+
+From her, there is no higher praise.
+
+</Scene>
+
+**After this walkthrough:** redo it cold within three days — no notes, all six steps out loud, the four checkpoints in the corner — ideally to the buddy in mock mode. A walkthrough read is worth 20% of a walkthrough re-fought. Then run the **commit drill** on the three sentences that carry this design: the algorithm with its reasons and flip condition; the key-TTL-clock sentence; and the fail-open-or-closed sentence for three different limiters (API, login, SMS).
+
+Related: <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> (the six steps and the clock) · <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a> (capacity- vs throughput-driven clusters) · <a href={`${BASE}sd/lessons/core-concepts/`}>Core concepts</a> (shedding vs limiting, say the layer) · <a href={`${BASE}sd/lessons/networking/`}>Networking</a> (proxies and the real client IP) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (the four promises, hot keys, hash tags) · <a href={`${BASE}sd/lessons/load-balancing/`}>Load balancing</a> (the gateway this limiter lives in) · <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a> (atomic operations instead of locks) · <a href={`${BASE}sd/lessons/llm-inference/`}>LLM inference</a> (token-budget limits: the same bucket, a different currency) · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a> (what to do with a 429 you receive) · <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and races</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- *System Design Interview – An Insider's Guide, Volume 1* (Alex Xu) — chapter 4, "Design a Rate Limiter": the same algorithms with diagrams, and the Redis race.
+- [Stripe — Scaling your API with rate limiters](https://stripe.com/blog/rate-limiters) — a production write-up: request-rate limiters (token bucket in Redis), concurrency limiters, and load shedders as separate layers.
+- [Cloudflare — Counting things, a lot of different things](https://blog.cloudflare.com/counting-things-a-lot-of-different-things/) — the sliding window counter at very large scale, with the measured error on real traffic.
+- [Generic cell rate algorithm (Wikipedia)](https://en.wikipedia.org/wiki/Generic_cell_rate_algorithm) and [Brandur Leach — Rate limiting, cells, and GCRA](https://brandur.org/rate-limiting) — GCRA's virtual-scheduling form and why it equals a token bucket.
+- [Token bucket](https://en.wikipedia.org/wiki/Token_bucket) and [Leaky bucket](https://en.wikipedia.org/wiki/Leaky_bucket) (Wikipedia) — including the "leaky bucket as a meter vs as a queue" distinction.
+- [Redis — scripting with Lua](https://redis.io/docs/latest/develop/interact/programmability/eval-intro/) and the [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/) — script atomicity, declaring keys, hash tags and the 16,384 slots.
+- [RFC 6585](https://www.rfc-editor.org/rfc/rfc6585) (429 Too Many Requests), [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110) (`Retry-After`), and the IETF [RateLimit header fields draft](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/) — check its current status.
+- [Envoy — global rate limiting](https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/other_features/global_rate_limiting) and [NGINX `limit_req`](https://nginx.org/en/docs/http/ngx_http_limit_req_module.html) — a centralised rate-limit service, and a leaky bucket with a burst queue, as real configuration.
+- [Google SRE book — Handling Overload](https://sre.google/sre-book/handling-overload/) and [AWS Builders' Library — Timeouts, retries, and backoff with jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/) — the server and client halves of "please slow down".
+
+**Look these up yourself**
+
+- **Concurrency limiters vs rate limiters** — capping requests in flight rather than per second; why a slow dependency needs the former.
+- **Adaptive concurrency limits** (e.g. Netflix's concurrency-limits library) — letting a service find its own limit from latency instead of a hand-set number.
+- **Heavy-hitter detection** (count-min sketch, the space-saving algorithm) — finding hot keys in a stream with tiny memory, for the switch-to-leasing threshold.
+- **redis-cell** — a Redis module that implements GCRA as a single command; compare it with a Lua script.
+- **Cost-weighted limits** — charging an LLM call by tokens, or a search by its fan-out, from the same bucket.
+- **Fair queuing (deficit round robin, weighted fair queuing)** — sharing a queue fairly between tenants when you must queue rather than reject.
+- **CRDT counters (G-counter, PN-counter)** — the data structure behind conflict-free cross-region count merging.
+- **SMS pumping fraud** — why OTP endpoints are a money limit, not just an abuse limit.

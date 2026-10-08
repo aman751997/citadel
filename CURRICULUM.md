@@ -78,3 +78,11 @@
 - 2026-08-17 — Coverage expansion: /bank page, curriculum → modules, gap register imported.
 - 2026-08-17 — **THE GREAT THEORY FORGE**: all 19 remaining SD theory lessons (M1–M2 complete, 8 pattern lessons, 5 AI-era) with Mermaid + quizzes; curriculum restructured PATTERN-FIRST (12 modules — pattern theory + its walkthroughs clubbed, per user directive); files renamed to semantic slugs; DSA wing added (/dsa/: 20 patterns, 144 problems, LC/LintCode links, done flags; two-pointers + sliding-window lessons ported from Grimoire with Java + bestiaries). SD theory scaffolding era CLOSED — only walkthroughs + reps remain.
 - 2026-08-17 — DSA forge to pattern 8 (user directive): prefix-sum, intervals, linked-lists, binary-search, stacks, heaps lessons (Java + Mermaid + bestiaries); Arsenal page gains click-to-mark solves + copy-progress button; SD roadmap copy-progress shipped earlier today.
+
+## Great rewrite (2026-10-08) — ALL THREE WINGS REBUILT AS NOVELS
+- Guide: `docs/LESSON_GUIDE.md` (components, voice, story bibles, correctness machinery). References: two-pointers/prefix-sum (DSA), caching (SD), solid (LLD).
+- DSA: all 20 patterns have lessons (144 roadmap problems each with a chapter, tested Java, playground, practice set, "Beyond this page").
+- SD: all 24 lessons rewritten + `url-shortener` and `typeahead` warm-up walkthroughs; every queued walkthrough in modules 3-11 now lives inside its pattern lesson (see `src/bank.ts` walkthrough flags). Remaining queued: none except bank rows not mapped to a lesson.
+- LLD: all 8 lessons rewritten (Gearhouse universe), every Java block compiled and stress-tested.
+- Gates (run before shipping): `npm run test:ts`, `node scripts/check-java.mjs` (54 suites), fresh `npm run build`, `node scripts/check-links.mjs dist`, `node scripts/check-mermaid.mjs <preview-url> dist`.
+- Known: 3 Mermaid diagrams in the Confluence-synced Mastery wing fail to render (provenance-spans-offsets-pages, event-driven-design-properly, per-speaker-recording-and-consent) — fix at the Confluence source and re-sync, don't hand-edit `src/mastery/**`.

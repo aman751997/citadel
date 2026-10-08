@@ -1,0 +1,1338 @@
+---
+title: 'Math & Bit Manipulation'
+description: 'A novel in ten chapters and six side quests. Climb the signal tower at Farrow Point, where every number is a row of thirty-two lanterns. Learn why pairs of lights cancel, why the storm lantern trips up the careless, and how to build a bit trick nobody showed you.'
+order: 17
+minutes: 110
+sessionMinutes: 8
+---
+import PatternHub from '../components/PatternHub.astro';
+import Playground from '../components/Playground.astro';
+import Practice from '../components/Practice.astro';
+import Trace from '../components/Trace.astro';
+import HintLadder from '../components/HintLadder.astro';
+import Reveal from '../components/Reveal.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Mermaid from '../components/Mermaid.astro';
+import { hints } from '../data/bit-manipulation/hints';
+import { twos, operators, single, missing, popcount, countingBits, reverse, masks, clock, sieve, mixedReview } from '../data/bit-manipulation/traces';
+import { BASE } from '../paths';
+
+<PatternHub
+  pattern="bit-manipulation"
+  start="prologue"
+  logline="The signal tower at Farrow Point speaks to ships in rows of thirty-two lanterns. Every number is one row. Learn what a single move does to a whole row, and puzzles that seem to need a map, a sort or a second pass come apart in one line of light."
+  cast={[
+    { name: 'You', role: 'The newest lamplighter. Like a CPU, you change a whole row of lanterns in one move.' },
+    { name: 'The Keeper', role: 'Runs the tower. Never lights a lantern for you; asks three questions instead.' },
+    { name: 'Mask', role: 'The stencil-cutter. Her boards have holes over the lanterns you mean to touch: AND keeps, OR lights, XOR flips.' },
+    { name: 'Xor', role: 'The tally-keeper of pairs. He keeps one row and flips every number into it. A number flipped in twice leaves no trace.' },
+    { name: 'Shift', role: 'The crank operator. Slides a whole row left or right. His brass crank (>>) copies the storm lantern; his iron crank (>>>) lets in darkness.' },
+    { name: 'The storm lantern', role: 'Lantern 31, painted red. When it is lit, the row means a negative number.' },
+    { name: 'Carry', role: 'The runner. Wherever two lit lanterns meet in a sum, she carries one light a place to the left.' },
+    { name: 'The Clockmaker', role: 'Keeps the harbour clock, where numbers wrap around. She deals in remainders, gears, powers and primes.' },
+  ]}
+  parts={[
+    { name: 'Part One · Reading the lanterns', description: 'What a row means, and what each move does to all of it at once.', links: [['twos-complement', 'The storm lantern'], ['operators', 'Stencils and cranks']] },
+    { name: 'Part Two · Pairs cancel', description: 'Fold everything into one row. Whatever has a partner disappears.', links: [['single-number', 'The ship that came alone'], ['missing-number', 'The berth left empty']] },
+    { name: 'Part Three · Counting the light', description: 'Count lit lanterns, build counts from counts, and mirror a row.', links: [['number-of-1-bits', 'The oil bill'], ['counting-bits', 'The almanac'], ['reverse-bits', 'The mirror signal']] },
+    { name: 'Part Four · Rows as sets, and the clockmaker', description: 'A row as a crew list. Then the arithmetic that wraps around.', links: [['bitmask-sets', 'Every crew from the roster'], ['clock-arithmetic', 'The clockmaker’s wheel'], ['sieve', 'The prime lanterns']] },
+  ]}
+  extensions={[['single-number-ii', 'Thrice-lit'], ['single-number-iii', 'Two strangers'], ['sum-without-plus', 'Adding with no plus sign'], ['power-of-two', 'One lantern only'], ['hamming-distance', 'Where two signals disagree'], ['reverse-integer', 'The decimal mirror']]}
+  extras={[['choose-the-tool', 'When the lanterns lie'], ['wider-family', 'The neighbouring towers'], ['exit-ticket', 'The night-watch exam'], ['cheat-sheet', 'The Keeper’s signal book']]}
+  note="All 5 roadmap problems, the arithmetic every interviewer assumes you know, and six side quests that make the family complete. Read one chapter per sitting; the story keeps your place."
+/>
+
+<h2 id="prologue">Prologue · Thirty-two lanterns</h2>
+
+<Scene chapter="Prologue" title="The tower at Farrow Point" mood="dawn">
+
+Farrow Point is a headland of black rock, and on it stands the signal tower. Around its top run galleries, and on every gallery hang thirty-two lanterns in a row. At night the ships in the bay read the rows, and each row is one number.
+
+The Keeper walks you along the lowest gallery. *"The lantern on the right is worth 1,"* she says. *"The next is worth 2, then 4, then 8. Each is worth twice its neighbour. Light the ones you need, and the ships add them up."*
+
+She lights three lanterns. A ship below flashes back: thirteen.
+
+*"Most apprentices learn to add one number at a time,"* she says. *"Here you will learn to change all thirty-two lanterns in a single move. So: what can you do to a whole row at once?"*
+
+</Scene>
+
+A Java `int` is **a row of 32 lanterns**: 32 bits, each on (1) or off (0). Lantern `i` is worth `2^i`, so a row's value is the sum of the lit lanterns' worths. Lantern 0, worth 1, is on the right; lantern 31 is on the left, and it is special (Chapter 1).
+
+The moves this book teaches, `&`, `|`, `^`, `~`, `<<`, `>>`, `>>>`, each touch **all 32 lanterns at once, in one machine step**. That is where the speed comes from. A bit trick replaces a loop over elements, a hash map or a string conversion with one operation on a whole row.
+
+The Keeper asks her three questions here, as everywhere in the realm:
+
+1. **What is settled?** Which lanterns you have already read, and which pairs have already cancelled.
+2. **Why is this move safe?** An identity you can prove lantern by lantern: `x ^ x == 0`, or "`x & (x − 1)` puts out exactly one lantern".
+3. **When do I stop?** Either when the row is dark, or after exactly 32 rounds. Half the bugs in this book come from mixing those two up.
+
+> “A number is a row of lanterns, and one move changes the whole row.” That is the promise. Every chapter keeps it, then asks the row a different question.
+
+<Figure caption="13 on the lowest gallery: lanterns 3, 2 and 0 are lit, worth 8 + 4 + 1 = 13. A Java int has 24 more lanterns to the left of these, all dark for 13.">
+  <ArrayStrip name="worth" values={['2⁷', '2⁶', '2⁵', '2⁴', '2³', '2²', '2¹', '2⁰']} indices={false} tones={{ 0: 'ghost', 1: 'ghost', 2: 'ghost', 3: 'ghost', 4: 'ghost', 5: 'ghost', 6: 'ghost', 7: 'ghost' }} />
+  <ArrayStrip name="lit  " values={['0', '0', '0', '0', '1', '1', '0', '1']} indices={false} tones={{ 4: 'hot', 5: 'hot', 7: 'hot' }} />
+</Figure>
+
+### When this pattern fires
+
+The problem is about the **binary form** of numbers, or about **cancelling, counting or choosing** under a tight memory budget. Listen for:
+
+- **"Every element appears twice except one", "O(1) extra space".** A hash map of counts costs O(n) memory; folding with XOR costs one `int`.
+- **"Number of 1 bits", "32-bit", "unsigned", "reverse the bits".** You need the exact row, sign lantern and all. Converting to a `String` works, but it allocates and hides the edge cases.
+- **"Without using + or −"**, "power of two", "differ in how many positions". These are identities about rows.
+- **"All subsets" with n up to about 20.** A counter from 0 to `2^n − 1` lists every subset, one row per subset.
+- **"Return the answer modulo 10⁹ + 7", gcd, primes, overflow.** That is the Clockmaker's half of this book: arithmetic that wraps around.
+
+<h2 id="playground">The training wall · You make every move</h2>
+
+<Scene title="The training wall">
+
+Halfway up the tower there is a practice wall with only eight lanterns, low enough to reach. Apprentices practise there before they are trusted with a real gallery. The moves are exactly the same; there are just fewer lanterns to watch. When you pull the wrong lever, the Keeper doesn't stop your hand. She tells you, lantern by lantern, what the move would have broken.
+
+</Scene>
+
+Three drills. **Fold the pairs:** fold each value into the running row and watch pairs vanish; try `+` or `|` and see why they can't cancel. **Put out the lowest lantern:** count lit lanterns one round per lantern, not one per position. **Reverse the row:** make room, copy, slide, eight rounds exactly; the drill will catch you if you stop when the row runs dark. Say the reason **before** pressing the button.
+
+<Playground lab="bit-manipulation" />
+
+<Part n="Part One" title="Reading the lanterns">
+
+What a row of 32 lanterns means, and what every move does to all of it at once.
+
+</Part>
+
+<h2 id="twos-complement">Chapter 1 · The storm lantern</h2>
+
+<Scene chapter="Chapter 1" title="The storm lantern" mood="storm">
+
+The storm comes in at dusk, and the harbour master runs up the stairs, dripping. The tide gauge reads five fathoms **below** the mark. He needs the tower to signal minus five.
+
+The leftmost lantern on every gallery is painted red. Everyone calls it the storm lantern, and everyone knows it means *negative*. "Easy," you say. "Light the storm lantern, then light five the usual way."
+
+The Keeper hands you a slate. *"Add your minus five to five,"* she says, *"lantern by lantern, the way the ships add. Minus five plus five should be a dark row. Is it?"*
+
+You add. It isn't. It isn't even close.
+
+*"Then what row,"* she asks, *"when you add five to it, leaves every lantern dark?"*
+
+</Scene>
+
+The red lantern isn't a sign glued onto a number. **In Java, lantern 31 has a negative worth: −2³¹.** Every other lantern keeps its positive worth. That one rule, called **two's complement**, gives:
+
+- `0` is all dark; `1` is lantern 0 alone; `Integer.MAX_VALUE = 2³¹ − 1` is every lantern lit **except** lantern 31.
+- `Integer.MIN_VALUE = −2³¹` is lantern 31 alone: `10000000 00000000 00000000 00000000`.
+- `−1` is **every lantern lit**: −2³¹ + (2³¹ − 1) = −1.
+
+**Why `−x == ~x + 1`.** `~x` flips every lantern. Every lantern is lit in exactly one of `x` and `~x`, so `x + ~x` is all 32 lit, which is −1. Rearranged: `~x + 1 = −x`. That is how Java negates: flip every lantern, then add one.
+
+<Figure caption="5, then ~5 (every lantern flipped, which is −6), then −5 = ~5 + 1. Add the bottom row to 5 and every column carries until the carry falls off lantern 31: the result is 0.">
+  <ArrayStrip name="5 " values={['00000000', '00000000', '00000000', '00000101']} indices={false} />
+  <ArrayStrip name="~5" values={['11111111', '11111111', '11111111', '11111010']} indices={false} tones={{ 3: 'blue' }} />
+  <ArrayStrip name="−5" values={['11111111', '11111111', '11111111', '11111011']} indices={false} tones={{ 0: 'hot', 1: 'hot', 2: 'hot', 3: 'hot' }} />
+</Figure>
+
+**Arithmetic wraps.** The adder works modulo 2³², and nothing in plain `+`, `−` or `*` checks for overflow. `Integer.MAX_VALUE + 1` is `Integer.MIN_VALUE`, silently. Two consequences you will meet again:
+
+- **`−Integer.MIN_VALUE == Integer.MIN_VALUE`**, and so `Math.abs(Integer.MIN_VALUE)` is negative. There are 2³¹ negative ints but only 2³¹ − 1 positive ones, so the most negative int has no positive partner.
+- **The same adder serves signed and unsigned.** The row for −5 is also the unsigned number 2³² − 5 = 4,294,967,291. Whether a row "is" −5 or 4,294,967,291 depends only on how you read it: `Integer.toString` reads it signed, `Integer.toUnsignedString` unsigned.
+
+<Trace title="Read the storm lantern" steps={twos} takeaway="Remember: lantern 31 is worth −2³¹. −x == ~x + 1, MAX_VALUE + 1 == MIN_VALUE, and −MIN_VALUE == MIN_VALUE." />
+
+**Why it works:** two's complement is arithmetic modulo 2³². The row for `−x` is the row for `2³² − x`, and adding `x` gives `2³²`, which is a 1 just past lantern 31: it falls off, leaving 0. One adder handles every sign.
+
+**What stays true:** a row never changes meaning by itself. The bits are the same; signed or unsigned is a decision you make when you read them.
+
+<Reveal q="Why doesn’t Java just use a sign lantern plus a magnitude?">
+
+Because then there would be two zeros (+0 and −0), and the adder would need a special case for every sign combination. With two's complement, `5 + (−5)` is the same carry-and-drop addition as `5 + 3`. A `long` follows exactly the same rules with 64 lanterns: `Long.MIN_VALUE` is lantern 63 alone.
+
+</Reveal>
+
+<HintLadder hints={hints.twos}>
+
+```java id=twos
+public int negate(int x) {
+    return ~x + 1;                          // flip every lantern, then add one
+}
+
+public String lanterns(int x) {             // all 32 lanterns, leading zeros included
+    String s = Integer.toBinaryString(x);   // drops leading zeros: 5 -> "101"
+    return "0".repeat(32 - s.length()) + s;
+}
+```
+
+**O(1) time and space** for `negate`; `lanterns` builds a 32-character string. `negate(Integer.MIN_VALUE)` returns `Integer.MIN_VALUE`, exactly as `-x` does.
+
+</HintLadder>
+
+**Catch the bug:** hashing a key into one of `n` buckets with `Math.abs(key) % n`. For `key = Integer.MIN_VALUE`, `Math.abs` is still negative, and with `n = 10` the bucket is `−8`: an `ArrayIndexOutOfBoundsException` that shows up once in four billion keys. Use `Math.floorMod(key, n)`, which always lands in `0..n − 1`.
+
+<h2 id="operators">Chapter 2 · Stencils and cranks</h2>
+
+<Scene chapter="Chapter 2" title="Stencils and cranks">
+
+Mask works in a loft full of thin wooden boards, each pierced with holes. Hold a board against a row and you see only the lanterns behind its holes. She has a board with a single hole for every position, and you spend a morning learning to read, light, darken and flip one lantern at a time.
+
+On the far wall, Shift tends the crank wheel that slides a whole row sideways. There are two handles. The brass one, he says, copies the storm lantern into the gap. The iron one lets in darkness.
+
+At noon the Keeper chalks a row on the slate: `01011000`. *"Put out the lowest lit lantern,"* she says. *"Don't tell me where it is first. One move, and it must work on any row."*
+
+</Scene>
+
+Every operator works on all 32 lanterns at once. Think of `&` as a stencil (only holes show through), `|` as lighting, `^` as flipping:
+
+```text
+a & b     lit only where BOTH are lit          read or keep lanterns through a stencil
+a | b     lit where EITHER is lit              light lanterns
+a ^ b     lit where they DIFFER                flip lanterns; equal values cancel
+~a        every lantern flipped                ~a == -a - 1
+a << k    slide left k; dark lanterns enter    a * 2^k (until lanterns fall off the top)
+a >> k    slide right k; COPIES of lantern 31  floor(a / 2^k): the sign is kept
+a >>> k   slide right k; dark lanterns enter   unsigned: always non-negative for k >= 1
+```
+
+**One lantern at a time.** The stencil with one hole at lantern `i` is `1 << i`. Then: read it with `(x & (1 << i)) != 0`; light it with OR; put it out with `x & ~(1 << i)`; flip it with `x ^ (1 << i)`.
+
+**The lowest lit lantern, two ways, with proofs.** Write `x` as some prefix, then the lowest lit lantern, then `k` dark lanterns: `x = P 1 0…0`.
+
+- **`x & (x − 1)` puts it out.** Subtracting 1 borrows from the lowest lit lantern: `x − 1 = P 0 1…1`. The prefix is untouched, the lit lantern goes dark, the `k` dark lanterns light up. AND with `x` puts those `k` back out: **`P 0 0…0`**. Exactly one lantern changed.
+- **`x & −x` keeps only it.** `~x = ~P 0 1…1`; adding one carries through the 1s: `−x = ~P 1 0…0`. Now `x` and `−x` agree only at that lantern (the prefixes are opposites): **`0…0 1 0…0`**.
+
+Both give 0 when `x` is 0. These two lines drive Chapter 5, Chapter 6 and two side quests.
+
+<Figure caption="x = 88. x − 1 puts out lantern 3 but lights lanterns 2, 1, 0 (blue). AND with x keeps only the unchanged prefix: 80, one lantern fewer. −x agrees with x only at lantern 3, so x & −x = 8 keeps just that lantern. (Low 8 lanterns shown; −x has 24 more lit lanterns above, all of them dark in x.)">
+  <ArrayStrip name="x        " values={['0', '1', '0', '1', '1', '0', '0', '0']} indices={false} tones={{ 1: 'hot', 3: 'hot', 4: 'hot' }} />
+  <ArrayStrip name="x − 1    " values={['0', '1', '0', '1', '0', '1', '1', '1']} indices={false} tones={{ 4: 'blue', 5: 'blue', 6: 'blue', 7: 'blue' }} />
+  <ArrayStrip name="x & (x−1)" values={['0', '1', '0', '1', '0', '0', '0', '0']} indices={false} tones={{ 1: 'done', 3: 'done', 4: 'out' }} />
+  <ArrayStrip name="−x       " values={['1', '0', '1', '0', '1', '0', '0', '0']} indices={false} tones={{ 4: 'blue' }} />
+  <ArrayStrip name="x & −x   " values={['0', '0', '0', '0', '1', '0', '0', '0']} indices={false} tones={{ 4: 'done' }} />
+</Figure>
+
+**The two cranks.** `>>` is the **arithmetic** shift: the storm lantern is copied into each gap, so negative stays negative and `x >> k` equals `floor(x / 2^k)`. Note that `−7 >> 1` is −4 while `−7 / 2` is −3: `/` rounds toward zero, `>>` rounds down. `>>>` is the **logical** shift: dark lanterns enter, and the row is treated as unsigned. Java has no unsigned `int` type, so `>>>` is how it slides a row as unsigned.
+
+<Figure caption="−8 slid right once. The brass crank (>>) copies the lit storm lantern in: −4. The iron crank (>>>) lets a dark lantern in: 2,147,483,644.">
+  <ArrayStrip name="−8      " values={['11111111', '11111111', '11111111', '11111000']} indices={false} />
+  <ArrayStrip name="−8 >> 1 " values={['11111111', '11111111', '11111111', '11111100']} indices={false} tones={{ 0: 'hot' }} />
+  <ArrayStrip name="−8 >>> 1" values={['01111111', '11111111', '11111111', '11111100']} indices={false} tones={{ 0: 'blue' }} />
+</Figure>
+
+Here is the bug the brass crank causes. This loop is meant to count lit lanterns:
+
+```java fragment
+int count = 0;
+while (n != 0) {
+    count += n & 1;
+    n >>= 1;          // BUG: the brass crank. n = -8 goes -4, -2, -1, -1, -1, ... and never reaches 0
+}
+```
+
+On any negative `n` it never ends, because `−1 >> 1` is `−1`. With `n >>>= 1` it ends after at most 32 rounds.
+
+Three more traps of the Java crank wheel:
+
+- **The shift distance is taken mod 32** (mod 64 for `long`). `1 << 32` is `1`, not 0, and `x >> 32` is `x`.
+- **`1 << 31` is `Integer.MIN_VALUE`**, and `1 << 40` is really `1 << 8`. For lanterns past 31, use `1L << k`.
+- **Precedence.** `==` and `!=` bind tighter than `&`, `^`, `|`; and `+`, `−` bind tighter than `<<`. In Java, `x & 1 << 3 != 0` doesn't even compile (an `int` AND a `boolean`), and `1 << n − 1` means `1 << (n − 1)`. Bracket every bit expression.
+
+<Trace title="Stencils and cranks" steps={operators} takeaway="Remember: x & (x − 1) puts out the lowest lit lantern; x & −x keeps only it. >> copies the sign, >>> lets in darkness. Bracket every bit test." />
+
+**Why it works:** each operator is defined lantern by lantern, so an identity that holds for one lantern position (with the borrow or carry accounted for) holds for the whole row.
+
+**What stays true:** a move never touches a lantern its stencil doesn't cover. `x | (1 << i)` changes lantern `i` at most; `x & (x − 1)` changes exactly one lantern when `x` isn't 0.
+
+<Reveal q="Is x << 1 always the same as x * 2?">
+
+In Java, yes, bit for bit, **including overflow**: both drop whatever falls off lantern 31. `0x40000000 << 1` and `0x40000000 * 2` are both `Integer.MIN_VALUE`. What differs is right shifts and division on negatives: `x >> 1` rounds down, `x / 2` rounds toward zero. They agree only when `x` is non-negative or even.
+
+</Reveal>
+
+<HintLadder hints={hints.bitOps}>
+
+```java id=bitOps
+public boolean isLit(int x, int i) { return (x & (1 << i)) != 0; }   // read lantern i
+public int light(int x, int i)     { return x | (1 << i); }          // turn it on
+public int darken(int x, int i)    { return x & ~(1 << i); }         // turn it off
+public int flip(int x, int i)      { return x ^ (1 << i); }          // toggle it
+public int lowestLit(int x)        { return x & -x; }                // keep only the lowest lit lantern (0 if none)
+public int dropLowest(int x)       { return x & (x - 1); }           // put out the lowest lit lantern
+```
+
+**O(1) each.** `i` must be 0..31; for a `long` row use `1L << i`. The JDK has these too: `Integer.lowestOneBit(x)` is `x & −x`, and `Integer.bitCount`, `Integer.numberOfTrailingZeros` and `Integer.highestOneBit` are worth knowing by name.
+
+</HintLadder>
+
+**Catch the bug:** `(x & (1 << i)) == 1` to test lantern `i`. When the lantern is lit, the AND is `2^i`, which equals 1 only for `i = 0`. For lantern 3 of `x = 8` it returns false. Compare with `!= 0`, or shift first: `((x >> i) & 1) == 1`.
+
+<Part n="Part Two" title="Pairs cancel">
+
+Fold everything into one row. Whatever has a partner disappears; whatever is left is the answer.
+
+</Part>
+
+<h2 id="single-number">Chapter 3 · The ship that came alone</h2>
+
+<Scene chapter="Chapter 3" title="The ship that came alone" mood="night">
+
+Ships come to Farrow Point in convoys of two, and every ship flashes its number as it passes the tower. Tonight the clerk's ledger blew into the sea, and now the harbour master asks which ship came without a partner.
+
+"We'd need to write down every number," you say, "and tick them off."
+
+*"You may keep one row of lanterns,"* says the Keeper. *"No ledger."* She calls over Xor, the tally-keeper of pairs, who does one thing all night: when a number is flashed, he flips the matching lanterns of his own row. Lit goes dark, dark goes lit.
+
+By midnight Xor's row has been flipped a thousand times. *"When the last ship has passed,"* the Keeper asks, *"what will his row show?"*
+
+</Scene>
+
+**Problem: Single Number · XOR fold**
+
+XOR has three properties, and together they make **pairs cancel**:
+
+- `a ^ a == 0`: a value flipped in twice leaves no trace.
+- `a ^ 0 == a`: an empty row changes nothing.
+- XOR is **commutative and associative**: you can reorder and regroup a fold freely.
+
+So the fold `acc = nums[0] ^ nums[1] ^ … ^ nums[n − 1]` can be rearranged to put each pair side by side: every pair becomes 0, and only the single remains. **Lantern by lantern:** each lantern of `acc` is flipped once for every value that lights it. A pair flips it an even number of times, back to where it started.
+
+<Figure caption="[4, 1, 2, 1, 2]. Xor’s row after each value: 4, 5, 7, 6, 4. When the second 1 arrives, 7 ^ 1 = 6 = 4 ^ 2: the 1s have cancelled. When the second 2 arrives, only 4 is left.">
+  <ArrayStrip name="values" values={[4, 1, 2, 1, 2]} tones={{ 0: 'hot' }} />
+  <ArrayStrip name="acc   " values={[4, 5, 7, 6, 4]} tones={{ 4: 'done' }} pointers={[{ at: 3, label: '1s cancel', tone: 'blue' }, { at: 4, label: '2s cancel' }]} />
+</Figure>
+
+<Trace title="Fold the convoy" steps={single} takeaway="Remember: x ^ x = 0 and x ^ 0 = x, in any order. One accumulator, one pass." />
+
+**Why it works:** XOR is addition without carries, lantern by lantern. A lantern of `acc` ends lit exactly when an **odd** number of values light it. Pairs contribute even counts; the single's lit lanterns are the only odd ones.
+
+**What stays true:** after reading `k` values, `acc` is the XOR of every value seen an odd number of times so far. **At loop exit**, every pair is complete, so `acc` is the single value. Say that sentence out loud when you write the loop; it is the variable's whole job.
+
+<Reveal q="What does the fold return if one value appears three times and every other value twice?">
+
+That value. `x ^ x ^ x = (x ^ x) ^ x = x`. The fold doesn't find "the value that appears once"; it finds **the XOR of all values that appear an odd number of times**. If exactly one value has an odd count, that is the answer. Side quests 1 and 2 break this promise on purpose.
+
+</Reveal>
+
+<HintLadder hints={hints.single}>
+
+```java id=singleNumber
+public int singleNumber(int[] nums) {
+    int acc = 0;                       // x ^ 0 = x: the empty fold
+    for (int x : nums) acc ^= x;       // a value folded in twice flips its lanterns back
+    return acc;                        // only the value without a partner is left lit
+}
+```
+
+**O(n) time, O(1) extra space.** Negative values need no special case: XOR doesn't care which lanterns mean what. A `HashMap` of counts is also correct, but costs O(n) space, which the problem forbids.
+
+</HintLadder>
+
+**Catch the bug:** starting with `int acc = nums[0];` and then folding **every** value, including index 0. That folds `nums[0]` in twice, so it cancels. On `[4, 1, 2, 1, 2]` the answer 4 disappears and the function returns 0. Start from 0, the empty fold. [Solve Single Number](https://leetcode.com/problems/single-number/).
+
+<h2 id="missing-number">Chapter 4 · The berth left empty</h2>
+
+<Scene chapter="Chapter 4" title="The berth left empty" mood="dawn">
+
+The quay has berths numbered 0 to n. Every ship is numbered too, 0 to n, and each one ties up wherever there is space. By dawn n ships are in, so one number never arrived. The harbour master hands you the list of ship numbers, in berth order: 4, 0, 1, 3.
+
+Xor is ready with his row. "Fold the ship numbers," you say. He does. The row shows 6, and there is no ship 6.
+
+The Keeper taps the berth numbers painted on the quay. *"Every ship that came is looking for a partner,"* she says. *"In Chapter 3, partners came in the list. Where are the partners here?"*
+
+</Scene>
+
+**Problem: Missing Number · XOR fold (or Gauss sum)**
+
+`nums` holds `n` distinct numbers from `0..n`: one number in that range is missing. Give every **present** number a partner, so that only the missing one is left alone:
+
+- The indexes `0, 1, …, n − 1`, plus `n` itself, are **exactly the full range `0..n`**, each once.
+- Fold the full range **and** the values. Each present number appears twice (once in the range, once as a value) and cancels. The missing number appears once.
+
+In code, start `acc` at `n` (the one number no index supplies) and fold `i ^ nums[i]` for every `i`.
+
+<Figure caption="[4, 0, 1, 3], n = 4. The top row is the full range 0..4 (the indexes plus n). Every number in it also appears in nums except 2. Fold everything: 4 ^ (0 ^ 4) ^ (1 ^ 0) ^ (2 ^ 1) ^ (3 ^ 3) = 2.">
+  <ArrayStrip name="index + n" values={[0, 1, 2, 3, 4]} tones={{ 2: 'hot', 4: 'purple' }} pointers={[{ at: 2, label: 'no partner' }, { at: 4, label: 'n', tone: 'purple' }]} />
+  <ArrayStrip name="nums     " values={[4, 0, 1, 3, '·']} tones={{ 4: 'ghost' }} />
+</Figure>
+
+<Trace title="Who partners with whom?" steps={missing} takeaway="Remember: fold the values, the indexes AND n. XOR never carries, so it never overflows." />
+
+**The summing version.** The full range sums to `n(n + 1) / 2`; subtract the values' total and the gap is the missing number. Correct, but **watch the multiplication**: in an `int`, `n * (n + 1)` overflows once `n` passes 46,340, even when the final total would fit. At LeetCode's bound (`n ≤ 10⁴`) the `int` version happens to be safe; make it a habit anyway to compute in `long`. XOR has no such worry: it never carries, so it can't overflow.
+
+**Why it works:** the multiset (range ∪ values) contains every present number exactly twice and the missing one once. The fold returns the XOR of odd-count values: the missing number.
+
+**What stays true:** after step `i`, `acc` is `n` XOR every index and value folded so far. **At loop exit**, every present number has met its partner.
+
+<Reveal q="Why not sort and look for the gap?">
+
+That works, in O(n log n) time, and it rewrites the input array (or copies it for O(n) space). A `boolean[n + 1]` of "seen" flags is O(n) time but O(n) space. The fold is O(n) time and O(1) space, which is why it is the expected answer.
+
+</Reveal>
+
+<HintLadder hints={hints.missing}>
+
+```java id=missingNumber
+public int missingNumber(int[] nums) {
+    int n = nums.length;
+    int acc = n;                       // n has no index of its own; fold it in up front
+    for (int i = 0; i < n; i++)
+        acc ^= i ^ nums[i];            // each present number meets itself: once as an index (or n), once as a value
+    return acc;
+}
+```
+
+```java id=missingNumberSum
+public int missingNumberSum(int[] nums) {
+    int n = nums.length;
+    long expected = (long) n * (n + 1) / 2;   // cast BEFORE multiplying
+    long actual = 0;
+    for (int x : nums) actual += x;
+    return (int) (expected - actual);
+}
+```
+
+**Both O(n) time, O(1) extra space.** With `int expected = n * (n + 1) / 2`, an array of 65,536 numbers already gives a wrong answer.
+
+</HintLadder>
+
+**Catch the bug:** starting `acc` at 0 instead of `n`. Then the number `n` has no partner in the range. On `[4, 0, 1, 3]` you get 6; on `[0, 1, 2]`, where `n = 3` itself is missing, you get 0. [Solve Missing Number](https://leetcode.com/problems/missing-number/).
+
+<Part n="Part Three" title="Counting the light">
+
+How many lanterns are lit? Then every count from 0 to n at once. Then the whole row, mirrored.
+
+</Part>
+
+<h2 id="number-of-1-bits">Chapter 5 · The oil bill</h2>
+
+<Scene chapter="Chapter 5" title="The oil bill">
+
+Every lit lantern burns oil, and the oil merchant bills by the lantern. The harbour master wants a count for each signal: how many lanterns does this row light?
+
+You take the iron crank. Look at lantern 0, add it to the tally, slide the row one place, repeat. For a row like 88 it is eight slides for three lit lanterns. For a row with only the storm lantern lit, it is thirty-two slides for one.
+
+The Keeper chalks `01011000` on the slate. *"In Chapter 2 you put out the lowest lit lantern in one move, without knowing where it was,"* she says. *"So stop sliding. How many times can you do that before the row is dark?"*
+
+</Scene>
+
+**Problem: Number of 1 Bits · shift loop, then Brian Kernighan's trick**
+
+Two correct loops, and one classic wrong one.
+
+1. **Slide and read.** Add `n & 1` (is lantern 0 lit?), then slide with `n >>>= 1`. The iron crank lets darkness in, so the loop ends after at most 32 rounds. It costs one round **per position** up to the highest lit lantern.
+2. **Put out the lowest lit lantern.** `n &= n − 1` removes exactly one lit lantern (Chapter 2's proof). Count rounds until `n` is 0. It costs one round **per lit lantern**. This is Brian Kernighan's trick.
+
+The wrong one is the brass crank: `n >>= 1` on a negative `n` never reaches 0 (Chapter 2).
+
+<Figure caption="88 = 01011000, three lit lanterns, three rounds of n &= n − 1: 88 → 80 → 64 → 0. Each round, exactly the lowest lit lantern goes out.">
+  <ArrayStrip name="round 0" values={['0', '1', '0', '1', '1', '0', '0', '0']} indices={false} tones={{ 1: 'hot', 3: 'hot', 4: 'hot' }} />
+  <ArrayStrip name="round 1" values={['0', '1', '0', '1', '0', '0', '0', '0']} indices={false} tones={{ 1: 'hot', 3: 'hot', 4: 'out' }} />
+  <ArrayStrip name="round 2" values={['0', '1', '0', '0', '0', '0', '0', '0']} indices={false} tones={{ 1: 'hot', 3: 'out' }} />
+  <ArrayStrip name="round 3" values={['0', '0', '0', '0', '0', '0', '0', '0']} indices={false} tones={{ 1: 'out' }} />
+</Figure>
+
+<Trace title="Count the lit lanterns" steps={popcount} takeaway="Remember: n &= n − 1 costs one round per LIT lantern, whatever the sign. A shifting loop must use >>>." />
+
+**About the input.** Older versions of this problem pass a 32-bit pattern “as an unsigned integer”, which arrives in Java as a possibly negative `int`: `11111111111111111111111111111101` arrives as −3 and has 31 lit lanterns. Both loops below handle every pattern, so the version of the problem you get doesn't matter.
+
+**Why it works:** each round of the second loop removes exactly one lit lantern and adds exactly one to `count`, so `count + (lit lanterns left in n)` never changes. **At loop exit** `n` is 0, so `count` is the original number of lit lanterns.
+
+**What stays true:** `count + bitCount(n)` equals the answer at the top of every round.
+
+<Reveal q="The JDK has Integer.bitCount. Why write this at all?">
+
+In production, call `Integer.bitCount(n)`; it is correct and fast. In an interview, say that you know it, then write the loop, because the follow-ups (Counting Bits, Hamming Distance, power of two) are built from `n & (n − 1)`. Converting to `Integer.toBinaryString(n)` and counting `'1'`s also works, but it allocates a string for a question about a row you already hold.
+
+</Reveal>
+
+<HintLadder hints={hints.popcount}>
+
+```java id=hammingWeight
+public int hammingWeight(int n) {
+    int count = 0;
+    while (n != 0) {
+        count += n & 1;                // is lantern 0 lit?
+        n >>>= 1;                      // the iron crank: a dark lantern enters at the top
+    }
+    return count;
+}
+```
+
+```java id=hammingWeightKernighan
+public int hammingWeightKernighan(int n) {
+    int count = 0;
+    while (n != 0) {
+        n &= n - 1;                    // put out the lowest lit lantern
+        count++;
+    }
+    return count;
+}
+```
+
+**O(32) = O(1) time, O(1) space** for both. The first takes (position of the highest lit lantern + 1) rounds; the second takes one round per lit lantern.
+
+</HintLadder>
+
+**Catch the bug:** `n >>= 1` in the first loop. On any negative input, such as −3 (the "unsigned" 4294967293), the storm lantern is copied in forever, `n` sticks at −1, and the loop never ends. [Solve Number of 1 Bits](https://leetcode.com/problems/number-of-1-bits/).
+
+<h2 id="counting-bits">Chapter 6 · The almanac</h2>
+
+<Scene chapter="Chapter 6" title="The almanac" mood="dusk">
+
+The harbour master wants an almanac: for every signal number from 0 to n, how many lanterns it lights, so the oil can be ordered a season ahead.
+
+You start counting each number from scratch, putting out lanterns one at a time. By number 300 your slate is full of chalk.
+
+The Keeper looks over your shoulder at row 13, `1101`. *"Cover the last lantern with your thumb,"* she says. *"What number is left?"*
+
+`110`. Six. You counted six an hour ago.
+
+*"Every row,"* she says, *"is a smaller row you already counted, with one more lantern on the end."*
+
+</Scene>
+
+**Problem: Counting Bits · DP on the last lantern**
+
+`i >> 1` is `i` with its last lantern dropped, and `i & 1` is that dropped lantern (1 if lit). So
+
+```text
+bits[i] = bits[i >> 1] + (i & 1)
+```
+
+Because `i >> 1 < i` for every `i ≥ 1`, filling the table from 0 upward means the entry you need is **always already written**. `bits[0] = 0` is the only starting value. This is dynamic programming: each answer is built from a smaller answer that is already known.
+
+<Figure caption="bits[0..8]. 8 is 1000; dropping its last lantern gives 4 (100), which has 1 lit lantern, and the dropped lantern was dark: bits[8] = bits[4] + 0 = 1.">
+  <ArrayStrip name="i      " values={[0, 1, 2, 3, 4, 5, 6, 7, 8]} indices={false} />
+  <ArrayStrip name="bits[i]" values={[0, 1, 1, 2, 1, 2, 2, 3, 1]} indices={false} tones={{ 4: 'blue', 8: 'hot' }} pointers={[{ at: 4, label: 'bits[8 >> 1]', tone: 'blue' }, { at: 8, label: 'bits[8]' }]} />
+</Figure>
+
+<Trace title="Build each count from an earlier one" steps={countingBits} takeaway="Remember: bits[i] = bits[i >> 1] + (i & 1), filled from 0 upward. The smaller index is always ready." />
+
+**The other recurrence.** `i & (i − 1)` is `i` with its lowest lit lantern put out, a smaller number with exactly one fewer lit lantern. So `bits[i] = bits[i & (i − 1)] + 1` works just as well.
+
+**Why it works:** both recurrences read an index smaller than `i` and correct by exactly the lantern that differs. Induction on `i` does the rest.
+
+**What stays true:** before handling `i`, every entry `bits[0..i − 1]` is final.
+
+<Reveal q="Why is bits[i − 1] + 1 wrong, when 'the next number has one more 1' sounds so natural?">
+
+Adding 1 carries. `7 + 1 = 8` is `0111 + 1 = 1000`: three lanterns went out and one came on. So `bits[i − 1] + 1` is right only when `i` is odd (no carry). It is already wrong at `i = 2`: `bits[1] + 1 = 2`, but 2 is `10`, with one lit lantern.
+
+</Reveal>
+
+<HintLadder hints={hints.countBits}>
+
+```java id=countBits
+public int[] countBits(int n) {
+    int[] bits = new int[n + 1];       // bits[0] = 0
+    for (int i = 1; i <= n; i++)
+        bits[i] = bits[i >> 1] + (i & 1);   // i without its last lantern, plus that lantern
+    return bits;
+}
+```
+
+```java id=countBitsLowest
+public int[] countBitsLowest(int n) {
+    int[] bits = new int[n + 1];
+    for (int i = 1; i <= n; i++)
+        bits[i] = bits[i & (i - 1)] + 1;    // i with its lowest lit lantern put out, plus that lantern
+    return bits;
+}
+```
+
+**O(n) time, O(n) space for the output** (nothing else). Counting each number separately with Chapter 5 is O(n log n); the problem's follow-up asks for O(n) without a built-in.
+
+</HintLadder>
+
+**Catch the bug:** `bits[i] = bits[i − 1] + 1`. It returns `[0, 1, 2, 3, …]`, wrong from `i = 2` onward. [Solve Counting Bits](https://leetcode.com/problems/counting-bits/).
+
+<h2 id="reverse-bits">Chapter 7 · The mirror signal</h2>
+
+<Scene chapter="Chapter 7" title="The mirror signal" mood="night">
+
+The tower on Gull Island, across the bay, reads Farrow Point through a great mirror. Everything arrives reversed: lantern 0 shows up where lantern 31 should be. The keepers there have asked for every signal to be sent pre-mirrored.
+
+You work it out on the training wall. Read the lowest lantern of the signal, put it at the bottom of a new row, push the new row up, read the next. You stop when the signal row runs dark. Done in two rounds.
+
+Gull Island flashes back: wrong. The Keeper holds the two rows side by side. *"The signal was `00000001`,"* she says. *"The mirror of it is `10000000`. What happened to the six dark lanterns you never read?"*
+
+</Scene>
+
+**Problem: Reverse Bits · build the mirror one lantern at a time**
+
+Build the result the way you build a number from digits: **make room, then drop the next lantern in.**
+
+```text
+repeat exactly 32 times:
+    result = (result << 1) | (n & 1)     make room in result, copy lantern 0 of n into it
+    n >>>= 1                             bring the next lantern of n down to position 0
+```
+
+The lantern read in round `k` (the original lantern `k`) is shifted left in each of the remaining `31 − k` rounds, so it ends at position `31 − k`. That is exactly the mirror.
+
+**Two rules decide whether it works:**
+
+- **Exactly 32 rounds.** Dark lanterns are part of the row. Stop when `n` reaches 0 and the result is never pushed up far enough: reversing `1` would return `1` instead of `10000000 00000000 00000000 00000000`.
+- **Make room before you take.** Take first and shift after, and the last round shifts once too often: the first lantern falls off the top.
+
+**Unsigned reading.** The problem treats the input and output as unsigned 32-bit values, but Java returns an `int`. LeetCode's `11111111111111111111111111111101` (4294967293 unsigned) comes back as −1073741825, which **is** 3221225471 read as unsigned. The bits are right; `Integer.toUnsignedString(result)` shows the unsigned value.
+
+<Figure caption="LeetCode’s example: 43261596 reversed is 964176192. Read the top row right to left, and you get the bottom row left to right.">
+  <ArrayStrip name="n     " values={['00000010', '10010100', '00011110', '10011100']} indices={false} />
+  <ArrayStrip name="result" values={['00111001', '01111000', '00101001', '01000000']} indices={false} tones={{ 0: 'done', 1: 'done', 2: 'done', 3: 'done' }} />
+</Figure>
+
+<Trace title="Mirror the row" steps={reverse} takeaway="Remember: exactly 32 rounds, make room before you take, and slide with >>> so the row always means 'what is left to read'." />
+
+**Why it works:** after round `k` (counting from 1), `result` holds the original lanterns `0..k − 1` mirrored into its low `k` positions, and `n` holds the unread lanterns `k..31` shifted down. After round 32, all 32 lanterns are mirrored into all 32 positions.
+
+**What stays true:** at the top of every round, `result`'s low positions hold everything read so far, in mirror order, and `n` holds everything not yet read. **At loop exit** nothing is left to read and nothing has fallen off.
+
+<Reveal q="Does >> instead of >>> break this loop?">
+
+Surprisingly, no, **because the loop runs exactly 32 rounds**. A copy of the storm lantern enters at position 31 and would need 31 more slides to reach position 0, where it would be read; the loop ends first. Every lantern ever read is an original one. Write `>>>` anyway: it says "unsigned", and `n` keeps meaning "what is left to read", which matters the moment someone changes the loop to stop when `n` is 0.
+
+</Reveal>
+
+<HintLadder hints={hints.reverse}>
+
+```java id=reverseBits
+public int reverseBits(int n) {
+    int result = 0;
+    for (int round = 0; round < 32; round++) {   // exactly 32 rounds: dark lanterns count too
+        result = (result << 1) | (n & 1);        // make room, then copy lantern 0 of n
+        n >>>= 1;                                // the iron crank: bring the next lantern down
+    }
+    return result;                               // read it unsigned with Integer.toUnsignedString
+}
+```
+
+**O(32) = O(1) time, O(1) space.** `Integer.reverse(n)` is the JDK's version.
+
+</HintLadder>
+
+<Reveal q="Follow-up: the function is called millions of times. Can it be faster than 32 rounds?">
+
+Yes: swap halves, then quarters, then eighths, in 5 steps instead of 32. Each line uses two stencils to move every other block at once:
+
+```java id=reverseBitsSwap
+public int reverseBitsSwap(int n) {
+    n = (n >>> 16) | (n << 16);                                  // swap the two 16-lantern halves
+    n = ((n & 0xff00ff00) >>> 8) | ((n & 0x00ff00ff) << 8);      // swap bytes within each half
+    n = ((n & 0xf0f0f0f0) >>> 4) | ((n & 0x0f0f0f0f) << 4);      // swap 4-lantern groups
+    n = ((n & 0xcccccccc) >>> 2) | ((n & 0x33333333) << 2);      // swap pairs
+    n = ((n & 0xaaaaaaaa) >>> 1) | ((n & 0x55555555) << 1);      // swap neighbours
+    return n;
+}
+```
+
+Another standard answer: precompute a table of the 256 reversed bytes, then reverse four bytes and swap their order.
+
+</Reveal>
+
+**Catch the bug:** the loop that stops when the row runs dark.
+
+```java fragment
+while (n != 0) {                        // BUG: stops when n runs dark, not after 32 rounds
+    result = (result << 1) | (n & 1);
+    n >>>= 1;
+}
+// reverseBits(1) returns 1 instead of 0x80000000 (-2147483648)
+```
+
+With `>>` instead of `>>>`, the same loop never ends on a negative input. [Solve Reverse Bits](https://leetcode.com/problems/reverse-bits/).
+
+<Part n="Part Four" title="Rows as sets, and the clockmaker">
+
+A row of lanterns can be a list of who is aboard. Then the arithmetic that wraps around: remainders, gears, powers and primes.
+
+</Part>
+
+<h2 id="bitmask-sets">Chapter 8 · Every crew from the roster</h2>
+
+<Scene chapter="Chapter 8" title="Every crew from the roster">
+
+A captain comes up the stairs with a roster of sailors. She wants to try every possible crew, from nobody at all to everybody, and score each one.
+
+You start listing crews on the slate and lose your place at about the fifteenth.
+
+The Keeper lights one lantern per sailor on the training wall: lantern 0 for the first name, lantern 1 for the second, and so on. *"A lit lantern means aboard,"* she says. *"Now every crew is a row, and every row is a number. You already know how to visit every number from 0 upward. How do you read who is aboard?"*
+
+</Scene>
+
+**Problem: Subsets · bitmask enumeration**
+
+With `n` items, **a row of `n` lanterns is a subset**: lantern `i` lit means item `i` is in. There are `2^n` rows, the numbers `0` to `2^n − 1`, and every subset is exactly one of them. So a plain counter visits every subset exactly once, with no recursion and no duplicates.
+
+A mask is a whole set in one `int`, and the set operations are single moves:
+
+```text
+contains i        ((mask >> i) & 1) == 1
+add i             mask | (1 << i)
+remove i          mask & ~(1 << i)
+toggle i          mask ^ (1 << i)
+union, both       a | b,  a & b
+a without b       a & ~b
+size              Integer.bitCount(mask)
+everybody         (1 << n) - 1
+```
+
+For `nums = [3, 5, 9]`, the counter visits:
+
+| mask | lanterns 2 1 0 | subset |
+|---|---|---|
+| 0 | 0 0 0 | [] |
+| 1 | 0 0 1 | [3] |
+| 2 | 0 1 0 | [5] |
+| 3 | 0 1 1 | [3, 5] |
+| 4 | 1 0 0 | [9] |
+| 5 | 1 0 1 | [3, 9] |
+| 6 | 1 1 0 | [5, 9] |
+| 7 | 1 1 1 | [3, 5, 9] |
+
+<Trace title="Read the crew list" steps={masks} takeaway="Remember: lantern i ↔ item i, counted from the RIGHT. 2^n masks, 0 (nobody) through 2^n − 1 (everybody)." />
+
+**Why it works:** the map from subsets to rows is a bijection. Each item has two states, in or out, and a row of `n` lanterns has exactly `2^n` patterns.
+
+**What stays true:** every mask below the counter has been turned into its subset exactly once.
+
+**Limits.** `1 << n` is only safe for `n ≤ 30` in an `int` (`n ≤ 62` with `1L << n`). The work is `O(n · 2^n)`: about 20 items is the practical ceiling, and that bound is itself the hint. **When a problem says n ≤ 20, think masks.**
+
+<Reveal q="Masks or backtracking? The Backtracking lesson solves Subsets with choose, explore, un-choose.">
+
+Both list all `2^n` subsets in `O(n · 2^n)`. **Masks** are a flat loop, and each subset has a number, which is what bitmask dynamic programming needs (a table indexed by subset). **Backtracking** can **prune**: if partial choices already break a rule (the weight is over the limit), it skips the whole branch, and a mask loop can't. Read the <a href={`${BASE}dsa/lessons/backtracking/`}>Backtracking lesson</a> for the recursive version and the pruning that makes it win.
+
+</Reveal>
+
+<HintLadder hints={hints.subsets}>
+
+```java id=subsets
+public List<List<Integer>> subsets(int[] nums) {
+    int n = nums.length;                                  // LeetCode: n <= 10
+    List<List<Integer>> all = new ArrayList<>();
+    for (int mask = 0; mask < (1 << n); mask++) {         // every row of n lanterns, once
+        List<Integer> crew = new ArrayList<>();
+        for (int i = 0; i < n; i++)
+            if (((mask >> i) & 1) == 1) crew.add(nums[i]);   // lantern i lit: nums[i] is aboard
+        all.add(crew);
+    }
+    return all;
+}
+```
+
+**O(n · 2^n) time, O(n · 2^n) for the output.**
+
+</HintLadder>
+
+**Catch the bug:** `mask <= (1 << n)`. The extra mask `1 << n` lights only lantern `n`, which stands for no item, so you add a second empty subset: `2^n + 1` results. [Solve Subsets](https://leetcode.com/problems/subsets/).
+
+<h2 id="clock-arithmetic">Chapter 9 · The clockmaker’s wheel</h2>
+
+<Scene chapter="Chapter 9" title="The clockmaker’s wheel" mood="dusk">
+
+The Clockmaker's workshop sits under the tower, full of ticking. Her harbour clock has 12 hours, and nobody there ever says "fourteen o'clock". Past 12, the numbers wrap around.
+
+She shows you two brass gears, one with 48 teeth and one with 18. "Mark a tooth on each where they touch," she says. "Turn. How many teeth pass before the marks meet again?" Then she shows you the merchants' accounts, kept "modulo a large prime", because the true totals would overflow every row in the tower.
+
+The Keeper sits down beside you. *"Lanterns wrap at 2³²,"* she says. *"The clock wraps at 12. When a number is going to wrap, how do you keep control of it?"*
+
+</Scene>
+
+Four tools that turn up in every round, often in disguise.
+
+**1. Greatest common divisor (Euclid).** Any number that divides both `a` and `b` also divides `a − b`, and so also `a % b`; the reverse holds too. So `gcd(a, b) = gcd(b, a % b)`, and the pair shrinks fast: the remainder at least halves every two steps, so it takes `O(log min(a, b))` steps. Stop at `gcd(a, 0) = a`. The least common multiple is `a / gcd(a, b) * b`: **divide first**, or the product overflows. The gears meet again after `lcm(48, 18) = 144` teeth.
+
+<Figure caption="Euclid on (48, 18): 48 % 18 = 12, 18 % 12 = 6, 12 % 6 = 0. The last nonzero value, 6, is the gcd.">
+  <ArrayStrip values={['48, 18', '18, 12', '12, 6', '6, 0']} join="→" indices={false} tones={{ 3: 'done' }} />
+</Figure>
+
+**2. Modular arithmetic.** "Return the answer mod 10⁹ + 7" means: keep every intermediate value reduced, and it stays small. The rules: `(a + b) % M` and `(a · b) % M` can be reduced after every step; `(a − b) % M` needs care, because **Java's `%` keeps the sign of the left operand**: `−7 % 3` is −1, not 2. Use `Math.floorMod(a − b, M)`, or `((a − b) % M + M) % M`. For multiplication, two residues near 10⁹ multiply to about 10¹⁸, far past an `int`: write **`(long) a * b % M`**, casting before the multiply. (Division is different: it needs a modular inverse. See "Look these up yourself".)
+
+**3. Fast power (repeated squaring).** To compute `b^e`, square the base once per lantern of `e`: `b, b², b⁴, b⁸, …`. Multiply into the result only the squares whose lantern of `e` is lit. `3¹³`: 13 is `1101`, so `3¹³ = 3⁸ · 3⁴ · 3¹`. That is `O(log e)` multiplications instead of `e`. With `% M` after each one, the numbers never grow. The same loop with doubles is **Pow(x, n)**, whose trap is `n = Integer.MIN_VALUE` (you can't negate it in an `int`); it lives in the <a href={`${BASE}dsa/lessons/matrix/`}>Matrix & Geometry lesson</a>.
+
+**4. Catching overflow.** Three habits: **widen first** (sum ints into a `long`); **check before you multiply** (Side quest 6); or let Java check for you: `Math.addExact`, `Math.subtractExact`, `Math.multiplyExact` and `Math.toIntExact` throw `ArithmeticException` instead of wrapping.
+
+<Trace title="Keep the numbers on the clock" steps={clock} takeaway="Remember: gcd(a, b) = gcd(b, a % b). Reduce after every step, cast to long BEFORE multiplying, and use floorMod for negatives." />
+
+**Why it works:** remainders respect `+`, `−` and `·`: reducing early gives the same remainder as reducing at the end. For powers, `e` is a sum of the powers of two that its lit lanterns are worth, so `b^e` is the product of the matching squares.
+
+**What stays true:** in `modPow`, `result × base^exp` (mod M) is the same at the top of every round. **At loop exit** `exp` is 0, so `result` is the answer.
+
+<Reveal q="Why must the modulus stay below about 3 × 10⁹ in modPow with longs?">
+
+Both `result` and `base` are below `mod`, so their product is below `mod²`, and that must fit in a `long` (below about 9.2 × 10¹⁸). That holds for `mod` up to about 3.03 × 10⁹, comfortably including 10⁹ + 7. For larger moduli, use `Math.multiplyHigh`, `BigInteger.modPow`, or a mulmod routine.
+
+</Reveal>
+
+<HintLadder hints={hints.clock}>
+
+```java id=gcd
+public int gcd(int a, int b) {           // a, b >= 0
+    while (b != 0) {
+        int r = a % b;                   // common divisors of (a, b) are exactly those of (b, r)
+        a = b;
+        b = r;
+    }
+    return a;                            // gcd(a, 0) = a
+}
+```
+
+```java id=modPow
+public long modPow(long base, long exp, long mod) {      // exp >= 0, 1 <= mod <= 2^31 - 1
+    long result = 1 % mod;                               // 1 % 1 = 0
+    base = Math.floorMod(base, mod);                     // 0..mod-1, even for a negative base
+    while (exp > 0) {
+        if ((exp & 1) == 1) result = result * base % mod;   // this lantern of exp is lit: take the square
+        base = base * base % mod;                        // base^1, base^2, base^4, base^8, ...
+        exp >>= 1;
+    }
+    return result;
+}
+```
+
+```java id=overflow
+public long sumAll(int[] nums) {
+    long total = 0;                      // widen first: an int total would wrap silently
+    for (int x : nums) total += x;
+    return total;
+}
+
+public int sumAllStrict(int[] nums) {
+    int total = 0;
+    for (int x : nums) total = Math.addExact(total, x);   // throws ArithmeticException instead of wrapping
+    return total;
+}
+```
+
+**gcd: O(log min(a, b)). modPow: O(log exp). sums: O(n).** Note that `sumAllStrict` throws the moment any **running** total leaves the `int` range, even if a later value would have brought it back.
+
+</HintLadder>
+
+**Catch the bug:** `(a * b) % MOD` with `int a, b`. With `a = 999,999,999` and `b = 999,999,998`, the product wraps before the `%` runs, and the remainder of a wrong number is a wrong number. `(long) a * b % MOD` is right; `(long) (a * b) % MOD` is still wrong, because the cast comes after the overflow. [Practice with Pow(x, n)](https://leetcode.com/problems/powx-n/).
+
+<h2 id="sieve">Chapter 10 · The prime lanterns</h2>
+
+<Scene chapter="Chapter 10" title="The prime lanterns" mood="night">
+
+On the longest night of the year, the tower has a tradition. One lantern is lit for every number from 2 up to the edge of the gallery. Then the keepers walk the gallery together.
+
+The first keeper stops at 2, the first lit lantern, and puts out every second lantern after it: 4, 6, 8. The next keeper finds 3 still lit and puts out 6, 9, 12. 4 is already dark, so nobody stops there. The next lit lantern is 5.
+
+By the end, the lanterns still burning are exactly the primes. *"The keeper at 5,"* the Keeper asks you, *"where should she start putting lanterns out? 10, 15 and 20 are already dark."*
+
+</Scene>
+
+**Problem: Count Primes · sieve of Eratosthenes**
+
+Count the primes strictly below `n`. Testing each number by trial division costs up to `√k` steps per number. The sieve lets **each prime cross out its own multiples**:
+
+- Walk `i` upward from 2. If `i` is still unmarked, nobody smaller divides it: **it is prime.**
+- Cross out `i · i, i · i + i, i · i + 2i, …` below `n`. Start at `i · i`, because any smaller multiple `i · k` with `k < i` has a prime factor smaller than `i`, which already crossed it out.
+
+<Figure caption="Primes below 30 (green): 2, 3, 5, 7, 11, 13, 17, 19, 23, 29. Ten of them. Every faded number was crossed out by its smallest prime factor or by a later prime.">
+  <ArrayStrip name="2–16 " values={[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]} indices={false} tones={{ 0: 'done', 1: 'done', 2: 'out', 3: 'done', 4: 'out', 5: 'done', 6: 'out', 7: 'out', 8: 'out', 9: 'done', 10: 'out', 11: 'done', 12: 'out', 13: 'out', 14: 'out' }} />
+  <ArrayStrip name="17–29" values={[17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]} indices={false} tones={{ 0: 'done', 1: 'out', 2: 'done', 3: 'out', 4: 'out', 5: 'out', 6: 'done', 7: 'out', 8: 'out', 9: 'out', 10: 'out', 11: 'out', 12: 'done' }} />
+</Figure>
+
+<Trace title="Cross out the multiples" steps={sieve} takeaway="Remember: each prime starts at i × i, and i × i must be computed in long." />
+
+**Why it works:** every composite `c` below `n` has a smallest prime factor `p` with `p · p ≤ c`, so `p`'s pass reaches it. No prime is ever crossed out, because a prime has no smaller factor to cross it out.
+
+**What stays true:** when the walk reaches `i`, every composite below `i` has already been crossed out, so "unmarked" means "prime".
+
+<HintLadder hints={hints.sieve}>
+
+```java id=countPrimes
+public int countPrimes(int n) {                  // primes strictly below n
+    if (n < 3) return 0;
+    boolean[] composite = new boolean[n];
+    int count = 0;
+    for (int i = 2; i < n; i++) {
+        if (composite[i]) continue;              // a smaller prime already crossed it out
+        count++;                                 // nobody crossed out i: it is prime
+        for (long j = (long) i * i; j < n; j += i)   // long: i * i overflows an int once i > 46,340
+            composite[(int) j] = true;
+    }
+    return count;
+}
+```
+
+**O(n log log n) time, O(n) space.** Up to LeetCode's `n = 5 × 10⁶`, that is a few million cheap steps. There are 78,498 primes below one million.
+
+</HintLadder>
+
+**Catch the bug:** `for (int j = i * i; …)`. Once `i` passes 46,340, `i * i` overflows. The first prime past that point is 46,349, and `46,349 × 46,349 = 2,148,229,801` wraps to −2,146,737,495. That is less than `n`, so the loop runs and `composite[j]` throws on a negative index. Any `n` above 46,349 triggers it. [Solve Count Primes](https://leetcode.com/problems/count-primes/).
+
+<Part n="Part Five" title="The Keeper changes one rule">
+
+Side quests. Same lanterns, same moves, one rule different. This is where memorised tricks break and understanding doesn’t.
+
+</Part>
+
+<Scene title="Signals with one word crossed out" mood="night">
+
+The night you finish the almanac, there is a stack of signal cards on your stool. Each one is a problem you have already solved, with one rule struck through in red ink and a new rule written above it in the Keeper's small, tidy hand.
+
+*"Anyone can copy a trick,"* says the note on top. *"Show me you know which identity the trick was standing on."*
+
+</Scene>
+
+<h2 id="single-number-ii">Side quest 1 · Thrice-lit</h2>
+
+**The card says:** every value appears **three times** except one, which appears once. Still O(1) extra space.
+
+**The reasoning:** the XOR fold dies here: three copies fold to `x ^ x ^ x = x`, so the triples don't cancel. On `[2, 2, 3, 2]` the fold gives `2 ^ 3 = 1`, not 3. Go back to what XOR really did: **each lantern position counted its lit values mod 2.** Now count them **mod 3**. At each lantern position, the triples contribute a multiple of 3; whatever is left over (0 or 1) is the single's lantern.
+
+<Figure caption="[2, 2, 3, 2]. Lantern 1 is lit in all four values: 4 mod 3 = 1. Lantern 0 is lit only in 3: 1 mod 3 = 1. The single is 11 = 3.">
+  <ArrayStrip name="lantern" values={[1, 0]} indices={false} tones={{ 0: 'ghost', 1: 'ghost' }} />
+  <ArrayStrip name="2      " values={['1', '0']} indices={false} tones={{ 0: 'hot' }} />
+  <ArrayStrip name="2      " values={['1', '0']} indices={false} tones={{ 0: 'hot' }} />
+  <ArrayStrip name="3      " values={['1', '1']} indices={false} tones={{ 0: 'hot', 1: 'hot' }} />
+  <ArrayStrip name="2      " values={['1', '0']} indices={false} tones={{ 0: 'hot' }} />
+  <ArrayStrip name="count  " values={['4', '1']} indices={false} />
+  <ArrayStrip name="mod 3  " values={['1', '1']} indices={false} tones={{ 0: 'done', 1: 'done' }} />
+</Figure>
+
+**Version 1, count per lantern:** for each of the 32 lantern positions, count how many values light it; if the count mod 3 isn't 0, light that lantern of the result. 32 passes, O(32n) = O(n) time, O(1) space. Negative numbers work: lantern 31 is counted like any other.
+
+**Version 2, two rows as a counter.** Instead of 32 counters, run all 32 at once with two rows, `ones` and `twos`. At every lantern position they hold a count mod 3 in two lanterns: `(twos, ones) = (0, 0)` for 0, `(0, 1)` for 1, `(1, 0)` for 2. A lit lantern in the incoming value advances that position's counter, `0 → 1 → 2 → 0`; a dark lantern leaves it alone:
+
+<Mermaid code={`stateDiagram-v2
+  direction LR
+  c0: count 0 · twos 0, ones 0
+  c1: count 1 · twos 0, ones 1
+  c2: count 2 · twos 1, ones 0
+  c0 --> c1: value lit here
+  c1 --> c2: value lit here
+  c2 --> c0: value lit here`} />
+
+The two update lines implement exactly that table. Check them one lantern position at a time, with `x` the incoming lantern:
+
+```text
+before (twos, ones)   x   ones = (ones ^ x) & ~twos   twos = (twos ^ x) & ~ones(new)   after
+(0, 0)                1   (0 ^ 1) & 1 = 1             (0 ^ 1) & ~1 = 0                 (0, 1)
+(0, 1)                1   (1 ^ 1) & 1 = 0             (0 ^ 1) & ~0 = 1                 (1, 0)
+(1, 0)                1   (0 ^ 1) & 0 = 0             (1 ^ 1) & ~0 = 0                 (0, 0)
+any                   0   ones & ~twos = ones          twos & ~ones = twos              unchanged
+```
+
+(The last row uses the fact that `ones` and `twos` are never both lit at the same position.) After all values, each position has seen `3k` or `3k + 1` lit values, so its counter is `(0, 0)` or `(0, 1)`: `ones` is the single.
+
+<Reveal q="Why are ones and twos never lit at the same lantern?">
+
+Each update line ANDs with the other row's complement: `ones` can only light where `twos` is dark, and `twos` (computed with the **new** `ones`) can only light where `ones` is dark. The state `(1, 1)` is unreachable, which is what lets three states fit in two lanterns. Swap the two lines, or compute `twos` from the old `ones`, and the table above breaks.
+
+</Reveal>
+
+<HintLadder hints={hints.singleII}>
+
+```java id=singleNumberII
+public int singleNumberII(int[] nums) {
+    int result = 0;
+    for (int bit = 0; bit < 32; bit++) {
+        int lit = 0;
+        for (int x : nums) lit += (x >>> bit) & 1;   // how many values light this lantern?
+        if (lit % 3 != 0) result |= 1 << bit;       // triples add a multiple of 3; the rest is the single
+    }
+    return result;
+}
+```
+
+```java id=singleNumberIIState
+public int singleNumberIIState(int[] nums) {
+    int ones = 0, twos = 0;            // per lantern: a counter mod 3, as (twos, ones)
+    for (int x : nums) {
+        ones = (ones ^ x) & ~twos;
+        twos = (twos ^ x) & ~ones;     // uses the NEW ones
+    }
+    return ones;                       // lanterns seen 3k + 1 times: the single
+}
+```
+
+**Both O(n) time, O(1) extra space.**
+
+</HintLadder>
+
+**Transfer test:** every value appears **k** times except one, which appears once. Which single number in Version 1 changes? (The `3` becomes `k`. Count mod k at every lantern; the leftover is the single's lantern.) [Solve Single Number II](https://leetcode.com/problems/single-number-ii/).
+
+<h2 id="single-number-iii">Side quest 2 · Two strangers</h2>
+
+**The card says:** exactly **two** values appear once; everything else appears twice. Return both.
+
+**The reasoning:** fold everything, and pairs cancel as before, leaving `both = a ^ b`. That isn't either answer, but it tells you **where `a` and `b` disagree**: every lit lantern of `both`. Since `a ≠ b`, at least one lantern is lit. Pick one: the lowest, `split = both & −both` (Chapter 2). Now split all the values by that lantern:
+
+- `a` and `b` land in **different** groups, because they disagree there.
+- Each pair lands **whole** in one group, because equal values agree everywhere.
+
+So each group is a Chapter 3 problem with one single. Fold one group to get `a`; then `b = both ^ a`.
+
+<Figure caption="[1, 2, 1, 3, 2, 5]. both = 3 ^ 5 = 6 = 110, split = 2 = 010. Lantern 1 lit (blue): 2, 3, 2, folding to 3. Lantern 1 dark (purple): 1, 1, 5, folding to 5.">
+  <ArrayStrip values={[1, 2, 1, 3, 2, 5]} tones={{ 0: 'purple', 1: 'blue', 2: 'purple', 3: 'blue', 4: 'blue', 5: 'purple' }} />
+</Figure>
+
+<Reveal q="What if a ^ b is Integer.MIN_VALUE, so −both overflows?">
+
+Nothing breaks. `−Integer.MIN_VALUE` is `Integer.MIN_VALUE` (Chapter 1), so `split = MIN_VALUE & MIN_VALUE = MIN_VALUE`: lantern 31, the only lit lantern, exactly what you wanted. The test `(x & split) != 0` then splits by the sign lantern.
+
+</Reveal>
+
+<HintLadder hints={hints.singleIII}>
+
+```java id=singleNumberIII
+public int[] singleNumberIII(int[] nums) {
+    int both = 0;
+    for (int x : nums) both ^= x;           // pairs cancel: both = a ^ b, nonzero because a != b
+    int split = both & -both;               // the lowest lantern where a and b disagree
+    int a = 0;
+    for (int x : nums)
+        if ((x & split) != 0) a ^= x;       // fold only the group with that lantern lit; pairs still cancel
+    return new int[]{a, both ^ a};
+}
+```
+
+**O(n) time, O(1) extra space.** The answer may be returned in either order.
+
+</HintLadder>
+
+**Catch the bug:** `if ((x & split) == 1)`. `split` is a single lantern worth `2^k`, so the AND is `2^k` or 0, and equals 1 only when `k = 0`. On `[1, 2, 1, 3, 2, 5]`, `split` is 2 and nothing passes the test: the function returns `[0, 6]`.
+
+**Transfer test:** you used the lowest lit lantern of `a ^ b`. Would the highest one work too? (Yes. Any lantern where they disagree splits them; the lowest is just the cheapest to isolate.) [Solve Single Number III](https://leetcode.com/problems/single-number-iii/).
+
+<h2 id="sum-without-plus">Side quest 3 · Adding with no plus sign</h2>
+
+**The card says:** return `a + b` without using `+` or `−`.
+
+**The reasoning:** add two rows the way you add by hand, column by column. At a column where exactly one lantern is lit, the sum lantern is lit: that is `a ^ b`, **the sum without carries**. At a column where both are lit, the sum lantern is dark and Carry takes a light one column to the left: that is `(a & b) << 1`, **the carries**. Now you have two new numbers to add, the partial sum and the carries, so repeat until there are no carries.
+
+```text
+round   a          b (carries)   a ^ b      (a & b) << 1
+1       00000101   00000111      00000010   00001010      5 + 7
+2       00000010   00001010      00001000   00000100
+3       00001000   00000100      00001100   00000000      no carries left: a = 12
+```
+
+**Why it ends, in Java.** Look at the lowest lit lantern of the carry row. If `b` has `t` dark lanterns at the bottom, so does `a & b`, and `(a & b) << 1` has at least `t + 1`. Each round pushes the carry row's lowest lit lantern at least one place left, so after at most 32 rounds, lantern 31's carry is shifted off the top and **Java's 32-bit `<<` drops it**: `b` becomes 0. That is also why negative numbers just work: two's complement addition is this same adder (Chapter 1).
+
+<Reveal q="Why do Python solutions of this problem need & 0xFFFFFFFF masks?">
+
+Python's integers have no fixed width. Nothing falls off the top, so for negative inputs the carry can march left forever and the loop never ends. Python solutions mask every step to 32 bits to imitate Java's row, then convert the final pattern back to a signed value. In Java, the `int` **is** the mask. Try `−1 + 1` in your head: the carry walks through all 32 lanterns and falls off, taking exactly 32 rounds.
+
+</Reveal>
+
+<HintLadder hints={hints.getSum}>
+
+```java id=getSum
+public int getSum(int a, int b) {
+    while (b != 0) {
+        int carry = (a & b) << 1;      // columns where both are lit carry one place left
+        a = a ^ b;                     // add every column, ignoring carries
+        b = carry;                     // now add the carries the same way
+    }
+    return a;
+}
+```
+
+**At most 32 rounds, so O(1) time and space.** The result equals `a + b` in Java, including the same wraparound on overflow.
+
+</HintLadder>
+
+**Transfer test:** subtract without `−`. (Add the negation: `a − b = a + (~b + 1)`, using the same loop twice.) [Solve Sum of Two Integers](https://leetcode.com/problems/sum-of-two-integers/).
+
+<h2 id="power-of-two">Side quest 4 · One lantern only</h2>
+
+**The card says:** is `n` a power of two? Then: a power of four?
+
+**The reasoning:** a power of two is a row with **exactly one lit lantern**. `n & (n − 1)` puts out the lowest lit lantern, so it gives 0 exactly when at most one lantern was lit. Two rows slip through that test: `0` (no lantern lit: `0 & −1 = 0`) and `Integer.MIN_VALUE` (only the storm lantern lit: `MIN & MAX = 0`). Neither is a power of two, and **`n > 0`** rejects both.
+
+For powers of four, `4^k = 2^(2k)`: the one lit lantern must sit at an **even** position. The stencil `0x55555555` (`0101…0101`) has holes at exactly the even positions.
+
+<Figure caption="16 is a power of two (and of four: lantern 4 is even). 16 − 1 = 15 lights everything below it, and 16 & 15 = 0. For 24 = 00011000, 24 & 23 = 16, which is not 0.">
+  <ArrayStrip name="16     " values={['0', '0', '0', '1', '0', '0', '0', '0']} indices={false} tones={{ 3: 'hot' }} />
+  <ArrayStrip name="15     " values={['0', '0', '0', '0', '1', '1', '1', '1']} indices={false} tones={{ 4: 'blue', 5: 'blue', 6: 'blue', 7: 'blue' }} />
+  <ArrayStrip name="16 & 15" values={['0', '0', '0', '0', '0', '0', '0', '0']} indices={false} tones={{ 3: 'done' }} />
+</Figure>
+
+<Reveal q="Is there a power-of-four test without the 0x55555555 stencil?">
+
+Yes: a power of two is a power of four exactly when it leaves remainder 1 mod 3. `4^k = (3 + 1)^k ≡ 1 (mod 3)`, while `2 · 4^k ≡ 2 (mod 3)`. So `isPowerOfTwo(n) && n % 3 == 1` works too. And for **powers of three**, there is no lantern trick at all: the largest power of three in an `int` is `3¹⁹ = 1,162,261,467`, and `n > 0 && 1162261467 % n == 0` works because 3 is prime.
+
+</Reveal>
+
+<HintLadder hints={hints.powers}>
+
+```java id=powers
+public boolean isPowerOfTwo(int n) {
+    return n > 0 && (n & (n - 1)) == 0;                  // one lit lantern, and it isn't the storm lantern
+}
+
+public boolean isPowerOfFour(int n) {
+    return isPowerOfTwo(n) && (n & 0x55555555) != 0;     // ...and it sits at an even position
+}
+```
+
+**O(1) time and space.**
+
+</HintLadder>
+
+**Catch the bug:** `return (n & (n − 1)) == 0;` without `n > 0`. It answers true for 0 and for `Integer.MIN_VALUE`.
+
+**Transfer test:** round `n` (with `1 ≤ n ≤ 2³⁰`) up to the next power of two. (Light every lantern below the highest lit one of `n − 1`, then add 1; or use `Integer.highestOneBit`.) [Solve Power of Two](https://leetcode.com/problems/power-of-two/) · [Solve Power of Four](https://leetcode.com/problems/power-of-four/).
+
+<h2 id="hamming-distance">Side quest 5 · Where two signals disagree</h2>
+
+**The card says:** in how many lantern positions do two rows `x` and `y` differ?
+
+**The reasoning:** `x ^ y` lights exactly the positions where they differ. Then count its lit lanterns, Chapter 5. Two moves you already own, stacked.
+
+<Figure caption="x = 1, y = 4. x ^ y = 101 lights lanterns 2 and 0, the two positions where the rows disagree: distance 2.">
+  <ArrayStrip name="x = 1" values={['0', '0', '0', '0', '0', '0', '0', '1']} indices={false} tones={{ 7: 'hot' }} />
+  <ArrayStrip name="y = 4" values={['0', '0', '0', '0', '0', '1', '0', '0']} indices={false} tones={{ 5: 'hot' }} />
+  <ArrayStrip name="x ^ y" values={['0', '0', '0', '0', '0', '1', '0', '1']} indices={false} tones={{ 5: 'done', 7: 'done' }} />
+</Figure>
+
+**The harder card: Total Hamming Distance.** Sum the distance over **every pair** in an array of up to 10⁴ values. All pairs is O(n²): 5 × 10⁷ pairs, each with a popcount. Instead, look one lantern position at a time: if `lit` values light it and `n − lit` don't, then exactly `lit × (n − lit)` pairs disagree there. Sum that over 32 positions: **O(32n)**.
+
+<HintLadder hints={hints.hamming}>
+
+```java id=hammingDistance
+public int hammingDistance(int x, int y) {
+    int diff = x ^ y;                  // lit exactly where x and y disagree
+    int count = 0;
+    while (diff != 0) {
+        diff &= diff - 1;              // one disagreement counted per round
+        count++;
+    }
+    return count;
+}
+
+public int totalHammingDistance(int[] nums) {
+    int total = 0, n = nums.length;
+    for (int bit = 0; bit < 32; bit++) {
+        int lit = 0;
+        for (int x : nums) lit += (x >>> bit) & 1;
+        total += lit * (n - lit);      // every lit/dark pair disagrees at this lantern
+    }
+    return total;
+}
+```
+
+**O(1) for one pair; O(32n) for all pairs, O(1) extra space.** At LeetCode's bounds the total stays below 10⁹, inside an `int`.
+
+</HintLadder>
+
+**Transfer test:** a value of 32 means what about `x` and `y`? (`y == ~x`: they disagree everywhere.) [Solve Hamming Distance](https://leetcode.com/problems/hamming-distance/) · [Solve Total Hamming Distance](https://leetcode.com/problems/total-hamming-distance/).
+
+<h2 id="reverse-integer">Side quest 6 · The decimal mirror</h2>
+
+**The card says:** reverse the **decimal** digits of a 32-bit `int`, keeping the sign. If the result doesn't fit in an `int`, return 0, and you **may not use a 64-bit type**.
+
+**The reasoning:** this is Chapter 7 in base 10: peel the lowest digit with `x % 10`, push it onto the result with `rev * 10 + digit`. The new rule is the cliff. `1534236469` reversed is `9646324351`, far beyond `Integer.MAX_VALUE`. Since you can't widen to `long`, you must **refuse the multiplication before it happens**:
+
+- If `rev > Integer.MAX_VALUE / 10` (that is, `rev > 214,748,364`), then `rev * 10` is already too big. Return 0.
+- The same on the negative side with `Integer.MIN_VALUE / 10 = −214,748,364`.
+
+What about `rev == 214,748,364` exactly? Then 9 digits have been pushed, and the one digit still to come is the input's **leading** digit. A 10-digit `int` starts with 1 or 2, so `rev * 10 + digit ≤ 2,147,483,642`: always safe. Java's `%` keeps the sign (`−123 % 10 == −3`), so negatives need no special case.
+
+<Reveal q="Why does checking `rev > Integer.MAX_VALUE` after the multiplication never fire?">
+
+An `int` can never hold a value greater than `Integer.MAX_VALUE`. By the time you compare, the overflow has already wrapped `rev` around to some other `int`. `1534236469` "reverses" to 1,056,389,759, a perfectly valid-looking wrong answer.
+
+</Reveal>
+
+<HintLadder hints={hints.reverseInt}>
+
+```java id=reverse
+public int reverse(int x) {
+    int rev = 0;
+    while (x != 0) {
+        int digit = x % 10;            // keeps x's sign: -123 % 10 == -3
+        x /= 10;
+        if (rev > Integer.MAX_VALUE / 10 || rev < Integer.MIN_VALUE / 10)
+            return 0;                  // rev * 10 would overflow: refuse BEFORE multiplying
+        rev = rev * 10 + digit;
+    }
+    return rev;
+}
+```
+
+**O(number of digits) = O(1) time, O(1) space.**
+
+</HintLadder>
+
+**Catch the bug:**
+
+```java fragment
+rev = rev * 10 + digit;
+if (rev > Integer.MAX_VALUE || rev < Integer.MIN_VALUE) return 0;   // BUG: an int is never outside int range
+```
+
+On `1534236469` it returns `1056389759` instead of 0.
+
+**Transfer test:** Palindrome Number asks whether an `int` reads the same reversed. Why can you skip the overflow check entirely if you reverse only **half** the digits? (Half of at most 10 digits is 5, and a 5-digit number can't overflow.) [Solve Reverse Integer](https://leetcode.com/problems/reverse-integer/).
+
+<Part n="Epilogue" title="Beyond the tower">
+
+When the lanterns are the wrong tool, who lives in the neighbouring towers, and the exam that proves you can find your own way.
+
+</Part>
+
+<h2 id="choose-the-tool">When the lanterns lie</h2>
+
+<Scene title="The ship that came twice" mood="storm">
+
+A month later the harbour master is back. This time every ship came once, except one ship that came **twice**, and the numbers are any numbers at all, not 0 to n.
+
+You reach for Xor. He folds the night's numbers into his row. The ship that came twice cancels itself out, and every other ship stays lit, all of them mixed together.
+
+The Keeper doesn't laugh. *"His row keeps whatever has no partner,"* she says. *"Tonight the answer is the one ship that **has** a partner. You erased the one thing you were looking for. What does remember things for you?"*
+
+</Scene>
+
+The lanterns are the right tool when the question is about **parity, single lanterns, or fixed-width rows**, or when the problem demands O(1) space for something a map would solve. They are the wrong tool when:
+
+- **You want the value that HAS a partner.** XOR keeps the values with **odd** counts. To find a repeated value among arbitrary values, use a `HashSet` (O(n) space). If the values are `1..n` in an array of `n + 1`, Find the Duplicate Number has an O(1)-space answer with cycle detection, which isn't a bit trick at all.
+- **The values aren't fixed-width integers.** Strings, objects and arbitrary-precision numbers don't fold into one row. Count them with a map.
+- **n is too large for masks.** Masks list `2^n` subsets; past about 20 items that is too slow, and past 62 the mask doesn't fit in a `long`. Use backtracking with pruning, or dynamic programming over something smaller than subsets.
+- **Clarity matters more than memory.** `Integer.bitCount(x)` is clearer than a hand-written loop; a `HashMap` of counts is clearer than a ones/twos state machine. When the problem doesn't demand O(1) space, say both, and pick the one you can defend.
+
+<Reveal q="Single Number, but the interviewer says O(n) extra space is fine. Should you still XOR?">
+
+Either is acceptable, and you should name both. The `HashMap` count is the obvious version and generalises (twice, three times, k times). XOR is the follow-up answer for O(1) space. Saying "a map works in O(n) space; XOR does it in O(1) because pairs cancel" is the complete answer.
+
+</Reveal>
+
+<h2 id="wider-family">The neighbouring towers · How the other roadmap patterns connect</h2>
+
+The lanterns turn up all over the realm. The shared idea: **a number is a row of independent bits, and one operation acts on all of them at once.**
+
+| Shared idea | Where it shows up | Where it belongs |
+|---|---|---|
+| XOR cancels a shared beginning | Prefix XOR: `xor(l..r) = px[r + 1] ^ px[l]` | <a href={`${BASE}dsa/lessons/prefix-sum/#prefix-xor`}>Prefix Sum · side quest 4</a> |
+| A row of n lanterns is a subset | Subsets, combinations: masks versus choose, explore, un-choose | <a href={`${BASE}dsa/lessons/backtracking/`}>Backtracking</a> |
+| Build an answer from a smaller one | Counting Bits is 1-D DP; the table index is the number | <a href={`${BASE}dsa/lessons/dp-1d/`}>1-D Dynamic Programming</a> |
+| Square and multiply | Pow(x, n), with the `Integer.MIN_VALUE` trap | <a href={`${BASE}dsa/lessons/matrix/`}>Matrix & Geometry</a> |
+| Count with a map when values are arbitrary | Single Number with a `HashMap`; duplicates; Two Sum | <a href={`${BASE}dsa/lessons/hashing/`}>Hashing & Sets</a> |
+| A visited set that fits in one int | Bitmask BFS: shortest path visiting every node | <a href={`${BASE}dsa/lessons/advanced-graphs/`}>Advanced Graphs</a> |
+| Halve the range with each bit | Binary search on the answer reads one bit per step | <a href={`${BASE}dsa/lessons/binary-search/`}>Binary Search</a> |
+
+**XOR is subtraction without borrows.** In the Prefix Sum book, the running-total ledger worked because the shared beginning cancels, and XOR cancels itself. It is the same idea as Chapter 3, spread along an array.
+
+**A bitmask is a tiny hash set.** For up to 32 (or 64) small integers, an `int` (or `long`) holds the whole set, and union, intersection and membership are single operations. That is why bitmask DP can index a table by "which items are used so far".
+
+<h2 id="exit-ticket">The night-watch exam · Build a solution with the labels removed</h2>
+
+<Scene title="No chapter titles" mood="dawn">
+
+At dawn after your first full watch, the Keeper hands you three signal cards with no chapter names on them, and a stub of chalk.
+
+*"Pick one,"* she says. *"Before you write a line, tell me the time and the memory it will cost, what your variables hold at the top of each round, and what they hold when the loop ends."*
+
+</Scene>
+
+Choose one. Keep the chapters closed. Write down the invariant, the stopping rule and the complexity **before** coding, and say what every variable holds at loop exit.
+
+1. **The odd one out.** Every value appears an even number of times (2, 4 or 6) except one, which appears an odd number of times. Find it in O(1) space. Test: one element, the odd value appearing 3 times, negative values.
+2. **The common prefix.** Given `0 ≤ left ≤ right`, return the bitwise AND of every integer in `left..right`. Test `left == right`, `left = 0`, `5..7`, and a range that crosses a power of two.
+3. **The complement.** Flip every lantern of a positive `num` **up to its highest lit lantern** (no leading zeros flipped): 5 = `101` becomes `010` = 2. Test 1, 5, a power of two, and `Integer.MAX_VALUE`.
+
+<Reveal q="I’ve written and tested it. What should my reasoning contain?">
+
+**The odd one out:** the plain XOR fold (Chapter 3). XOR returns the XOR of all values with an **odd** count, and there is exactly one. O(n) time, O(1) space; at loop exit `acc` holds that value.
+
+**The common prefix:** any lantern below the highest position where `left` and `right` differ is dark in some number of the range, so the answer is their **common leading lanterns**. Either shift both right until they are equal (counting shifts) and shift back, or repeat `right &= right − 1` while `right > left`; Chapter 5's move puts out the lowest lit lantern until `right` drops to the shared prefix. `5..7` gives 4.
+
+**The complement:** build a stencil of all lit lanterns up to the highest lit lantern of `num`, then XOR. `Integer.highestOneBit(num)` gives that lantern; the stencil is `(highest << 1) − 1`. For `num` with lantern 30 lit, `highest << 1` is `Integer.MIN_VALUE`, and `MIN_VALUE − 1` wraps to `MAX_VALUE`: exactly the right stencil. Write it, then test it, rather than trusting the wrap.
+
+Now explain why a slightly wrong version fails one of your tests: a `>>` that never ends, an `== 1` that should be `!= 0`, a loop that stops when the row runs dark. That counterexample is stronger evidence of understanding than a memorised trick.
+
+</Reveal>
+
+Passing this once is a useful checkpoint. Rebuild one of these on another day, with a changed input, without the headings choosing the trick for you.
+
+<h2 id="mixed-recall">Quick recall · Keep the rule warm</h2>
+
+Close the code. Name the identity each move stands on, and say when the loop stops. This short round is a warm-up for the independent practice below.
+
+<Trace title="Which move fits?" steps={mixedReview} takeaway="Now try the independent session: no pattern title, a new input, and your explanation before the rubric." />
+
+<h2 id="independent-practice">Night watch · The problem won’t name its trick</h2>
+
+The review queue starts with due concepts, then new ones. Hints or corrected attempts bring a concept back tomorrow. Successful recall at a scheduled review stretches the interval to 3, 7, then 14 days. Your reasoning is **self-checked**; nothing here automatically marks a roadmap problem solved.
+
+<Practice pattern="bit-manipulation" />
+
+<h2 id="cheat-sheet">The Keeper’s signal book</h2>
+
+| When you see… | Start with… | The promise to keep |
+|---|---|---|
+| A negative number, MIN_VALUE, "unsigned" | Lantern 31 is worth −2³¹; `−x == ~x + 1` | Arithmetic wraps mod 2³²; `−MIN_VALUE == MIN_VALUE` |
+| Read, set, clear or flip lantern i | Stencil `1 << i` with AND, OR, AND-NOT, XOR | Compare a bit test with `!= 0`, never `== 1` |
+| Lowest lit lantern | `x & (x − 1)` puts it out; `x & −x` keeps it | Exactly one lantern changes |
+| Every value twice except one | XOR fold from 0 | `acc` = XOR of the values seen an odd number of times |
+| One missing from 0..n | Fold indexes, n and values; or a long sum | Every present number appears twice |
+| Count lit lanterns | `n &= n − 1` until 0; or `>>>` and 32 rounds max | `count + bitCount(n)` never changes |
+| Counts for every number 0..n | `bits[i] = bits[i >> 1] + (i & 1)` | `i >> 1 < i`, so it is already filled |
+| Reverse a 32-bit row | `result = (result << 1) \| (n & 1)`, `n >>>= 1`, 32 rounds | Exactly 32 rounds; make room before taking |
+| All subsets, n up to about 20 | Masks 0 to `2^n − 1`; lantern i means item i | Each mask is one subset, visited once |
+| gcd, lcm | `gcd(a, b) = gcd(b, a % b)`; lcm divides first | The common divisors never change |
+| Answer mod 10⁹ + 7; huge powers | Reduce every step; `(long) a * b % M`; square and multiply | Cast before multiplying; floorMod for negatives |
+| Count primes below n | Sieve from `i * i`, in long | Unmarked when reached means prime |
+| Every value three times except one | Count each lantern mod 3; or ones/twos | `(twos, ones)` is a counter mod 3 per lantern |
+| Two values without partners | Fold, split by `both & −both`, fold one group | The split lantern separates a from b; pairs stay whole |
+| Add without + | `a ^ b` plus carries `(a & b) << 1`, repeat | The carry moves left each round; at most 32 |
+| Power of two / four | `n > 0 && (n & (n − 1)) == 0`; four: `& 0x55555555` | One lit lantern, not the sign lantern |
+| Positions where two rows differ | Popcount of `x ^ y`; all pairs: `lit × dark` per lantern | `x ^ y` lights exactly the disagreements |
+| Reverse decimal digits, no long | Check `rev` against `MAX / 10` and `MIN / 10` first | Refuse the multiply before it overflows |
+
+Bit tricks are **O(1) space** but not always O(1) time: per-lantern counting is O(32n), masks are O(n · 2^n), and the sieve is O(n) memory. Count every loop.
+
+## Five bugs the Keeper keeps in her pocket
+
+1. **The brass crank on a negative row.** `n >>= 1` copies the sign lantern forever; `while (n != 0)` never ends. Use `>>>`.
+2. **`== 1` instead of `!= 0`.** `x & (1 << i)` is `2^i` when lit. And bracket every bit test: `==` binds tighter than `&`.
+3. **Stopping when the row runs dark.** Fixed-width problems (reverse bits) need exactly 32 rounds; dark lanterns count.
+4. **Overflow before the operation you were careful about.** `n * (n + 1)` before `/ 2`, `i * i` in the sieve, `a * b` before `% MOD`. Cast to `long` before the multiply.
+5. **Forgetting the sign lantern's edge cases.** `n > 0` in the power-of-two test; `Math.abs(Integer.MIN_VALUE)` is negative; use `Math.floorMod` for indexes.
+
+## Coming back to the tower
+
+<Scene title="The Keeper’s last word" mood="dusk">
+
+On your last evening of the season, the Keeper walks the top gallery with you as the lanterns come on, one row at a time. Out in the bay a ship flashes a number back, and you read it before the Keeper does.
+
+*"You'll forget which trick went with which problem,"* she says. *"That's fine. Remember that a number is a row, and every move touches the whole row. Remember which identity you are standing on. And count the rounds, because the dark lanterns count too."*
+
+</Scene>
+
+For each chapter, aim to do three things on a fresh input: **recognise the variation, say which identity makes the move safe, and code it without the solution open**. If one feels shaky, that is your next short session.
+
+A drill plan that fits this book: **Single Number** as a two-minute warm-up, saying "`acc` is the XOR of every odd-count value" out loud. Then **Reverse Bits** as the main rep, narrating what `result` and `n` hold at loop exit. Then, once warm, an unseen transfer such as Single Number III or the common-prefix exit ticket. Revisit a new idea tomorrow and again a few days later, and mix families so the chapter title doesn't choose the method for you.
+
+All **5 problems from your Math & Bit Manipulation roadmap** are covered above (Single Number, Missing Number, Number of 1 Bits, Counting Bits, Reverse Bits), with the arithmetic around them and six side quests. The neighbouring patterns live in their own books: <a href={`${BASE}dsa/lessons/prefix-sum/`}>Prefix Sum</a> for XOR ledgers, <a href={`${BASE}dsa/lessons/backtracking/`}>Backtracking</a> for subsets with pruning, and <a href={`${BASE}dsa/lessons/matrix/`}>Matrix & Geometry</a> for Pow(x, n). Use the <a href={`${BASE}dsa/`}>full DSA roadmap</a> to continue across patterns.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study** — next reps once the five above feel calm:
+
+- [Bitwise AND of Numbers Range](https://leetcode.com/problems/bitwise-and-of-numbers-range/) — exit ticket 2 as a real problem.
+- [Number Complement](https://leetcode.com/problems/number-complement/) — exit ticket 3.
+- [Power of Three](https://leetcode.com/problems/power-of-three/) — where the lantern trick stops and number theory takes over.
+- [Pow(x, n)](https://leetcode.com/problems/powx-n/) — repeated squaring with doubles and the `Integer.MIN_VALUE` exponent.
+- [Find the Duplicate Number](https://leetcode.com/problems/find-the-duplicate-number/) — the problem that looks like XOR and isn't.
+- [Maximum XOR of Two Numbers in an Array](https://leetcode.com/problems/maximum-xor-of-two-numbers-in-an-array/) — greedy bit by bit, with a prefix set or a trie.
+- [Gray Code](https://leetcode.com/problems/gray-code/) — `i ^ (i >> 1)`, a one-line sequence where neighbours differ by one lantern.
+- [Two's complement (Wikipedia)](https://en.wikipedia.org/wiki/Two%27s_complement) — the storm lantern, formally.
+- [Bit Twiddling Hacks (Sean Eron Anderson, Stanford)](https://graphics.stanford.edu/~seander/bithacks.html) — a famous catalogue of row tricks, with explanations.
+- [Sieve of Eratosthenes (cp-algorithms)](https://cp-algorithms.com/algebra/sieve-of-eratosthenes.html) and [Binary exponentiation (cp-algorithms)](https://cp-algorithms.com/algebra/binary-exp.html) — Chapters 9 and 10 in depth.
+- *Hacker's Delight* by Henry S. Warren — the book-length version of this tower.
+
+**Look these up yourself** — real ideas this book didn't have room for:
+
+- **Submask enumeration** — `for (s = m; s > 0; s = (s − 1) & m)` visits every subset of a mask; over all masks it costs O(3^n), the basis of many bitmask DPs.
+- **Bitmask DP** — the travelling salesman problem in O(n² · 2^n), and "shortest path visiting all nodes".
+- **Modular inverse** — dividing mod a prime with Fermat's little theorem, `a^(M − 2) mod M`, using Chapter 9's `modPow`.
+- **The extended Euclidean algorithm** — finds x and y with `ax + by = gcd(a, b)`; the general way to invert mod a non-prime.
+- **XOR basis (linear basis)** — the maximum XOR of any subset, by Gaussian elimination over bits.
+- **java.util.BitSet** — a growable row of lanterns for sets far bigger than 64.
+- **Segmented and linear sieves** — primes in a window far from 0, or in true O(n).
+- **`Integer.numberOfTrailingZeros` and `highestOneBit`** — JDK built-ins that replace several loops in this book.

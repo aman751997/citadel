@@ -1,65 +1,750 @@
 ---
-title: 'Pattern: Fan-out — Push vs Pull Feeds'
-description: 'One write, many readers — the feed problem, the celebrity problem, and the hybrid answer that every social design lands on.'
+title: 'Pattern: Fan-out & Feeds — Push, Pull, Hybrid'
+description: 'The awards night one celebrity froze every feed at Kestrel, and the hybrid answer every social design lands on. Push vs pull with real numbers, timeline caches, the fan-out pipeline, deletes, ranking, counters, notifications — then Twitter and a notification system, out loud on the clock.'
 module: 5
 order: 1
-minutes: 30
+minutes: 80
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import ArrayStrip from '../components/ArrayStrip.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { strategies, celebrity, storage, pipeline, readPath, ranking, notifications, counters, drills } from '../data/sd/pattern-fanout';
+import { BASE } from '../paths';
 
-## The pattern in one sentence
+<PatternHub
+  pattern="sd-pattern-fanout"
+  start="prologue"
+  logline="One person posts; millions must see it. The whole pattern is one decision — when does the copying happen? At write time, at read time, or split by who is writing. Get that sentence right, with a number in it, and the most-asked scale question in system design is half answered."
+  cast={[
+    { name: 'You', role: 'Two months at Kestrel. You built the follow button. You did not think about what happens after someone presses it fifty million times.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Draws two arrows on the whiteboard — one for writes, one for reads — and asks which one should be expensive.' },
+    { name: 'Dev Okafor', role: 'SRE. Was watching the fan-out lag graph on awards night. Still talks about it calmly, which is worse.' },
+    { name: 'Iris Tan', role: 'Product lead. Wants the feed instant, ranked, and with notifications. Oh, and also like counts.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Has seen one row take fifty thousand writes a second, once.' },
+    { name: 'The Interviewer', role: 'Says “Design Twitter” and then waits to see whether you ask about celebrities before they do.' },
+  ]}
+  parts={[
+    { name: 'Part One · One write, many readers', description: 'Push, pull, and the celebrity who broke push.', links: [['two-strategies', 'Pay now or pay later'], ['celebrity', 'Awards night']] },
+    { name: 'Part Two · Building the timeline', description: 'Storage, paging, the pipeline, and everything that changes after posting.', links: [['timeline-storage', 'Ids, not posts'], ['pagination', 'The page that moved'], ['pipeline', 'The fan-out line'], ['inactive', 'Nobody home'], ['deletes', 'Take it back']] },
+    { name: 'Part Three · Beyond the timeline', description: 'Ranking, counters, and the sibling problem.', links: [['ranking', 'The feed that thinks'], ['counters', 'Fifty thousand hearts'], ['notifications', 'The sibling problem']] },
+    { name: 'Part Four · In the room', description: 'The numbers, two walkthroughs on the clock, and the other skins.', links: [['sizing', 'The whiteboard sweep'], ['walkthrough', 'Twitter, out loud'], ['notification-walkthrough', 'Notifications, sketched'], ['transfer', 'Same pattern, other skins']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Push or pull, threshold, cursor, dedup — with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="Parts One and Two are the pattern; read them in one sitting. Part Four is the payoff — come back to the Twitter walkthrough before every feed mock and read the lines aloud."
+/>
 
-One user's action must appear to many users (followers, subscribers, channel members) — and you must choose **when** the expensive many-copies work happens: at write time (push), at read time (pull), or split by who's writing (hybrid).
+<h2 id="prologue">Prologue · Awards night</h2>
 
-**Trigger words:** "feed", "timeline", "followers see", "subscribers", "notify all members", "home page shows posts from people you follow".
+<Scene chapter="Prologue" title="Awards night" mood="storm">
 
-## The two pure strategies
+At 9:12 p.m. on awards night, Dev posts one line in the incident channel: *"Fan-out lag is 40 minutes. Nothing is down."*
 
-**Pull (fan-out on read):** store each post once, by author. Building Alice's feed = fetch recent posts from all 800 people she follows, merge, rank, return.
+Juno Vale — twelve million followers, the most-followed account on Kestrel — is live-posting from the red carpet. Six photos in half an hour. Each one becomes twelve million small writes, one into every follower's home feed. Behind her, in the same queue, sit everyone else's posts: a birthday, a lost cat, your own test post from the lobby. None of them will appear for forty minutes.
 
-**Push (fan-out on write):** every user has a materialized **feed cache** (Redis list/sorted set of post IDs). When Bob posts, a fan-out worker inserts the post ID into every follower's feed. Reading a feed = one cache read.
+The next morning Mara draws two arrows on the whiteboard. One says WRITE. One says READ. *"Every feed copies a post to many people,"* she says. *"The only question is which arrow does the copying. Last night we chose. Let's choose again, on purpose."*
 
-<Mermaid code={`flowchart TD
-    subgraph PUSH["Push — pay at write"]
-      BP["Bob posts"] --> FW["fan-out workers"] --> F1["Alice's feed cache"]
-      FW --> F2["Carol's feed cache"]
-      FW --> F3["...every follower"]
-      AR["Alice reads"] -->|"one cheap read"| F1
+</Scene>
+
+**The pattern in one sentence.** One user's action must appear to many users — followers, subscribers, channel members — and you must choose **when** the expensive many-copies work happens: at write time (**push**, fan-out on write), at read time (**pull**, fan-out on read), or split by who is writing (**hybrid**).
+
+**Trigger words:** "feed", "timeline", "followers see", "subscribers", "notify all members", "home page shows posts from people you follow", "broadcast". When you hear one, the interviewer is waiting for three things: the push/pull tradeoff **with numbers**, the **celebrity problem** named before they raise it, and a **threshold** said out loud.
+
+**Why it matters to you.** This is the canonical Tier 2 question — Twitter, Instagram, a news feed — and the fan-out half of "Design a Notification System". Your gap register says *silent skips* and *cache hand-waves*; a feed design is where both show up most. The timeline is a cache, so it gets the four promises from <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (key, TTL, invalidation, failure plan). The follow table is a many-to-many join, and naming it is your M:N habit. And this lesson ends with a full 45-minute round on the clock, because pacing is the other gap.
+
+<Figure caption="The whole pattern. Push pays at write time and makes reads one cache fetch. Pull stores once and pays at every read. Hybrid pushes for ordinary accounts and pulls only the few celebrities.">
+  <Mermaid code={`flowchart LR
+    subgraph PUSH["Push · pay at write"]
+      B1["Bob posts"] --> W["fan-out workers"]
+      W --> T1["Alice's timeline"]
+      W --> T2["Carol's timeline"]
+      W --> T3["…every follower"]
+      R1["Alice reads"] -->|"one range read"| T1
     end
-    subgraph PULL["Pull — pay at read"]
-      BP2["Bob posts"] -->|"stored once"| DB[(posts by author)]
-      AR2["Alice reads"] -->|"query 800 followees,\nmerge, rank"| DB
+    subgraph PULL["Pull · pay at read"]
+      B2["Bob posts"] -->|"stored once"| P[("posts by author")]
+      R2["Alice reads"] -->|"ask 200 followees,\nmerge, sort"| P
     end`} />
+</Figure>
 
-| | Push | Pull |
-|--|------|------|
-| Read cost | O(1) — the product wants this; feeds are read 100:1 | O(followees) per read — expensive, slow |
-| Write cost | O(followers) per post | O(1) |
-| Killer case | **celebrity posts** → 100M feed inserts for one tweet | **heavy reader** following thousands |
-| Staleness | feed materializes seconds after post (async workers) | always fresh |
+<Part n="Part One" title="One write, many readers">
 
-## The celebrity problem and the hybrid answer
+Two pure strategies, the arithmetic that separates them, and the account that breaks the obvious winner.
 
-Push dies at celebrities: one Ronaldo post = 600M writes, and the fan-out storm delays everyone else's posts behind it. Pull dies at read volume. So every real system converges on **hybrid**:
+</Part>
 
-- **Normal users (99.9%): push.** Their follower counts are small; write fan-out is cheap; reads stay O(1).
-- **Celebrities (past a threshold, say 100K followers): pull.** Their posts are stored once. At read time: fetch feed cache (pushed part) + fetch recent posts from the few celebrities you follow (pulled part) + **merge and rank**.
+<h2 id="two-strategies">Chapter 1 · Pay now or pay later</h2>
 
-Alice follows 799 normies + Ronaldo → her read = 1 cache read + 1 celebrity lookup + merge. This exact paragraph, with a threshold number said out loud, is the expected answer to the most-asked scale question in SD interviews (Twitter/Instagram feed).
+<Scene chapter="Chapter 1" title="Pay now or pay later" mood="dawn">
 
-Implementation notes that earn depth: fan-out runs **async via queues** (post write returns instantly; feed inserts are the queues lesson's exact diagram — key by follower ID for parallelism); feed caches hold **IDs only, not content** (hydrate post content from a post cache at read — dedups storage, edits propagate free); cap feed length (~800 entries — beyond page 3 nobody scrolls; fall back to pull for archaeology); a new user with an empty feed cache gets a one-time pull build.
+Mara writes three numbers under the arrows: *200M people open the app, 10 times a day. 100M posts a day. Everyone follows about 200 accounts.*
 
-## Questions this pattern unlocks
+*"Pull is simple,"* she says. *"Store each post once. When Alice opens the app, ask her 200 followees for their latest posts and merge. Push is the opposite: when Bob posts, copy his post into every follower's timeline, and reading is one fetch."* She hands you the marker. *"Which arrow is busier?"*
 
-| Bank question | How the pattern applies |
-|---------------|------------------------|
-| **Twitter / News feed** (walkthrough next) | the pattern verbatim — hybrid + ranking |
-| **Instagram** | same + media via blob/CDN lesson; feed = IDs, images = CDN |
-| **Notification system** | fan-out to devices instead of feeds; add per-channel workers (push/email/SMS), priorities, retry+DLQ |
-| **TikTok / recommendations feed** | pull, but candidates come from a ranker, not a follow graph — meets AI-era recsys lesson |
-| **Discord huge channels** | push to online members only (registry from realtime lesson), lazy for offline |
-| **Live comments** | fan-out to current viewers of a stream = pub/sub push, no persistence per viewer |
+</Scene>
+
+**Pull (fan-out on read).** Each post is written once, indexed by author. Building Alice's home timeline means: look up the 200 accounts she follows, fetch each one's recent posts, merge them newest-first (a k-way merge with a heap of size k), and return the top 20.
+
+**Push (fan-out on write).** Every user has a materialised **timeline** — a short list of post ids in a cache. When Bob posts, a background worker inserts the new post id into the timeline of every follower. Reading is one range query on one key.
+
+**Worked numbers** (the interview-scale numbers used through this lesson; the ÷10⁵ seconds-per-day rule from <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a>, peak = 3× average):
+
+| | Daily | Average/s | Peak/s |
+|---|---|---|---|
+| Timeline reads (200M DAU × 10 opens) | 2B | 20,000 | **60,000** |
+| Posts written | 100M | 1,000 | **3,000** |
+| **Pull:** per-author lookups (reads × 200 followees) | 400B | 4,000,000 | **12,000,000** |
+| **Push:** timeline inserts (posts × at most 200 pushed followers) | 20B | 200,000 | **600,000** |
+
+Push makes **twenty times fewer** operations (12,000,000 ÷ 600,000 = 20), and it moves them off the path the user is waiting on. That is the general rule: **move the work to the rare side of the ratio.** Here there are 20 timeline reads for every post written (2B ÷ 100M), and each read shows 20 posts, so every post written is displayed about 400 times.
+
+**The tail-latency tax on pull.** A pull read waits for the slowest of its 200 lookups. If each lookup is slower than its own p99 1% of the time, the chance a read hits at least one slow lookup is 1 − 0.99²⁰⁰ ≈ **87%**. Wide fan-in turns every backend's rare tail into your common case.
+
+| | Push (fan-out on write) | Pull (fan-out on read) |
+|---|---|---|
+| Write cost | O(followers) per post, done asynchronously | O(1) per post |
+| Read cost | O(1) range read + hydration | O(followees) lookups + merge, on the user's clock |
+| Freshness | Seconds behind (fan-out lag) | Always current |
+| Storage | One timeline per active user (ids only) | None beyond the posts |
+| Killer case | **Celebrity posts** — millions of inserts per post | **Heavy readers** who follow thousands; read QPS × followees |
+| Good when | Reads ≫ writes, follower counts bounded | Writes ≫ reads, or tiny scale, or no follow graph |
+
+<Trace title="Count the work" steps={strategies} takeaway="Pull costs reads × followees; push costs posts × followers. Feeds are read far more than written, so push wins — until one author's follower count explodes." />
+
+<Reveal q="At Kestrel’s first 10,000 users, which would you build?">
+
+Pull — and say why. With 10,000 users, a read that merges 200 followees is a single indexed query (`WHERE author_id IN (…) ORDER BY created_at DESC LIMIT 20`) on one database, comfortably fast. Push adds a queue, workers and a cache cluster for no benefit. The pattern is a response to scale; naming the scale at which you'd switch ("when timeline reads start to dominate database load") is the senior move.
+
+</Reveal>
+
+**Catch the trap:** "Pull, with a cache in front." Every user's merged timeline is different, so caching the merged result per user *is* materialising a timeline — push with extra steps and worse invalidation. If you want the cache, say push.
+
+<h2 id="celebrity">Chapter 2 · Awards night</h2>
+
+<Scene chapter="Chapter 2" title="Awards night" mood="night">
+
+Dev replays the night for the post-mortem. *"Juno has 12 million followers. Six posts. Our fan-out workers had about thirty thousand inserts a second to spare."* He doesn't finish the sentence. He doesn't need to.
+
+Iris asks the obvious question: *"Can't we just add workers?"* Theo answers it: *"Next year she'll have 50 million followers. Will we add workers for every post she makes?"*
+
+</Scene>
+
+**The celebrity problem is write amplification.** Under push, one post costs one insert per follower.
+
+- Awards night: 6 posts × 12,000,000 followers = **72,000,000 inserts**. At 30,000 spare inserts/s, that is 72,000,000 ÷ 30,000 = 2,400 s = **40 minutes** of backlog — and every ordinary post queued behind it waits too.
+- Interview scale: one post from a **50M-follower** account = 50,000,000 inserts. Against the 600,000 inserts/s peak budget from Chapter 1, that is 50,000,000 ÷ 600,000 ≈ **83 seconds of the entire fan-out fleet** for one post. It also writes 50M × 16 bytes = **800 MB** of timeline entries, most into timelines that will scroll past it.
+
+Pull, meanwhile, dies at read volume (12M lookups/s). So every real design converges on **hybrid**:
+
+- **Ordinary accounts — push.** Below a follower **threshold** (say **100,000**), fan out on write. Most accounts are far below it, and their posts are cheap to copy.
+- **Celebrities — pull.** Above the threshold, don't fan out at all. Their posts go only into their own **author timeline** (`user_posts:{authorId}`, newest first, capped).
+- **At read time**, merge: Alice's pushed timeline (one range read) + the recent posts of the few celebrities she follows (one cached list each) → merge two-or-more sorted lists → top 20.
+
+<Figure caption="A hybrid read. The pushed part and the pulled part are both sorted newest-first, so the merge is cheap. The celebrity's list is the same object for millions of readers, so it lives in every feed server's memory.">
+  <Mermaid code={`sequenceDiagram
+    participant A as Alice's app
+    participant TS as Timeline service
+    participant L1 as In-process cache
+    participant R as Redis
+    participant PC as Post cache
+    A->>TS: GET /timeline?limit=20
+    TS->>R: newest 25 ids from tl:alice (pushed part)
+    TS->>L1: recent posts of Juno (celebrity she follows)
+    L1-->>TS: hit (refreshed about once a second)
+    TS->>TS: merge two sorted lists, take 20
+    TS->>PC: MGET 20 post bodies (hydrate)
+    TS-->>A: 20 posts + nextCursor`} />
+</Figure>
+
+**Choosing the threshold.** Say a number and the reason: *"Above 100K followers, a single post's fan-out would take more than a fraction of a second of the fleet and delay everyone else; below it, push. I'd tune it from the fan-out lag metrics."* At 100,000, the most expensive pushed post is 100,000 inserts — about 0.17 s of the 600,000/s fleet. The read side pays one extra lookup per followed celebrity, and those lookups are the hottest, best-cached keys in the system.
+
+<Trace title="Break the celebrity" steps={celebrity} takeaway="Celebrity = write amplification. Hybrid: push below a stated threshold, pull above it, merge at read, and treat each celebrity's post list as a hot key." />
+
+<Reveal q="Per account, push costs posts × followers and pull costs reads × followers. Isn’t the break-even independent of follower count? Why threshold on followers at all?">
+
+Sharp — over a whole day, for one author, push costs `p × F` inserts and pull costs `r × F` lookups (`p` posts/day, `r` timeline reads per follower per day), so the follower count cancels. Three things the daily average hides:
+
+1. **Burstiness.** Push spends all `F` inserts in the seconds after the post. At `F` = 50M, that burst is what blocks the fleet and creates lag for everyone else. Pull spreads the cost across the day's reads.
+2. **Caching collapses pull for celebrities.** The `r × F` pull lookups all read *the same* small list. With an in-process cache on 200 feed servers, Redis sees about 200 reads/s for it, not millions. An ordinary author's list gets no such sharing.
+3. **Memory.** Push writes the celebrity's ids into tens of millions of timelines, crowding out the posts of people those users follow more closely.
+
+So the threshold is about burst size and cache sharing, not daily totals. Saying this gets you past "because celebrities are big".
+
+</Reveal>
+
+**Refinements worth one sentence each:**
+
+- **Hysteresis.** Use two thresholds (become "pulled" above 100K, return to "pushed" below 80K) so an account hovering at the line doesn't flip back and forth.
+- **Followers who are celebrities' superfans** still pay only one extra lookup per celebrity followed; a user following 300 celebrities is rare, and you can cap the pulled set by recency.
+- **Per-edge decisions.** Some designs push a celebrity's posts only to followers who interact with them often and pull for the rest. Mention it as a tuning idea, not the baseline.
+
+**Catch the trap:** "Queues absorb the spike." They do — by holding a multi-hour backlog. Absorbing is not the same as finishing, and every ordinary post waits behind it.
+
+<Part n="Part Two" title="Building the timeline">
+
+The timeline is a cache with a strange shape: one sorted list per user, written by strangers, read by one person. This part makes it honest.
+
+</Part>
+
+<h2 id="timeline-storage">Chapter 3 · Ids, not posts</h2>
+
+<Scene chapter="Chapter 3" title="Ids, not posts" mood="dawn">
+
+Kestrel's first push prototype copied the whole post — text, author name, avatar URL — into every follower's timeline. It was fast. Then a user fixed a typo, and Iris asked why the old version was still in twelve thousand feeds. Then Theo asked how much memory twelve thousand copies of every post was using.
+
+Mara wrote one word on the board: *references*.
+
+</Scene>
+
+**Timelines hold post ids, not post bodies.** Fan-out copies the cheap reference; the content lives in exactly one place. At read time the service **hydrates**: it fetches the 20 post bodies by id from a post cache (one multi-get), then the authors from a user cache, then counts from a counter cache. Edits and deletes take effect everywhere at once because there is only one copy to change.
+
+**The data structure: a Redis sorted set per user.**
+
+```text
+key     tl:{userId}                      e.g. tl:42
+member  postId                           e.g. "1840221933092847616"
+score   post time in milliseconds        e.g. 1791457200123
+
+on fan-out:   ZADD tl:42 1791457200123 1840221933092847616
+              ZREMRANGEBYRANK tl:42 0 -801         keep only the newest 800
+on read:      ZRANGE tl:42 +inf -inf BYSCORE REV LIMIT 0 25 WITHSCORES
+```
+
+Why a sorted set and not a list:
+
+| | List (`LPUSH` + `LTRIM`) | Sorted set (`ZADD` + `ZREMRANGEBYRANK`) |
+|---|---|---|
+| Order | By **arrival**; out-of-order fan-out misorders the feed | By **score** (post time), whatever order inserts arrive in |
+| Retried insert | Duplicate entry | **No-op** — same member, same score |
+| Insert cost | O(1) | O(log N) |
+| Memory | Smaller | Larger (skiplist + hash table per entry) |
+| Paging by cursor | By index (shifts as items arrive) | By score (stable) |
+
+The sorted set costs a little more memory and buys **ordering and idempotency** — both of which the pipeline in Chapter 5 relies on. A list is defensible if your queue guarantees per-follower ordering and you dedupe at read time; say that if you pick it.
+
+**Two details that separate people who have run this:**
+
+- **Don't use a 64-bit id as the score.** Redis scores are double-precision floats, exact only up to 2⁵³ (about 9 × 10¹⁵). Time-ordered 64-bit ids are around 10¹⁸, so they round, and neighbouring ids collide or misorder. Use a millisecond timestamp as the score (about 1.8 × 10¹² — exact in a double) and the id as the member. Members with equal scores are ordered lexicographically, which matches numeric order for ids of the same length.
+- **Cap the length.** Keep the newest **800** entries (`ZREMRANGEBYRANK tl:42 0 -801` removes ranks 0 through N−801, leaving the newest 800; if N ≤ 800 the range is empty). Nobody scrolls 40 pages; a reader who does falls back to a slow pull from author timelines.
+
+**Worked numbers: how big is every timeline?**
+
+- Entry ≈ 8-byte id + 8-byte score = **16 bytes** raw. 800 entries = **12.8 KB** per user.
+- Timelines only for users **active in the last 30 days** (Chapter 6). Assume **300M** monthly actives (200M daily actives is two-thirds of them): 300M × 12.8 KB = **3.84 TB** raw.
+- Redis sorted sets beyond a small size spend several times the raw bytes per entry on pointers and hash tables. Budget **~4×** (benchmark it): ≈ 15 TB, plus one replica ≈ **30 TB of RAM** — roughly **300 cache nodes** at ~100 GB usable each.
+- Spread over 300 nodes, the 600,000 inserts/s peak is about **2,000 inserts/s per node** — light. Timelines are a **memory** problem, not a throughput problem. If memory dominates the bill, pack each timeline into a compact binary blob (16 bytes per entry, close to raw) at the cost of read-modify-write on insert.
+
+**The four promises for the timeline cache** (from <a href={`${BASE}sd/lessons/caching/`}>Caching</a> — say all four):
+
+1. **Key:** `tl:{userId}`, a sorted set of post ids scored by time, capped at 800.
+2. **TTL:** none while the user is active; the key expires after **30 days without a read** (refresh `EXPIRE` on read), on the same clock fan-out uses to skip inactive users.
+3. **Invalidation:** none needed for content — ids are references; deletes, edits and blocks are filtered at hydration (Chapter 7).
+4. **Failure plan:** the cache is **load-bearing** (falling back to pull for everyone is 12M lookups/s). A lost shard means rebuilding its users' timelines by pull, rate-limited, serving a degraded feed (own posts + celebrity posts) meanwhile.
+
+<Trace title="Shape the timeline" steps={storage} takeaway="Sorted set: score = millisecond time, member = post id, capped at 800. Ordering comes from the score, retries are no-ops, and the content lives elsewhere." />
+
+**Catch the trap:** "Store the feed in the database." Say *where*: the post store is the source of truth; the timeline is a derived, rebuildable cache. If a candidate can't say what happens when the timeline is lost, they have not decided whether it's a cache or a database.
+
+<h2 id="pagination">Chapter 4 · The page that moved</h2>
+
+<Scene chapter="Chapter 4" title="The page that moved" mood="dusk">
+
+A bug report with a screen recording: a user scrolls to the second page of their feed and sees three posts they have already seen. Dev reproduces it in a minute. *"Three posts arrived while she was reading page one,"* he says. *"Page two was `offset=20`. Everything shifted down by three."*
+
+</Scene>
+
+**Feeds paginate with cursors, never offsets.** New posts arrive at the top while the user reads, so "skip 20" means something different a second later. A cursor names a **position in the data**: "posts older than the last one I showed you."
+
+<Figure caption="One timeline, newest on the left. Page one ended at the post marked CURSOR. Three new posts arrived since; with a cursor, page two starts right after the cursor anyway.">
+  <ArrayStrip name="tl:42" indices={false} values={['new', 'new', 'new', 'p1', '…', 'p20', 'p21', '…', 'p40']} tones={{ 0: 'ghost', 1: 'ghost', 2: 'ghost', 3: 'done', 4: 'done', 5: 'done', 6: 'hot', 7: 'hot', 8: 'hot' }} pointers={[{ at: 5, label: 'CURSOR', tone: 'blue' }]} regions={[{ from: 0, to: 2, label: 'arrived later', tone: 'dim' }, { from: 3, to: 5, label: 'page 1', tone: 'green' }, { from: 6, to: 8, label: 'page 2', tone: 'gold' }]} />
+</Figure>
+
+**The cursor** is an opaque, encoded `(scoreMs, postId)` of the last item shown — the timestamp plus a tie-breaker, as in <a href={`${BASE}sd/lessons/delivery-framework/`}>the framework's API chapter</a>. The next page:
+
+```text
+GET /timeline?limit=20&cursor=eyJ0IjoxNzkxNDU3MjAwMTIzLCJpZCI6IjE4NDAyMjE5MzMwOTI4NDc2MTYifQ
+  decode → (t = 1791457200123, id = 1840221933092847616)
+  ZRANGE tl:42 1791457200123 -inf BYSCORE REV LIMIT 0 25 WITHSCORES
+  drop entries with score = t whose id is not smaller than the cursor id (already shown)
+  merge with celebrity posts older than the cursor, hydrate, filter, return 20 + nextCursor
+```
+
+The score bound is **inclusive** so posts sharing the cursor's millisecond aren't lost; the id tie-breaker removes the ones already shown. The same cursor applied to each celebrity's author timeline keeps the merge consistent.
+
+**Three more read-path habits:**
+
+- **Pull to refresh** uses the opposite cursor: "newer than the first item I have" (`since`). The client prepends.
+- **Cache-first reads.** The common read touches no database: timeline (Redis) → post bodies (post cache, `MGET`) → authors (user cache) → counts (counter cache). The database sees only cache misses — and the post cache's hot set is small: two days of posts at 100M/day × ~500 bytes ≈ **100 GB**.
+- **Read your own writes.** The author must see their own post immediately, even if fan-out is behind. The post service inserts the id into the author's own timeline synchronously (one `ZADD`) before returning, or the read path merges the author's latest posts. Pick one and say it.
+
+**Over-fetch for filtering.** Read 25 ids for a 20-item page. Hydration will drop some (deleted posts, blocked authors — Chapter 7); over-fetching keeps pages full. If a page still comes back short, fetch again from the new cursor rather than returning a half page.
+
+<Reveal q="The user scrolls past entry 800, the end of the cached timeline. What now?">
+
+Fall back to pull: for that rare deep scroll, query the author timelines of their followees for posts older than the cursor and merge, accepting a slower response. Say how rare it is ("nobody reads 40 pages; we'd measure") and that it shares the rebuild code from Chapter 6. Don't grow every timeline to serve a handful of archaeologists.
+
+</Reveal>
+
+**Catch the trap:** using the post id alone as the cursor while sorting by a separate timestamp. If the two orders disagree even slightly (ids issued on different machines), pages skip or repeat. The cursor must be the **same key you sort by**, plus a unique tie-breaker.
+
+<h2 id="pipeline">Chapter 5 · The fan-out line</h2>
+
+<Scene chapter="Chapter 5" title="The fan-out line" mood="night">
+
+After awards night, Dev keeps a second graph next to the lag graph: one line per fan-out worker. Most are flat. One is a plateau that lasts eleven minutes. *"That's a single author with ninety thousand followers,"* he says. *"One message, one worker, one partition. Everyone behind him on that partition is waiting for a stranger's fan-out to finish."*
+
+</Scene>
+
+**The write path, end to end.** Posting is synchronous only up to durability; fan-out is asynchronous. The user's request returns as soon as the post is stored and the event is published.
+
+<Figure caption="The fan-out pipeline. Two queues: one event per post, then many small batches of follower ids, so one big author is spread across the whole worker pool.">
+  <Mermaid code={`flowchart LR
+    C["Client"] -->|"POST /posts"| PS["Post service"]
+    PS -->|"1 · insert"| PDB[("Post store\nsource of truth")]
+    PS -->|"2 · own timeline"| TL[("Timeline cache\nRedis sorted sets")]
+    PS -->|"3 · PostCreated\n(outbox)"| Q1[["posts topic\nkeyed by author"]]
+    Q1 --> EX["Fan-out planner"]
+    EX -->|"follower pages"| G[("Follow graph\nfollowers by followee")]
+    EX -->|"batches of ~1,000 ids"| Q2[["timeline-writes\nkeyed by cache shard"]]
+    Q2 --> FW["Fan-out workers × N"]
+    FW -->|"pipelined ZADD + trim"| TL`} />
+</Figure>
+
+1. **Store, then publish.** The post service writes the post to the post store and publishes `PostCreated` — through a transactional outbox so a crash can't store the post and lose the event (the <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & Streams</a> outbox chapter).
+2. **Plan.** A planner consumes `PostCreated`, checks whether the author is above the celebrity threshold (if so, stop: nothing to push), then pages through the author's followers, filters to active ones, and emits **batches** of about 1,000 follower ids.
+3. **Write.** Workers take batches, group ids by Redis shard, and send pipelined `ZADD` + `ZREMRANGEBYRANK` commands — one round trip per shard per batch instead of one per follower.
+
+**Why two queues.** A single "fan out this post" message processed by one worker makes a big author's fan-out **serial** and blocks the partition behind it — Dev's eleven-minute plateau. Splitting into batches spreads one author across every worker, and small authors no longer wait behind big ones. For extra isolation, route authors with large follower counts to a **separate lane** with its own workers, so ordinary posts always have capacity.
+
+**Ordering.** You don't need global order, and you shouldn't pay for it. Timeline order comes from the **score** (post time), so batches can land in any order and the feed still reads newest-first. Per-author order in the posts topic (keyed by author id) keeps a post's create and later delete events in sequence.
+
+**Deduplication.** Delivery is at-least-once: a worker that crashes after writing 600 of 1,000 entries gets the batch again. `ZADD` of an existing member with the same score is a **no-op**, so the retry is harmless. This is why Chapter 3 chose the sorted set — idempotency by data structure, not by bookkeeping.
+
+**Lag and back-pressure.** **Fan-out lag** = time from post stored to last timeline written. That is what users feel, so that is the SLO and the alert: *"p99 fan-out lag under 5 seconds for authors below the threshold."*
+
+- **Back-pressure** comes for free with a pull-based log: if Redis slows, workers fetch more slowly and lag grows instead of anything falling over. Lag *is* the back-pressure signal (<a href={`${BASE}sd/lessons/queues-streams/`}>Queues & Streams</a>, "The line grows").
+- **Drain time** = backlog ÷ (capacity − incoming). Awards night: 72M inserts against 30,000/s spare = 40 minutes. Double the workers to 60,000/s spare: 20 minutes — if Redis can absorb it.
+- **Shed when behind.** If lag passes a ceiling, drop work that will never be read: skip followers inactive for more than a week, or treat the author as pulled for this post. Users rebuilding on login will still see it.
+- **Posting never waits for fan-out.** The post is durable and visible on the author's profile and in their own timeline; followers see it late. A delay, not an outage.
+
+<Trace title="Run the line" steps={pipeline} takeaway="Split fan-outs into batches across a shared pool, make inserts idempotent, order by score not arrival, alert on lag in seconds — and never fail a post because fan-out is slow." />
+
+<Reveal q="A follower unfollows Bob while Bob’s fan-out batch for her is still in the queue. Bob’s post lands in her timeline after the unfollow. Is that a bug?">
+
+A tiny one, and you fix it at read time rather than in the pipeline. The worker could re-check the follow edge before every insert, but that adds a graph lookup per follower to the hottest write path. Instead, hydration drops posts whose author the viewer no longer follows (next chapter's filtering). Say: *"The pipeline is eventually consistent with the follow graph; the read path enforces it."*
+
+</Reveal>
+
+**Catch the trap:** "Fan-out is a for-loop in the post service." Then a 90K-follower post holds an HTTP request open for minutes, and a crash halfway loses the rest. The loop belongs on a queue, in batches, with retries that are safe to repeat.
+
+<h2 id="inactive">Chapter 6 · Nobody home</h2>
+
+<Scene chapter="Chapter 6" title="Nobody home" mood="dusk">
+
+Theo runs a query against the fan-out logs and reads the answer twice. Of every hundred timeline inserts last week, forty went to people who hadn't opened Kestrel in over a month. *"We're delivering mail to empty houses,"* he says. *"Very quickly."*
+
+</Scene>
+
+Follower lists include everyone who ever pressed Follow, including accounts that left years ago. Pushing to them costs writes and memory for timelines nobody will read.
+
+- **Skip inactive followers.** Keep a last-seen flag per user (an "active in the last 30 days" bitmap or set beside the follower lists). The planner filters on it. If 40% of follower edges point at inactive users, fan-out writes drop by **40%** compared with pushing to every follower — at interview scale, 240,000 of the 600,000 inserts/s peak.
+- **Let their timelines expire.** The timeline key's 30-day idle expiry (Chapter 3) runs on the same clock, so memory goes only to people who read.
+- **Rebuild on return.** When an inactive user logs in, the timeline read misses. The service **rebuilds by pull**: fetch the followee list, read each followee's recent posts from their author timeline, merge, write the newest 800 into `tl:{userId}`, mark the user active, serve page one. From then on they receive pushes like everyone else.
+- **New users** take the same path: a new account has no timeline, so the first read rebuilds it from whatever they followed during sign-up (or from popular posts, if nothing).
+
+**The rebuild must be protected.** A user following 2,000 accounts costs 2,000 author-timeline reads. Batch them by shard, run them in parallel, and return page one as soon as the first 20 are known while the rest fills. After a cache-shard loss, thousands of users rebuild at once — rate-limit rebuilds and serve a degraded page (own posts plus celebrity posts) to the rest until their turn. This is the timeline cache's failure plan from Chapter 3, made concrete.
+
+<Reveal q="Why not keep timelines for everyone and avoid the rebuild path entirely?">
+
+Because the rebuild path has to exist anyway: a cache shard can die, a new user has no timeline, and a deep scroll past the cap needs a pull. Once the path exists, using it for returning users is free, and it saves the writes and memory of maintaining hundreds of millions of timelines nobody reads. The design is "push for the active, pull for everyone else" — the hybrid again, split by reader instead of by writer.
+
+</Reveal>
+
+**Catch the trap:** sizing the timeline cache by **registered** users. Size it by the users your activity window keeps, and say why: 500M registered × 12.8 KB = 6.4 TB raw, against 3.84 TB for 300M monthly actives — and the gap widens every year as old accounts pile up.
+
+<h2 id="deletes">Chapter 7 · Take it back</h2>
+
+<Scene chapter="Chapter 7" title="Take it back" mood="storm">
+
+A user posts something she regrets and deletes it within thirty seconds. Fan-out already copied it into 40,000 timelines. Her support ticket is short and frightened: *"It's still showing up for my friends."*
+
+Mara asks the room: *"Do we chase 40,000 copies, or make sure nobody can see them?"*
+
+</Scene>
+
+**Lazy filtering at read time is the primary mechanism.** Because timelines hold ids, the post store is the only source of truth. Hydration checks every post it fetches, and drops what the viewer shouldn't see:
+
+| Change | Source of truth | Read-time filter | Optional async cleanup |
+|---|---|---|---|
+| **Delete** | Post marked deleted (a tombstone) in the post store; post cache entry deleted | Hydration finds a tombstone → drop | A "delete fan-out" job removes the id from timelines when convenient |
+| **Edit** | Post row updated; post cache key deleted | Nothing — hydration fetches the current body | None needed |
+| **Block / mute** | Viewer's blocked set (cached, small) | Drop posts whose author is in it | Fan-out also checks blocks for new posts |
+| **Unfollow** | Follow edge removed | Drop posts whose author isn't followed (unless promoted/recommended) | Optional removal job |
+| **Account private / suspended** | Author state in the user store | Hydration checks visibility → drop | None |
+
+Why lazy beats eager:
+
+- **Eager deletion is fan-out again.** Removing one post from 40,000 timelines is 40,000 writes on the critical path of the delete, with the same lag and retry problems — and it still races with an in-flight fan-out that inserts the post *after* you deleted it. A read-time check has no such race: it consults the truth at the moment of display.
+- **The cost is small and bounded.** One tombstone check per hydrated post, done in the same multi-get as the body. Over-fetching 25 ids per page absorbs the drops.
+- **Correctness on the slow path too.** The delete must also reach the caches that hold the body: delete the post-cache key on write (delete, don't update — the caching lesson's rule) and purge CDN copies of any media.
+
+<Trace title="Hide what changed" steps={readPath} takeaway="Ids in timelines, truth in one store: deletes, edits, blocks and unfollows are enforced at hydration. Inactive users skip fan-out and rebuild by pull on return." />
+
+**Catch the trap:** promising that a deleted post vanishes "instantly everywhere". It vanishes from every *read that happens after the delete commits* — but a client that already rendered it keeps it until refresh, and a push notification already sent can't be recalled. Say the honest promise.
+
+<Part n="Part Three" title="Beyond the timeline">
+
+Iris's "oh, and also…" chapter: ranked feeds, like counts, and the notification system that is fan-out's twin.
+
+</Part>
+
+<h2 id="ranking">Chapter 8 · The feed that thinks</h2>
+
+<Scene chapter="Chapter 8" title="The feed that thinks" mood="dawn">
+
+Iris has a chart. Users who follow more than 500 accounts open the app less, not more: their newest-first feed is a firehose, and the posts they care about scroll away before they look. *"I want the feed to know what they care about,"* she says. Mara draws a funnel and asks a different question: *"Where do the posts come from before anyone ranks them?"*
+
+</Scene>
+
+**Chronological vs ranked.**
+
+| | Chronological | Ranked |
+|---|---|---|
+| Order | Newest first, by score | By predicted interest (engagement, affinity, recency) |
+| Paging | Stable cursor on `(time, id)` | Needs a **snapshot** per session (below) |
+| Cost per read | Range read + hydrate | Candidate fetch + features + model scoring, ~100s of candidates |
+| Explainability | Obvious | Opaque; needs tuning, experiments, guardrails |
+| Good when | Small follow counts, live events, "Following" tabs | Large follow graphs, engagement-driven products |
+
+**A ranked feed is three stages**, and fan-out is only the first:
+
+<Figure caption="Ranking reuses the fan-out pattern as candidate generation. The recommender adds out-of-network candidates; the ranker orders everything; the blender applies product rules.">
+  <Mermaid code={`flowchart LR
+    T["Pushed timeline\nin-network ids"] --> CG["Candidate generation\n~1,000s of ids"]
+    CP["Celebrity pulls"] --> CG
+    RS["Recommender\nout-of-network"] --> CG
+    CG --> F["Feature hydration\naffinity, engagement,\nrecency, media type"]
+    F --> LR["Light ranker\ncheap, prunes to ~100s"]
+    LR --> HR["Heavy ranker\nprecise model"]
+    HR --> B["Blender\ndiversity, filters,\nads slots, freshness"]
+    B --> P["Page of 20\n+ session snapshot"]`} />
+</Figure>
+
+1. **Candidate generation** — recall, cheaply. In-network candidates come from exactly what Parts One and Two built: the pushed timeline plus celebrity pulls. Out-of-network candidates ("posts you might like") come from the recommender's nearest-neighbour retrieval — <a href={`${BASE}sd/lessons/recsys/`}>Recommendation systems</a> is the full funnel.
+2. **Scoring** — precision, expensively. Hydrate features (how often you interact with this author, the post's engagement so far, its age, its media type), run a light model to prune, then a heavier model on the survivors. Stay inside a latency budget (say 150 ms for the whole request).
+3. **Blending** — product rules. No more than two posts in a row from one author; drop posts already seen (a per-user seen set, often a Bloom filter); insert ads at fixed slots; boost very fresh posts; apply policy filters.
+
+**Paging a ranked feed.** Rank order isn't time order, and scores change as engagement arrives, so a "posts older than X" cursor repeats and skips. **Rank once per session**, store the ordered ids (a few hundred) with a short TTL (minutes), and make the cursor an offset into that **snapshot**. Pull-to-refresh starts a new snapshot.
+
+**Precompute or rank at read?** Ranking at read time uses the freshest engagement signals and costs CPU per request. Some designs pre-rank in the background (when the user is likely to open the app) and cache the result. Say which, and why: *"Rank at read for freshness; cache the ranked snapshot per session; pre-rank only if the model blows the latency budget."*
+
+<Trace title="Rank and page" steps={ranking} takeaway="Fan-out generates in-network candidates; the ranker orders; the blender applies rules. Ranked pages need a session snapshot, not a time cursor." />
+
+**Catch the trap:** "We'll use machine learning to rank the feed." That's a box with no inputs. Name where candidates come from, how many, the latency budget, and how paging stays stable.
+
+<h2 id="counters">Chapter 9 · Fifty thousand hearts</h2>
+
+<Scene chapter="Chapter 9" title="Fifty thousand hearts" mood="storm">
+
+Juno posts a photo of her dog. Theo watches a single row in the likes table take fifty thousand updates a second, every one of them waiting for the same row lock. *"I've seen this once before,"* he says. *"It ended the same way. Badly."*
+
+</Scene>
+
+Every post shows counts — likes, replies, reposts, views — and those counts are a fan-**in** problem: many writers, one number. A naive `UPDATE posts SET likes = likes + 1` serialises every like on one row.
+
+**Separate the fact from the count.**
+
+- **The fact:** a `likes` row keyed by `(postId, userId)` — that is what answers "did I already like this?" and stops double-likes (the primary key dedupes). It shards cleanly by post id.
+- **The count:** a derived number that may lag a second or two. Users don't notice 41,207 vs 41,213.
+
+**Sharded counters.** Split the counter into N sub-counters; each increment picks one at random; a read sums all N.
+
+- Viral post: **50,000 likes/s**. One contended row manages a few thousand updates/s at best.
+- With **64 shards**: 50,000 ÷ 64 ≈ **781 updates/s per shard** — comfortable.
+- Reads sum 64 values; cache that sum for 1–2 seconds so hydration (1.2M post reads/s at peak) doesn't hammer it.
+- Make it adaptive: most posts get one shard; a post whose like rate crosses a line gets more.
+
+**Alternatives worth naming:**
+
+| Approach | How | Cost |
+|---|---|---|
+| **Sharded counters** | N rows/keys, random increment, sum on read | Read cost × N; cache the sum |
+| **Write coalescing** | Buffer increments in memory per server, flush every second | A crash loses up to a second of counts |
+| **Stream aggregation** | Like events → log → windowed aggregator → periodic counter write | Seconds of delay; exactly the stream design from <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series</a> |
+| **Redis `INCR`** | Atomic increment on one key | One key is one shard — a hot key again; shard the key |
+| **HyperLogLog** (unique viewers) | Probabilistic distinct count | At most about 12 KB per key, ~0.81% standard error in Redis; no "did X view?" |
+
+<Trace title="Count without contention" steps={counters} takeaway="Keep the fact (who liked) separate from the count (how many). Shard hot counters, cache the sum, and use HyperLogLog when uniques can be approximate." />
+
+**Catch the trap:** making the displayed count authoritative. If a payout or a ranking signal depends on exact counts, compute it from the facts (the likes rows or the event log) in a batch job — never from the fast, approximate counter.
+
+<h2 id="notifications">Chapter 10 · The sibling problem</h2>
+
+<Scene chapter="Chapter 10" title="The sibling problem" mood="dusk">
+
+Iris: *"Oh, and also — when Juno goes live, tell her followers. On their phones."* Dev, very calmly: *"All fifty million of them?"* Mara draws the fan-out pipeline from Chapter 5 again and changes one box: the timeline cache becomes a row of phones, inboxes and email servers that don't belong to us.
+
+*"Same shape,"* she says. *"Except now the last hop can say no."*
+
+</Scene>
+
+**A notification system is fan-out to devices.** One event ("Juno is live", "Alex liked your post", "Your code is 482913") becomes deliveries on one or more **channels** — mobile push (through Apple's APNs and Google's FCM), email, SMS, and an in-app inbox. Everything in Part Two applies; three things are new:
+
+1. **The last hop is someone else's system** with its own rate limits, failures and costs (SMS costs real money per message).
+2. **Users have preferences** — per type, per channel, quiet hours — and a legal right to opt out.
+3. **Not all messages are equal.** A login code must arrive in seconds; a weekly digest can wait an hour.
+
+<Figure caption="The notification pipeline. Checks happen once, before the split; each channel gets its own priority queues, workers, rate limits and retries.">
+  <Mermaid code={`flowchart LR
+    SRC["Producers\nlikes, follows, live,\nsecurity, marketing"] --> API["Notification API\nvalidate + idempotency key"]
+    API --> EXP["Expand + enrich\nsegment → users,\ntemplate, locale"]
+    EXP --> CHK["Preferences, quiet hours,\nper-user rate limit,\ndedup + aggregation"]
+    CHK --> PQ[["push: high / low"]]
+    CHK --> EQ[["email: high / low"]]
+    CHK --> SQ[["sms: high"]]
+    CHK --> IN[("In-app inbox\nper-user list")]
+    PQ --> PW["Push workers"] --> APNS["APNs / FCM"]
+    EQ --> EW["Email workers"] --> ESP["Email provider"]
+    SQ --> SW["SMS workers"] --> SMS["SMS provider"]
+    PW -.->|"failures"| DLQ[["retry with backoff → DLQ"]]
+    APNS -.->|"invalid token"| DT[("Device tokens")]`} />
+</Figure>
+
+**The pieces, each one sentence in an interview:**
+
+- **Per-channel pipelines.** Each channel has its own queue and workers, so a slow email provider can't delay push notifications. Same isolation idea as Chapter 5's separate lanes.
+- **Priorities.** Separate queues per class (transactional/security ahead of social ahead of marketing), each with reserved workers. A single FIFO can't honour priority: a 20M-message marketing blast at 9:00 would sit in front of every login code.
+- **Preferences.** Look up the user's settings once, after expansion and before the channel split: per notification type × channel, quiet hours in the user's time zone, unsubscribe. Cache them; they change rarely.
+- **Rate limits, both directions.** Per **user** (no more than a few pushes an hour from social events — aggregate the rest) and per **provider** (a token bucket sized to the provider's documented throughput — check current docs; <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> has the algorithms).
+- **Dedup and aggregation.** An idempotency key per `(notificationId, channel, device)` stops redelivered messages from buzzing a phone twice. Social events inside a short window collapse into one: *"Alex and 41 others liked your post."* Push services also offer collapse identifiers so a newer notification replaces an older one on the device.
+- **Retries.** Retry transient failures (timeouts, 5xx, 429) with **exponential backoff and jitter**, a capped number of attempts, then a **dead-letter queue**. Don't retry permanent failures: an "unregistered device" response means delete that token.
+- **Device registry.** A user has several devices; each app install registers a token. Fan-out to a user means fan-out to their live tokens.
+- **Tracking.** Record sent / delivered / opened per message (from provider callbacks and app opens) — for debugging, for "why didn't I get it?" support tickets, and for measuring whether notifications help or annoy.
+- **The in-app inbox is a feed.** A per-user list of notification ids, capped, paged by cursor — push fan-out exactly as in Part Two.
+
+**Worked numbers.**
+
+- Volume: 200M DAU × 5 notifications a day = 1B/day → **10,000/s** average, **30,000/s** peak.
+- Broadcast: "Juno is live" to **50M** followers. If our sending path to the push providers sustains 50,000/s (an assumption to measure, not a vendor limit), the blast takes 50,000,000 ÷ 50,000 = **1,000 s ≈ 17 minutes**. For a live event that's too slow for the last followers — so prioritise the followers most likely to care, and accept that a broadcast is minutes, not seconds.
+- **The notification stampede.** If 5% of 50M open the app within a minute, that's 2,500,000 ÷ 60 ≈ **41,667 extra timeline reads/s** — two-thirds of the normal 60,000/s peak, on top of it. Staggering the send over several minutes is load management for your *own* read path.
+
+<Trace title="Deliver, once, in order of importance" steps={notifications} takeaway="Per-channel queues split by priority; preferences and rate limits before the split; idempotency keys per device; backoff, jitter, DLQ; stagger broadcasts to protect your own read path." />
+
+<Reveal q="Exactly-once notifications: can you promise them?">
+
+No. The queue delivers at least once, and the provider call and your "sent" record can't be one atomic step — a crash between them means you don't know whether it went out. You make duplicates rare (idempotency key checked before sending, recorded right after) and cheap (collapse identifiers replace rather than stack on the device). For security codes, a duplicate is harmless; a missing one is not, so you bias toward retrying. Say: *"At-least-once with dedup; duplicates are rare and harmless, losses are not acceptable."* <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs</a> covers retries and DLQs in depth.
+
+</Reveal>
+
+**Catch the trap:** one queue for everything. It is the most common notification design flaw, and interviewers test it with a single question: "What happens to password resets during a marketing blast?"
+
+<Part n="Part Four" title="In the room">
+
+The numbers in one sweep, then the two questions this pattern unlocks, spoken on the delivery framework's clock.
+
+</Part>
+
+<h2 id="sizing">Chapter 11 · The whiteboard sweep</h2>
+
+<Scene chapter="Chapter 11" title="The whiteboard sweep" mood="dawn">
+
+Before her design reviews, Mara does the numbers on the back of an envelope and folds it into her pocket. She showed you once. Every figure fit on one side, and every box in the design pointed back at one of them.
+
+</Scene>
+
+**Assumptions** (state them): 500M registered users, **200M DAU** (300M monthly actives), 10 timeline opens per DAU per day, **100M posts/day**, ~500 bytes per post (text + metadata; media lives in object storage), average 200 follows, timelines capped at 800 entries of 16 bytes, peak = 3× average, ÷10⁵ seconds per day.
+
+```text
+QPS       timeline reads  2B/day     → 20,000/s avg → 60,000/s peak
+          posts           100M/day   → 1,000/s avg  → 3,000/s peak         read pages : posts = 20 : 1
+          fan-out inserts ≤200/post  → 200,000/s    → 600,000/s peak       pull would be 12,000,000/s
+          hydration       60,000 × 20 posts          → 1,200,000 post gets/s peak (60,000 MGETs)
+Storage   posts           100M × 500 B = 50 GB/day   → 18.25 TB/year       ×3 replicas ≈ 55 TB/year
+          follow graph    500M × 200 = 100B edges × 16 B × 2 directions   ≈ 3.2 TB
+          timelines       300M MAU × 800 × 16 B      ≈ 3.84 TB raw          ×~4 overhead ×2 replicas ≈ 30 TB RAM
+          post cache      2 days × 50 GB             ≈ 100 GB hot set
+Celebrity 50M followers × 1 post = 50M inserts ≈ 83 s of the 600,000/s fleet  → pull above 100K followers
+Notifs    200M × 5/day = 1B/day  → 10,000/s avg → 30,000/s peak; 50M broadcast ≈ 17 min at 50,000/s
+```
+
+**The bridge:** *"So the timeline cache is a memory problem — about 30 TB of RAM — not a throughput problem; fan-out writes are ~600K/s spread over about 300 nodes. The posts themselves are modest: 18 TB a year. The design hinges on the celebrity tail, so push below 100K followers, pull above it."*
+
+<Reveal q="The follow graph is 100 billion edges. Why store it twice?">
+
+Fan-out asks "who follows Bob?" (followers by followee) and timeline rebuilds ask "who does Alice follow?" (followees by follower). Each question needs its own index, partitioned by its leading id, or one of them becomes a scatter-gather across every shard. 1.6 TB per direction is cheap compared with that. This is the many-to-many table from <a href={`${BASE}sd/lessons/databases/`}>Databases</a> — name it, and name both indexes.
+
+</Reveal>
+
+<h2 id="walkthrough">Chapter 12 · Twitter, out loud</h2>
+
+<Scene chapter="Chapter 12" title="Twitter, out loud" mood="night">
+
+Final Friday. Mara sets the phone face-down. *"Design Twitter's home timeline,"* she says. *"Forty-five minutes. I'll be the interviewer, and I won't mention celebrities. Let's see if you do."*
+
+You write four numbers in the corner of the board — 9 · 15 · 25 · 38 — and pick up the marker.
+
+</Scene>
+
+A 45-minute round on <a href={`${BASE}sd/lessons/delivery-framework/`}>the delivery framework's</a> clock: intros to 0:03, requirements to **0:09**, entities and API to **0:15**, high-level design to **0:25**, deep dives to **0:38**, wrap-up to 0:41, then your questions. Timestamps below are the clock; read the lines aloud once.
+
+**0:03 · Roadmap and requirements**
+
+> **You:** "Before I draw anything, here's how I'd like to use our time: about six minutes on requirements and scale, a couple on the entities and the API, a simple design that works, then two or three deep dives on the hardest parts, and a short wrap-up. Stop me any time. Would you like estimates up front, or as they become relevant?"
+>
+> **Interviewer:** "Up front is fine, briefly."
+>
+> **You:** "Functional: users can post short text, with optional media; users can follow and unfollow accounts; users see a home timeline of posts from accounts they follow, newest first, paginated. Out of scope unless you want them: search, trends, DMs, ads, notifications, and ranking — I'll come back to ranking if there's time, since it changes the read path."
+
+**0:05 · Non-functionals with numbers**
+
+> **You:** "Scale: I'll assume 500 million users, 200 million daily actives — about 300 million monthly — each opening the timeline ten times a day — two billion reads a day, about 20,000 a second, 60,000 at a 3× peak. A hundred million posts a day — 1,000 a second, 3,000 at peak. Average 200 follows. So it's read-heavy: twenty timeline reads per post, and each post is shown about 400 times."
+>
+> "Timeline reads should be fast — p99 under 200 ms. Availability over consistency: a post may take a few seconds to reach followers — I'll aim for p99 under five seconds — but an acknowledged post is never lost, and authors see their own post immediately. Follower counts are heavy-tailed: some accounts have tens of millions. Posts are about 500 bytes: 50 GB a day, 18 TB a year before replication. Media goes to object storage and a CDN — I'll leave it there."
+
+**0:08 · The bridge**
+
+> **You:** "So: post, follow, and a paginated home timeline; 60,000 timeline reads a second at peak against 3,000 posts; a few seconds of staleness is fine; the follower distribution has a very long tail. The numbers say: precompute timelines, and handle the tail separately. Does that match what you had in mind?"
+>
+> **Interviewer:** "Yes. Go on."
+
+**0:09 · Core entities**
+
+> **You:** "Four nouns. **User**. **Post** — id, author, text, media references, created time. **Follow** — a follower and a followee; that's many-to-many, a self-join on User, so I'll store it as an edge table with an index in each direction: who-follows-X for fan-out, who-does-X-follow for rebuilds. That's about 100 billion edges. And the **Timeline** — not a source of truth, a derived per-user list of post ids. I'll keep it in a cache."
+
+**0:11 · API**
+
+```text
+POST   /posts              { text, mediaIds? }  Idempotency-Key: <uuid>  → 201 { postId }
+PUT    /follows/{userId}                                                   → 204
+DELETE /follows/{userId}                                                   → 204
+GET    /timeline?limit=20&cursor=<opaque>                                  → 200 { posts[], nextCursor }
+```
+
+> **You:** "The user always comes from the auth token. Posting takes an idempotency key, because a retried post on a flaky connection would otherwise publish twice — visibly. Follow is a PUT to a known URL, so it's idempotent by definition. The timeline is a live list, so cursor pagination — the cursor encodes the last post's timestamp plus its id as a tie-breaker; offsets would shift as new posts arrive."
+
+**0:15 · High-level design, one requirement at a time**
+
+> **You:** "Posting. Client to load balancer to a stateless post service. It writes the post to the post store — a wide-column or sharded relational store, partitioned by post id, with an author index — and publishes a PostCreated event through an outbox to a log, keyed by author. It also adds the post id to the author's own timeline so they see it instantly. Then it returns 201."
+>
+> "Following writes an edge into the follow graph, both directions."
+>
+> "Fan-out. A fan-out service consumes PostCreated, pages through the author's followers from the graph, keeps the ones active in the last 30 days, and pushes the post id into each follower's timeline: a Redis sorted set per user, score is the post time in milliseconds, member is the post id, capped at 800."
+>
+> "Reading. The timeline service reads the newest 25 ids from the user's sorted set, hydrates the bodies from a post cache with one multi-get, the authors from a user cache, filters anything deleted or blocked, and returns 20 with a cursor. Cache misses fall through to the stores."
+
+<Figure caption="Twitter home timeline, high level. Numbers on the arrows are the peaks the design must carry.">
+  <Mermaid code={`flowchart LR
+    C["Client"] --> LB["Load balancer"]
+    LB -->|"3K posts/s"| PS["Post service"]
+    LB -->|"60K reads/s"| TS["Timeline service"]
+    LB --> FS["Follow service"]
+    PS --> PDB[("Post store\n18 TB/yr")]
+    PS -->|"PostCreated"| K[["Log: posts"]]
+    FS --> G[("Follow graph\n100B edges × 2")]
+    K --> FO["Fan-out service"]
+    FO --> G
+    FO -->|"600K inserts/s"| TL[("Timeline cache\nRedis sorted sets\n~30 TB RAM")]
+    TS --> TL
+    TS -->|"1.2M gets/s"| PC[("Post + user cache\n~100 GB hot")]
+    PC -.->|"miss"| PDB`} />
+</Figure>
+
+> **You:** "That serves all three features. Now the hard part — it doesn't survive the follower tail."
+
+**0:25 · Deep dive 1 — the celebrity problem**
+
+> **You:** "Pure push fails at celebrities. An account with 50 million followers posting once means 50 million inserts — at our 600,000-a-second fleet, about 83 seconds of all fan-out capacity, and every normal post waits behind it. Pure pull fails at reads: 60,000 reads a second times 200 followees is 12 million lookups a second, and each read waits for the slowest of 200 calls."
+>
+> "So hybrid. Accounts under 100,000 followers are pushed; over it, they're not fanned out at all — their posts live only in their author timeline. At read time, the timeline service takes the pushed sorted set, fetches the recent posts of the few celebrities the user follows, and merges — both lists are sorted, so it's cheap. At 100,000, the worst pushed post costs about a sixth of a second of fleet time. The celebrity lists are the hottest keys in the system, so every timeline server holds them in a one-second in-process cache; Redis sees a few hundred reads a second for each instead of millions. I'd use two thresholds — 100K up, 80K down — so accounts near the line don't flap, and tune the number from fan-out lag."
+
+**0:30 · Deep dive 2 — the timeline cache**
+
+> **You:** "Four promises for this cache. Key: tl colon user id, sorted set, score in milliseconds — not the 64-bit id, because scores are doubles and would lose precision — member is the post id, capped at 800 with a rank trim after each insert. Ids, not bodies, so edits and deletes need no fan-out. TTL: none while active; the key expires after 30 idle days, the same clock the fan-out uses to skip inactive followers. Invalidation: deletes, blocks and unfollows are filtered at hydration, against the source of truth; I over-fetch 25 for a page of 20. Failure: it's load-bearing — falling back to pull for everyone is 12 million lookups a second — so a lost shard's users are rebuilt by pull, rate-limited, with a degraded page meanwhile. A returning inactive user takes the same rebuild path on login."
+>
+> "Size: 300 million monthly actives times 800 entries times 16 bytes is 3.84 TB raw; with sorted-set overhead around 4× and one replica, about 30 TB of RAM — roughly 300 nodes. Spread over them, 600,000 inserts a second is about 2,000 per node. Memory is the cost driver, not throughput."
+
+**0:34 · Deep dive 3 — the fan-out pipeline**
+
+> **You:** "Fan-out is two stages so big authors don't block small ones: one event per post, then a planner emits batches of about a thousand follower ids onto a second queue that all workers share, grouped by Redis shard so each batch is one pipelined round trip per shard. Delivery is at-least-once, and that's fine: a re-sent ZADD with the same member and score is a no-op, so retries can't duplicate. Order doesn't matter in the queue, because the score orders the timeline. The metric that matters is fan-out lag — post stored to last timeline written — with an SLO of five seconds at p99 and an alert on it. If lag spikes, the post itself is unaffected; followers see it late. Past a ceiling we shed: skip followers inactive for a week, who'll rebuild anyway."
+
+**0:38 · Wrap-up**
+
+> **You:** "To recap: posting is a durable write plus an event; the timeline is a precomputed sorted set of ids per active user; celebrities are pulled and merged at read; reads are cache-only in the common case, well under 200 ms. At 10×, the first pressure is timeline memory — about 300 TB of RAM — so I'd lower the cap, keep timelines only for weekly actives, or pack entries into compact blobs; fan-out at six million inserts a second scales with workers and shards. If a Redis shard dies, its users' feeds rebuild by pull at a controlled rate. I'd monitor fan-out lag p99, timeline read p99, timeline cache hit rate, rebuild rate, and celebrity-merge latency. With more time: ranking — the pushed timeline becomes candidate generation for a ranker — and notifications."
+
+**0:41.** Mara turns the phone over. *"You said 'celebrity' at minute five,"* she says. *"I was going to ask at minute twenty."*
+
+**Check the numbers yourself:** 200M × 10 = 2B ÷ 10⁵ = 20,000/s, ×3 = 60,000/s. 100M ÷ 10⁵ = 1,000/s, ×3 = 3,000/s. 2B ÷ 100M = 20 reads per post; × 20 posts per page = 400 displays per post. 3,000 × 200 = 600,000 inserts/s; 60,000 × 200 = 12,000,000 lookups/s. 50M ÷ 600,000 ≈ 83 s; 100,000 ÷ 600,000 ≈ 0.17 s. 100M × 500 B = 50 GB/day × 365 = 18.25 TB. 300M × 800 × 16 B = 3.84 TB; × 4 × 2 ≈ 30.7 TB; ÷ 100 GB ≈ 300 nodes; 600,000 ÷ 300 = 2,000/s per node. At 10×: ≈ 300 TB RAM, 6M inserts/s.
+
+<Reveal q="Where in this walkthrough would you most likely have skipped silently — and what would it have cost?">
+
+The two silent skips that cost the most here: **the follow table's second index** (without it, either fan-out or rebuild becomes a scatter-gather, and the interviewer will find it) and **the timeline cache's failure plan** (without "it's load-bearing, here's the rebuild", the cache is a hand-wave — your logged gap). A third: not saying that the author sees their own post immediately. Each takes one sentence. Saying them is the difference between "knows the pattern" and "has thought about running it".
+
+</Reveal>
+
+<h2 id="notification-walkthrough">Chapter 13 · Notifications, sketched</h2>
+
+<Scene chapter="Chapter 13" title="Notifications, sketched" mood="dusk">
+
+The following Friday, Mara doesn't set a timer. *"Design a notification system. I want the skeleton, not the speech — the line you'd say at each checkpoint. If the skeleton is right, the speech writes itself."*
+
+</Scene>
+
+The same clock, compressed to the lines that score. Chapter 10 has the depth for every dive.
+
+| Clock | Step | The line that scores |
+|---|---|---|
+| 0:03 | Requirements | "Internal services send notifications to users over push, email, SMS and an in-app inbox; users control preferences per type and channel. Out of scope: building our own push transport, the template editor UI." |
+| 0:05 | Non-functionals | "A billion a day — 10,000 a second, 30,000 at peak — plus broadcasts to 50 million. Security codes within seconds; social within a minute; marketing within hours. At-least-once, no visible duplicates, respect opt-outs always." |
+| 0:09 | Entities | "Notification, Template, Preference (user × type × channel), DeviceToken (user has many), DeliveryAttempt (one per channel per device), InboxItem." |
+| 0:11 | API | "`POST /notifications` (internal) with recipient or segment, type, template, data, priority, and an idempotency key. `GET /me/notifications?cursor=` for the inbox. `PUT /me/preferences`. Devices register tokens with `PUT /me/devices/{deviceId}`." |
+| 0:15 | High-level | "API → expand segment → enrich (template, locale) → preferences, quiet hours, per-user rate limit, aggregation → per-channel, per-priority queues → channel workers → providers. Provider callbacks update DeliveryAttempt. The inbox is a per-user capped list — feed fan-out." |
+| 0:25 | Dive 1 · priority and isolation | "Separate queues and reserved workers per channel and priority, so a marketing blast can't delay a login code, and a slow email provider can't delay push." |
+| 0:30 | Dive 2 · reliability | "Idempotency key per notification, channel and device, checked before sending; backoff with jitter on 5xx, 429 and timeouts; DLQ after N attempts; invalid-token responses delete the token. At-least-once with dedup — duplicates rare and harmless, losses not." |
+| 0:34 | Dive 3 · broadcast | "A 50M broadcast is a fan-out: expand in batches, rate-limit to the providers, stagger over minutes — partly to protect our own feed from 40,000 extra reads a second when people tap it." |
+| 0:38 | Wrap-up | "First bottleneck at 10× is provider throughput and cost (SMS); monitor send latency by priority, failure rate by provider, DLQ depth, opt-out rate after campaigns." |
+
+<Reveal q="The interviewer asks: “How is this the same pattern as the Twitter timeline?”">
+
+One event, many recipients, and a choice of when to copy. The inbox is literally a pushed timeline (ids per user, capped, cursor-paged). Broadcasts are the celebrity problem: one event, 50M deliveries — you batch, rate-limit and stagger instead of fanning out in one burst. The differences are at the edges: an external last hop that can refuse, user preferences, and priorities. Saying the shared shape first, then the differences, shows you're reasoning from a pattern rather than reciting a design.
+
+</Reveal>
+
+<h2 id="transfer">Chapter 14 · Same pattern, other skins</h2>
+
+<Scene chapter="Chapter 14" title="Same pattern, other skins" mood="dawn">
+
+On your last whiteboard of the quarter, Mara writes five product names in a column — and next to each, only two words: *push* or *pull*, and *why*. *"If you can fill in this column,"* she says, *"you don't need to memorise five designs. You need this one, and the column."*
+
+</Scene>
+
+| Question | Push or pull? | What changes from the Twitter design |
+|---|---|---|
+| **Twitter / news feed** | Hybrid | The walkthrough above; ranking (Chapter 8) when asked |
+| **Instagram** | Hybrid | Media via presigned upload, object storage and CDN (<a href={`${BASE}sd/lessons/blob-cdn/`}>Blob & CDN</a>); the feed carries ids and the client loads images from the CDN. Stories are a second, short-lived feed: a per-user tray of who has a story, entries expiring after 24 hours |
+| **TikTok For You** | Pull + rank | No follow graph to push along: candidates come from a recommender (<a href={`${BASE}sd/lessons/recsys/`}>Recommendation systems</a>), ranked per request, served from a prefetched session queue. Fan-out only for a "Following" tab |
+| **LinkedIn-style feed** | Hybrid + heavy ranking | Two-way connections plus one-way follows for influencers; activity of connections ("Sam commented on…") multiplies candidates, so ranking and dedup across activity types matter more than raw fan-out |
+| **Notification system** | Push to devices | Chapter 10 and 13: per-channel pipelines, priorities, preferences, dedup, retries |
+| **Discord / Slack huge channels** | Push to online members | Deliver over open connections to members currently connected (presence registry from <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime</a>); offline members read the channel's log on return — pull |
+| **Live comments on a stream** | Push via pub/sub | Fan-out to current viewers only, no per-viewer storage; sample or drop under load |
+| **Tinder matches** | Tiny push | A match notifies two people — fan-out of two; the hard parts are geospatial and the swipe store |
+
+**The general rule.** Push when the audience is **known, bounded and reads often**. Pull when the audience is **huge, unknown, or decided at read time** (a recommender). Hybrid when the audience size is **heavy-tailed** — which, for anything with followers, it always is.
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The feed review" steps={drills} takeaway="Push for the many, pull for the few, merge at read. Ids not bodies. Say the threshold, the lag SLO, and the failure plan." />
 
 <Quiz questions={[
   {
@@ -74,11 +759,11 @@ Implementation notes that earn depth: fan-out runs **async via queues** (post wr
     why: 'Move work to the rare side of the ratio. This is the same precompute trade as typeahead\'s top-K — recognizing it as one recurring move across problems is the pattern skill itself.'
   },
   {
-    q: 'Your push-based feed is live and Cristiano Ronaldo (600M followers) joins. What breaks, and what is the fix?',
+    q: 'Your push-based feed is live and a superstar with 600M followers joins. What breaks, and what is the fix?',
     options: [
       'Nothing — queues absorb it',
-      'His每 post triggers 600M feed inserts, hogging workers for hours and delaying all other fan-outs. Fix: hybrid — flag accounts over ~100K followers as pull-at-read; merge pushed feed + pulled celebrity posts',
-      'His reads get slow — add read replicas',
+      'Each post triggers 600M timeline inserts, hogging workers for hours and delaying all other fan-outs. Fix: hybrid — flag accounts over ~100K followers as pull-at-read; merge pushed feed + pulled celebrity posts',
+      'Their reads get slow — add read replicas',
       'Storage explodes — store one copy per post'
     ],
     answer: 1,
@@ -94,9 +779,132 @@ Implementation notes that earn depth: fan-out runs **async via queues** (post wr
     ],
     answer: 2,
     why: 'Normalization inside a cache: the fan-out copies the cheap reference, content stays in one place. A deleted post = drop from one post cache, every feed heals automatically.'
+  },
+  {
+    q: 'A fan-out batch is redelivered after a worker crash. Which timeline structure makes that harmless?',
+    options: [
+      'A Redis list with LPUSH',
+      'A sorted set scored by post time — re-adding the same member with the same score changes nothing',
+      'A hash with a counter per post',
+      'Any structure, as long as the queue is exactly-once'
+    ],
+    answer: 1,
+    why: 'Queues deliver at least once. Idempotency by data structure (ZADD of an existing member) is cheaper and safer than tracking which inserts already happened.'
+  },
+  {
+    q: 'Notifications: a marketing blast of 20M messages starts at 9:00. How do password-reset codes stay fast?',
+    options: [
+      'Send codes via SMS only',
+      'Separate priority queues with reserved workers, per channel, so transactional messages never wait behind bulk ones',
+      'Increase the provider rate limit',
+      'Delay marketing until midnight'
+    ],
+    answer: 1,
+    why: 'A single FIFO cannot honour priority. Priority is a property of queue layout and worker allocation.'
   }
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: 10 minutes — extend the hybrid feed with ranking ("chronological → engagement-ranked: what changes?") and answer live: where does ranking run, what gets precomputed, what does the celebrity merge look like now? Then weekend mock: **Twitter feed**, full 45.
+<Scene title="The interview room" mood="night">
+
+The Interviewer says *"Design a news feed"* and waits. A year ago you would have drawn a database and a loop. Today you say the ratio, the two strategies, the tail — and a number.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "Feeds are read far more than written — at 200 million daily users opening the app ten times a day and 100 million posts, that's 60,000 timeline reads a second at peak against 3,000 posts. So I'd **precompute**: fan-out on write into a per-user timeline — a Redis sorted set of post ids, scored by post time, capped at 800 — and hydrate the bodies from a post cache at read time. Ids, not bodies, so edits and deletes need no fan-out; deletes, blocks and unfollows are filtered at hydration. Fan-out runs **asynchronously**: the post is stored and an event published; workers push to active followers in batches, idempotently, and I'd alert on fan-out lag at five seconds p99. Pure push breaks on **celebrities** — 50 million followers is 50 million inserts per post — so it's **hybrid**: accounts above 100,000 followers aren't fanned out; their recent posts are pulled from a hot in-process cache and merged at read. Inactive users are skipped and rebuilt by pull when they return. Pagination is by cursor on time plus id. If the feed is ranked, the timeline becomes candidate generation for a ranker, and paging uses a per-session snapshot."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · Why not just pull? It’s simpler and always fresh.">
+
+Because reads dominate. Pull at 60,000 reads/s × 200 followees is 12M lookups/s, and every read waits for the slowest of 200 calls (1 − 0.99²⁰⁰ ≈ 87% of reads hit at least one p99-slow call). Push is 600,000 inserts/s, off the user's critical path. Pull is right at small scale, and for celebrities.
+
+</Reveal>
+
+<Reveal q="2 · How did you pick 100,000 as the celebrity threshold?">
+
+From fan-out lag: at 100K, the most expensive pushed post is about 0.17 s of a 600K/s fleet, so no single post can stall others for long; above it, cost grows without bound (50M followers ≈ 83 s). Pull cost per celebrity is one lookup on a heavily cached list. I'd tune it from the lag metric and use hysteresis (100K up, 80K down) to stop flapping.
+
+</Reveal>
+
+<Reveal q="3 · A user deletes a post that’s already in 40,000 timelines. What happens?">
+
+The post is tombstoned in the post store and its cache key deleted. Timelines hold ids, so hydration sees the tombstone and drops it on every subsequent read; over-fetching 25 for 20 keeps pages full. An async job may clean the ids out later. No synchronous 40,000-write delete, and no race with an in-flight fan-out.
+
+</Reveal>
+
+<Reveal q="4 · Redis loses a shard. What do users see?">
+
+The timeline cache is load-bearing, so this is planned for: replicas fail over first. If the data is lost, affected users' timelines are rebuilt by pull on their next read — rate-limited so the post store isn't flooded — and users waiting for a rebuild get a degraded page (their own and celebrity posts). Fan-out keeps writing to the new shard throughout.
+
+</Reveal>
+
+<Reveal q="5 · Now make it ranked. What changes?">
+
+The read path, not the write path. The pushed timeline plus celebrity pulls (plus recommender candidates if wanted) become candidates; features are hydrated; a light model prunes and a heavy model scores; a blender applies diversity, seen-filtering and ads. Paging changes: rank once per session, store the ordered ids briefly, and page by offset into that snapshot, because rank order isn't time order.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "Feed", "timeline", "followers see" | Fan-out: push vs pull vs hybrid, with the read:write ratio |
+| Reads ≫ writes | Push: precompute timelines; reads become one range read |
+| One author with millions of followers | Celebrity problem = write amplification → hybrid, threshold ~100K, merge at read |
+| Celebrity post lists read by millions | Hot key → in-process L1 cache, ~1 s TTL |
+| What goes in the timeline | Post ids in a sorted set: score = ms time, member = id, cap 800 |
+| Edits, deletes, blocks, unfollows | Lazy filtering at hydration; optional async cleanup |
+| Paging a live feed | Cursor = (time, id) of last item; inclusive bound + tie-break |
+| Paging a ranked feed | Per-session snapshot of ranked ids; cursor = offset into it |
+| Fan-out implementation | Event via outbox → planner → batches of ~1,000 → workers, pipelined per shard |
+| Retries / redelivery | At-least-once + idempotent ZADD |
+| "What if fan-out falls behind?" | Lag SLO (5 s p99), alert in seconds, shed inactive, posting unaffected |
+| Inactive or new users | Skip fan-out; rebuild by pull on first read |
+| Like / view counts | Facts (who liked) separate from counts; sharded counters; HyperLogLog for uniques |
+| "Design notifications" | Per-channel, per-priority queues; preferences; rate limits; idempotency per device; backoff + DLQ; stagger broadcasts |
+| TikTok-style feed | Pull from a recommender + rank; no follow-graph fan-out |
+| Sizing | Reads/s, posts/s, inserts/s = posts × followers, timeline RAM = actives × cap × entry |
+
+## Five mistakes to leave behind
+
+1. **Choosing push or pull without the ratio.** Say reads per second against posts per second first; the choice follows.
+2. **Not naming the celebrity problem before the interviewer does.** Say it with a number and a threshold.
+3. **Copying post bodies into timelines.** Ids, then hydrate.
+4. **A timeline cache with no failure plan.** It's load-bearing; say how it rebuilds.
+5. **One queue for every notification.** Priority and channel isolation are the design.
+
+<Scene title="Mara’s last word" mood="dusk">
+
+A year after awards night, Juno posts twelve times during the ceremony. Dev watches the fan-out lag graph out of habit. It never leaves the bottom of the chart — her posts aren't in it. At 11 p.m. he sends one line to the channel: *"Nothing happened."* Mara reacts with a single checkmark.
+
+</Scene>
+
+**Keep it warm:** with the buddy, 10 minutes — extend the hybrid feed with ranking (*"chronological → engagement-ranked: what changes?"*) and answer live: where does ranking run, what gets precomputed, what does the celebrity merge look like now, how does paging stay stable? Then the weekend mock: **Twitter feed**, the full 45 minutes on the clock above, with the four checkpoints written in the corner. A week later, **Notification System** from the skeleton in Chapter 13.
+
+Related: <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (the four promises, hot keys) · <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & Streams</a> (outbox, lag, back-pressure, pub/sub vs work queues) · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> (the follow table, sharding) · <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a> · <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> · <a href={`${BASE}sd/lessons/recsys/`}>Recommendation systems</a> · <a href={`${BASE}sd/lessons/pattern-realtime/`}>Realtime</a> · <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs</a> · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a>.
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 1, "Describing Load", uses Twitter's home timeline to explain exactly this push-vs-pull tradeoff and the hybrid; chapter 11 (stream processing) covers the event log underneath fan-out.
+- [Timelines at Scale](https://www.infoq.com/presentations/Twitter-Timeline-Scalability/) (Raffi Krikorian, QCon 2013) — Twitter's own account of fan-out on write into Redis-backed home timelines, and what high-follower accounts cost it.
+- [Twitter's recommendation algorithm](https://github.com/twitter/the-algorithm) (open-sourced 2023) — the candidate sourcing → ranking → heuristics-and-filters funnel from Chapter 8, as real code.
+- [TAO: Facebook's Distributed Data Store for the Social Graph](https://www.usenix.org/conference/atc13/technical-sessions/presentation/bronson) (USENIX ATC 2013) — how a social graph with both edge directions is stored and cached at scale.
+- [Redis sorted sets](https://redis.io/docs/latest/develop/data-types/sorted-sets/) — `ZADD`, range queries by score, rank trimming, and how equal scores are ordered.
+- [Redis HyperLogLog](https://redis.io/docs/latest/develop/data-types/probabilistic/hyperloglogs/) — memory bound and error rate for approximate unique counts.
+- [Apple: sending notification requests to APNs](https://developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns) and [Firebase Cloud Messaging](https://firebase.google.com/docs/cloud-messaging) — collapse identifiers, priorities, and error responses such as unregistered tokens. Check current docs for limits.
+
+**Look these up yourself**
+
+- **"Feeding Frenzy" (Silberstein et al., SIGMOD 2010)** — choosing push or pull per follower edge from producer and consumer rates; the formal version of Chapter 2's break-even reveal.
+- **Snowflake-style id generation** — time-ordered 64-bit ids, and why they suit cursors and timelines (and why they don't fit in a double).
+- **Bloom filters for "already seen" sets** — keeping ranked feeds from repeating posts across sessions within a fixed memory budget.
+- **Count-min sketch** — approximate per-item counts and heavy hitters, the cousin of HyperLogLog for trending and abuse detection.
+- **Exponential backoff with jitter** — why "full jitter" spreads retries better than fixed delays when thousands of clients fail together.
+- **Notification fatigue and send-time optimisation** — how products decide *whether* and *when* to notify, not only how to deliver.
+- **Edge-level hot partitions in the follow graph** — storing a celebrity's follower list across many shards so fan-out paging doesn't hammer one.

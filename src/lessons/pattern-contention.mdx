@@ -1,79 +1,1042 @@
 ---
 title: 'Pattern: Contention — Locks, Idempotency, Exactly-Once'
-description: 'When two requests want the same thing at once — bookings, payments, inventory — and the toolkit that keeps them honest.'
+description: 'The night Kestrel sold 212 seats twice and charged 37 people twice. One scarce thing, many hands, and a network that repeats itself — the toolbox that keeps them honest, then Ticketmaster, payments and a job scheduler out loud.'
 module: 6
 order: 1
-minutes: 35
+minutes: 110
 ---
-import Quiz from '../components/Quiz.astro';
+import PatternHub from '../components/PatternHub.astro';
+import Scene from '../components/Scene.astro';
+import Part from '../components/Part.astro';
+import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
+import Trace from '../components/Trace.astro';
+import Reveal from '../components/Reveal.astro';
+import Quiz from '../components/Quiz.astro';
+import { race, toolbox, contentionMath, locks, holds, crowd, idempotency, payments, scheduler, drills } from '../data/sd/pattern-contention';
+import { BASE } from '../paths';
 
-## The pattern in one sentence
+<PatternHub
+  pattern="sd-pattern-contention"
+  start="prologue"
+  logline="Many hands reach for one scarce thing — the last seat, the same rupee, one job — over a network that drops answers and repeats requests. Your design must make it happen once, to one winner. Close the gap between check and change; make the second attempt harmless; and never trust a holder who might have fallen asleep."
+  cast={[
+    { name: 'You', role: 'Two months at Kestrel. You write payment code for a living. You have never sold a stadium in four minutes.' },
+    { name: 'Mara Quell', role: 'Principal engineer. Draws one seat on the whiteboard and asks who owns it.' },
+    { name: 'Dev Okafor', role: 'SRE. Was on call for the drop. Narrates the incident in a very calm voice.' },
+    { name: 'Theo Brandt', role: 'Database whisperer. Believes every lock is a promise someone will eventually break.' },
+    { name: 'Iris Tan', role: 'Product lead. Her “oh, and also” is how Kestrel ended up in ticketing, payments and cron jobs.' },
+    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
+  ]}
+  parts={[
+    { name: 'Part One · One seat, many hands', description: 'The race, and the tools inside one database.', links: [['problem', 'The gap between check and change'], ['atomic', 'One statement'], ['db-locks', 'Lock it, or bet on it']] },
+    { name: 'Part Two · Beyond one database', description: 'Distributed locks, serialising, holds and crowds.', links: [['distributed-locks', 'The lock that fell asleep'], ['serialize', 'One line, one writer'], ['holds', 'Held, not sold'], ['waiting-room', 'Two million at the door']] },
+    { name: 'Part Three · Twice is the enemy', description: 'Idempotency end to end, and what exactly-once really means.', links: [['idempotency', 'The double tap'], ['exactly-once', 'Effectively once']] },
+    { name: 'Part Four · Money and time', description: 'Ledgers, payment states, and jobs that must run once.', links: [['ledger', 'Money is append-only'], ['payments', 'The answer that never came'], ['scheduler-mechanics', 'The worker who came back']] },
+    { name: 'Part Five · Out loud', description: 'Ticketmaster in full; payments and a scheduler in sketch; the same pattern in new skins.', links: [['ticketmaster', 'Ticketmaster, out loud'], ['payments-walkthrough', 'Payments, sketched'], ['scheduler-walkthrough', 'A job scheduler, sketched'], ['transfer', 'Same fight, new skins']] },
+  ]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  routes={[
+    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#decision-drills', title: '🧭 Decision drills', text: 'Pick the cheapest correct tool, with feedback' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+  ]}
+  note="This is the longest pattern lesson, because money and scarce inventory make it the deep dive in three of the most-asked questions. Read one part per sitting; the walkthroughs in Part Five assume Parts One to Four."
+/>
 
-Multiple concurrent actors compete to mutate the same scarce resource — the last seat, the same ₹500, one job — and your design must guarantee it happens **once, to one winner**, under retries, crashes, and races.
+<h2 id="prologue">Prologue · The Lanterns drop</h2>
 
-**Trigger words:** "book", "reserve", "purchase", "only one", "inventory", "double-charge", "flash sale", "run this job exactly once". The moment money or scarce inventory appears, this pattern IS the deep dive — walk in ready.
+<Scene chapter="Prologue" title="Sold twice" mood="storm">
 
-## Tool 1 — Atomic check-and-set (start here, not with locks)
+Kestrel Live's first big on-sale is The Lanterns at the city stadium: 50,000 seats, 10:00 a.m. sharp. At 10:00:04 Dev posts the first graph — two million people, a wall of traffic. At 10:06 he posts the second: *"Sold out."*
 
-The cheapest correct answer is usually a **conditional write** that checks and mutates in one atomic step:
+At 10:40 the support queue posts the third. Two hundred and twelve seats were sold to two people each. Thirty-seven fans were charged twice for one order — their banking app had retried the request when the response was slow.
+
+In the post-mortem, Mara draws a single square on the whiteboard and writes *B-4-17* inside it. *"One seat,"* she says. *"Two buyers, both told yes. And one buyer, told yes twice."* She caps the marker. *"Those are two different bugs. Which one is which?"*
+
+</Scene>
+
+The first bug is **contention**: many actors competing to change one scarce thing at the same moment. The second is **duplication**: one actor's single intent arriving more than once, because networks time out and clients retry. Both bugs break the same promise — **it happens once, to one winner** — and the same small toolbox fixes both.
+
+**The pattern in one sentence:** multiple concurrent actors compete to mutate the same scarce resource — the last seat, the same ₹500, one job — and your design must guarantee it happens **once, to one winner**, under retries, crashes and races.
+
+**Trigger words:** "book", "reserve", "purchase", "only one", "inventory", "double-charge", "flash sale", "redeem", "run this job exactly once", "at most N per user". **The moment money or scarce inventory appears, this pattern IS the deep dive — walk in ready.**
+
+**Where it shows up.** Module 6 unlocks three walkthroughs — Ticketmaster, a payment system, a distributed job scheduler — and the same tools answer Airbnb booking, flash sales, coupon redemption, inventory, a distributed lock service and (at its limit) a stock exchange. Part Five does the three walkthroughs out loud and maps the others.
+
+**Your stakes.** Payments are your day job. That is an edge: idempotency keys, payment states and reconciliation are things you have shipped, not memorised, and the payments walkthrough is your wheelhouse. It is also a risk, because the interviewer will push past what your team's framework does for you — fencing tokens, the unknown state after a timeout, why a ledger is append-only. This lesson is about saying the mechanism, not the library name.
+
+<Figure caption="The toolbox, cheapest first. Every chapter below is one rung. Climb only when the rung below cannot express your critical section.">
+  <Mermaid code={`flowchart TB
+    A["1 · One atomic statement\nUPDATE … WHERE status = AVAILABLE"] --> U["2 · A constraint says no\nUNIQUE / EXCLUSION"]
+    U --> L["3 · Row lock or version\nFOR UPDATE · version column"]
+    L --> D["4 · Distributed lock\nlease + fencing token"]
+    D --> S["5 · Serialise\none writer per key"]
+    S --> H["Around all of them:\nholds with expiry · waiting room\nidempotency keys · ledgers"]`} />
+</Figure>
+
+<Part n="Part One" title="One seat, many hands">
+
+The race, its arithmetic, and the tools that live inside one database. Most contention problems are solved here.
+
+</Part>
+
+<h2 id="problem">Chapter 1 · The gap between check and change</h2>
+
+<Scene chapter="Chapter 1" title="The gap" mood="night">
+
+Theo prints the hold code from the drop and reads it aloud like an alibi. *"Select the seat. If it's available, update it to held."* He sets the paper down.
+
+*"Both buyers did the select in the same millisecond. Both saw available. Both updated."* He draws two arrows into the square. *"The database did exactly what we asked. We asked the wrong question."*
+
+Mara turns to you. *"Where is the gap?"*
+
+</Scene>
+
+Every contention bug has the same shape: **read, decide in the application, write back**. Between the read and the write is a gap, and another actor can act inside it. Both decisions were correct when they were made; together they are wrong.
+
+<Figure caption="The lost update. Each buyer's check was true when it ran. Nothing connected the check to the write.">
+  <Mermaid code={`sequenceDiagram
+    participant A as Buyer A
+    participant DB as seats table
+    participant B as Buyer B
+    A->>DB: SELECT status WHERE seat = B-4-17
+    DB-->>A: AVAILABLE
+    B->>DB: SELECT status WHERE seat = B-4-17
+    DB-->>B: AVAILABLE
+    A->>DB: UPDATE status = HELD, held_by = A
+    B->>DB: UPDATE status = HELD, held_by = B
+    Note over A,B: both told seat held · B owns the row · A was robbed`} />
+</Figure>
+
+"It's in a transaction" doesn't save you. Postgres defaults to Read Committed and MySQL's InnoDB to Repeatable Read; neither stops this read-then-write pattern (Postgres's Repeatable Read would abort the second writer; MySQL's would not). The <a href={`${BASE}sd/lessons/databases/#isolation`}>Databases lesson, Chapter 7</a> has the full anomaly table. The fix in this lesson is not "raise the isolation level"; it is **close the gap**: make the check and the change one indivisible step, or make sure only one actor can be in the gap at a time.
+
+**Three questions to ask of any contended resource** — Mara's version of the Keeper's three:
+
+1. **What exactly is scarce?** One seat, a count of units, one job run, a balance. This sets the **lock granularity**: lock the *seat*, not the *event*; the *account*, not the *ledger*. Coarser locks mean more contention for no extra safety.
+2. **Where does the truth live?** One row in one database is the easy case. Truth split across services is the hard case.
+3. **How long is the critical section?** One statement (microseconds), one transaction (milliseconds), or minutes of human checkout? The longer it is, the less you can hold a lock across it — and the more you need holds with expiry.
+
+**Worked numbers — the shape of an on-sale.** Assumptions: 2,000,000 fans arrive within 2 minutes of opening; 50,000 seats; an average order of 2 seats.
+
+- Winning orders: 50,000 ÷ 2 = **25,000**. Success rate: 25,000 ÷ 2,000,000 = **1.25%**.
+- Arrival rate: 2,000,000 ÷ 120 s ≈ **16,700 people per second**. If they all try to hold seats directly, that is ~16,700 contended writes per second at one database, aimed at a small set of rows.
+- Contention concentrates: if 30% of attempts want the 500 best seats, that is about **5,000 attempts per second** on 500 rows. They are all gone within the first second; the other 4,500-plus attempts per second are losers.
+
+**98.75% of the work is telling people "no".** Design so "no" is cheap, fast and honest. That sentence will shape every box in the Ticketmaster walkthrough.
+
+<Trace title="Find the race" steps={race} takeaway="Read-decide-write leaves a gap. Close it, or keep everyone else out of it. And notice that almost every request on a hot night is a loser." />
+
+**Catch the trap:** solving contention before naming the resource. "We'll use a distributed lock" — on what? A lock on the whole event serialises 2 million people through one door. Say the granularity first.
+
+<h2 id="atomic">Chapter 2 · One statement</h2>
+
+<Scene chapter="Chapter 2" title="One statement" mood="dawn">
+
+Theo deletes eleven lines of hold code and types one statement in their place. Then he runs the load test from the drop: two hundred threads, one seat.
+
+One thread prints *held*. One hundred and ninety-nine print *taken*.
+
+*"No lock objects,"* he says. *"No Redis. The row is the lock."* Mara asks the obvious next question: *"And when the decision is too big for one statement?"*
+
+</Scene>
+
+**Start here, not with locks.** The cheapest correct answer is usually a **conditional write** that checks and mutates in one atomic step. The database takes a row lock for the length of that one statement, and the second writer re-checks the condition after the first commits.
 
 ```sql
-UPDATE seats SET status='held', user_id=42
-WHERE seat_id=17 AND status='available';
+UPDATE seats
+   SET status = 'HELD', held_by = :hold_id, held_until = now() + interval '10 minutes'
+ WHERE event_id = :event AND seat_id = :seat
+   AND (status = 'AVAILABLE' OR (status = 'HELD' AND held_until < now()));
 -- 1 row updated → you won. 0 rows → someone beat you. No lock objects anywhere.
 ```
 
-Same idea as optimistic concurrency (`WHERE version = 7` … `SET version = 8`) and Redis `SETNX`/Lua (the rate limiter used exactly this). **Reach for locks only when the critical section spans multiple operations** that can't collapse into one atomic statement.
+The shortest form — the one interviewers like — is `UPDATE seats SET held_by = ? WHERE id = ? AND held_by IS NULL`. **The row count is the answer.** Your code never reads-then-decides; it asks the database to decide and reports what happened.
 
-## Tool 2 — Locks, and the parts people get wrong
+**Several seats at once, all or nothing.** A buyer picks four seats together. Hold them in one statement and compare the count:
 
-**DB pessimistic lock** (`SELECT ... FOR UPDATE`): inside one database, this is the honest default — transactional, released on commit or crash. Say it before reaching for anything distributed.
+```sql
+BEGIN;
+UPDATE seats SET status = 'HELD', held_by = :hold_id, held_until = now() + interval '10 minutes'
+ WHERE event_id = :event AND seat_id = ANY(:seat_ids)
+   AND (status = 'AVAILABLE' OR (status = 'HELD' AND held_until < now()));
+-- app: if rows updated <> 4 → ROLLBACK (someone took one of them); else COMMIT
+COMMIT;
+```
 
-**Distributed lock** (Redis `SET key val NX PX 30000`): needed when the critical section spans services or seconds. The two failure conversations interviewers want:
+The rollback releases the seats you did get, so a buyer never ends up with three of four. (Two multi-seat holds can still lock rows in different orders; Postgres detects the deadlock and aborts one, which your code treats like a lost race and reports "seats taken". Sorting seat ids helps when you lock rows one by one.)
 
-- **Expiry vs. slow holder:** lock has TTL 30s (holder crash must not wedge the system forever) — but a GC-paused holder can wake *after* expiry and keep mutating while a new holder works. Fix: **fencing tokens** — the lock service issues a monotonically increasing number; storage rejects writes carrying a stale token. Without fencing, a TTL lock is advisory, not safe — saying this sentence is staff-level signal.
-- **What are you locking?** Lock granularity = contention scope: lock the *seat*, not the *event*; the *account*, not the *ledger*.
+**Counts work the same way.** For interchangeable units — 5,000 general-admission tickets, stock of a product, the remaining uses of a coupon:
 
-**The waiting room** (Ticketmaster): when 500K people want 10K tickets, don't let them fight at the database. Admit users from a **queue** into the purchase flow at a controlled rate; inside, contention is back to manageable per-seat check-and-set with a **short hold + TTL** ("your seat is held for 8 minutes") — held-but-unpaid seats auto-release.
+```sql
+UPDATE inventory SET remaining = remaining - :qty
+ WHERE sku = :sku AND remaining >= :qty;      -- 0 rows → sold out (or not enough left)
+```
 
-## Tool 3 — Idempotency: making retries harmless
+**A unique constraint is a lock the database never forgets to take.** When the rule is "at most one of these", let an index say no:
 
-Contention's evil twin is **duplication**: networks retry, users double-click, queues deliver at-least-once (queues lesson promised this fight — here it is). A retried "charge ₹500" must not charge twice.
+| Rule | Constraint |
+|---|---|
+| One redemption of a coupon per user | `UNIQUE (coupon_id, user_id)` on redemptions |
+| One live booking per seat per event | `UNIQUE (event_id, seat_id)` on tickets — or a partial unique index `WHERE status <> 'CANCELLED'` |
+| One run of a cron job per scheduled minute | `UNIQUE (job_id, scheduled_at)` on job runs |
+| One effect per idempotency key | `PRIMARY KEY (client_id, idempotency_key)` |
+| No overlapping stays on a listing (Postgres) | `EXCLUDE USING gist (listing_id WITH =, stay WITH &&)` — needs the `btree_gist` extension |
 
-<Mermaid code={`sequenceDiagram
+The second insert fails with a duplicate-key (or exclusion) error, atomically, under any concurrency. Constraints shine where row locks can't help: **the rule is about absence** ("no booking exists yet"), and there is no row to lock until someone creates it. Same idea in Redis: `SET key value NX` (set only if absent) and a Lua script that checks and decrements in one step — the rate-limiter lesson used exactly this.
+
+<Reveal q="The conditional UPDATE runs under Read Committed. Why can't two buyers both get 1 row updated?">
+
+Because an `UPDATE` doesn't use the snapshot it started with for rows someone else is changing. The first writer locks the row; the second waits on that lock. When the first commits, Postgres re-evaluates the second writer's `WHERE` against the **newly committed** row version — `status` is now `HELD` with a future `held_until` — so the condition fails and zero rows change. MySQL InnoDB gets the same outcome a different way: `UPDATE` reads the latest committed row (a locking read) rather than the transaction's snapshot. The check and the change are atomic because the database does both under one row lock.
+
+</Reveal>
+
+**Catch the trap:** reading the seat, checking it in Java, and then writing an unconditional `UPDATE` — even inside `@Transactional`. The annotation gives you a transaction, not a guard. Put the condition in the `WHERE`.
+
+<h2 id="db-locks">Chapter 3 · Lock it, or bet on it</h2>
+
+<Scene chapter="Chapter 3" title="Lock it, or bet on it" mood="dusk">
+
+Iris adds the rule every promoter asks for: *no more than six tickets per account per event*, counted across every order the account has made. Theo looks at the hold statement for a long time. *"That's not one row any more,"* he says. *"That's a decision."*
+
+Mara writes two words on the board: LOCK and BET. *"One waits. One retries. Which bet fits a seat at 10 a.m.? Which fits an organiser editing the event description?"*
+
+</Scene>
+
+When the decision needs logic one statement can't express, you have two families. The <a href={`${BASE}sd/lessons/databases/#concurrency-control`}>Databases lesson, Chapter 8</a> builds both on a guitar; here is when each wins under contention.
+
+**Pessimistic: lock first, then decide.** `SELECT … FOR UPDATE` locks the rows you read until commit; other writers (and other locking reads) wait.
+
+```sql
+BEGIN;
+SELECT tickets_bought FROM account_event_limits
+ WHERE account_id = :acct AND event_id = :event FOR UPDATE;      -- other orders for this account wait here
+-- app: if tickets_bought + 4 > 6 → ROLLBACK, "limit reached"
+UPDATE seats SET status = 'HELD', held_by = :hold_id, held_until = now() + interval '10 minutes'
+ WHERE event_id = :event AND seat_id = ANY(:seat_ids)
+   AND (status = 'AVAILABLE' OR (status = 'HELD' AND held_until < now()));         -- check count = 4
+UPDATE account_event_limits SET tickets_bought = tickets_bought + 4
+ WHERE account_id = :acct AND event_id = :event;
+COMMIT;
+```
+
+Notice the granularity: the lock is on **this account's** counter for this event, not on the event. Two different fans never wait for each other. (The counter row must exist before anyone locks it — create it with `INSERT … ON CONFLICT DO NOTHING` first; you can't lock a row that isn't there.)
+
+Two variants worth naming:
+
+- **`SKIP LOCKED`** — when the caller wants *any* row from a pool (general admission, the next job in a queue table, any free bed), skip rows others have locked and take the next. Two buyers get two different rows instead of one waiting for the other.
+- **`NOWAIT`** — fail immediately instead of queueing. Good when waiting is worse than "try again".
+
+**Optimistic: read freely, write only if nothing changed.** Add a version column and turn the write into a compare-and-set:
+
+```sql
+SELECT description, version FROM events WHERE id = :event;      -- version = 7
+-- ...ten minutes in the organiser's edit form...
+UPDATE events SET description = :new, version = version + 1
+ WHERE id = :event AND version = 7;                               -- 0 rows → someone saved first; reload
+```
+
+No lock is held while the human thinks. The loser finds out at write time and redoes its work. (JPA's `@Version` generates exactly this `WHERE`.)
+
+**Worked numbers — what each bet costs on a hot row.**
+
+- **Pessimistic ceiling = 1 ÷ lock time.** Hold a seat row for 2 ms and it serialises at most 1 ÷ 0.002 = **500 changes per second**. Call the payment provider (300 ms) while holding it and the ceiling collapses to 1 ÷ 0.3 ≈ **3 per second**. Never hold a lock across a network call to someone else.
+- **Optimistic under contention is quadratic.** If N writers hit one row together and every loser retries at once, round 1 has N attempts, round 2 has N − 1, and so on: N(N + 1) ÷ 2 attempts for N successful writes. For N = 100 that is **5,050 attempts** to do 100 writes. Add backoff with jitter and a retry cap, or don't use optimistic on hot rows at all.
+
+| | Atomic statement | Unique / exclusion constraint | Pessimistic (`FOR UPDATE`) | Optimistic (version) |
+|---|---|---|---|---|
+| Critical section | One statement | One insert | A short transaction with app logic | Anything, including human think time |
+| Cost with no conflict | Nothing extra | An index check | A lock held for the transaction | Nothing extra |
+| Cost on conflict | Loser gets 0 rows instantly | Loser gets a duplicate-key error | Loser waits | Loser redoes its work |
+| Danger | Can't express multi-row logic | Only "at most one" rules | Lock waits, deadlocks, locks across slow calls | Retry storms on hot rows |
+| Fits | Seat holds, stock decrements | Redemptions, one-per-X rules, idempotency keys, date ranges | Limits across rows, short contended decisions | Edit forms, profiles, rare conflicts |
+
+**Rules of lock hygiene:** hold row locks for milliseconds; never across human think time or a call to another service; lock rows in a consistent order (by id) so transactions can't deadlock; and lock the smallest thing that is actually scarce.
+
+<Trace title="Pick the cheapest correct tool" steps={toolbox} takeaway="Specific row: conditional UPDATE. Any row from a pool: SKIP LOCKED. At-most-one rule: a constraint. Logic across rows: a brief FOR UPDATE. Slow humans, rare conflicts: a version column." />
+
+<Trace title="Price the bet" steps={contentionMath} takeaway="A hot row's ceiling is one over the lock time. Optimistic retries grow with the square of the contenders. Both say: keep critical sections tiny, and keep crowds away from single rows." />
+
+**Catch the trap:** "optimistic locking is faster." It is faster when conflicts are rare. On the hottest rows of an on-sale it is the slowest option you have — every winner is paid for by a crowd of retries.
+
+<Part n="Part Two" title="Beyond one database">
+
+When the critical section spans services, takes minutes, or faces two million people at once.
+
+</Part>
+
+<h2 id="distributed-locks">Chapter 4 · The lock that fell asleep</h2>
+
+<Scene chapter="Chapter 4" title="The lock that fell asleep" mood="night">
+
+Dev tells this one at onboarding. Kestrel's payout job took a Redis lock with a thirty-second TTL so only one worker would pay organisers. One night the worker hit a forty-second garbage-collection pause. The lock expired. A second worker took it and started paying.
+
+Then the first worker woke up, still certain it held the lock, and finished *its* payouts too.
+
+*"Every organiser got paid twice,"* Dev says. *"Finance noticed. Organisers did not complain."* Mara writes one line under the story: **Who is allowed to stop a holder who doesn't know it has lost?**
+
+</Scene>
+
+**When you need a distributed lock at all:** the critical section spans more than one database statement *and* more than one system — call a third party, then write two stores — or the resource isn't a database row (a file, a printer, a job). Inside one database, prefer the tools from Part One; they release automatically on commit or crash.
+
+**The Redis lock, done properly.**
+
+```text
+acquire:  SET lock:payout-2026-10-08  <random-token>  NX  PX 30000
+          → OK means you hold it for 30 s; nil means someone else does
+
+release:  only if the value is still MY token, delete it — atomically:
+```
+
+```lua
+-- KEYS[1] = lock key, ARGV[1] = my token
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+else
+  return 0
+end
+```
+
+- **`NX`** — set only if absent: the acquire is atomic.
+- **`PX 30000`** — the TTL. A crashed holder must not wedge the system forever, so every distributed lock is really a **lease**: a lock that expires.
+- **The random token** — so a holder whose lease expired can't delete the *next* holder's lock with a plain `DEL`.
+
+**The two conversations interviewers want.**
+
+**1 · Expiry versus the slow holder.** A lease protects you from a dead holder by assuming that after the TTL the holder has stopped. But a process can pause for any length of time — a GC pause, a VM migration, a swapped page, a slow network — and resume *without knowing time passed*. Checking "do I still hold it?" right before writing doesn't help; the pause can land between the check and the write. Longer TTLs only move the window.
+
+**The fix is fencing tokens.** The lock service hands out a number that increases with every grant — 33, then 34. The holder sends its number with every write. **The protected resource remembers the highest number it has seen and rejects anything lower.** A zombie holder with 33 is refused once 34 has written. This moves the guarantee from "the holder behaves" to "the storage checks" — and storage, unlike a paused process, is awake.
+
+<Figure caption="Fencing. The lock expired while A slept; B's token 34 reached storage first; A's late write with 33 is refused.">
+  <Mermaid code={`sequenceDiagram
+    participant A as Worker A
+    participant L as Lock service
+    participant B as Worker B
+    participant S as Storage
+    A->>L: acquire
+    L-->>A: granted · token 33 · 30 s
+    Note over A: GC pause 40 s
+    B->>L: acquire (A's lease expired)
+    L-->>B: granted · token 34
+    B->>S: write · token 34
+    S-->>B: ok · highest seen = 34
+    A->>S: write · token 33
+    S-->>A: rejected · 33 is older than 34`} />
+</Figure>
+
+In SQL the fence is one more condition: `UPDATE payouts SET … , fence = :token WHERE id = :id AND fence < :token`. A plain Redis `SET … NX` has no counter to give you; you can keep one with `INCR` alongside the lock, but the honest answer is that **a fencing token only works if the resource checks it**. Without fencing, a TTL lock is advisory, not safe — saying that sentence is staff-level signal.
+
+**2 · Where does the lock live, and what if it fails?** A single Redis primary with asynchronous replication can fail over and lose a just-granted lock, so two clients both hold it. **Redlock** (acquire the lock on a majority of N independent Redis nodes, e.g. 3 of 5, within a time well under the TTL) was proposed for this. **Its safety is debated:** Martin Kleppmann argued it depends on timing assumptions — bounded pauses, network delay and clock drift — and provides no fencing token; Salvatore Sanfilippo (antirez) replied that the assumptions are reasonable in practice. You don't need to settle the debate in an interview. Say:
+
+> "For **efficiency** — avoiding duplicate work where a rare double is harmless — a single Redis lock is fine. For **correctness** — money, inventory — I won't rely on any lock alone: I'd use a consensus-backed lock service that gives me a fencing token, and I'd make the write itself check it, or skip the lock and use a conditional write in the database."
+
+**Consensus-backed locks** (the "design a lock service like Chubby" question). Google's Chubby, Apache ZooKeeper and etcd run a consensus protocol (Paxos, Zab, Raft) across an odd number of replicas, so a lock grant survives the loss of a minority of machines and two clients can't both be granted it. They pair locks with **sessions or leases** kept alive by heartbeats, and they expose a monotonically increasing number you can use as a fence: Chubby calls it a **sequencer**; in ZooKeeper the zxid of the lock node serves; etcd keys carry revisions. The <a href={`${BASE}sd/lessons/core-concepts/#liveness`}>Core concepts lesson, Chapter 6</a> covers heartbeats, leases and majority voting from first principles.
+
+| Lock | Survives | Gives a fence | Use for |
+|---|---|---|---|
+| DB row lock / conditional write | Anything the database survives | The row version, if you add one | Default whenever the truth is one database |
+| Redis `SET NX PX` + token | Holder crash (TTL); not failover or long pauses | No (add an `INCR` counter) | Efficiency: dedupe work, throttle a cron |
+| Redlock | Some node failures, under timing assumptions | No | Debated; name the debate |
+| ZooKeeper / etcd / Chubby | Minority of replicas failing | Yes (zxid, revision, sequencer) | Correctness across services, leader election |
+
+<Trace title="Lock, lease, fence" steps={locks} takeaway="Release only your own lock. A paused holder can't police itself, so the storage must reject stale tokens. Redlock is debated; for correctness, fence the write." />
+
+<Reveal q="The interviewer: “Why not just make the TTL ten minutes so pauses can’t outlast it?”">
+
+Because no pause bound is guaranteed — long GC pauses, VM live migration and network partitions have all lasted longer than anyone planned — and a long TTL makes every real crash expensive: a dead holder now blocks the resource for ten minutes. The TTL trades availability against safety without ever giving you safety. Fencing gives you safety at any TTL, so you can keep the TTL short.
+
+</Reveal>
+
+**Catch the trap:** "Redis lock with a TTL, so it's safe." It is safe against crashes and unsafe against pauses. Add: *"…and every write carries the fencing token, which storage checks."*
+
+<h2 id="serialize">Chapter 5 · One line, one writer</h2>
+
+<Scene chapter="Chapter 5" title="One line, one writer" mood="dawn">
+
+Theo is unimpressed by locks of every kind. He tells you about a bakery in his home town that served one customer at a time through a hatch. *"Nobody fought over the last loaf,"* he says. *"The line decided."*
+
+*"What if the line is long?"* you ask.
+
+*"Then you open more hatches,"* he says, *"one per kind of bread."*
+
+</Scene>
+
+The most robust way to avoid fighting over a resource is to **stop sharing it**: route every change for one key to one writer, which applies them in order. No locks, no retries — contention becomes a queue.
+
+- **Partitioned log.** Put requests on a Kafka topic keyed by the resource id (seat block, account, symbol). Every request for one key lands in one partition and is consumed by one consumer, in order. Scale by having many keys across many partitions. See <a href={`${BASE}sd/lessons/queues-streams/#ordering`}>Queues & streams, Chapter 7</a> for ordering per key.
+- **Single-threaded owner.** An in-memory, single-threaded process owns each key and applies changes one at a time — the actor model, or Redis itself (commands on one node run one at a time, which is why a Lua script is atomic).
+- **The limit case — a stock exchange.** Every order for one symbol touches the same order book, and fairness demands a strict order. Exchanges sidestep locking entirely: a **sequencer** stamps each order with a total order, and a **single-threaded in-memory matching engine per symbol** applies them, journaling the input so the state can be rebuilt by replay. Martin Fowler's write-up of the LMAX architecture is the classic public description.
+
+| | Locks / conditional writes | Serialise through one writer |
+|---|---|---|
+| Latency | Immediate answer | A queue hop; the answer comes asynchronously unless the caller waits |
+| Throughput on one hot key | Bounded by lock time | Bounded by one thread — but no lock overhead, often far higher |
+| Failure | Database handles it | You must handle owner failover (replay the log; fence the old owner) |
+| Fits | Most product systems | Exchanges, per-account ledgers, very hot keys, ordered workflows |
+
+**Catch the trap:** "put it on a queue" as a contention fix for something the user is waiting on. If the buyer needs "you got the seat" now, a queue only moves the wait. Say how the answer gets back (the caller polls or waits on a reply), and keep the per-key consumer fast.
+
+<h2 id="holds">Chapter 6 · Held, not sold</h2>
+
+<Scene chapter="Chapter 6" title="Held, not sold" mood="dusk">
+
+Iris watches a recording of a real checkout. The fan picks two seats, types a card number, waits for a bank verification screen, fumbles a one-time code, and pays — four minutes later.
+
+*"We can't lock a row for four minutes,"* Theo says.
+
+*"And we can't let someone else buy her seats while she types,"* Iris says.
+
+Mara draws a circle next to the seat and labels it **HELD**. *"So it's neither available nor sold. For how long? And who notices when time runs out?"*
+
+</Scene>
+
+A **hold** (or reservation) separates "this is mine for now" from "this is mine". The seat moves through a small **state machine**, and every transition is a conditional write:
+
+<Figure caption="The seat state machine. Every arrow is one conditional UPDATE; the words after the comma are its WHERE clause.">
+  <Mermaid code={`stateDiagram-v2
+    [*] --> AVAILABLE
+    AVAILABLE --> HELD: hold, if AVAILABLE
+    HELD --> HELD: re-hold by another buyer, old hold expired
+    HELD --> BOOKED: confirm, my hold still live
+    HELD --> AVAILABLE: release or sweeper, hold expired
+    BOOKED --> AVAILABLE: refund or cancel
+    BOOKED --> [*]`} />
+</Figure>
+
+**Three design rules.**
+
+1. **Correctness never waits for a sweeper.** The hold statement treats an expired hold as available (`held_until < now()` in its `WHERE`), and the confirm statement requires a live one (`held_until > now()`). A background **sweeper** still flips expired holds back to `AVAILABLE` every few seconds, but only to keep the seat map accurate and notify the waitlist. If it falls behind, nobody is double-sold. (Same idea as Pastebin's read-path expiry check in the delivery-framework lesson.)
+2. **Never charge for a seat you can't confirm.** Card payments separate **authorisation** (the bank reserves the funds) from **capture** (the money moves). Authorise → confirm the seats with the conditional `HELD → BOOKED` update → capture. If confirm finds the hold gone, **void** the authorisation — no money moved, nothing to refund.
+3. **The server's clock is longer than the buyer's.** Show the buyer 10 minutes; expire the hold server-side at 10 minutes plus a grace (say 2 minutes), and refuse to *start* a checkout in the last minute. A payment that completes at 9:59 on the buyer's timer always finds its hold alive.
+
+**Worked numbers — what a hold TTL costs.** Assumptions: the waiting room (next chapter) admits 100 buyers per second; each holds 2 seats; 20% abandon without paying; TTL 10 minutes.
+
+- Seats held per second: 100 × 2 = **200**. All 50,000 seats are held after 50,000 ÷ 200 = **250 s** — about four minutes. The site says "sold out".
+- But 20% of those holds belong to people who walked away: 0.2 × 50,000 = **10,000 seats**. Holds made between 0 and 250 s expire between **600 s and 850 s**, and those seats come back on sale.
+- So "sold out" at 4 minutes really meant **"all held"**. Keep the waiting room open (with an honest message) until holds settle, and offer returning seats to the people still in line.
+- The TTL is a dial: a 5-minute TTL brings the 10,000 seats back between 300 s and 550 s, but buyers fumbling bank verification lose their seats more often. Pick it from your checkout-duration data — e.g. "p95 checkout is 4 minutes, so 10 minutes holds".
+
+| TTL | Abandoned seats return | Risk |
+|---|---|---|
+| Short (3–5 min) | Fast; less false "sold out" | Real buyers time out during bank verification |
+| Long (15+ min) | Slowly; long false "sold out" | Scalpers and bots hoard seats cheaply — cap holds per account |
+| 10 min + server grace | Balanced; tune from p95 checkout time | Must still handle the late-payment race (rule 2) |
+
+<Trace title="Holds and their clocks" steps={holds} takeaway="Holds are conditional writes with an expiry baked into the WHERE. The sweeper tidies; it doesn't guard. Authorise, confirm, capture — and void when confirm fails." />
+
+<Reveal q="Should holds live in Redis (with key TTLs) instead of the database?">
+
+You can — a Redis key per seat with `SET seat:B-4-17 hold-9 NX EX 600` is a hold that expires on its own, and it absorbs a big read/write burst. But now there are two sources of truth: Redis says who holds the seat, the database says who bought it. You must make the confirm step check Redis atomically with the database write, and decide what happens when Redis fails over and loses a hold. For most on-sales the database can carry the hold writes **because the waiting room meters them** (a few hundred per second), so keep holds in the database and use Redis for the seat-map cache and the queue. Say the condition that flips it: hold traffic beyond what one primary can take, even after metering — then Redis (or sharded inventory) becomes the hot path, with the database confirming.
+
+</Reveal>
+
+**Catch the trap:** "the seat is released when the hold expires" — by whom? If the answer is "a cron job", the interviewer asks what happens when it falls behind. Put the expiry in the `WHERE`.
+
+<h2 id="waiting-room">Chapter 7 · Two million at the door</h2>
+
+<Scene chapter="Chapter 7" title="Two million at the door" mood="storm">
+
+Dev replays the first minute of the drop at one-tenth speed. The hold endpoint isn't the first thing to fall over. The seat map is — two million browsers refreshing it every couple of seconds, a million requests a second for a picture of seats that were already gone.
+
+*"We didn't have a contention problem,"* Dev says. *"We had a crowd problem, and the contention was the part of the crowd that reached the database."*
+
+Mara draws a door in front of the whole diagram. *"So let fewer people through the door. But fairly. And tell everyone else the truth."*
+
+</Scene>
+
+**A virtual waiting room** puts a queue in front of the purchase flow. Everybody who arrives gets a place in line; the system **admits** people into the seat map and checkout at a controlled rate; inside, contention is back to manageable per-seat conditional writes and short holds.
+
+**How it works, mechanically:**
+
+1. **Join.** On arrival the user gets a position: an atomic counter (`INCR queue:event-77` in Redis) returns the next number. The server returns a **signed token** carrying the event, the position and an issue time. Nothing else is stored per user.
+2. **Fairness at opening.** Everyone who arrived *before* the on-sale starts has equal claim; a counter would reward whoever's clock and network were fastest. A common choice: randomise positions among early arrivals, then first-come-first-served for everyone after. Say which you chose and why.
+3. **Wait.** The client polls for the single global number **"now serving"**, which an admission controller advances at the admission rate (e.g. +100 every second). Because that number is the same for every user, the poll response is cacheable at the CDN for a second — two million pollers cost the origin almost nothing.
+4. **Admit.** When `position ≤ now serving`, the server exchanges the queue token for a short-lived signed **admission token**. The API gateway checks that signature (no database lookup) on every seat-map, hold and checkout request; without it, you get the waiting room.
+5. **Sell out honestly.** Show the estimated wait and the tickets remaining. When everything is held, say so — and keep the line alive, because abandoned holds come back (Chapter 6).
+
+<Figure caption="The waiting room meters the crowd. Only admitted users reach the seat map and the hold path, so the database sees hundreds of writes a second, not tens of thousands.">
+  <Mermaid code={`flowchart LR
+    U["2M fans"] -->|"join"| Q["Waiting room\nINCR position · signed token"]
+    U -.->|"poll now-serving\nCDN-cached 1 s"| CDN["CDN edge"]
+    AC["Admission controller\n+100 per second"] --> CDN
+    Q -->|"admission token"| GW["API gateway\nverifies signature"]
+    GW --> MAP["Seat map\ncached per section"]
+    GW --> HOLD["Hold service\nconditional UPDATE"]
+    HOLD --> DB[("Seats DB")]`} />
+</Figure>
+
+**Worked numbers.** Assumptions from the prologue (2,000,000 fans in 2 minutes, 25,000 winning orders), plus: admission 100 users/s; an admitted user spends about 4 minutes in the flow; pollers poll every 10 s; seat-map viewers refresh every 2 s.
+
+- **Waiting-room polls:** 2,000,000 ÷ 10 s = **200,000 requests/s** — but every one asks for the same number, so the CDN answers them. Origin load: about one request per second per edge location.
+- **Inside the room (Little's law):** concurrent shoppers = admission rate × time in flow = 100 × 240 s = **24,000**.
+- **Seat-map reads:** without the room, 2,000,000 ÷ 2 s = **1,000,000 reads/s**. With it, 24,000 ÷ 2 s = **12,000 reads/s**, served from a per-section cache with a 1-second TTL; with 100 sections, the database sees about **100 reads/s**. The map can be a second stale because the hold is the truth.
+- **Hold writes:** about 100 per second — two orders of magnitude below the 16,700/s of an unmetered crowd, and far below the 500/s ceiling of any one hot row.
+- **Wait estimate:** position ÷ admission rate. Position 30,000 waits 30,000 ÷ 100 = **300 s**. With 25,000 winning orders, people past roughly the 30,000–40,000 mark are likely to get nothing (some admitted users abandon, which is why it isn't exactly 25,000) — tell them early.
+
+**Choosing the admission rate.** It is a capacity dial, not a fairness one: set it so admitted users can actually complete checkout — the hold path, the payment provider's rate limits, the seat-map cache — with headroom. Admitting faster than seats are released only adds people who will see "taken".
+
+| Without a waiting room | With one |
+|---|---|
+| 16,700 hold attempts/s; most fail; DB hot | ~100 holds/s; most succeed |
+| 1M seat-map reads/s | ~12K/s, cache-served |
+| Refresh-button lottery; bots win | An explicit, explainable order |
+| "Sold out" with no information | Position, wait estimate, tickets left |
+
+<Trace title="Meter the crowd" steps={crowd} takeaway="Wait ≈ position ÷ admission rate. Make the poll a shared, cacheable number; put the per-user state in a signed token." />
+
+<Reveal q="Bots join the queue a thousand times each. What does the design do?">
+
+The waiting room makes bots cheaper to see, not impossible. Require a logged-in, verified account to join (one position per account), rate-limit joins per IP and device, put a challenge in front of the join, and cap tickets per account at the hold step (Chapter 3's counter). The admission token is bound to the account, so a bot can't share one position with a thousand clients. Full bot defence is its own design; name these layers and move on.
+
+</Reveal>
+
+**Catch the trap:** "we'll autoscale the booking service." Autoscaling adds web servers. The contended rows, the payment provider's limits and the database primary don't autoscale. The waiting room protects the parts that can't grow.
+
+<Part n="Part Three" title="Twice is the enemy">
+
+Contention's evil twin: one intent, delivered twice. The queues lesson promised this fight — here it is.
+
+</Part>
+
+<h2 id="idempotency">Chapter 8 · The double tap</h2>
+
+<Scene chapter="Chapter 8" title="The double tap" mood="night">
+
+The thirty-seven double charges all have the same shape. The fan taps *Pay*. The request reaches Kestrel, Kestrel charges the card, and the response is lost on a train going through a tunnel. The banking app waits ten seconds and helpfully tries again. Kestrel, seeing a brand-new request, charges the card again.
+
+*"Kestrel was correct both times,"* Theo says. *"It was asked twice."*
+
+You know this one from work. Mara hands you the marker anyway. *"Then make the second request harmless. All the way down."*
+
+</Scene>
+
+An operation is **idempotent** when doing it twice has the same effect as doing it once. Networks retry, users double-click, load balancers replay, queues deliver at least once. A retried "charge ₹500" must not charge twice. Some operations are naturally idempotent (`SET status = 'SHIPPED'`, `PUT /profile`, `DELETE photo 7`). Anything that *creates* or *adds* — a charge, an order, `likes + 1` — needs help.
+
+**The idempotency key, end to end.**
+
+<Figure caption="The client's key turns a retry into a replay. The unique constraint makes the claim atomic; the stored response makes the replay identical.">
+  <Mermaid code={`sequenceDiagram
     participant C as Client
     participant P as Payment API
     participant DB as idempotency store
-    C->>P: POST /charge {amount, idempotency_key: "a1b2"}
-    P->>DB: INSERT key a1b2 (unique constraint)
+    C->>P: POST /charges · Idempotency-Key a1b2 · ₹500
+    P->>DB: INSERT a1b2, hash(request), IN_PROGRESS (unique)
     DB-->>P: ok — first time
     P->>P: charge the card
-    P->>DB: store result under a1b2
+    P->>DB: a1b2 → COMPLETED, store response
     P-->>C: 200 charged
-    Note over C,P: timeout! client retries
-    C->>P: POST /charge {..., idempotency_key: "a1b2"}
-    P->>DB: INSERT a1b2 → duplicate!
-    P-->>C: 200 (stored result replayed — no second charge)`} />
+    Note over C,P: response lost · client retries
+    C->>P: POST /charges · Idempotency-Key a1b2 · ₹500
+    P->>DB: INSERT a1b2 → duplicate
+    DB-->>P: existing row · COMPLETED · same hash
+    P-->>C: 200 (stored response replayed — no second charge)`} />
+</Figure>
 
-Mechanics that make it real: the **client generates the key** (one per logical operation, reused on retry — that's the whole point); the server enforces it with a **unique constraint** (atomic — a check-then-insert race would readmit duplicates); store the **result** so retries get the same response; keys expire after ~24–48h. This is Stripe's actual public API design — cite it.
+**1 · The client generates the key** — one per **logical operation** (when the user taps *Pay*), stored with the pending action, and **reused on every retry**. That is the whole point: only the client knows two requests are the same attempt. A fresh key on retry is the most common real bug — the server correctly treats it as a new payment. (A UUID is fine; scope it per client or account so two customers can't collide.)
 
-For state that changes multiple times, add a **state machine**: `pending → charged → refunded` with legal transitions enforced in the DB. A duplicate "mark charged" on an already-charged payment is an illegal transition → rejected. (Your appointment-status war story is literally this — use it in interviews.)
+**2 · The server claims the key atomically.** A table with a primary key on `(client_id, idempotency_key)`:
 
-## Tool 4 — Ledgers: money is append-only
+```sql
+CREATE TABLE idempotency_keys (
+  client_id       bigint       NOT NULL,
+  idempotency_key text         NOT NULL,
+  request_hash    bytea        NOT NULL,      -- hash of method + path + canonical body
+  status          text         NOT NULL,      -- IN_PROGRESS | COMPLETED
+  response_code   int,
+  response_body   jsonb,
+  locked_until    timestamptz,                -- for recovering abandoned IN_PROGRESS rows
+  created_at      timestamptz  NOT NULL DEFAULT now(),
+  PRIMARY KEY (client_id, idempotency_key)
+);
+```
 
-Never `UPDATE balance = balance - 500`. Financial state is an **append-only double-entry ledger**: every movement is two immutable rows (debit A, credit B); balance = SUM (cached, but recomputable). Why interviewers care: an update destroys history — no audit, no dispute resolution, no reconciliation; an append-only ledger makes every balance explainable. One sentence of "double-entry, append-only, balances are derived" unlocks the payments walkthrough.
+The first request **inserts** its row as `IN_PROGRESS`; a concurrent duplicate's insert fails on the primary key. Never "check if it exists, then insert" — both checks can pass.
 
-## Questions this pattern unlocks
+**3 · Decide by state and hash.** When the insert hits an existing row:
 
-| Bank question | How the pattern applies |
-|---------------|------------------------|
-| **Ticketmaster** (walkthrough) | waiting room + seat hold w/ TTL + check-and-set |
-| **Payment system** (walkthrough) | idempotency keys + state machine + ledger — your fintech wheelhouse |
-| **Job scheduler** (walkthrough) | "exactly-once" = at-least-once trigger + lease (lock w/ TTL + heartbeat) + idempotent jobs + fencing |
-| **Airbnb booking** | calendar date-range check-and-set; overlapping-dates uniqueness |
-| **Flash sale** | inventory as atomic decrement (Redis Lua) + queue to meter entry |
-| **Stock exchange** | contention taken to its limit: a single-threaded in-memory matching engine per symbol — sidestep locking entirely by serializing |
+| Existing row | Same request hash? | Response |
+|---|---|---|
+| `COMPLETED` | Yes | **Replay** the stored status and body — byte for byte |
+| `COMPLETED` or `IN_PROGRESS` | **No** | **Reject** (`422`): same key, different payload is a client bug. Never replay (wrong answer) and never execute (double effect) |
+| `IN_PROGRESS`, lock still valid | Yes | **`409 Conflict`**: "still processing, retry shortly" |
+| `IN_PROGRESS`, `locked_until` passed | Yes | The first attempt died mid-flight: **recover** it (below) |
+
+(The IETF's draft Idempotency-Key header spec suggests these same status codes; Stripe's public API errors on a reused key with different parameters. Check current docs for exact codes.)
+
+**4 · Make the effect and the record atomic, where you can.** If the operation is local — insert an order, append ledger entries — do it **in the same database transaction** that flips the key to `COMPLETED`. Crash before commit: neither happened, the retry does the work. Crash after: the retry replays. This is the dedup-table pattern from <a href={`${BASE}sd/lessons/queues-streams/#idempotency`}>Queues & streams, Chapter 5</a>, one hop earlier at the API edge.
+
+**5 · When the effect is outside your database, chain the keys.** You can't put the card network inside your transaction. So: record the attempt, then call the provider **with your own idempotency key** (derived from the client's, e.g. `charge:a1b2`), then record the result. If you crash between the call and the record, the recovery path calls the provider **again with the same key** — the provider dedupes it and returns the original result. Idempotency is only end to end if every hop that can repeat is keyed. Stripe's engineering blog describes this style — "atomic phases" and "recovery points" — for exactly this reason.
+
+**6 · Keys expire.** Keep them longer than any client will retry: 24 hours is a common choice (Stripe documents pruning keys after at least 24 hours — check current docs). Partition the table by day or TTL old rows so it doesn't grow forever. A retry after expiry is a new request; the client's retry policy must give up before then.
+
+**Retries, the client's half.** Retry only what can succeed next time — timeouts, connection resets, `503`, `429` (honour `Retry-After`), `409` in-progress — never a `400` or "card declined". Use **exponential backoff with full jitter** and a cap, at **one layer** (three layers retrying three times is 27 attempts), always with **the same key**. The <a href={`${BASE}sd/lessons/core-concepts/#retries`}>Core concepts lesson, Chapter 12</a> has the arithmetic.
+
+**Worked numbers — the size of the dedup table.** At 10,000,000 payments a day with a 24-hour key retention, about 10 million rows live at once; at roughly 500 bytes each (key, hash, stored response) that is about 5 GB plus index — an ordinary table. Retention, not traffic, sets the size.
+
+<Trace title="Same key, again" steps={idempotency} takeaway="Claim the key atomically, compare the request hash, and answer by state: replay, reject, or ‘still working’. Then key every downstream hop too." />
+
+<Reveal q="Can the server dedupe without a client key — say, same card, same amount, within 60 seconds?">
+
+It's a heuristic, and it fails both ways. A fan buying two separate ₹500 tickets in a minute is blocked (false positive); a retry that arrives 61 seconds later charges twice (false negative). The key identifies **intent** — "this one purchase" — and intent lives on the client. Fingerprint heuristics are a fraud signal, not an idempotency mechanism.
+
+</Reveal>
+
+**Catch the trap:** "We'll make it idempotent." Say how: who makes the key, where it's stored, that the claim is atomic, what "same key, different payload" returns, and that the downstream call carries its own key.
+
+<h2 id="exactly-once">Chapter 9 · Effectively once</h2>
+
+<Scene chapter="Chapter 9" title="Effectively once" mood="dawn">
+
+In a design review, a new engineer says the receipt service is "exactly-once, because Kafka". Theo asks, gently, how many emails a customer gets if the email provider accepts the send and the consumer crashes before committing its offset.
+
+The engineer thinks about it. *"Two?"*
+
+*"Two,"* Theo agrees. *"Exactly-once is a property of the whole path. Kafka only owns part of it."*
+
+</Scene>
+
+**Exactly-once *delivery* across a network is not available.** A sender that hears nothing can either resend (risking a duplicate: **at-least-once**) or not (risking a loss: **at-most-once**). What you can build is **exactly-once effect** — often called **effectively-once**:
+
+> **at-least-once delivery + idempotent processing = effectively once.**
+
+The three ingredients, which this lesson has now built:
+
+1. **Never lose it** — persist before acknowledging; retry until acknowledged; the outbox for side effects (below).
+2. **Recognise a repeat** — a stable id per logical operation: the client's idempotency key, a producer-assigned event id, `(job_id, scheduled_at)`.
+3. **Make the repeat harmless** — a unique constraint or dedup row committed **atomically with the effect**, a conditional state transition, or a downstream idempotency key.
+
+**The outbox, for side effects.** When the payment commits, Kestrel must also tell the ticketing service, send a receipt and notify the organiser. Writing to the database and then publishing to a broker is a **dual write**; a crash between them loses the event. Instead, insert the event into an `outbox` table **in the same transaction** as the payment, and let a relay publish it at least once; consumers dedupe by event id. The full mechanism is <a href={`${BASE}sd/lessons/queues-streams/#outbox`}>Queues & streams, Chapter 6</a>.
+
+**What "exactly-once" in a product name means.** Kafka's exactly-once semantics (idempotent producer plus transactions) make a read-process-write pipeline **within Kafka** effectively once: consumed offsets and produced records commit together. The moment the effect leaves Kafka — an email, a card charge, a write to your Postgres — you are back to at-least-once plus idempotency. Stream processors such as Flink make similar promises about their own state. Say "within the boundary of X", and name the boundary.
+
+<Figure caption="Effectively once, end to end. Each hop either commits its dedup marker with its effect, or passes a key to the next hop that does.">
+  <Mermaid code={`flowchart LR
+    C["Client\nkey a1b2"] -->|"retries, same key"| API["Payment API\nidempotency row"]
+    API -->|"same txn"| DB[("payments + ledger\n+ outbox")]
+    API -->|"key charge:a1b2"| PSP["Payment provider\ndedupes by key"]
+    DB --> R["Outbox relay\nat-least-once"]
+    R --> K["Broker"]
+    K --> T["Ticketing consumer\ndedupe by event id"]`} />
+</Figure>
+
+**Catch the trap:** a dedup check in Redis *before* the work and a write to Postgres *after* it. A crash between them, or two consumers at once, breaks it. The marker must commit with the effect, in the same store.
+
+<Part n="Part Four" title="Money and time">
+
+Payments and job schedulers are this pattern with higher stakes: money must balance, and jobs must run — once.
+
+</Part>
+
+<h2 id="ledger">Chapter 10 · Money is append-only</h2>
+
+<Scene chapter="Chapter 10" title="Money is append-only" mood="dusk">
+
+Finance asks a simple question after the drop: *how much do we owe the promoter?* The answer should be one query. It takes Theo two days, because the payments table has a `balance` column that the refund code, the fee code and a support tool all update in place — and none of them left a trace of what the number was before.
+
+Mara writes on the board: **Never ask "what is the balance?" Ask "what happened?" — and add it up.**
+
+</Scene>
+
+**Never `UPDATE balance = balance - 500`.** Financial state is an **append-only double-entry ledger**:
+
+- Every money movement is a **transaction** made of two or more **entries**, each against an **account** (a customer, an organiser's payable balance, Kestrel's fee revenue, the money sitting at the payment provider).
+- **Entries in a transaction sum to zero.** Using a signed convention (debits positive, credits negative), money can only move, never appear or vanish.
+- **Entries are never updated or deleted.** A refund or a correction is a *new* transaction with opposite entries.
+- **A balance is derived**: the sum of an account's entries. You may cache it (a balances table updated in the same transaction, or periodic snapshots), but it must always be recomputable from the entries.
+
+**Worked example — a ₹1,000 ticket with a 10% fee.**
+
+| Transaction | Account | Entry |
+|---|---|---|
+| T1 · charge | Provider clearing (money the provider owes us) | +₹1,000 |
+| T1 · charge | Organiser payable | −₹900 |
+| T1 · charge | Kestrel fee revenue | −₹100 |
+| | **Sum** | **₹0** |
+| T2 · full refund | Provider clearing | −₹1,000 |
+| T2 · full refund | Organiser payable | +₹900 |
+| T2 · full refund | Kestrel fee revenue | +₹100 |
+| | **Sum** | **₹0** |
+
+After T2, every balance is back to zero — and both events are still on the record. That is what an update can't give you.
+
+**Why interviewers care:** an update destroys history — no audit, no dispute resolution, no reconciliation. An append-only ledger makes every balance explainable. One sentence — *"double-entry, append-only, balances are derived"* — unlocks the payments walkthrough. (You've lived this: the day job's ledger is why your instinct here is already right. Say it with the mechanism, not the framework.)
+
+**Worked numbers — size.** Assume 10,000,000 payments a day, 3 entries each, about 100 bytes per entry: 30,000,000 entries a day, **3 GB a day, about 1.1 TB a year** (about 11 billion rows a year). Big, but append-only data partitions cleanly by time; old partitions go to cheaper storage.
+
+**Contention inside the ledger — the hot house account.** Every payment credits *Kestrel fee revenue*. If that account's running balance lives in one row, every payment updates one row. Average 10,000,000 ÷ 86,400 ≈ **116 payments/s**; at a 5× peak, about **579/s** — above the **500/s** ceiling of a row held for 2 ms. Fixes, cheapest first: don't maintain a synchronous running balance for house accounts (derive it, or update it asynchronously from the entries); or **split the account into N sub-accounts** and pick one at random per entry, summing them for the real balance; or batch entries into the house account every second. Customer accounts rarely need this — one customer doesn't pay 500 times a second.
+
+<Reveal q="If balances are derived, how do you stop a customer's wallet going negative when two spends race?">
+
+The derivation is for truth; the guard is still a contention tool. Keep a cached balance row per wallet, updated **in the same transaction** as the entries, with a condition: `UPDATE wallets SET balance = balance - 500 WHERE id = :w AND balance >= 500`. One row changed: append the entries and commit. Zero: insufficient funds, roll back. The cache can always be rebuilt from the entries; the conditional update guards the invariant. A nightly job recomputes balances from entries and alerts on any mismatch.
+
+</Reveal>
+
+**Catch the trap:** "store the balance on the user row." Fine as a cache with a guard; wrong as the only record. Say *derived*, *append-only*, *sum to zero*.
+
+<h2 id="payments">Chapter 11 · The answer that never came</h2>
+
+<Scene chapter="Chapter 11" title="The answer that never came" mood="storm">
+
+Dev pulls up one of the drop's stranger payments. Kestrel asked the payment provider to charge ₹2,400. Ten seconds later, the call timed out. The code marked the payment FAILED and released the seats. The fan tried again and paid. The next morning the provider's settlement report listed *two* charges.
+
+*"The first one wasn't a failure,"* Dev says. *"It was a question we stopped waiting for."*
+
+</Scene>
+
+**The payment state machine.** Every payment is a row with a state, and every move between states is a conditional update — exactly like a seat. A duplicate "mark succeeded" on a payment that is already `SUCCEEDED` is an illegal transition and changes nothing. (Your appointment-status war story is literally this — a status column with legal transitions enforced in the database. Use it in interviews.)
+
+<Figure caption="Payment states. UNKNOWN is the state most designs forget: the provider may or may not have charged the card.">
+  <Mermaid code={`stateDiagram-v2
+    [*] --> CREATED
+    CREATED --> SUBMITTED: call provider with key
+    SUBMITTED --> SUCCEEDED: provider says yes
+    SUBMITTED --> FAILED: provider says no
+    SUBMITTED --> UNKNOWN: timeout or 5xx
+    UNKNOWN --> SUCCEEDED: retry same key or status query
+    UNKNOWN --> FAILED: retry same key or status query
+    SUCCEEDED --> REFUNDED: refund
+    SUCCEEDED --> [*]
+    FAILED --> [*]`} />
+</Figure>
+
+```sql
+UPDATE payments SET state = 'SUCCEEDED', provider_ref = :ref, updated_at = now()
+ WHERE id = :id AND state IN ('SUBMITTED', 'UNKNOWN');   -- 0 rows → already settled; do nothing
+```
+
+**Calling the payment service provider (PSP).**
+
+- **Persist before you call.** Insert the payment as `CREATED`, move it to `SUBMITTED`, then call. If you crash mid-call, a row exists to recover.
+- **Always send an idempotency key to the PSP**, stable per payment attempt (e.g. the payment id). Retries reuse it.
+- **Never hold a database transaction or lock open across the call** (Chapter 3: 300 ms inside a lock = 3 payments/s).
+- **A timeout is "unknown", not "failed".** Move to `UNKNOWN`. Resolve it by retrying **with the same key** (the PSP returns the original outcome) or querying the PSP for the payment's status. Never retry with a new key, never release goods or tell the user "failed" while the money might have moved.
+
+**Webhooks.** PSPs report asynchronous outcomes (bank verification finished, a dispute opened) by calling your webhook endpoint. They deliver **at least once** and possibly out of order: verify the signature, insert the provider's event id into a dedup table, apply the change through the state machine's conditional update (which ignores stale transitions), and respond `2xx` only after commit.
+
+**Reconciliation — the safety net under everything.** Once a day (or more often), compare **your ledger** to **the PSP's settlement report** (and the bank's statement), transaction by transaction:
+
+| Mismatch | Likely cause | Action |
+|---|---|---|
+| PSP charged, we show `UNKNOWN` or `FAILED` | Timeout we never resolved (the scene) | Mark succeeded and fulfil, or refund — by policy |
+| We show `SUCCEEDED`, PSP has no charge | A bug, or a webhook we misread | Investigate; never silently fix |
+| Amounts differ | Currency, fees, partial capture | Post an adjusting ledger transaction |
+| Charged twice for one order | A retry with a fresh key | Refund one; find the key bug |
+
+Reconciliation exists because **every distributed system has a crack you didn't think of**. Interviewers listen for it in any payments design; it is also what turns the scene's double charge into a next-morning refund instead of a chargeback.
+
+**Side effects through the outbox.** On `SUCCEEDED`, the same transaction writes the ledger entries **and** an outbox event (`PaymentSucceeded`); ticket issuance, receipts and merchant webhooks consume it and dedupe by event id.
+
+<Trace title="Money under uncertainty" steps={payments} takeaway="A timeout is UNKNOWN: resolve it with the same key, a status query, or reconciliation. Corrections are new balanced transactions. House accounts are hot rows." />
+
+**Catch the trap:** "if the PSP call fails, we retry." A timeout isn't a failure, and a retry with a new key is a second payment. Say *UNKNOWN*, *same key*, *reconcile*.
+
+<h2 id="scheduler-mechanics">Chapter 12 · The worker who came back</h2>
+
+<Scene chapter="Chapter 12" title="The worker who came back" mood="night">
+
+Iris's latest "oh, and also": organisers want scheduled jobs — release a second block of tickets at noon, send reminders the day before, settle payouts every night at 2 a.m. Kestrel builds a scheduler in a week.
+
+In week two, Dev finds a payout batch that ran twice. A worker had stalled on a slow disk; the scheduler decided it was dead and gave the job to another; then the first worker recovered and finished.
+
+*"The job ran exactly once,"* Dev says, *"on each of two machines."*
+
+</Scene>
+
+A distributed scheduler has **two** contention points: **creating** a run at the scheduled time (several scheduler instances may try) and **executing** it (several workers may grab it, and a "dead" one may come back).
+
+**Creating runs: let a unique key decide.** Give every run a deterministic identity — `(job_id, scheduled_at)` — with a unique constraint. Two scheduler instances that both wake at midnight both try to insert run `(42, 2026-10-09T00:00Z)`; one succeeds, one gets a duplicate-key error and moves on. You can still elect a leader (via ZooKeeper or etcd) to avoid wasted work, but correctness no longer depends on the election being perfect.
+
+**Executing runs: leases, heartbeats, fences.**
+
+```sql
+-- claim: any due run that is queued, or whose lease has expired
+UPDATE job_runs
+   SET state = 'RUNNING', owner = :worker, lease_until = now() + interval '30 seconds',
+       fence = fence + 1, attempt = attempt + 1
+ WHERE id = (SELECT id FROM job_runs
+              WHERE due_at <= now()
+                AND (state = 'QUEUED' OR (state = 'RUNNING' AND lease_until < now()))
+              ORDER BY due_at
+              LIMIT 1
+              FOR UPDATE SKIP LOCKED)
+RETURNING id, fence;
+
+-- heartbeat every 10 s: renew only if I still own this fence
+UPDATE job_runs SET lease_until = now() + interval '30 seconds'
+ WHERE id = :run AND owner = :worker AND fence = :fence;     -- 0 rows → I lost it: stop work
+```
+
+- **Lease** — the worker owns the run until `lease_until`; a crash means it simply stops renewing, and another worker reclaims the run after expiry.
+- **Heartbeat** — renew every 10 s for a 30 s lease, so two missed heartbeats are tolerated. A heartbeat that changes 0 rows means "you lost the lease": stop.
+- **Fence** — incremented on every claim. Every effect the job writes carries it, and the target rejects lower fences (`… WHERE fence < :fence`). The paused worker from the scene would have been refused.
+- **At-least-once execution + idempotent jobs.** Leases guarantee a run is eventually executed, not that it executes once — a worker can finish the work and die before marking it done. So jobs must be idempotent: "settle payouts for 2026-10-08" writes payouts keyed by `(organiser, date)`, so a second run finds them and changes nothing; a reminder job records `(event, user, reminder_type)` before sending.
+- **Retries and the dead-letter queue.** On failure, schedule the next attempt with exponential backoff (`due_at = now() + backoff(attempt)`). After N attempts (say 5), move the run to `DEAD` — a dead-letter state or queue — and alert a human. Never retry forever: a poison job burns workers and hides the error. See <a href={`${BASE}sd/lessons/queues-streams/#poison`}>Queues & streams, Chapter 8</a>.
+
+**Cron fan-out.** A recurring job is a **definition** (a cron expression); the scheduler materialises the next run(s) a little ahead of time — e.g. every minute it creates runs due in the next few minutes. Many jobs share popular times (midnight, the top of the hour), which creates spikes.
+
+**Worked numbers.** Assumptions: 10,000,000 runs a day; 50,000 runs in flight at peak; heartbeat 10 s, lease 30 s; 1,000 worker slots; average run 2 s; 1,000,000 runs scheduled for exactly midnight.
+
+- Average rate: 10,000,000 ÷ 86,400 ≈ **116 runs/s**.
+- Heartbeat writes: 50,000 ÷ 10 s = **5,000 writes/s** — more than the runs themselves. Lengthen the heartbeat for long jobs, or keep leases in a store built for it.
+- Dead-worker detection: at most **30 s** after its last renewal, plus the claim loop's polling interval.
+- Midnight: 1,000 slots ÷ 2 s = **500 runs/s** of throughput, so 1,000,000 runs take 1,000,000 ÷ 500 = **2,000 s ≈ 33 minutes** to drain; the last run starts half an hour late. Spread the same million runs across the hour (let users choose "hourly, any minute"; Jenkins's `H` cron syntax does this by hashing the job name) and the rate is 1,000,000 ÷ 3,600 ≈ **278 runs/s** — under capacity, no backlog.
+
+<Trace title="Runs, leases, zombies" steps={scheduler} takeaway="A unique run id makes creation idempotent. Leases plus heartbeats recover crashed workers; fences stop paused ones; idempotent jobs make at-least-once safe; a DLQ stops infinite retries." />
+
+**Catch the trap:** "the scheduler guarantees exactly-once execution." It can't. Say: *at-least-once execution, idempotent jobs, fencing against zombies — effectively once.*
+
+<Part n="Part Five" title="Out loud">
+
+The three module-6 walkthroughs, using the delivery framework's clock: Ticketmaster in full, payments and a scheduler as sketches, then the same pattern in new skins.
+
+</Part>
+
+<h2 id="ticketmaster">Chapter 13 · Ticketmaster, out loud</h2>
+
+<Scene chapter="Chapter 13" title="Ticketmaster, out loud" mood="night">
+
+Friday mock. Mara puts the phone face-down. *"Design Ticketmaster,"* she says. *"I've watched you build every part of it this month. Now do it in forty-five minutes, in order."*
+
+You write 9 · 15 · 25 · 38 in the corner of the board — the four checkpoints from the <a href={`${BASE}sd/lessons/delivery-framework/`}>delivery framework</a> — and pick up the marker.
+
+</Scene>
+
+A 45-minute round, compressed to its spoken lines. Timestamps are the clock.
+
+**0:03 · Roadmap and requirements**
+
+> **You:** "About six minutes on requirements, a couple on entities and the API, a design that works, then two or three deep dives — I expect the hardest part to be contention for seats — and a short wrap-up. Capacity numbers as they become relevant, if that's OK."
+>
+> "Functional: users can **view an event and its seat map**, **hold seats and pay for them**, and **get a confirmed ticket**. Out of scope unless you want them: search and discovery, resale, dynamic pricing, organiser tools, the venue-map editor."
+
+**0:05 · Non-functionals with numbers**
+
+> **You:** "The defining number is the on-sale spike. I'll assume a 50,000-seat stadium and 2 million fans arriving within two minutes of opening — about 16,700 a second — for 25,000 orders at two seats each, so about 1.25% succeed. Normal traffic is small by comparison."
+>
+> "**No seat is ever sold twice** — strong consistency on the booking path. **Browsing favours availability** — a seat map a second or two stale is fine. **Nobody is charged without getting a ticket.** **Fair and honest**: an explainable order, and people learn early if they won't get in. Holds last 10 minutes."
+
+**0:08 · The bridge**
+
+> **You:** "So: view, hold-and-pay, ticket; strongly consistent seat ownership under a 2-million-person spike; available, slightly stale browsing. The spike and the seat contention are the design. Does that match?"
+>
+> **Interviewer:** "Yes. Go."
+
+**0:09 · Core entities**
+
+> **You:** "**Event** and **Venue**. **Seat** — really *event-seat*, one row per seat per event, with a status, who holds it and until when. **Hold**, which groups the seats one buyer is checking out. **Booking** with its state, **Payment** with its state, and **Ticket**, issued per seat once booked. Event to event-seat is one-to-many — 50,000 rows for this event."
+
+**0:11 · API**
+
+```text
+POST /events/{id}/queue                          → 200 { queueToken, position, estimatedWaitS }
+GET  /events/{id}/queue/status                   → 200 { nowServing, ticketsLeft }      (CDN-cached ~1 s)
+POST /events/{id}/admission  { queueToken }      → 200 { admissionToken } | 200 { admitted: false, position }
+GET  /events/{id}/seats?section=B                → 200 { seats: [{ id, status }] }      (cached ~1 s)
+POST /events/{id}/holds      { seatIds }         → 201 { holdId, expiresAt } | 409 seats taken
+     headers: Admission-Token, Idempotency-Key
+POST /holds/{holdId}/checkout { paymentMethod }  → 202 { bookingId, state }
+     headers: Admission-Token, Idempotency-Key
+GET  /bookings/{id}                              → 200 { state, tickets }
+```
+
+> **You:** "Two things on purpose. Hold and checkout carry **idempotency keys**, because they create things and cost money — a retried checkout must not charge twice. And checkout returns 202 with a booking to poll, because payment can take a while with bank verification."
+
+**0:15 · High-level design, one requirement at a time**
+
+> **You:** "View: event pages are mostly static, so the CDN serves them. The seat map goes through the gateway to an event service that reads seat status from a cache per section, refreshed from a read replica every second."
+>
+> "Hold: the gateway forwards to a booking service. The truth is a Postgres `event_seats` table. A hold is one conditional update — set held-by and held-until where the seats are available or their hold has expired — and it must change exactly as many rows as seats requested, or it rolls back."
+>
+> "Pay: checkout authorises the card through a payment service, which calls the provider with an idempotency key. Then the booking service confirms — held to booked, only if the hold is still mine and alive — and the payment service captures. Confirm and an outbox event commit together; a ticketing consumer issues tickets and sends the email."
+>
+> "And in front of all of it, a waiting room, because 16,700 people a second can't all reach the hold path."
+
+<Figure caption="Ticketmaster's design. The waiting room meters the crowd; the seats table is the only truth about who owns a seat; payment never runs inside a database lock.">
+  <Mermaid code={`flowchart LR
+    U["Fans"] --> CDN["CDN\nevent pages · queue status"]
+    U --> WR["Waiting room\nposition counter · signed tokens"]
+    U --> GW["API gateway\nchecks admission token"]
+    GW --> EV["Event service\nseat map"]
+    EV --> SC[("Seat-map cache\nper section · 1 s")]
+    SC -.-> RR[("Read replica")]
+    GW --> BK["Booking service\nholds · confirm"]
+    BK --> DB[("Postgres primary\nevent_seats · bookings\nidempotency · outbox")]
+    DB -.-> RR
+    GW --> PAY["Payment service"]
+    PAY -->|"idempotency key"| PSP["Payment provider"]
+    DB --> OB["Outbox relay"] --> TK["Ticketing consumer\nissue · email"]
+    SW["Hold sweeper"] -.-> DB`} />
+</Figure>
+
+**0:25 · Deep dive 1 — no seat sold twice**
+
+> **You:** "The signature problem. Options: a Redis lock per seat, a pessimistic row lock held through checkout, or a conditional update plus a hold with an expiry. The Redis lock adds a second source of truth that can disagree with the database and needs fencing to be safe. Holding a row lock through a four-minute checkout is impossible — the ceiling of a row is one over the lock time. So: **a hold is a conditional update, and the expiry is in its WHERE clause.** The seat's states are available, held, booked."
+>
+> "Confirm is also conditional: held to booked, only where held-by is my hold and held-until is in the future. Payment is **authorise, confirm, capture** — if confirm fails because my hold lapsed, we void the authorisation, so nobody is charged for a seat they didn't get. The server-side hold runs two minutes longer than the timer the buyer sees, so a payment finishing on time always finds its hold."
+>
+> "The sweeper releases expired holds every few seconds for the seat map; correctness doesn't depend on it. A double-click on *Hold* carries the same idempotency key and gets the same hold back."
+
+**0:31 · Deep dive 2 — the flash crowd**
+
+> **You:** "Without metering, 16,700 hold attempts a second hit one primary, aimed at a few hundred popular rows, and a million seat-map reads a second hit the event service. So a **virtual waiting room**: each arrival gets a position from an atomic counter and a signed token; positions before opening are randomised so the fastest network doesn't win. Clients poll a single *now serving* number, which is the same for everyone, so the CDN answers two million pollers."
+>
+> "I'd admit about 100 people a second. With about four minutes in the flow, that's 24,000 people inside — 12,000 seat-map reads a second, served from a one-second cache — and about 100 holds a second, which one Postgres primary handles easily. All seats are held after about 250 seconds. If 20% of holders abandon, 10,000 seats come back between 10 and 14 minutes in, so 'sold out' at minute four means 'all held': we keep the line alive and admit people as seats return. Position 30,000 waits about five minutes; people far back are told early that tickets are unlikely."
+
+**0:36 · Deep dive 3 — payments in one breath**
+
+> **You:** "Checkout has its own idempotency key; the payment service stores key, request hash and result. A provider timeout makes the payment *unknown*, never *failed*: we retry with the same provider key or query status, and a daily reconciliation against the provider's report catches anything left. I can go deeper on payments if you'd like."
+>
+> **Interviewer:** "That's enough. Wrap up."
+
+**0:38 · Wrap-up**
+
+> **You:** "Recap: view is CDN plus a one-second seat-map cache; hold is a conditional update with expiry; pay is authorise-confirm-capture with idempotency keys; tickets go out through an outbox. At 10× — ten such on-sales at once — events are independent, so I'd shard seat data by event id; the single hottest event is still one shard, and the waiting room's admission rate is what keeps it within bounds. If the primary fails, holds and checkouts pause for the failover window while the waiting room keeps people in line; browsing continues from cache. I'd monitor hold success rate, hold-to-booking conversion, expired holds, queue length and wait, provider latency and the count of unknown payments — and an invariant check that booked seats never exceed capacity, which should be impossible, so it pages. With more time: bot defence and per-account ticket limits."
+
+**0:41.** Mara turns the phone over. Four minutes to spare.
+
+**Check the numbers yourself:** 2,000,000 ÷ 120 s ≈ 16,700/s. 50,000 ÷ 2 = 25,000 orders; 25,000 ÷ 2,000,000 = 1.25%. 100/s × 240 s = 24,000 inside; 24,000 ÷ 2 s = 12,000 map reads/s. 100 × 2 = 200 seats/s; 50,000 ÷ 200 = 250 s. 20% × 50,000 = 10,000 returning seats, expiring 600–850 s after opening. 30,000 ÷ 100 = 300 s.
+
+<Reveal q="Where in this walkthrough would you most likely have hand-waved — and what would the interviewer have asked?">
+
+Usually one of three places. "We use a distributed lock" without granularity or fencing — the interviewer asks what happens when the lock expires mid-checkout. "The seat is released after 10 minutes" without saying who releases it — they ask what happens when the job falls behind. And "the payment failed, so we release the seat" — they ask what a timeout means. Each has a one-sentence answer in this walkthrough: conditional write with expiry in the WHERE; correctness doesn't depend on the sweeper; a timeout is unknown, resolved with the same key.
+
+</Reveal>
+
+<h2 id="payments-walkthrough">Chapter 14 · Payments, sketched</h2>
+
+<Scene chapter="Chapter 14" title="Your wheelhouse" mood="dawn">
+
+Mara skips the timer this time. *"You do this for a living,"* she says. *"So I'm going to interrupt you every time you say a framework's name instead of a mechanism."*
+
+She interrupts twice. You stop saying framework names.
+
+</Scene>
+
+A compressed walkthrough: the decisions and the lines that carry them. Use the same clock as Ticketmaster.
+
+**Requirements (0:03–0:09).** Merchants create payments through an API; customers pay by card; merchants can refund; merchants get notified of outcomes. Out of scope: payouts to merchants' banks, fraud scoring, currency conversion — name them. NFRs: **never charge twice, never lose a payment record, every rupee explainable**; 10,000,000 payments a day (≈ **116/s** average, ≈ **579/s** at a 5× peak); API p99 for creating a payment of a few hundred milliseconds, excluding the provider; availability high, but correctness beats availability: *"if the ledger is unavailable, we refuse payments rather than take untracked money."*
+
+**Entities (0:09–0:11).** **Payment** (state machine), **IdempotencyKey**, **ProviderAttempt** (each call to the PSP, with its own key), **LedgerTransaction** and **LedgerEntry**, **Account**, **Refund**, **OutboxEvent**, **WebhookEvent** (inbound, deduped).
+
+**API (0:11–0:15).**
+
+```text
+POST /payments            { amount, currency, source, merchantRef }   Idempotency-Key required
+                          → 201 { paymentId, state }   (replayed on retry; 422 if key reused with a different body)
+GET  /payments/{id}       → 200 { state, amount, … }
+POST /payments/{id}/refunds { amount }                                 Idempotency-Key required
+POST /webhooks/provider   (from the PSP; signature-verified, deduped by provider event id)
+```
+
+**High-level (0:15–0:25).** API → payment service → Postgres (payments, idempotency keys, ledger, outbox — **one database, so one transaction can cover all four**) → PSP adapter → PSP. An outbox relay → broker → merchant-webhook sender and receipts. A reconciliation job reads the PSP's daily settlement file and the ledger.
+
+<Figure caption="Payment system. One database holds the state, the keys, the ledger and the outbox, so every local step is one transaction; only the PSP call crosses a boundary, and it carries its own key.">
+  <Mermaid code={`flowchart LR
+    M["Merchant client"] -->|"Idempotency-Key"| API["Payment API"]
+    API --> PS["Payment service\nstate machine"]
+    PS --> DB[("Postgres\npayments · idempotency\nledger · outbox")]
+    PS -->|"provider key"| PSP["PSP"]
+    PSP -->|"webhooks"| WH["Webhook receiver\ndedupe event id"]
+    WH --> PS
+    DB --> R["Outbox relay"] --> B["Broker"] --> MW["Merchant webhooks\nreceipts"]
+    REC["Reconciliation job\ndaily"] --> DB
+    PSP -.->|"settlement report"| REC`} />
+</Figure>
+
+**Deep dives (0:25–0:38) — the three that score:**
+
+1. **Idempotency, end to end.** Client key → `(merchant_id, key)` primary key with request hash → `IN_PROGRESS` / `COMPLETED` → replay, 422 on mismatch, 409 while in flight → our own key to the PSP per attempt → recovery job for stale `IN_PROGRESS` rows that re-calls the PSP with the same key. *Line:* "Every hop that can repeat is keyed, and each key's record commits with its effect."
+2. **The unknown state.** Timeout → `UNKNOWN` → retry same key with backoff, or status query → webhook may settle it first (conditional transition ignores whichever arrives second) → reconciliation catches the rest. *Line:* "A timeout is a question, not an answer."
+3. **The ledger.** Double-entry, append-only, entries sum to zero; refunds are new transactions; balances derived and cached with a guard; house accounts split into sub-accounts because every payment touches them (579/s against a 500/s single-row ceiling). Size: 30M entries/day, ~3 GB/day, ~1.1 TB/year, partitioned by month.
+
+**Wrap-up (0:38–0:41).** First bottleneck at 10× (≈ 5,800/s at peak): the single Postgres primary — shard by merchant id (a payment, its keys, its ledger entries and its outbox rows live on one shard, so transactions stay local; house accounts become per-shard sub-accounts). Failure: if the PSP is down, payments fail fast with a clear error — no queueing card charges for later. Monitor: unknown-state count and age, reconciliation mismatches, PSP error rate and latency, idempotency 409/422 rates, ledger imbalance (must be zero).
+
+<Reveal q="The interviewer: “Why not use two-phase commit between your database and the PSP?”">
+
+The PSP doesn't take part in your transaction protocol — it's an HTTP API, not an XA resource — and you wouldn't want your database's locks held for the length of a card network round trip. The pattern instead is **persist intent → call with an idempotency key → record the outcome**, with a recovery path that replays the call safely and reconciliation as the backstop. Sagas generalise this for multi-step flows: each step has a compensating action (void an authorisation, refund a capture).
+
+</Reveal>
+
+<h2 id="scheduler-walkthrough">Chapter 15 · A job scheduler, sketched</h2>
+
+<Scene chapter="Chapter 15" title="The senior must-have" mood="dusk">
+
+The Interviewer, in a different room, draws a clock face and a row of boxes. *"A million jobs, some every minute, some once next Tuesday. Workers die. Make sure each runs."* Then, almost as an afterthought: *"Exactly once."*
+
+You smile, because you know which word to push back on.
+
+</Scene>
+
+**Requirements.** Create one-off and recurring (cron) jobs; run each at roughly its time (within a few seconds); retry failures with backoff; surface status and failures; a dead-letter for jobs that keep failing. Out of scope: workflow DAGs between jobs, the job code itself. NFRs: **every due run executes at least once**, **no run's effects happen twice** (push back: *"exactly-once execution isn't possible across machines — I'll give at-least-once execution with idempotent jobs and fencing, which is effectively once"*); 10,000,000 runs/day (≈ 116/s), with top-of-hour spikes; the scheduler itself highly available.
+
+**Entities.** **Job** (definition: owner, cron expression or run time, payload, retry policy), **JobRun** (job id, scheduled time, state, attempt, owner, lease-until, fence), **Worker**.
+
+**API.**
+
+```text
+POST   /jobs              { schedule | runAt, payload, retryPolicy }   Idempotency-Key  → 201 { jobId }
+GET    /jobs/{id}/runs    ?cursor=…                                    → 200 { runs, nextCursor }
+POST   /jobs/{id}/pause   ·   DELETE /jobs/{id}
+POST   /runs/{id}/retry   (redrive a dead run)
+```
+
+**High-level.** Job definitions in a database. A **materialiser** (several instances; optionally leader-elected) turns cron definitions into `job_runs` rows a few minutes ahead, with `UNIQUE (job_id, scheduled_at)` making double materialisation harmless. **Workers** claim due runs with `FOR UPDATE SKIP LOCKED` and a lease (or the runs are pushed onto a queue by a dispatcher), heartbeat while running, and write results carrying the run's fence. Failed runs are rescheduled with backoff; after N attempts they become `DEAD` and alert.
+
+<Figure caption="Job scheduler. The unique run id makes creation idempotent; leases recover crashed workers; fences stop paused ones.">
+  <Mermaid code={`flowchart LR
+    API["Jobs API"] --> JD[("job definitions")]
+    MAT["Materialiser × N\ncron → runs ahead"] --> JD
+    MAT -->|"INSERT … unique (job_id, scheduled_at)"| JR[("job_runs\nstate · lease · fence")]
+    W["Workers\nclaim SKIP LOCKED\nheartbeat 10 s"] --> JR
+    W -->|"writes carry fence"| T[("Job targets\nreject stale fence")]
+    JR -->|"attempt > 5"| DLQ["DEAD runs\nalert + redrive"]`} />
+</Figure>
+
+**Deep dives.**
+
+1. **Effectively-once execution.** Unique run id (creation); lease + heartbeat (crash recovery: a dead worker's run is reclaimed within 30 s of its last renewal); fence on every write (zombie workers refused); idempotent job bodies (a worker that finished but died before marking done is harmless). *Line:* "At-least-once from leases, at-most-once *effect* from fences and idempotent jobs."
+2. **The midnight spike.** 1,000,000 runs at midnight against 500 runs/s of capacity is a 33-minute drain. Options: more workers for the spike (autoscale on due-but-unclaimed runs), priorities so payouts beat newsletters, and spreading flexible jobs across the hour (≈ 278/s — no backlog).
+3. **The scheduler's own state at scale.** Heartbeats alone are 5,000 writes/s at 50,000 in-flight runs. Partition `job_runs` by time bucket or shard by job id; or keep leases in a store designed for frequent small writes; or lengthen heartbeats for long jobs. Claiming via `SKIP LOCKED` scales to thousands of claims per second per database; beyond that, a dispatcher pushes due runs onto a partitioned queue.
+
+**Wrap-up.** At 10×, the `job_runs` table and heartbeat writes are first — shard by job id with a materialiser per shard. If a materialiser dies, others (or a new leader) pick up within seconds, and the unique key prevents doubles. Monitor: due-but-unclaimed count and age (lateness), lease expiries (worker deaths), retries and dead runs, fence rejections (should be rare — each one is a zombie caught).
+
+The <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs & pipelines</a> lesson owns the job template (persist, enqueue, status, workers); this chapter owns the "once" part.
+
+<h2 id="transfer">Chapter 16 · Same fight, new skins</h2>
+
+<Scene chapter="Chapter 16" title="Same fight, new skins" mood="dawn">
+
+Mara pins a list to the board: hotel rooms, holiday rentals, a flash sale on sneakers, a coupon that works a thousand times, a stock exchange. *"Different nouns,"* she says. *"Ask the same three questions. What is scarce? Where does the truth live? How long is the critical section?"*
+
+</Scene>
+
+| Question | What is scarce | The move |
+|---|---|---|
+| **Ticketmaster** (walkthrough) | One seat per event | Waiting room + seat hold with TTL + conditional update; authorise-confirm-capture |
+| **Payment system** (walkthrough) | One logical charge; consistent balances | Idempotency keys + state machine + double-entry ledger + reconciliation — your fintech wheelhouse |
+| **Job scheduler** (walkthrough) | One execution per run | "Exactly-once" = at-least-once trigger + lease (lock with TTL + heartbeat) + idempotent jobs + fencing |
+| **Airbnb booking** | Nights on a listing's calendar | Date ranges: one row per (listing, night) with a unique key, inserted in one transaction — or a Postgres exclusion constraint on the range; a pending-request hold with expiry while the host decides or payment completes |
+| **Hotel booking** | A *count* of rooms of a type per night | Per (hotel, room type, night) inventory rows with a conditional decrement for every night of the stay, in one transaction (lock rows in date order); overbooking, if the business allows it, is a deliberate limit above capacity |
+| **Flash sale** | A count of units | Inventory as an atomic decrement (Redis Lua or `DECR` with a floor check), split into N buckets if one key is too hot (10,000 units → 10 keys of 1,000); a waiting room meters entry; orders created asynchronously from the reservation, with a hold TTL that returns unpaid units |
+| **Inventory / e-commerce checkout** | Stock of a SKU | `UPDATE … SET stock = stock - :q WHERE stock >= :q`; reserve at checkout, not at add-to-cart; release on expiry |
+| **Coupon redemption** | One use per user; N uses total | `UNIQUE (coupon_id, user_id)` + `UPDATE coupons SET remaining = remaining - 1 WHERE id = ? AND remaining > 0`, both in one transaction |
+| **Distributed lock service (Chubby)** | Lock ownership | Consensus (Raft / Paxos) across 3 or 5 replicas, sessions with leases and heartbeats, and a sequencer or fencing token checked by the resource; name the Redlock debate |
+| **Stock exchange** | The order book of one symbol | Contention taken to its limit: a sequencer for total order and a single-threaded in-memory matching engine per symbol — sidestep locking entirely by serialising |
+| **Two riders matched to one driver** | One driver | Conditional update on the driver's state (`AVAILABLE → OFFERED` where available), an offer with a short TTL, decline/expiry returns the driver |
+
+**Worked numbers — the flash sale, bucketed.** 10,000 units, 1,000,000 buyers in a minute. Without a waiting room, every buyer decrements one Redis key — one shard serialises all of it. With 10 buckets of 1,000 units each, ten keys (on different shards) share the load; a buyer whose bucket is empty tries another, and the sale is over when all ten report zero. The decrement is still atomic per bucket, so no unit is sold twice.
+
+<Reveal q="Airbnb: why doesn't a unique constraint on (listing_id, check_in) prevent double bookings?">
+
+Because two overlapping stays can start on different days: 3–6 October and 5–8 October share the night of the 5th but have different check-in dates. The rule is about **ranges**, not points. Either turn the range into points — one row per night, each unique on `(listing_id, night)`, all inserted in one transaction so any collision rolls back the whole stay — or guard the range directly with a Postgres exclusion constraint (`EXCLUDE USING gist (listing_id WITH =, stay WITH &&)`). Per-night rows also make the calendar query trivial.
+
+</Reveal>
+
+<h2 id="decision-drills">Decision drills · Make the calls</h2>
+
+Close the lesson and answer from memory. Each wrong choice tells you what it would break.
+
+<Trace title="The contention review" steps={drills} takeaway="Cheapest correct tool first: one statement, then a constraint, then a brief lock or a version. Fence every lease. Key every hop. Serialise what everyone needs. Say ‘effectively once’, and name the boundary." />
 
 <Quiz questions={[
   {
@@ -119,9 +1082,131 @@ Never `UPDATE balance = balance - 500`. Financial state is an **append-only doub
     ],
     answer: 1,
     why: 'Money questions are history questions. Append-only + derived balances is the difference between "trust me" and "here\'s the proof" — and reconciliation (comparing your ledger to the bank\'s) only exists if history exists.'
-  }
+  },
+  {
+    q: 'Your payment-provider call times out. What do you record, and what do you do next?',
+    options: [
+      'FAILED; ask the customer to pay again',
+      'UNKNOWN; retry with the same provider idempotency key or query the provider, and let reconciliation settle what remains',
+      'SUCCEEDED; most timeouts are slow successes',
+      'Nothing; wait for the customer to complain'
+    ],
+    answer: 1,
+    why: 'A timeout means no answer, not no. A new attempt with a new key is how customers get charged twice; the same key makes the retry a replay.'
+  },
 ]} />
 
-## Drill hand-off
+<h2 id="interview-script">Say it in the room</h2>
 
-With the buddy: **race-condition gauntlet** — 5 scenarios (double-booked hotel room, double-charged card, twice-run cron job, oversold flash sale, two riders matched to one driver), 2 minutes each: name the race, pick the cheapest sufficient tool, name its failure mode. Then weekend mock: **Ticketmaster**.
+<Scene title="The interview room" mood="night">
+
+The Interviewer has drawn a booking service with an arrow into a database and asks, a little too casually: *"What happens if two people book the last room at the same time?"* A year ago you'd have said "we lock it". Today you ask yourself three questions first, and then you answer.
+
+</Scene>
+
+**The 90-second answer** (adapt the nouns):
+
+> "The scarce thing is one room-night, and the truth lives in one Postgres table, so I'll keep the guarantee in the database. The hold is **one conditional update**: set held-by and held-until where the room is available or its hold has expired, and the row count tells me who won — no lock objects, no read-then-write gap. Checkout takes minutes, so I never hold a database lock across it: the **hold has a 10-minute expiry inside its WHERE clause**, a sweeper only tidies up, and confirm is another conditional update that requires a live hold. Payment is **authorise, confirm, capture** — if the hold lapsed, I void the authorisation. Every create carries a **client idempotency key**, stored with a request hash, so a retried tap replays the first answer; the provider call carries **its own key**, and a timeout makes the payment *unknown*, resolved by retrying with the same key and by **daily reconciliation**. If a burst can reach this path — a flash sale — a **waiting room** meters admission so the database sees hundreds of holds a second, not tens of thousands. If I ever need a lock across services, it's a lease with a **fencing token** the storage checks. Exactly-once delivery doesn't exist; this gives **effectively once**."
+
+**Five follow-ups you will get:**
+
+<Reveal q="1 · Why not a distributed lock on the room?">
+
+Because the database can do it atomically for free, and a separate lock is a second source of truth that can disagree with it. A TTL lock is also unsafe without fencing — a paused holder can wake after expiry and write. I'd use a distributed lock only when the critical section spans systems, and then with a fencing token the resource checks.
+
+</Reveal>
+
+<Reveal q="2 · Optimistic or pessimistic?">
+
+For a single contended row, neither in the classic sense — a conditional update is the cheapest. If the decision spans rows (a per-account limit), a brief `SELECT … FOR UPDATE` on the smallest scarce row, held for milliseconds. Optimistic versions fit low-contention edits with human think time; on a hot row they cause quadratic retries — 100 contenders cost 5,050 attempts.
+
+</Reveal>
+
+<Reveal q="3 · The client retried with the same key but a different amount. What happens?">
+
+422. I store a hash of the canonical request with the key: same key and same hash replays the stored response; same key, different hash is a client bug, and I neither replay (wrong answer) nor execute (double effect). If the original is still in flight, 409 and the client backs off.
+
+</Reveal>
+
+<Reveal q="4 · What happens when the payment succeeds after the hold expired?">
+
+It can't capture money for a seat it doesn't get, because I authorise first, confirm the seat with a conditional update that requires a live hold, and capture only after confirm. If confirm fails, I void the authorisation. To make that rare, the server-side hold outlives the buyer's visible timer by a grace period, and checkout can't start in the last minute.
+
+</Reveal>
+
+<Reveal q="5 · Can you guarantee exactly-once?">
+
+Not delivery — a sender that hears nothing must either resend or risk a loss. I guarantee exactly-once **effect**: at-least-once delivery, a stable id per logical operation, and a dedup record or conditional transition committed atomically with the effect. Where an effect leaves my database, I pass a key to the next hop, and reconciliation catches anything that slips through.
+
+</Reveal>
+
+<h2 id="cheat-sheet">Cheat sheet</h2>
+
+| When you see… | Say… |
+|---|---|
+| "Book", "reserve", "the last one" | Granularity first, then a conditional UPDATE; row count = who won |
+| "At most one per user / per X" | A unique constraint (exclusion constraint for ranges) |
+| Any one of N identical rows | `FOR UPDATE SKIP LOCKED` |
+| A decision across several rows | Brief `SELECT … FOR UPDATE` on the smallest scarce row |
+| Human edit form, rare conflicts | Optimistic version column |
+| Hot row, many contenders | Ceiling = 1 ÷ lock time; optimistic = N(N+1)/2 attempts; meter or split |
+| Lock across services | Lease (`SET NX PX` + token) **and** a fencing token the storage checks |
+| "Is Redlock safe?" | Debated (timing assumptions, no fence); for correctness: consensus lock + fence, or a DB guard |
+| Everyone needs the same key | Serialise: one writer per key (partitioned log, single-threaded engine) |
+| Checkout takes minutes | Hold with TTL in the WHERE; sweeper only tidies; available → held → booked |
+| Payment after hold expired | Authorise → confirm → capture; void on failure; server grace > visible timer |
+| Flash crowd | Waiting room: atomic position, signed token, CDN-cached now-serving, admission rate |
+| Retries, double taps | Client key per intent; unique claim; request hash; replay / 422 / 409; TTL ~24 h |
+| External side effect | Key the downstream call; outbox for events; consumers dedupe by event id |
+| "Exactly-once" | At-least-once + idempotent effect = effectively once; name the boundary |
+| Money | Double-entry, append-only, sum to zero, balances derived; corrections are new transactions |
+| PSP timeout | UNKNOWN → same key / status query → reconciliation |
+| Cron "exactly once" | Unique (job_id, scheduled_at); lease + heartbeat; fence; idempotent job; DLQ after N |
+| Top-of-hour spike | Capacity ÷ run time vs runs due; spread flexible jobs |
+
+## Five mistakes to leave behind
+
+1. **Read, decide in code, write back.** Put the condition in the `WHERE`, or a constraint in the schema.
+2. **A TTL lock without fencing.** Safe against crashes, unsafe against pauses.
+3. **A lock held across a slow call.** 300 ms inside a lock is 3 per second. Hold, commit, pay, confirm.
+4. **A fresh idempotency key on retry — or none downstream.** The key is per intent, reused on every retry, and every hop that can repeat needs one.
+5. **"Failed" after a timeout.** It's unknown. Same key, status query, reconciliation.
+
+<Scene title="Mara’s last word" mood="dusk">
+
+A month later, The Lanterns add a second night. 10:00 a.m. The waiting room fills to 1.8 million. The seat map holds steady at a second stale. Holds tick along at a hundred a second. At 10:04 the site says *all seats held — stay in line, seats may return*; at 10:13 a few thousand come back, and the line moves again.
+
+The support queue is quiet. Reconciliation finds zero double charges.
+
+Mara looks at the square on the whiteboard, still labelled *B-4-17*, and doesn't erase it. *"One seat,"* she says. *"One winner. Once."*
+
+</Scene>
+
+**Keep it warm:** with the buddy, run the **race-condition gauntlet** — five scenarios (a double-booked hotel room, a double-charged card, a cron job that ran twice, an oversold flash sale, two riders matched to one driver), two minutes each: name the race, pick the cheapest sufficient tool, name its failure mode. Then the weekend mock: **Ticketmaster**, on the clock, followed by payments with the interviewer interrupting every framework name.
+
+Related: <a href={`${BASE}sd/lessons/databases/#concurrency-control`}>Databases: concurrency control</a> (the toolbox on one row) · <a href={`${BASE}sd/lessons/databases/#isolation`}>Databases: isolation levels</a> · <a href={`${BASE}sd/lessons/queues-streams/#idempotency`}>Queues & streams: idempotent consumers</a> and <a href={`${BASE}sd/lessons/queues-streams/#outbox`}>the outbox</a> · <a href={`${BASE}sd/lessons/core-concepts/#liveness`}>Core concepts: leases and fencing</a> and <a href={`${BASE}sd/lessons/core-concepts/#retries`}>retries</a> · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (the seat map's cache) · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> (Redis Lua atomics) · <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs & pipelines</a> · <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> · <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and races</a> (five real races from your own code, each solved with a different tool).
+
+<h2 id="beyond">Beyond this page</h2>
+
+**Further study**
+
+- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 7 "Transactions" (lost updates, write skew, serializability), chapter 8 "The Trouble with Distributed Systems" (process pauses, leases, fencing tokens), chapter 9 "Consistency and Consensus", and chapter 12 "The Future of Data Systems" (end-to-end idempotence with request ids).
+- [How to do distributed locking](https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html) (Martin Kleppmann) and [Is Redlock safe?](http://antirez.com/news/101) (Salvatore Sanfilippo) — both sides of the Redlock debate.
+- [The Chubby lock service for loosely-coupled distributed systems](https://static.googleusercontent.com/media/research.google.com/en//archive/chubby-osdi06.pdf) (Burrows, OSDI 2006) — coarse-grained locks, sessions, and sequencers.
+- [Idempotent requests](https://docs.stripe.com/api/idempotent_requests) (Stripe API docs) and [Designing robust and predictable APIs with idempotency](https://stripe.com/blog/idempotency) (Stripe engineering blog).
+- [The Idempotency-Key HTTP header field](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/) (IETF draft) — a proposed standard for the header and its error cases.
+- [PostgreSQL: explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html) and [the SELECT locking clause](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE) (`FOR UPDATE`, `NOWAIT`, `SKIP LOCKED`).
+- [PostgreSQL: exclusion constraints](https://www.postgresql.org/docs/current/ddl-constraints.html#DDL-CONSTRAINTS-EXCLUSION) — the range-overlap guard for bookings.
+- [Apache Kafka: message delivery semantics](https://kafka.apache.org/documentation/#semantics) — what "exactly-once" means inside Kafka.
+- [The LMAX Architecture](https://martinfowler.com/articles/lmax.html) (Martin Fowler) — a single-threaded in-memory engine that serialises instead of locking.
+
+**Look these up yourself**
+
+- **Sagas and compensating actions** — multi-step workflows (book flight, hotel, car) without distributed transactions.
+- **Two-phase commit and why it blocks** — the coordinator-failure problem, and why services prefer outbox + sagas.
+- **Serializable Snapshot Isolation** — how Postgres detects write skew, and the retry loop it obliges you to write.
+- **Hot-account sharding in ledgers** — sub-accounts, batching and asynchronous balance aggregation for accounts every transaction touches.
+- **Fairness in virtual waiting rooms** — lotteries versus first-come-first-served, and how pre-queue randomisation is explained to fans.
+- **Escrow / reservation counters in distributed inventory** — giving each region or shard a slice of stock to decrement locally.
+- **Payment authorisation expiry** — how long a card authorisation stays valid before it must be captured or re-authorised, and how that bounds hold design.
+- **Clock-bound leases** — why lease holders should assume expiry slightly early, and how monotonic clocks help.

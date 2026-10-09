@@ -57,17 +57,16 @@
 - War Room (battle-tested, from prod code): patterns-why (18 dossiers), inventory, build-drills, cheatsheet — ✅ live at `/lld/war/…`. SD War Room: 6 case studies at `/sd/war/…`. Doctrine: theory first, War Room = live examples.
 - Remaining LLD work = REPS, not lessons: the classic-problems drill order (parking lot → splitwise → vending machine → LRU → BookMyShow → elevator → logger → rate limiter), timed with the buddy, post-mortems logged. Lesson infra: MDX in `src/lld-lessons/`, modules in `src/lld-modules.ts`.
 
-## Mastery status — SYNCED FROM CONFLUENCE (2026-09-11)
+## Mastery status (hand-maintained)
 
-| Dossier | Chapters | Source |
-|---------|----------|--------|
-| AI Document Pipeline | 15 | Confluence `57966593` |
-| Reporting Engine | 8 | Confluence `54231041` |
-| Telemedicine PoC | 5 | Confluence `58294374` |
-| War Stories (one integration day, 8 bugs) | 1 | Confluence `39026689` |
+| Dossier | Chapters |
+|---------|----------|
+| AI Document Pipeline | 15 |
+| Reporting Engine | 8 |
+| Telemedicine PoC | 5 |
+| War Stories (one integration day, 8 bugs) | 1 |
 
-- Generated wing: `scripts/confluence-to-mdx.mjs` converts raw wiki markdown → MDX, `scripts/verify-mdx.mjs` round-trips it back and diffs (29/29 clean). Page manifests in `content-sync/<project>/meta.json`; protocol in `content-sync/README.md`.
-- Doctrine: Confluence is the source of truth for this wing — edit there, re-sync, never hand-edit `src/mastery/**`.
+- Chapters are plain MDX in `src/mastery/<project>/`, edited directly.
 - Use: the résumé half of the loop ("walk me through something you built"). Reread the relevant dossier before any round where that work is on the CV.
 
 ## Coverage map
@@ -85,4 +84,4 @@
 - SD: all 24 lessons rewritten + `url-shortener` and `typeahead` warm-up walkthroughs; every queued walkthrough in modules 3-11 now lives inside its pattern lesson (see `src/bank.ts` walkthrough flags). Remaining queued: none except bank rows not mapped to a lesson.
 - LLD: all 8 lessons rewritten (Gearhouse universe), every Java block compiled and stress-tested.
 - Gates (run before shipping): `npm run test:ts`, `node scripts/check-java.mjs` (54 suites), fresh `npm run build`, `node scripts/check-links.mjs dist`, `node scripts/check-mermaid.mjs <preview-url> dist`.
-- Known: 3 Mermaid diagrams in the Confluence-synced Mastery wing fail to render (provenance-spans-offsets-pages, event-driven-design-properly, per-speaker-recording-and-consent) — fix at the Confluence source and re-sync, don't hand-edit `src/mastery/**`.
+- Known: 3 Mermaid diagrams in the Mastery wing fail to render (provenance-spans-offsets-pages, event-driven-design-properly, per-speaker-recording-and-consent) — fix in the MDX directly.

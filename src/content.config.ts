@@ -44,7 +44,7 @@ const war = defineCollection({
   }),
 });
 
-// Mastery wing — project dossiers synced from Confluence via scripts/confluence-to-mdx.mjs.
+// Mastery wing — project dossiers, hand-maintained.
 // id = "<project>/<chapter-slug>"; project must match a slug in src/mastery-projects.ts.
 const mastery = defineCollection({
   loader: glob({ pattern: '**/*.mdx', base: './src/mastery' }),
@@ -54,8 +54,6 @@ const mastery = defineCollection({
     project: z.string(),
     order: z.number(),
     minutes: z.number(),
-    source: z.string().url().optional(),
-    synced: z.string().optional(),
   }),
 });
 

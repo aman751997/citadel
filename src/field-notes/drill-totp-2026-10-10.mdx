@@ -1,0 +1,68 @@
+---
+title: "Grill: TOTP authenticator MFA, closed book (round 1)"
+description: "Six questions from easy to senior, my first answers, the score, and the model answer to say next time. Overall about 6/10 — right ideas, answers stopped too early."
+kind: drill
+date: "2026-10-10"
+minutes: 12
+---
+
+**Read with:** [Authenticator-app MFA (TOTP)](../totp-authenticator-mfa/). Next round: new questions in a couple of days.
+
+## Scorecard
+
+| Q | Topic | Score | The one fix |
+|---|---|---|---|
+| 1 | How the server knows the code is right | 7 | We store the **secret** (encrypted, in a vault) — not a hash, not a code |
+| 2 | From time to 6 digits | 6 | Spell out dynamic truncation: nibble offset, 4 bytes, mask, mod, pad |
+| 3 | Clock drift and replay | 7.5 | Add the trade-off (3 valid codes), the row lock, and "first use by an attacker still wins" |
+| 4 | The lockout war story | 5 | Tell the **whole** story: race → fix → both regressions → lesson |
+| 5 | TOTP vs SMS vs passkeys | 5 | TOTP's two weaknesses, *why* passkeys fix them, trade-offs, rollout |
+| 6 | Lost-phone rescue | 6.5 | The guards (no self-reset, isolation, audit, identity check) and what happens to sessions |
+
+**The pattern:** every answer had the right core, closed-book. What cost points was stopping after the first true sentence. Use four beats every time: **what → why → trade-off → what I'd do next.** Q6 was already better than Q4–Q5, so the habit is moving.
+
+## Q1 — "When the user types the 6 digits, how does your server know they're right? Does it call the authenticator vendor?"
+
+- **My answer:** no; shared secret, both compute HMAC of time — but said we store an *HMAC-hashed code* and send it via the QR.
+- **The slip:** we store the **secret itself**, encrypted; the QR carries that secret; codes are never stored. You can't hash the secret like a password because the server must *compute* HMAC with it.
+- **Model answer:** "No network call. At enrolment we generate a random 160-bit secret, keep it encrypted in a vault and hand it to the phone once through a QR code. After that both sides independently compute HMAC-SHA1 of the secret and the current 30-second time step, truncated to 6 digits. If the user's code matches what we compute, they hold the secret."
+
+## Q2 — "Walk me from the current Unix time to the digits on the screen."
+
+- **My answer:** step = time / 30, HMAC-SHA1(secret, step), truncate to 6 digits.
+- **Missing:** floor; 8-byte big-endian counter; how truncation works; zero-padding.
+- **Model answer:** "Step is floor of Unix time over 30, written as an 8-byte big-endian counter. HMAC-SHA1 it with the secret — 20 bytes. Dynamic truncation: the low nibble of the last byte picks an offset, read 4 bytes there, mask the sign bit, mod 10 to the 6, zero-pad. That's RFC 6238 on top of HOTP, RFC 4226."
+- **Memory hook:** floor, 8 bytes, HMAC, nibble-offset, 4 bytes, mask, mod, pad.
+
+## Q3 — "The phone is 20 s behind, and someone behind the user types the same code 10 s later elsewhere. What happens?"
+
+- **My answer:** the ±1 step window accepts the drift; replay is rejected via the last used step.
+- **Missing:** the trade-off, the row lock, and the edge case.
+- **Model answer:** "We accept the previous, current and next step, so ±30 s of drift works — at the cost of 3 valid codes at a time. Each accepted step is stored and only later steps are accepted, under a row lock, so a seen code can't be reused even inside its validity. It doesn't stop an attacker who uses it *first* — that's real-time phishing, which TOTP can't solve and passkeys can."
+
+## Q4 — "How could an attacker with the password get far more than 3 guesses, and how did you fix it — including what went wrong with the fix?"
+
+- **My answer:** parallel requests passed the check before the increment; fixed with an atomic compute.
+- **Missing:** the numbers, both regressions, the lesson. A one-liner here sounds read-about, not lived.
+- **Model answer (~75 s):** "Our 3-strikes lock was check-then-act: read the count, verify the code over a network call, then increment. An attacker with the password could fire 200 parallel guesses; they'd all read zero before any increment landed. I reserved the attempt atomically before checking, with ConcurrentHashMap.compute, and proved it with a 20-thread burst test that gets exactly 3 checks. Then the fix had two bugs of its own. End-to-end tests showed a request refused for another reason now burned an attempt, so I give it back when the check errors rather than answers. And review found that when a lockout expired, two threads could wipe each other's counts — so the lock check, its expiry and the reservation became one atomic step per user, and expiry only removes that exact lockout. The lesson: concurrency fixes need burst tests, and the fix needs its own review."
+- **Shape to reuse:** problem → numbers → fix → proof → what broke next → final design → lesson.
+
+## Q5 — "Why an authenticator app over SMS? If an architect says TOTP isn't enough, what then?"
+
+- **My answer:** SMS costs per message and can be SIM-swapped; I'd propose passkeys.
+- **Missing:** two more reasons for TOTP, TOTP's own weaknesses, *why* passkeys fix them, trade-offs, rollout.
+- **Model answer (~60 s):** "Four reasons over SMS: SMS can be SIM-swapped or intercepted, it costs per message, we had no SMS provider in that market, and TOTP works offline with no delivery problems. But TOTP has two real weaknesses: it's phishable in real time, and the server holds a shared secret, so a vault leak would let attackers mint codes. For stronger, passkeys: bound to our domain, so a phishing page gets nothing, and we store only public keys, so a leak is harmless. The cost is front-end work, device support and a recovery story — so roll them out alongside TOTP, require them for admins first, keep TOTP as the fallback."
+- **Shape:** choice → reasons → its weaknesses → better option → why → trade-offs → rollout.
+
+## Q6 — "A tenant has exactly one admin and she loses her phone. Who rescues her, how is that not a security hole, and what happens to her sessions?"
+
+- **My answer:** platform support deletes her secret from the vault, which clears her MFA; she enrols again with her phone.
+- **Right:** the rescuer and the mechanism. Wording: she scans a **new** QR with a **new** secret.
+- **Missing — guarding the hole:** nobody resets their own authenticator (else stolen password + self-reset bypasses MFA); permission-gated; tenant admins can't reach other tenants; audited on the tenant's own log with the actor; support verifies identity out-of-band first.
+- **Missing — sessions:** revoked after the reset commits; refresh tokens older than the reset are refused; next sign-in shows a fresh QR.
+- **Model answer (~60 s):** "Inside the tenant, any admin with the update permission can reset someone else's authenticator — never their own, otherwise a stolen password plus a self-reset bypasses MFA. If the only admin loses her phone, platform support resets her; tenant admins can't reach other tenants at all. Every reset is audited on the customer's own log with the actor, and support verifies identity out-of-band before acting. The reset deletes her secret, ends her sessions after commit, and refresh tokens older than the reset are refused. Her next sign-in shows a fresh QR."
+
+## Before round 2
+
+- Re-read the feature note's *Concepts*, *War stories* and *Q&A drill*.
+- Say the Q4 model answer out loud twice — out loud beats re-reading.

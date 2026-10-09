@@ -59,4 +59,17 @@ const mastery = defineCollection({
   }),
 });
 
-export const collections = { lessons, dsa, lld, war, mastery };
+// Field Notes — hand-written (not synced): interview-worthy features and grill drills from the day job.
+const field = defineCollection({
+  loader: glob({ pattern: '**/*.mdx', base: './src/field-notes' }),
+  schema: z.object({
+    title: z.string(),
+    description: z.string(),
+    kind: z.enum(['feature', 'drill']),
+    date: z.string(),
+    minutes: z.number(),
+    status: z.string().optional(),
+  }),
+});
+
+export const collections = { lessons, dsa, lld, war, mastery, field };

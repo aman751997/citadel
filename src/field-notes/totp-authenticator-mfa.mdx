@@ -1,0 +1,171 @@
+---
+title: "Authenticator-app MFA (TOTP): how six digits prove you hold the phone"
+description: "Per-tenant multi-factor sign-in with an authenticator app, plus idle sign-out — the RFC 6238 maths, the safety rails around it, the design choices, and four bugs worth telling."
+kind: feature
+date: "2026-10-09"
+minutes: 18
+status: "built, in review"
+---
+import Mermaid from '../components/Mermaid.astro';
+
+**Honesty guard.** I designed and built this as backend lead for a multi-tenant healthcare SaaS platform. Status: built and proven on the full local stack (end-to-end checks across every door of the design, three review rounds against a signed design), **in review, not yet live**. Don't quote production numbers.
+
+## 60-second pitch
+
+A US healthcare client needed multi-factor sign-in for every portal user and automatic sign-out after a quiet period — switched on **per tenant**, with every other tenant's sign-in left byte-for-byte unchanged. I chose authenticator-app codes (TOTP, RFC 6238) over SMS: free, works offline, and no SMS provider needed. The server and the phone never talk to each other. They share one secret, handed over once through a QR code, and each independently computes `HMAC-SHA1(secret, floor(now / 30))`, cut down to 6 digits. If the digits match, the user holds the secret. Around the maths I built what makes it safe in practice: a ±1-step clock window, a replay guard (each 30-second step works once), a 3-strikes lockout that stays correct under parallel requests, a lost-phone reset with a last-resort rescue path, and short-lived step tokens that can never be used as real login tokens.
+
+## The picture
+
+### Enrolment (once)
+
+<Mermaid code={`sequenceDiagram
+    participant P as Phone
+    participant UI as Login page
+    participant A as Auth service
+    participant D as Admin service + vault
+    UI->>A: password OK (MFA tenant, not enrolled)
+    A-->>UI: enrol step token (10 min), no real tokens
+    UI->>A: start enrolment (step token)
+    A->>D: enrol(user)
+    D->>D: 20 random bytes into the vault
+    D-->>UI: otpauth link with the Base32 secret, shown as a QR
+    P->>P: scan, secret saved, offline from now on
+    UI->>A: confirm with the first 6-digit code
+    A->>D: verify(code, enrolling) marks the user enrolled
+    A-->>UI: access + refresh tokens`} />
+
+### Every sign-in afterwards
+
+<Mermaid code={`sequenceDiagram
+    participant P as Phone
+    participant A as Auth service
+    participant D as Admin service
+    P->>P: step = now/30, HMAC, 6 digits
+    A->>A: reserve an attempt (atomic, per user)
+    A->>D: verify(user, code)
+    D->>D: secret from vault, try steps now-1, now, now+1
+    D->>D: constant-time compare, step after the last one used?
+    D-->>A: true, store the step (replay guard)
+    A-->>A: issue tokens (lifetime = min(30 min, idle limit))`} />
+
+### Why the code changes every 30 seconds
+
+<Mermaid code={`flowchart LR
+    T["Clock 10:00:29<br>unix 1791540029"] --> S1["step 59718000"] --> C1["code, e.g. 872193"]
+    T2["Clock 10:00:30<br>unix 1791540030"] --> S2["step 59718001"] --> C2["new code"]`} />
+
+## Concepts (general first)
+
+- **Shared secret.** A random key known only to the server and the device. Everything else (algorithm, time) is public; security rests on the secret alone.
+- **The secret is stored encrypted, never hashed.** A password can be hashed because the server only *compares* it. For TOTP the server must *compute* `HMAC(secret, step)`, so it needs the secret back — keep it encrypted and recoverable (a vault, referenced by id).
+- **HMAC.** A keyed hash. You can't produce it without the key, and one changed input bit scrambles the output. TOTP uses HMAC-SHA1; SHA-1's collision weakness doesn't apply to HMAC.
+- **HOTP (RFC 4226).** One-time password from a counter: `truncate(HMAC(secret, counter))`.
+- **TOTP (RFC 6238).** HOTP where the counter is time: `floor(unix_time / 30)`, written as an 8-byte big-endian number. No state to sync, just clocks.
+- **Dynamic truncation.** HMAC gives 20 bytes. The low 4 bits of the last byte pick an offset (0–15); read 4 bytes from there; clear the top bit (a positive 31-bit int); `mod 1,000,000`; left-pad to 6 digits — `042817` is valid.
+- **Base32 and the otpauth link.** The QR is just `otpauth://totp/Issuer:account?secret=...&issuer=...&algorithm=SHA1&digits=6&period=30`, so any authenticator app can read it.
+- **Clock window.** Accept the previous, current and next step — ±30 s for phone drift and slow typing. Trade-off: 3 valid codes at any moment.
+- **Replay guard.** A code stays valid for its whole step. Store the last accepted step and only accept later steps, under a row lock — so a seen code can't be reused even while still "valid". It can't stop an attacker who uses it *first*; that's real-time phishing.
+- **Constant-time compare.** Compare every digit whatever the first mismatch, so timing leaks nothing.
+- **Rate limit.** A guess succeeds with probability 3 in 1,000,000; capping attempts at 3 per lockout makes brute force pointless.
+
+## Worked example — the real RFC 6238 test vector
+
+- Secret (ASCII) `12345678901234567890` → Base32 `GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ`.
+- Time 59 s → step `floor(59/30) = 1`.
+- HMAC-SHA1, truncated → `94287082` (8 digits) → **`287082`** (6 digits).
+- The unit tests check exactly these vectors; at 60 s the step becomes 2 and the code changes.
+
+## How it's built
+
+| Piece | Where it lives |
+|---|---|
+| Generate secret (20 bytes, `SecureRandom`), store in the vault, build the QR link | `AdminTotpService.enrol` |
+| RFC 6238 maths: HMAC-SHA1 + dynamic truncation | `AdminTotpService.code(key, step)` |
+| ±1 step window, constant-time compare, "after the last used step" | `AdminTotpService.matchingStep` |
+| Verify; the first good code confirms enrolment | `AdminTotpService.verify` |
+| Lost-phone reset: clear secret, end sessions after commit, audit | `AdminTotpService.reset` |
+| Step-token checks: type, user still active, status unchanged, branch active, tenant still requires MFA | `AdminAuthService.mfaStep` |
+| 3-strikes lock: check, expiry and reservation in one atomic step per user | `MfaOtpService.verifyAttempt` |
+| Step tokens refused as normal Bearer tokens in every service | shared auth library, token validation |
+| Idle limit: access-token lifetime = min(30 min, limit); refresh rules as backstop | token provider + refresh checks |
+
+Data: per user — when the authenticator was confirmed, the last step used (replay guard), when it was last reset; the secret in the vault by reference. Per tenant — MFA required, when it was switched on, the idle limit.
+
+## Decisions vs alternatives
+
+| Decision | Alternative | Why this | Revisit when |
+|---|---|---|---|
+| Authenticator app (TOTP) | SMS / email codes | Free, offline, no SMS provider, can't be SIM-swapped | Users without smartphones |
+| TOTP | Passkeys (WebAuthn) | Works with any authenticator app today; passkeys need front-end work and device support | Phishing-resistant MFA is required — TOTP can be relayed in real time |
+| Secret in a vault | Column in the users table | A database dump alone can't mint codes | — |
+| ±1 step window | Wider window | Drift tolerance vs 3 valid codes at a time | Many clock-drift complaints |
+| Replay guard = last used step | Cache of used codes | One number per user, monotonic, no expiring cache | — |
+| Idle limit via token lifetime, capped at 30 min | Server-side "last activity" tracking | One number in one place; refresh checks as backstop | Limits above 30 min wanted (needs a refresh redesign) |
+| Settings left out of an update stay unchanged | Full replacement | A password-rule change can't switch MFA off by accident | — |
+| Platform support can reset any tenant's user | Tenant admins only | A tenant with one admin who loses the phone would be locked out for good | — |
+
+## War stories
+
+1. **The lock that parallel requests walked through.**
+   - *Situation:* 3 wrong codes should lock the user.
+   - *Bug:* check-then-act — read the attempt count, verify the code over a network call, then increment. 200 parallel guesses all read "0" before any increment landed.
+   - *Fix:* reserve the attempt atomically **before** checking (`ConcurrentHashMap.compute`), proved by a 20-thread burst test that gets exactly 3 checks.
+   - *My own regression:* reserving first meant a request refused for another reason ("nothing to confirm yet") burned an attempt. End-to-end tests caught it; the attempt is now given back when the check *errors* rather than *answers*.
+   - *Second regression, found in review:* when a lockout expired, two threads could wipe each other's fresh counts. Final design: lock check, expiry and reservation in **one** `compute` per user, and expiry only removes *that exact* lockout object.
+   - *Lesson:* concurrency fixes need burst tests, and the fix needs its own review.
+2. **The idle limit that could never exceed 30 minutes.**
+   - *Situation:* the design allowed 5–480 minutes.
+   - *Bug:* refresh required a still-valid access token (an older rule elsewhere), and the access token expired at the limit — so anything over 30 never applied.
+   - *Fix:* cap at 5–30, keep the refresh check as a backstop.
+   - *Lesson:* trace the whole flow end to end, not just your new code.
+3. **The dead-end SMS step.**
+   - *Situation:* if the tenant switched MFA off again, enrolled users fell back to an old per-user flag that sends an SMS code — and that tenant had no SMS at all. They'd be stuck.
+   - *Fix:* when the tenant no longer requires MFA, anyone whose MFA came from authenticator enrolment signs in with the password only; their authenticator is kept for when MFA comes back. Older per-user MFA is untouched.
+   - *Lesson:* an "accepted limitation" deserves a second look at what the user actually experiences.
+4. **The token the browser silently dropped.**
+   - *Situation:* sign-in "worked", then bounced straight back to the login page.
+   - *Cause:* an admin's JWT carried ~150 permission codes — 5.3 KB, over the ~4 KB cookie limit — so the browser silently discarded it.
+   - *Fix:* an existing permission-compression option brings it to 2.1 KB.
+   - *Lesson:* the path includes the browser.
+
+## Q&A drill
+
+1. **Does the server call the authenticator vendor?** No — shared secret + clock + the same formula; the phone is offline.
+2. **Why store the secret encrypted instead of hashed?** The server has to compute HMAC with it; a hash is one-way.
+3. **Why 30 seconds?** RFC default: short enough that a stolen code dies fast, long enough to type.
+4. **Phone clock wrong?** Within ±30 s it works; beyond that every code fails — set phone time to automatic.
+5. **How is replay stopped?** Store the last accepted step and accept only later ones, under a row lock.
+6. **Guess odds?** 3 valid codes in the window → 3 in a million per try, capped at 3 tries per 15-minute lock.
+7. **Why constant-time comparison?** So the position of the first wrong digit doesn't leak through timing.
+8. **Lost phone?** Another admin with the right permission resets it — never their own. A lone admin is rescued by platform support. Every reset is audited on the tenant's own log; sessions end; the next sign-in shows a fresh QR. Support should verify identity out-of-band first.
+9. **Can the step token call APIs?** No — every service rejects step-token types as Bearer tokens.
+10. **TOTP's weaknesses?** Real-time phishing relay, and a shared secret on the server. Passkeys fix both: origin-bound, and the server stores only a public key.
+11. **Why HMAC-SHA1 if SHA-1 is broken?** Collisions don't help against HMAC; the RFC and every app use it.
+12. **How were other tenants kept unchanged?** Everything sits behind per-tenant settings; new response fields only appear when set; end-to-end tests assert byte-identical responses for a tenant without the settings.
+
+## Closed-book self-check
+
+- Write the TOTP formula from memory, including dynamic truncation.
+- Draw the enrolment and sign-in sequences.
+- Explain the ±1 window, the replay guard and the 3-strikes lock — and why each exists.
+- Tell the "parallel guesses" war story in under 90 seconds, with both regressions.
+- Name two alternatives to TOTP and when you'd switch.
+
+## Numbers
+
+| Thing | Value |
+|---|---|
+| Secret | 20 random bytes (160 bits), Base32 in the QR |
+| Code | 6 digits, 30 s step, HMAC-SHA1 |
+| Window | ±1 step → 3 valid codes at a time |
+| Guess odds | 3 in 1,000,000 per try |
+| Lockout | 3 wrong codes → 15 min |
+| Step tokens | enrol 10 min, challenge 5 min |
+| Idle limit | off, or 5–30 min; access-token lifetime = min(30 min, limit) |
+| Proof | end-to-end checks across every door, burst tests for the lock, three review rounds |
+
+## Honest boundaries
+
+- In review, not yet live; the authenticator screens exist only as a local demo so far.
+- No backup codes — recovery is an admin or platform-support reset.
+- TOTP is phishable in real time; passkeys would be the upgrade.

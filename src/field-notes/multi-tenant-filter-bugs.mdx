@@ -1,0 +1,60 @@
+---
+title: "When the tenant filter lies: three multi-tenancy bugs from one mechanism"
+description: "A shared-schema SaaS isolates customers with an ORM row filter. Three bugs where it silently did the wrong thing — a leak, a hidden row, and a limit that never tripped — and fixing the class each time."
+kind: feature
+date: "2026-10-15"
+minutes: 10
+status: "mixed: one fixed and merged, one in review, one open"
+---
+
+**Honesty guard.** Backend lead on a multi-tenant healthcare SaaS platform. Bug 1's fix is merged; bug 3's fix is in review; bug 2 is diagnosed with a fix planned. Say exactly that.
+
+## 60-second pitch
+
+Our platform keeps every customer's data in shared tables with a `tenant_id` column, and an ORM filter (Hibernate's `@Filter`) adds `tenant_id = :current` to queries automatically, switched on around repository calls from the request's tenant. It's convenient, and it fails silently. I hit three bugs from it. One: repository calls made outside a transaction, and work on async threads, skipped the filter, so queries could see other tenants. Two: a reset row saved under the user's tenant was invisible to a pre-login request carrying the platform tenant, so customers couldn't finish a password reset. Three: a security rate limit counted the user's recent requests through the filter, scoped to the *caller's* tenant, so it returned zero and never tripped. Each time the fix was to stop trusting the ambient filter where the meaning is "this exact record" or "this exact user", and to test across tenants.
+
+## Concepts (general first)
+
+- **Isolation models.** Database per tenant (strongest, most ops), schema per tenant, or shared schema with a tenant column (cheapest, relies on every query being scoped).
+- **ORM row filters are session-scoped.** They apply only where the session has them enabled; native SQL, bulk DML and calls outside that session can bypass them.
+- **Ambient context is a hidden input.** A thread-local tenant set from the request header or token is invisible in the method signature, so behaviour changes with the caller.
+- **Exact-key lookups don't need tenant scoping.** A random secret or a user id resolved on the server identifies one row; filtering by the caller's tenant only adds a way to get it wrong. Unauthenticated callers must never choose the tenant.
+- **Test across tenants.** Every bug here passed single-tenant tests.
+
+## How each was fixed
+
+| Bug | Symptom | Fix |
+|---|---|---|
+| Filter skipped outside transactions / on async threads | Possible cross-tenant reads | An aspect opens a read-only transaction around repository calls so the filter is enabled; a task decorator copies the tenant context to async threads |
+| Reset row hidden from pre-login requests | Customers couldn't complete a password reset | Planned: look the row up by its secret without the ambient filter, then use the row's own tenant for everything after |
+| Rate-limit count scoped to the caller's tenant | Limit silently never tripped for one frontend | Native count by server-resolved user id, plus an integration test that sets a *different* caller tenant and still expects the limit |
+
+## War stories
+
+**1. The limit that passed every test.** Situation: a per-user "5 resets per hour" limit. Bug: unit tests mocked the repository and the end-to-end test used a tenant-matched token, so all green. In reality the main frontend sends a platform-tenant pre-login token; the count ran with that filter and saw nothing. A reviewer spotted it by reading how the filter is applied. Fix: native query by user id; new test with mismatched tenants. Lesson: when a mechanism is ambient, write the test with the ambient value *wrong*.
+
+**2. A security fix that depended on a bug.** Bug 2 hid customers' reset rows, which accidentally blocked an account-takeover path. Fixing bug 2 first would have exposed every customer. We documented the order: the takeover fix ships first.
+
+**3. Async threads lose the tenant.** Work handed to an executor ran without the request's thread-local tenant, so the filter wasn't set. A task decorator that captures and restores the context fixed every executor at once, instead of patching call sites.
+
+## Q&A drill
+
+- **"How do you make multi-tenancy safe in a shared schema?"** Defence in depth: the ORM filter for convenience, explicit tenant predicates or row-level security in the database for anything critical, never letting unauthenticated callers choose the tenant, and tests that run with a mismatched tenant.
+- **"Would Postgres row-level security fix these?"** It moves enforcement into the database so native SQL can't bypass it, but it still depends on setting the session's tenant correctly. Bugs 2 and 3 were about using the *wrong* tenant, which RLS alone wouldn't catch.
+- **"When is bypassing the filter correct?"** When the key is globally unique and server-trusted (a random secret, a resolved user id) and the result is then scoped by the row's own tenant.
+
+## Closed-book self-check
+
+1. Three tenancy models and one trade-off each.
+2. Why can a native query or bulk update escape an ORM filter?
+3. Write the test that would have caught bug 3.
+
+## Numbers
+
+- 3 distinct bugs, 1 mechanism.
+- Bug 3: limit never tripped for the main frontend; caught in review, fixed with a native count and a cross-tenant integration test.
+
+## Honest boundaries
+
+- Bug 2's fix is planned, not built.
+- No evidence any cross-tenant read happened in production for bug 1; it was found in code and fixed.

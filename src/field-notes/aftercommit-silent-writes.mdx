@@ -1,0 +1,73 @@
+---
+title: "Writes that logged success and saved nothing: Spring's after-commit trap"
+description: "Database writes deferred to an after-commit callback either threw or vanished silently, and every unit test passed. Why the finished transaction is still bound, the REQUIRES_NEW fix, and the second trap it opened."
+kind: feature
+date: "2026-10-15"
+minutes: 11
+status: "built, merged"
+---
+
+**Honesty guard.** As backend lead on a multi-tenant healthcare platform I found this trap, proved it with a standalone reproduction, fixed the first affected site, and flagged the second, which a teammate then fixed. Both fixes are merged. I don't have numbers on how much data was lost before the fix.
+
+## 60-second pitch
+
+We had a helper that defers work until a transaction commits (Spring's `TransactionSynchronization.afterCommit`), used for side effects like writing search-index hashes after a patient is saved. Some of those deferred writes never reached the database. The surprise: inside an `afterCommit` callback, the **finished transaction's resources are still bound to the thread**. So a normal `@Transactional` method (propagation `REQUIRED`) doesn't start a new transaction; it **joins the one that already committed**. A bulk `@Modifying` update then throws, but `repository.save()` throws nothing and is simply never committed: the log says "saved N hashes" and the table stays empty. Unit tests passed because without a real transaction the helper ran the code inline. I proved all of it with a tiny Spring Boot reproduction, then fixed the sites with `REQUIRES_NEW`.
+
+## Concepts (general first)
+
+- **Transaction synchronization.** Spring lets you register callbacks around a transaction: `beforeCommit`, `afterCommit`, `afterCompletion`. Teams use `afterCommit` for "only if the main write really committed" side effects.
+- **Propagation.** `REQUIRED` joins an existing transaction or starts one; `REQUIRES_NEW` always suspends the current one and starts a fresh one with its own connection.
+- **Why after-commit is a trap.** During `afterCommit` the transaction is committed but not yet cleaned up, so it still looks active to `REQUIRED`. Spring's commit logic skips the inner method's commit because it isn't the transaction's owner.
+- **Silent vs loud failure.** Bulk JPQL update/delete needs an active transaction and throws (`TransactionRequiredException` wrapped). `save()` just queues changes in a persistence context that will never flush.
+- **Test environment drift.** If the code path behaves differently with and without an active transaction, unit tests without one prove nothing about production.
+
+## How it's fixed
+
+| Piece | What |
+|---|---|
+| Deferred writes | The methods called from after-commit callbacks are `@Transactional(propagation = REQUIRES_NEW)`, so each opens and commits its own transaction |
+| Bulk updates | Keyed on globally unique columns (the row's primary key), because the new transaction gets a fresh session where the tenant filter may not be enabled |
+| Proof | A standalone Spring Boot + H2 reproduction showing each behaviour, and an integration test that reproduces the bug and the fix against a real database |
+| Guidance | A comment at the call site explaining why the call is safe, so nobody "simplifies" `REQUIRES_NEW` away |
+
+## Decisions vs alternatives
+
+| Choice | Alternative | Why |
+|---|---|---|
+| `REQUIRES_NEW` on the deferred method | Do the write inside the main transaction | The design wanted the side effect only after a successful commit, and isolated from it |
+| `REQUIRES_NEW` | `TransactionTemplate` inside the callback | Same effect; the annotation keeps call sites simple and consistent |
+| `REQUIRES_NEW` | An outbox table and a worker | More durable (retries), but heavier; not needed for best-effort index hashes |
+| Key bulk updates on the primary key | Key on a per-tenant id | The fresh session may not carry the tenant filter, and per-tenant ids aren't unique across tenants |
+
+## War stories
+
+**1. The log lied.** Situation: while fixing an email search hash written after commit, I checked the sibling call sites. Bug: name and phone search hashes for patients created during bookings logged "saved" while the table stayed empty, because `saveAll()` joined the already-committed transaction and was never flushed. I flagged it in my PR as a known open issue; a teammate fixed it with `REQUIRES_NEW` and an integration test. Lesson: "no exception" isn't "committed"; check the database, not the log, and check the siblings of every bug you fix.
+
+**2. Proving it, not guessing.** Rather than argue about Spring internals in review, I built a 50-line Boot app with H2: `@Modifying` update throws, `save()` vanishes, `REQUIRES_NEW` commits, plain SELECTs work. Five minutes of reproduction ended the debate.
+
+**3. The fix opened a second trap.** `REQUIRES_NEW` gives a fresh persistence session. Our multi-tenant row filter is enabled per session, so a bulk update keyed on a per-tenant id could touch other tenants' rows. Fix: key bulk statements on globally unique columns. Lesson: when a fix changes the transaction, re-check everything that's session-scoped.
+
+**4. Green tests, broken production.** With no transaction active, the helper runs the task immediately, so in unit tests the write "just worked". Lesson: test transaction-sensitive code against a real transaction and database.
+
+## Q&A drill
+
+- **"Explain Spring transaction propagation."** REQUIRED joins or starts; REQUIRES_NEW suspends and starts fresh; NESTED uses a savepoint; SUPPORTS, MANDATORY and NEVER are the rest. Then tell this story as the case where REQUIRED surprised everyone.
+- **"Why does REQUIRED join a committed transaction?"** In `afterCommit` the synchronization and resources are still bound until cleanup, so it looks active; the inner method isn't the owner, so its commit is skipped.
+- **"When would you use an outbox instead?"** When the side effect must survive crashes and be retried, for example sending an email or publishing an event. For best-effort derived data, REQUIRES_NEW is enough.
+- **"How do you stop this recurring?"** A shared helper with a clear contract (callbacks call only REQUIRES_NEW methods), an integration test reproducing the trap, and a comment at each call site.
+
+## Closed-book self-check
+
+1. Why does a bulk update throw but `save()` silently vanish inside `afterCommit`?
+2. What does REQUIRES_NEW change, and what new risk did it bring here?
+3. Why did unit tests pass?
+
+## Numbers
+
+- 2 affected write sites: the email search hash (my fix) and the name/phone prefix hashes (flagged by me, fixed by a teammate); both merged.
+- Reproduction: one small Spring Boot + H2 app covering 4 behaviours (bulk update throws, save lost, REQUIRES_NEW commits, reads fine).
+
+## Honest boundaries
+
+- I don't know how many rows were missed before the fix, so I don't claim a number.
+- The durable alternative (an outbox with retries) wasn't needed for these best-effort writes.

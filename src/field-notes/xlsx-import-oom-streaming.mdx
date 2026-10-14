@@ -1,0 +1,77 @@
+---
+title: "A 2 MB spreadsheet that took down the server: streaming an Excel import"
+description: "An import 'processed in chunks' but read the whole workbook into memory first. 2 MB of .xlsx became ~355 MB of live heap and restarted the pod. The SAX streaming fix, how I proved it identical, and the traps."
+kind: feature
+date: "2026-10-15"
+minutes: 11
+status: "built, merged"
+---
+
+**Honesty guard.** I diagnosed and fixed this as backend lead on a multi-tenant healthcare platform. The fix is merged. The numbers below come from the dev environment and a local end-to-end run, not from production monitoring.
+
+## 60-second pitch
+
+A hospital's appointment register (a 2 MB `.xlsx` with about 16,600 rows) restarted our patient service every time someone imported it. The pod had 2 GB with a 1.5 GB heap. The import was described as "chunked", but only the *processing* was chunked: the reader used Apache POI's `WorkbookFactory.create`, which builds the entire workbook as objects in memory, and both importers ran inside the chunk callback, so that object graph stayed pinned for the whole run. A 2 MB zipped XML file became about **355 MB of live heap**. CSV was already streamed; `.xlsx` never was. I switched `.xlsx` to POI's SAX event API (`XSSFReader` plus `XSSFSheetXMLHandler`), which reads one row at a time. I proved the output identical on all 16,642 rows, the reader ran in a **64 MB heap**, and the full import's heap stayed about flat.
+
+## Concepts (general first)
+
+- **`.xlsx` is a zip of XML.** Compression hides the real size: shared strings, styles and cell XML expand a lot, and the object model (one Java object per cell) multiplies it again.
+- **DOM vs streaming.** A DOM-style API (POI "usermodel") loads everything so you can jump around. A streaming API (SAX "event model") hands you rows in order and keeps almost nothing. Imports read top to bottom, so streaming fits.
+- **"Chunked" isn't streamed.** Chunking the *writes* doesn't help if the *read* is a single in-memory load. Ask where the bytes are held, not how the loop is shaped.
+- **Live set vs allocation.** OOMs come from what stays reachable, so look for references kept alive across the whole job (here, the workbook captured by a long-running callback).
+
+## How it's built
+
+| Piece | What it does |
+|---|---|
+| Format sniffing | Detect `.xlsx` vs legacy `.xls` from the file's magic bytes, not the name; `.xls` stays on the old reader (small, rare) |
+| Spool to a temp file | `OPCPackage.open(File)` reads the zip lazily; opening from a stream would buffer it all |
+| SAX sheet handler | `XSSFReader` plus `XSSFSheetXMLHandler`: one callback per row, cells resolved through the shared-strings table |
+| Error plumbing | Exceptions thrown by the row consumer (job cancelled, job reaped) come back wrapped in `SAXException`; unwrap them so cancellation still works |
+| Formulas | The event API returns a formula cell's **cached value**, not the formula text |
+
+## Decisions vs alternatives
+
+| Choice | Alternative | Why |
+|---|---|---|
+| SAX event model | Bigger heap / more pod memory | Hides the bug; the next, larger file fails again |
+| SAX event model | `SXSSF` | SXSSF streams **writing**, not reading |
+| SAX event model | A third-party streaming reader | Fewer dependencies; POI already ships the event API |
+| Keep `.xls` on usermodel | Convert everything | Legacy format is small and rare; not worth the risk |
+| Prove equivalence before shipping | Trust it | Readers differ subtly (formulas, dates, empty cells) |
+
+## War stories
+
+**1. The chunking illusion.** Situation: the code and its docs said "chunked import". Bug: only processing was chunked; reading loaded everything, and the workbook stayed referenced for the whole run because the importers ran inside the chunk callback. Fix: stream the read. Lesson: trace where the bytes live, not what the loop looks like.
+
+**2. Proving "same output".** I ran the old and new readers over the real file and diffed every row: 16,642 rows identical except one column, a serial-number column built from a formula. The new reader returns the cached value, the old returned formula text, and that column wasn't used downstream. Lesson: an equivalence diff turns "should be the same" into a fact, and shows exactly where it isn't.
+
+**3. Cancellation almost broke.** Our job runner cancels by throwing from inside the row consumer. SAX wraps that in its own exception, so the cancel would have been reported as a parse error. Unwrapping it kept cancel and reaper behaviour intact.
+
+**4. The end-to-end run needed real neighbours.** Every row failed locally until the import could reach the branch and user-profile services on the right ports. Lesson: an import end-to-end test needs its real dependencies, not mocks.
+
+## Q&A drill
+
+- **"How did you find the cause?"** The pod restarted only during this import; the reader was POI usermodel; I measured the live heap of the workbook object (about 355 MB) against the 1.5 GB heap and saw it pinned for the whole job.
+- **"Why not just give the pod more memory?"** It moves the cliff. File size isn't controlled by us; memory per import must be constant.
+- **"How do you know it's fixed?"** The equivalence diff, a probe that parses the file in a 64 MB heap, and a full local import at `-Xmx768m` with the same results as the baseline (16,324 created, 303 failed) and after-GC heap staying around 345 MB against roughly 320 MB idle.
+- **"What would you add next?"** Heap dumps on OOM in dev, a guard against two big imports running at once, and a lower `MaxRAMPercentage` so the pod leaves room for non-heap memory.
+
+## Closed-book self-check
+
+1. Why does a 2 MB `.xlsx` become hundreds of MB in memory?
+2. What's the difference between POI usermodel, event model (SAX) and SXSSF?
+3. Why spool to a file before `OPCPackage.open`?
+4. How do you prove two readers produce the same output?
+
+## Numbers
+
+- File: 2 MB, about 16,600 rows; pod 2 GB, heap 1.5 GB.
+- Before: about 355 MB live heap for the workbook alone, pinned for the whole import.
+- After: parses in a 64 MB heap; full import at `-Xmx768m`, after-GC heap max about 345 MB (about 320 MB idle).
+- Equivalence: 16,642 rows identical except one unused formula column.
+
+## Honest boundaries
+
+- Measured in dev and locally, not in production.
+- Follow-ups suggested, not done: heap dumps on OOM, a single-running-import guard, tuning `MaxRAMPercentage`.

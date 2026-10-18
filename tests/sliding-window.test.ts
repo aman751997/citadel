@@ -83,11 +83,11 @@ test('dark lamps trace numbers agree with recomputation', () => {
   const after = zerosRun(a, k, 5);
   assert.equal(after.left, 4); assert.equal(after.zeros, 2); assert.equal(after.bestBefore, 5);
   assert.equal(bruteLongestZeros(a, k), 6); assert.deepEqual([a[5], a[10]], [0, 0]);
-  assert.match(right(traces.darkLamps[2]).label, /Tail at 4; log length 2, best stays 5/);
+  assert.match(right(traces.darkLamps[2]).label, /left at 4; record length 2, best stays 5/);
 });
 test('no-repeat trace numbers agree with recomputation', () => {
   assert.equal(bruteNoRepeat('abba'), 2); assert.equal(unguardedJump('abba'), 3); assert.equal(bruteNoRepeat('pwwkew'), 3);
-  assert.match(text(traces.noRepeats[1]), /records 3/); assert.match(text(traces.noRepeats[1]), /is 2/);
+  assert.match(text(traces.noRepeats[1]), /recorded as 3/); assert.match(text(traces.noRepeats[1]), /is 2/);
 });
 test('baskets, repaint, toll traces agree with recomputation', () => {
   const fruit = traces.fruitInput;
@@ -168,7 +168,7 @@ test('shrink-before-grow slides a fixed pane too, and still reaches the right an
   }
 });
 test('a misplaced record is rejected with the numbers on the board', () => {
-  // Longest: Head takes [1, 0, 1, 1, 0] with k = 1; recording before the repair is refused.
+  // Longest: right takes [1, 0, 1, 1, 0] with k = 1; recording before the repair is refused.
   let s = lab.create('longest', 0);
   for (const act of ['grow', 'record', 'grow', 'record', 'grow', 'record', 'grow', 'record', 'grow']) s = lab.move(s, act).state;
   assert.equal(s.zeros, 2);
@@ -178,7 +178,7 @@ test('a misplaced record is rejected with the numbers on the board', () => {
   let t = lab.create('shortest', 0);
   for (let i = 0; i < 4; i++) t = lab.move(t, 'grow').state;
   assert.equal(t.sum, 8);
-  const skip = lab.move(t, 'shrink'); assert.equal(skip.accepted, false); assert.match(skip.state.message, /isn’t logged/);
+  const skip = lab.move(t, 'shrink'); assert.equal(skip.accepted, false); assert.match(skip.state.message, /isn’t recorded/);
   t = lab.move(lab.move(t, 'record').state, 'shrink').state;
   assert.equal(t.sum, 6);
   const late = lab.move(t, 'record'); assert.equal(late.accepted, false); assert.match(late.state.message, /record-after-the-loop/);

@@ -235,9 +235,9 @@ export function challengeFor(id: ConceptId, variant = 0): Challenge {
       rubric: [`The block width is fixed at ${t.length}.`, 'Counts are updated, not recomputed: one letter in, one out.', 'A single matching block is enough to answer yes.'],
       explanation: 'An anagram has the same multiset of letters and the same length, so a fixed-width block with a letter tally finds it in one pass.' };
     case 'flips': return { ...base, strategy: 'longest', topic: 'Operation budget becomes a contents budget', section: 'dark-lamps',
-      prompt: `Lamps ${list(a)} (1 = lit, 0 = dark). You may switch on at most ${k} dark lamps. What is the longest run of neighbouring lit lamps you can make?`,
+      prompt: `Array ${list(a)} of 1s and 0s. You may flip at most ${k} zeros into ones. What is the longest run of consecutive ones you can make?`,
       question: 'Enter the length.', answer: longestAtMostZeros(a, k),
-      hints: ['Stop choosing which lamps to switch on. What must a stretch satisfy to become fully lit?', `A stretch works exactly when it holds at most ${k} dark lamps.`, 'Grow; while there are too many dark lamps, drop from the left; record after.'],
+      hints: ['Stop choosing which zeros to flip. What must a stretch satisfy to become all ones?', `A stretch works exactly when it holds at most ${k} zeros.`, 'Grow; while there are too many zeros, drop from the left; record after.'],
       rubric: [`The rule is “at most ${k} zeros in the stretch”.`, 'An illegal stretch stays illegal as it grows, so the left end may move on for good.', 'The length is recorded after the repair loop, never before.'],
       explanation: 'Reframe the operation limit as a limit on the stretch’s contents, then it is a longest-legal-stretch scan.' };
     case 'no-repeat': return { ...base, strategy: 'longest', topic: 'No repeated characters', section: 'no-repeats',
@@ -249,17 +249,17 @@ export function challengeFor(id: ConceptId, variant = 0): Challenge {
     case 'two-kinds': return { ...base, strategy: 'longest', topic: 'At most two kinds', section: 'two-baskets',
       prompt: `Trees in a row bear fruit types ${list(a)}. You have two baskets, each for one type. Start at any tree and pick one fruit from each tree moving right, stopping as soon as a fruit fits neither basket. How many fruits can you pick at most?`,
       question: 'Enter the number of fruits.', answer: atMostKinds(a, 2)[0],
-      hints: ['Say the basket rule as a rule about a stretch of trees.', 'A stretch works when it holds at most 2 different types.', 'Count types in view; drop from the left while there are 3; remove a type when its count hits 0.'],
+      hints: ['Say the basket rule as a rule about a stretch of trees.', 'A stretch works when it holds at most 2 different types.', 'Count types in the window; drop from the left while there are 3; remove a type when its count hits 0.'],
       rubric: ['The rule is “at most 2 distinct values in the stretch”.', 'A type whose count reaches zero is removed, so the distinct count stays honest.', 'Record after shrinking.'],
       explanation: 'It is the longest stretch with at most two distinct values: a counts map, shrink while it has three keys.' };
     case 'repaint': return { ...base, strategy: 'longest', topic: 'Keep the majority, repaint the rest', section: 'k-repaints',
-      prompt: `Doors are painted “${s}”. You may repaint at most ${k} doors to any letter. What is the longest block of neighbouring doors that can all end up the same letter?`,
+      prompt: `String “${s}”. You may change at most ${k} characters to any letter. What is the longest substring that can all end up the same letter?`,
       question: 'Enter the length.', answer: longestRepaint(s, k),
       hints: ['Inside one block, which letter should you keep?', 'A block needs (length − count of its most common letter) repaints.', `Grow; while length − maxFreq > ${k}, drop from the left; record. A stale maxFreq is safe.`],
       rubric: ['Legal means length − most common count ≤ k.', 'The block’s length never decreases, and grows only when it is genuinely legal.', 'Record the length, not maxFreq + k.'],
       explanation: 'Repaint everything except the most common letter. A block is legal when length − maxFreq ≤ k.' };
     case 'toll': return { ...base, strategy: 'shortest', topic: 'Shortest block reaching a total', section: 'toll',
-      prompt: `Stalls pay ${list(a)} coins. What is the shortest block of neighbouring stalls that pays at least ${k}? Enter 0 if none does. Aim for O(n).`,
+      prompt: `Values ${list(a)}. What is the length of the shortest block of neighbouring values with a sum of at least ${k}? Enter 0 if none does. Aim for O(n).`,
       question: 'Enter the length (0 if none).', answer: shortestAtLeast(a, k),
       hints: ['Once a block reaches the total, does growing it ever help?', 'Every payment is positive, so a qualifying block keeps qualifying as it grows.', 'Grow; while the total is enough, record the length, then drop from the left.'],
       rubric: ['Record inside the loop, while the block still qualifies.', 'Shrink with a while, not an if: several drops may still qualify.', 'Report 0 if nothing was ever recorded.'],
@@ -271,11 +271,11 @@ export function challengeFor(id: ConceptId, variant = 0): Challenge {
       rubric: ['missing drops only for a letter that was still needed; surplus copies don’t count.', 'Record inside the loop, before the left end moves.', 'Every right end gets its shortest covering block checked.'],
       explanation: 'A need tally plus a missing counter: grow until nothing is missing, then record and squeeze.' };
     case 'window-max': return { ...base, strategy: 'deque', topic: 'Maximum of every block', section: 'tallest-mast',
-      prompt: `Mast heights ${list(a)}. Report the tallest of every ${k} neighbouring masts, from left to right, in O(n) total time.`,
+      prompt: `Heights ${list(a)}. Report the maximum of every ${k} neighbouring values, from left to right, in O(n) total time.`,
       question: 'Enter the list of maxima.', answer: windowMaxima(a, k),
-      hints: ['When a taller mast arrives, can an older, shorter one ever be the tallest again?', 'Keep only candidates, in decreasing height; the front is the answer.', 'Pop the back while it is no taller than the newcomer; pop the front once its index leaves; read the front.'],
-      rubric: ['Store indices so you can tell when the front expires.', 'Each index is pushed once and popped at most once: amortised O(1).', `Answers start once ${k} masts are in view.`],
-      explanation: 'A queue of indices with decreasing values: older, shorter masts are popped from the back; expired ones from the front.' };
+      hints: ['When a taller value arrives, can an older, shorter one ever be the tallest again?', 'Keep only candidates, in decreasing height; the front is the answer.', 'Pop the back while it is no taller than the newcomer; pop the front once its index leaves; read the front.'],
+      rubric: ['Store indices so you can tell when the front expires.', 'Each index is pushed once and popped at most once: amortised O(1).', `Answers start once ${k} values have been seen.`],
+      explanation: 'A queue of indices with decreasing values: older, smaller values are popped from the back; expired ones from the front.' };
     case 'stock': return { ...base, strategy: 'running', topic: 'Buy before you sell', section: 'buy-low',
       prompt: `Prices by day: ${list(a)}. Buy once, then sell once on a later day. What is the best profit? Enter 0 if no trade makes money.`,
       question: 'Enter the best profit.', answer: bestProfit(a),

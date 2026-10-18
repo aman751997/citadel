@@ -1,0 +1,113 @@
+---
+// <TrieAutocompleteSim /> : type a prefix, see the trie path and the top-K list stored at that node, then change a query's
+// count and compare a nightly batch rebuild with an in-place streaming patch. Props (optional): k (2-5), prefix, mode ('batch'|'patch').
+// Logic: src/lib/sim/trie-autocomplete.ts.
+import SimShell from '../SimShell.astro';
+import { SAMPLE } from '../../lib/sim/trie-autocomplete.ts';
+interface Props { k?: number; prefix?: string; mode?: 'batch' | 'patch'; title?: string; fallback?: string }
+const { k = 3, prefix = 'ca', mode = 'batch', title = 'Type a prefix: what does the trie node already know?',
+  fallback = 'Ten queries with scores: car 900, cat 700, dog 600, catalog 500, card 400, door 350, can 300, cap 260, care 150, cab 120. With k = 3, the node for "ca" stores car, cat, catalog, so typing "ca" is two hops plus reading a stored list; nothing below the node is visited. If "door" jumps to 1000, only the lists on its own path (the root, "d", "do") change. If "car" drops to 100, a nightly rebuild gives cat, catalog, card for "c". An in-place patch gives cat, catalog, car, because "card" was never in the list and the node cannot know it deserves the slot without rescanning its subtree.' } = Astro.props;
+const queries = Object.keys(SAMPLE);
+---
+<SimShell title={title} fallback={fallback}>
+  <div class="tas" data-tas data-k={k} data-prefix={prefix} data-mode={mode} data-sample={JSON.stringify(SAMPLE)}>
+    <div class="sim-row">
+      <label>Typed prefix <input type="text" data-prefix-in maxlength="12" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Typed prefix" /></label>
+      <label>k <select data-k-in aria-label="Suggestions per node">{[2, 3, 4, 5].map((n) => <option value={n}>{n}</option>)}</select></label>
+    </div>
+    <p class="tas-label">Trie path</p>
+    <div class="tas-path" data-path aria-label="Trie path for the typed prefix"></div>
+    <p class="tas-label">List stored at this node (served index)</p>
+    <ol class="tas-list" data-list></ol>
+    <div class="sim-row" role="status" aria-live="polite" aria-atomic="true">
+      <div class="sim-stat"><b data-s="hops"></b><small>hops with the stored list</small></div>
+      <div class="sim-stat"><b data-s="scan"></b><small>queries a scan would sort</small></div>
+    </div>
+    <hr class="tas-rule" />
+    <p class="tas-label">Now the counts change</p>
+    <div class="sim-row">
+      <label>Query <select data-q aria-label="Query whose count changes">{queries.map((q) => <option value={q}>{q}</option>)}</select></label>
+      <button type="button" data-up>+500 searches</button>
+      <button type="button" data-down>-500 (decay)</button>
+    </div>
+    <div class="sim-row" role="radiogroup" aria-label="How the index absorbs the change">
+      <label><input type="radio" name="tas-mode" value="batch" data-mode-in /> Batch: change waits for the next build</label>
+      <label><input type="radio" name="tas-mode" value="patch" data-mode-in /> Streaming: patch lists on the query's path</label>
+    </div>
+    <div class="sim-row"><button type="button" data-build>Run the nightly build</button><button type="button" data-reset>Reset</button></div>
+    <p class="sim-live" data-note role="status" aria-live="polite"></p>
+  </div>
+</SimShell>
+
+<style is:global>
+  .tas input[type="text"] { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: .4rem .6rem; font: inherit; font-family: var(--mono); width: 9rem; }
+  .tas-label { margin: .9rem 0 .3rem; font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--text-dim); font-weight: 700; }
+  .tas-path { display: flex; flex-wrap: wrap; gap: .3rem; align-items: center; }
+  .tas-path span { font-family: var(--mono); font-size: .85rem; padding: .2rem .5rem; border: 1px solid var(--blue); border-radius: 6px; background: #58a6ff20; }
+  .tas-path span.end { border-color: var(--green); background: #3fb95030; }
+  .tas-path span.gone { border-style: dashed; border-color: var(--red); background: transparent; color: var(--text-dim); }
+  .tas-list { margin: 0; padding-left: 1.4rem; font-family: var(--mono); font-size: .9rem; min-height: 2.4em; }
+  .tas-list small { color: var(--text-dim); }
+  .tas-rule { border: 0; border-top: 1px solid var(--border); margin: 1rem 0 0; }
+  .tas .bad { color: var(--red); } .tas .ok { color: var(--green); }
+</style>
+
+<script>
+  import { SAMPLE as DEFAULT, buildIndex, suggest, patchIndex, changedPrefixes, wrongPrefixes, type Index, type Scores } from '../../lib/sim/trie-autocomplete.ts';
+
+  const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
+  const show = (p: string) => (p === '' ? '(root)' : esc(p));
+
+  document.querySelectorAll<HTMLElement>('[data-tas]').forEach((el) => {
+    const q = <T extends HTMLElement>(s: string) => el.querySelector<T>(s)!;
+    const sample: Scores = JSON.parse(el.dataset.sample!) ?? DEFAULT;
+    let k = Number(el.dataset.k) || 3;
+    let mode: 'batch' | 'patch' = el.dataset.mode === 'patch' ? 'patch' : 'batch';
+    let prefix = el.dataset.prefix ?? '';
+    let truth: Scores = { ...sample };
+    let served: Index = buildIndex(truth, k);
+    let note = 'Edit a count, then compare the two modes.';
+
+    const render = () => {
+      const r = suggest(served, prefix);
+      const path = r.path.map((p, i) => `<span class="${i === r.path.length - 1 && r.found ? 'end' : ''}">${p === '' ? '(root)' : esc(p.slice(-1))}</span>`);
+      if (!r.found) path.push(`<span class="gone">${esc(prefix.slice(r.path.length - 1))} (no node)</span>`);
+      q('[data-path]').innerHTML = path.join(' → ');
+      q('[data-list]').innerHTML = r.found
+        ? r.top.map((t) => `<li>${esc(t.q)} <small>${t.score}</small></li>`).join('')
+        : '<li><small>No node, so an empty list. Nobody searched anything that starts this way.</small></li>';
+      q('[data-s="hops"]').textContent = String(r.hops);
+      q('[data-s="scan"]').textContent = String(r.scanned);
+      q<HTMLInputElement>('[data-prefix-in]').value = prefix;
+      q<HTMLSelectElement>('[data-k-in]').value = String(k);
+      el.querySelectorAll<HTMLInputElement>('[data-mode-in]').forEach((b) => { b.checked = b.value === mode; });
+      const stale = changedPrefixes(served, buildIndex(truth, k));
+      const wrong = wrongPrefixes(served);
+      const bits = [note];
+      if (mode === 'batch' && stale.length) bits.push(`Lists that would change at the next build: <b>${stale.map(show).join(', ')}</b>. Until then every reader sees the old lists.`);
+      if (mode === 'patch' && wrong.length) bits.push(`<span class="bad">Patched lists that disagree with a full rebuild: <b>${wrong.map(show).join(', ')}</b>.</span>`);
+      if (mode === 'patch' && !wrong.length && stale.length === 0) bits.push('<span class="ok">Every list matches a full rebuild.</span>');
+      q('[data-note]').innerHTML = bits.join(' ');
+    };
+
+    const change = (name: string, delta: number) => {
+      const next = Math.max(1, truth[name] + delta);
+      const before = served;
+      truth = { ...truth, [name]: next };
+      if (mode === 'patch') {
+        served = patchIndex(served, name, next);
+        note = `${esc(name)} is now ${next}. Patched ${changedPrefixes(before, served).length ? 'lists' : 'no lists'}: ${changedPrefixes(before, served).map(show).join(', ') || 'none changed'}.`;
+      } else note = `${esc(name)} is now ${next} in the logs. The served index has not changed.`;
+      render();
+    };
+
+    q('[data-prefix-in]').addEventListener('input', (e) => { prefix = (e.target as HTMLInputElement).value.toLowerCase(); render(); });
+    q('[data-k-in]').addEventListener('change', (e) => { k = Number((e.target as HTMLSelectElement).value); served = buildIndex(truth, k); note = `Rebuilt with k = ${k}.`; render(); });
+    q('[data-up]').addEventListener('click', () => change(q<HTMLSelectElement>('[data-q]').value, 500));
+    q('[data-down]').addEventListener('click', () => change(q<HTMLSelectElement>('[data-q]').value, -500));
+    el.querySelectorAll<HTMLInputElement>('[data-mode-in]').forEach((b) => b.addEventListener('change', () => { mode = b.value as 'batch' | 'patch'; note = mode === 'batch' ? 'Batch: changes wait for a build.' : 'Streaming: each change patches its own prefixes.'; render(); }));
+    q('[data-build]').addEventListener('click', () => { served = buildIndex(truth, k); note = 'Rebuilt from the full counts and swapped in.'; render(); });
+    q('[data-reset]').addEventListener('click', () => { truth = { ...sample }; served = buildIndex(truth, k); note = 'Back to the starting counts.'; render(); });
+    render();
+  });
+</script>

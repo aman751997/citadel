@@ -1,81 +1,68 @@
 ---
 title: 'Walkthrough: Design Typeahead / Autocomplete'
-description: 'The evening Kestrel’s search box suggested a stranger’s phone number, and the 45-minute fight that rebuilds it. Requirements to latency budget, a tested top-K trie, the offline build-and-swap pipeline, edge caching, hot prefixes, trending, personalization, and the whole round out loud.'
+description: 'Suggest completions as the user types, in under 100 ms. Requirements and numbers, tries versus prefix indexes, a tested top-K trie, the offline build-and-swap pipeline, batch versus streaming count updates, edge caching, debouncing, sharding, trending, personalisation, and the whole interview round.'
 module: 3
 order: 3
-minutes: 80
+minutes: 95
 ---
 import PatternHub from '../components/PatternHub.astro';
-import Scene from '../components/Scene.astro';
 import Part from '../components/Part.astro';
 import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
 import Trace from '../components/Trace.astro';
 import Reveal from '../components/Reveal.astro';
 import Quiz from '../components/Quiz.astro';
+import ChapterDone from '../components/ChapterDone.astro';
+import LessonProgress from '../components/LessonProgress.astro';
+import RevisionCards from '../components/RevisionCards.astro';
+import AnswerModes from '../components/AnswerModes.astro';
+import TrieAutocompleteSim from '../components/sim/TrieAutocompleteSim.astro';
 import { scoping, estimate, contract, indexChoice, pipeline, budget, scaleOut, fresh, failure, drills } from '../data/sd/typeahead';
 import { BASE } from '../paths';
 
 <PatternHub
   pattern="sd-typeahead"
   start="prologue"
-  logline="Typeahead looks like a data-structure question and is really a question about time. Every ranking decision is made hours earlier, offline, so that each keystroke costs one walk down a tree that already knows the answer. Fight it once in the six-step order and you will see the same split — slow build, instant read — in half the designs you meet."
-  cast={[
-    { name: 'You', role: 'Three months at Kestrel. The rate-limiter round went well. This is the next warm-up on the list.' },
-    { name: 'Mara Quell', role: 'Principal engineer. Plays the interviewer, phone face-down on the table as the clock.' },
-    { name: 'Dev Okafor', role: 'SRE. Was paged when the search cluster melted under a prototype that queried it on every keystroke.' },
-    { name: 'Iris Tan', role: 'Product lead. Wants suggestions that are instant, trending, personal and in eleven languages — preferably by Friday.' },
-    { name: 'Theo Brandt', role: 'Database whisperer. Has opinions about tries, and about anything that runs a query per keystroke.' },
-    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
-  ]}
+  logline="Typeahead looks like a data-structure question and is really a question about time. Every ranking decision is made hours earlier, offline, so each keystroke costs one walk down a tree that already holds the answer. A slow build and an instant read: you will meet the same split in many other designs."
+  cast={[]}
   parts={[
-    { name: 'Part One · Scope it (steps 1–3)', description: 'Requirements, the numbers that matter, and the contract.', links: [['requirements', 'Ten words in a box'], ['estimation', 'A hundred thousand questions a second'], ['entities-api', 'The contract']] },
+    { name: 'Part One · Scope it (steps 1–3)', description: 'Requirements, the numbers that matter, and the contract.', links: [['requirements', 'What to build'], ['estimation', 'Requests per second'], ['entities-api', 'The contract']] },
     { name: 'Part Two · Draw it (step 4)', description: 'Two systems on two clocks: a slow builder and an instant reader.', links: [['high-level', 'Two clocks']] },
-    { name: 'Part Three · Deep dive: the index', description: 'Three ways to remember a prefix, a tested top-K trie, and the nightly build.', links: [['data-model', 'A tree that already knows'], ['pipeline', 'The night shift']] },
-    { name: 'Part Four · Deep dive: the 100 ms', description: 'The latency budget, the client, the edge, and the letter s.', links: [['latency', 'Where the hundred milliseconds go'], ['edge', 'Eighteen thousand prefixes'], ['sharding', 'The letter s']] },
-    { name: 'Part Five · Deep dive: fresh and personal', description: 'Trending within minutes, personal without leaking, many languages.', links: [['trending', 'The storm at 14:05'], ['personal', 'Your searches, not everyone’s']] },
-    { name: 'Part Six · Finish the fight', description: 'Failure and degradation, wrap-up, then the whole round on the clock.', links: [['failure', 'Stale is a feature'], ['wrap-up', 'The last three minutes'], ['walkthrough', 'The fight, out loud']] },
+    { name: 'Part Three · Deep dive: the index', description: 'Tries versus prefix indexes, a tested top-K trie, and the nightly build.', links: [['data-model', 'Tries and prefix indexes'], ['pipeline', 'The nightly build']] },
+    { name: 'Part Four · Deep dive: the 100 ms', description: 'The latency budget, the client, the edge cache, and sharding.', links: [['latency', 'The latency budget'], ['edge', 'Caching hot prefixes'], ['sharding', 'Sharding the trie']] },
+    { name: 'Part Five · Deep dive: fresh and personal', description: 'Updating counts, trending within minutes, personal suggestions, many languages.', links: [['trending', 'Batch versus streaming'], ['personal', 'Personalisation']] },
+    { name: 'Part Six · Finish', description: 'Failure and degradation, wrap-up, then the whole round on the clock.', links: [['failure', 'When things break'], ['wrap-up', 'Wrap-up'], ['walkthrough', 'The round, out loud']] },
   ]}
-  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
+  extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Interview answers'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
   routes={[
-    { href: '#prologue', title: '📖 Read the story', text: 'Incident → requirement → index → pipeline → edge → decision' },
+    { href: '#prologue', title: '📖 Read the lesson', text: 'Problem → requirements → index → pipeline → edge → decisions' },
     { href: '#decision-drills', title: '🧭 Decision drills', text: 'The calls interviewers probe, with feedback' },
-    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+    { href: '#interview-script', title: '🎤 Interview answers', text: 'The 30-second, 2-minute and detailed answers, plus follow-ups' },
   ]}
-  note="A walkthrough is a fight, not a read. At every chapter break, say your answer out loud before you scroll. Parts One and Two are one sitting; each deep dive is another."
+  note="At every chapter end, say your answer out loud before you scroll. Parts One and Two are one sitting; each deep dive is another."
 />
 
-<h2 id="prologue">Prologue · The suggestion nobody wrote</h2>
+<LessonProgress />
 
-<Scene chapter="Prologue" title="The suggestion nobody wrote" mood="night">
+<h2 id="prologue">Prologue · Why typeahead is not a search query</h2>
 
-Kestrel ships its new search bar on a Tuesday. By Thursday evening there are two incidents.
+Here is how a first version usually fails. A team ships a search box and, for every keystroke, sends the typed text to the search cluster as a prefix query. At the evening peak the cluster's CPU sits at 100% and typeahead p99 is 380 ms. Worse, the real searches, the ones people press Enter on, queue behind millions of half-typed words.
 
-The first is Dev's. The prototype sends every keystroke to the search cluster as a prefix query. At the evening peak the cluster's CPU sits at 100%, typeahead p99 is 380 ms, and — worse — the *real* searches, the ones people press Enter on, are queueing behind a million half-typed words.
+The second failure is quieter. A user types "kes" and the box suggests a stranger's name followed by a phone number. One person had searched for it forty times, and the first version ranked by raw count.
 
-The second is quieter, and it is the one that reaches the CEO. A user types "kes" and the box suggests a stranger's full name followed by a phone number. One person had searched for it forty times. The prototype ranked by raw count.
+**Typeahead** (autocomplete, query suggestion) shows a short list of likely completions under a search box as the user types. The usual one-line answer is *"a trie, top-K per prefix, under 100 ms"*. Those three phrases are right. The rest of this lesson is why each is there, with numbers, in the order the <a href={`${BASE}sd/lessons/delivery-framework/`}>delivery framework</a> asks for, and then the follow-ups: freshness, privacy, hot prefixes, personalisation, languages and failure.
 
-Friday morning, Mara puts her phone face-down on the table. *"Typeahead,"* she says. *"It's on the interview list anyway. Forty-five minutes. Make it fast, and make it never do that again."*
+**The one idea under the whole design: two clocks.** Ranking is expensive and may be hours old. Answering must take microseconds, on every keystroke. So you split the system in two. An **offline builder** turns search logs into a precomputed index. An **online reader** only ever looks things up. Every hard question in this round is a question about which clock a piece of work belongs on.
 
-She writes **9 · 15 · 25 · 38** in the corner of the board and hands you the marker.
+**Where you have seen the parts.** The <a href={`${BASE}sd/lessons/search/#typeahead`}>Search lesson, chapters 7–9</a> introduced the latency budget, the trie with top-K per node and the three prefix stores. The <a href={`${BASE}dsa/lessons/tries/`}>Tries lesson</a> builds the data structure by hand. This lesson stands alone, and goes further: every interview step, a tested build, and the parts those chapters only sketched.
 
-</Scene>
+**Common slips this lesson is built around.**
 
-**Typeahead** (autocomplete, query suggestion) shows a short list of likely completions under a search box as the user types. It looks small, and the bank lists it as an easy-to-medium warm-up — *"trie, top-K per prefix, under 100 ms"*. Those three phrases are the answer. This walkthrough is about saying *why* each one is there, with numbers, in the order the delivery framework asks for, and then surviving the follow-ups: freshness, privacy, hot prefixes, personalization, languages, and failure.
+- **The cache hand-wave.** "Cache the hot prefixes" is as empty as "cache it in Redis" unless it comes with the four promises: key, TTL and why, invalidation, failure plan. Chapter 8 gives all four.
+- **Pacing.** The trie is the fun part. Candidates draw it at minute four and never reach freshness or privacy. Reach it at 0:25, as the clock says.
+- **Silent skips.** Say out loud what you are not designing (the results page, spelling correction, ads in suggestions) so nobody wonders.
 
-**The one idea under the whole design: two clocks.** Ranking is expensive and can be hours old. Answering must take microseconds and happen on every keystroke. So you split the system in two: an **offline builder** that turns search logs into a precomputed index, and an **online reader** that only ever looks things up. Every hard question in this round is a question about which clock a piece of work belongs on.
-
-**Where you've seen the parts already.** The <a href={`${BASE}sd/lessons/search/#typeahead`}>Search lesson, chapters 7–9</a> introduced the latency budget, the trie with top-K per node, and the three prefix stores; the <a href={`${BASE}dsa/lessons/tries/`}>Tries lesson</a> built the data structure by hand. This lesson stands on its own — everything you need is here — but it goes further: the full interview, every step on the clock, a tested build, and the parts those chapters only sketched.
-
-**Why this one is personal.** It hits your gap register in three places:
-
-- **The cache hand-wave.** "Cache the hot prefixes" is the same red flag as "cache it in Redis" unless it comes with the four promises — key, TTL and why, invalidation, failure. Chapter 8 says all four.
-- **Pacing.** The trie is the fun part. Candidates draw it at minute four and never reach freshness or privacy. You'll reach the trie at 0:25, like the clock says.
-- **Silent skips.** You will say out loud what you are *not* designing — the search results page, spelling correction, ads in suggestions — so nobody wonders.
-
-**How to use this walkthrough.** Attempt each step yourself first — out loud — *then* scroll. The part breaks are your pause points.
-
-<Figure caption="The six steps from the delivery framework, with this lesson’s chapters under each. The four checkpoints for a 45-minute round are the moments you must be leaving requirements, drawing, diving, and wrapping up.">
+<Figure caption="The six steps from the delivery framework, with this lesson’s chapters under each. The times are when you should be leaving requirements, drawing, diving and wrapping up in a 45-minute round.">
   <Mermaid code={`flowchart LR
     R["1 · Requirements\nCh 1–2 · leave by 0:09"] --> E["2 · Entities\nCh 3"]
     E --> A["3 · API\nCh 3 · leave by 0:15"]
@@ -84,7 +71,47 @@ She writes **9 · 15 · 25 · 38** in the corner of the board and hands you the 
     D --> W["6 · Wrap-up\nCh 13"]`} />
 </Figure>
 
-The lesson teaches each step in far more depth than 45 minutes allows, so that you have choices in the room. Chapter 14 compresses it back into the round you would actually speak.
+The lesson teaches each step in more depth than 45 minutes allows, so you have choices in the room. Chapter 14 compresses it back into the round you would speak.
+
+<Quiz
+  id="ta-prologue"
+  title="Prologue checkpoint"
+  questions={[
+    {
+      kind: 'failure',
+      q: 'The first version queries the search cluster for every keystroke. At peak the cluster is at 100% CPU, typeahead p99 is 380 ms, and real searches are slow. What is the most direct fix?',
+      options: [
+        'Add more search nodes',
+        'Add a cache in front of the search cluster',
+        'Move prefix lookups off the search cluster onto a precomputed, in-memory top-K index',
+        'Make the client wait 500 ms before each request',
+      ],
+      answer: 2,
+      why: 'Typeahead asks "which K popular queries start with these characters", which can be computed once offline and read in microseconds.',
+      explain: [
+        'It buys headroom and keeps the wrong machine on the wrong job. Every keystroke is still a scatter-gather query with a long tail.',
+        'Long prefixes are a long tail, so most requests miss. Every miss is still a search-cluster query.',
+        'Correct. The search cluster goes back to serving real searches, and the read path stops depending on how many queries share a prefix.',
+        'It cuts load but spends five times the whole 100 ms budget before the request leaves the phone.',
+      ],
+    },
+    {
+      kind: 'scenario',
+      q: 'A suggestion appears that exactly one user searched, 40 times. Which two-word rule would have stopped it?',
+      options: ['Higher count threshold', 'Distinct users', 'Shorter TTL', 'Case folding'],
+      answer: 1,
+      why: 'Counting people instead of searches means one person cannot put their text in everyone’s box. A higher count threshold can be met by that same person.',
+      explain: [
+        'Forty searches by one person can clear any count threshold you pick. The unit being counted is the problem.',
+        'Correct: require at least k distinct users, so a single account (or bot) cannot promote a string.',
+        'A TTL bounds how long a bad list lives. It does not stop the string getting in.',
+        'Normalisation merges spelling variants. It has nothing to do with who searched.',
+      ],
+    },
+  ]}
+/>
+
+<ChapterDone id="prologue" />
 
 <Part n="Part One" title="Scope it (steps 1–3)">
 
@@ -92,112 +119,176 @@ Six minutes of requirements and numbers, two of nouns, four of API. The numbers 
 
 </Part>
 
-<h2 id="requirements">Chapter 1 · Ten words in a box</h2>
+<h2 id="requirements">Chapter 1 · What to build</h2>
 
-<Scene chapter="Chapter 1" title="Ten words in a box" mood="dawn">
+A stakeholder usually hands you a list: suggest what people search for, show trending stuff fast, make it personal, support eleven languages, fix typos, and make it instant. That is six features and one adjective. Before drawing, turn it into answers: how many suggestions, ranked by what, how fresh is "fast", and what number is "instant"?
 
-Iris arrives with a list. *"It should suggest what people search for. Trending stuff, fast — when something happens, I want it there. Personal: my searches first. Eleven languages. Typos fixed. And instant."*
-
-Mara doesn't look up. *"That's six features and one adjective. How many suggestions? Ranked by what? How fresh is 'fast'? And 'instant' — give me a number."*
-
-</Scene>
-
-**Functional requirements** — what the system does, in the order you would build it:
+**Functional requirements**, in the order you would build them:
 
 1. **As the user types, return the top K completions of the current prefix** (K = 10 on web, 5 on mobile). Completions are **whole past queries**, not documents: typing "red ru" suggests "red running shoes".
 2. **Rank by popularity with recency**: how many distinct people searched it, weighted so this week counts more than last year.
-3. **Fresh**: a query that suddenly trends (a storm, a launch, a celebrity) should appear **within minutes**, not after tomorrow's batch.
-4. **Safe**: never suggest a private or harmful string — names with phone numbers, slurs, anything a court asked you to remove.
+3. **Fresh**: a query that suddenly trends (a storm, a launch) should appear **within minutes**, not after tomorrow's batch.
+4. **Safe**: never suggest a private or harmful string, such as names with phone numbers, slurs, or anything a court asked you to remove.
 
-**Stretch, said out loud:** personalization (the user's own recent searches, location), typo tolerance ("iphnoe" → "iphone"). **Out of scope:** the search results page, spelling correction as a product, ads in suggestions, the admin tooling for the denylist. *"Tell me if you want any of those."*
+**Stretch, said out loud:** personalisation (the user's own recent searches, location) and typo tolerance ("iphnoe" gives "iphone"). **Out of scope:** the results page, spelling correction as a product, ads in suggestions, denylist admin tooling. Ask the interviewer if they want any of those.
 
-**A multi-language note**, in one sentence, because Iris said eleven: *"I'll build one index per locale, keyed on a normalised form of the text — case-folded and Unicode-normalised — and treat input-method languages like Chinese and Japanese as a follow-up."* Chapter 11 has the details.
+**Languages, in one sentence:** one index per locale, keyed on a normalised form of the text (case-folded, Unicode-normalised); input-method languages such as Chinese and Japanese are a follow-up. Chapter 11 has the details.
 
 **Non-functional requirements, each with a number or a choice:**
 
 | Quality | The requirement | What it decides |
 |---|---|---|
-| **Latency** | **p99 under 100 ms** from keystroke to painted suggestions; origin p99 under 10 ms | Precomputed, in memory, in region, hot prefixes at the edge |
-| **Availability** | Suggestions keep working when anything behind them fails; **availability over consistency** | Every replica serves a possibly stale index rather than an error |
-| **Freshness** | Batch ranking daily; trending within ~5 minutes | Two paths: a batch build and a small streaming layer |
+| **Latency** | **p99 under 100 ms** keystroke to painted suggestions; origin p99 under 10 ms | Precomputed, in memory, in region, hot prefixes at the edge |
+| **Availability** | Keep working when anything behind it fails; **availability over consistency** | Every replica serves a possibly stale index rather than an error |
+| **Freshness** | Batch ranking daily; trending within about 5 minutes | Two paths: a batch build and a small streaming layer |
 | **Scale** | 100M daily users, peaks around 175K keystrokes/s (Chapter 2) | Many stateless replicas; edge caching |
 | **Privacy** | No suggestion unless at least *k* distinct users searched it | A filter in the pipeline, not a patch in the UI |
 
-**Why availability over consistency is easy here.** Nobody can tell whether a suggestion list is one minute or one day old, and two replicas on different builds for a few minutes during a rollout harm no one. Typeahead is an **aid**: if it fails, the user just types the whole query. Say that, because it licenses every degradation in Chapter 12.
+**Why availability over consistency is easy here.** Nobody can tell whether a suggestion list is one minute or one day old, and two replicas on different builds for a few minutes during a rollout harm no one. Typeahead is an aid: if it fails, the user just types the whole query. Say that, because it licenses every degradation in Chapter 12.
 
-**The bridge**, at 0:09: *"So: top 10 completions per keystroke, ranked by decayed popularity, trending within minutes, never private or harmful; p99 under 100 ms, stale over unavailable; personalization and typos as stretch. Does that match?"*
+**The bridge**, at 0:09: *"Top 10 completions per keystroke, ranked by decayed popularity, trending within minutes, never private or harmful; p99 under 100 ms, stale over unavailable; personalisation and typos as stretch. Does that match?"*
 
 <Trace title="Scope the box" steps={scoping} takeaway="Core: top-K completions by decayed popularity, trending within minutes, safe. Stretch: personal, typo-tolerant. NFR: p99 under 100 ms, availability over consistency." />
 
-**Catch the trap:** "It should be fast and accurate." Fast is a number (100 ms p99, keystroke to paint). Accurate is a ranking rule (decayed distinct-user popularity). An adjective in a requirement is a blank you haven't filled.
+**A common slip:** "It should be fast and accurate." Fast is a number (100 ms p99, keystroke to paint). Accurate is a ranking rule (decayed distinct-user popularity). An adjective in a requirement is a blank you have not filled.
 
-<h2 id="estimation">Chapter 2 · A hundred thousand questions a second</h2>
+<Quiz
+  id="ta-requirements"
+  title="Chapter 1 checkpoint"
+  questions={[
+    {
+      kind: 'tradeoff',
+      q: 'Product asks for strong consistency: after a new trending query appears, every user must see it at the same instant. What do you say?',
+      options: [
+        'Agree, and use a distributed lock around every index update',
+        'Decline: nobody can observe a list being a few minutes old, so keep availability over consistency and bound staleness with a TTL',
+        'Agree, but only for the top 10 prefixes',
+      ],
+      answer: 1,
+      why: 'Typeahead is a hint. Consistency would cost availability and latency for something no user can detect.',
+      explain: [
+        'A lock on a hot index path adds latency and a new failure mode, to hide a difference nobody can see.',
+        'Correct. State the staleness you accept (about 5 minutes for trending, a day for batch lists) and what it buys: every replica can always answer.',
+        'A partial version keeps the cost on the hottest prefixes and still gains nothing a user can notice.',
+      ],
+    },
+    {
+      kind: 'scenario',
+      q: 'Which sentence is a finished requirement?',
+      options: [
+        'Suggestions must be fast and relevant',
+        'Top 10 completions of the typed prefix, p99 under 100 ms keystroke to paint, ranked by decayed distinct-user popularity',
+        'Use a trie for the suggestions',
+      ],
+      answer: 1,
+      why: 'A requirement states an outcome with a number or a rule. A data structure is a solution.',
+      explain: [
+        '"Fast" and "relevant" are adjectives. Each is a blank that needs a number or a rule.',
+        'Correct: output, latency number and ranking rule are all stated.',
+        'That is a design choice made before the requirement exists.',
+      ],
+    },
+  ]}
+/>
 
-<Scene chapter="Chapter 2" title="A hundred thousand questions a second">
+<ChapterDone id="requirements" />
 
-Dev has the prototype's graph on his laptop. *"Every search was ten requests,"* he says. *"Somebody typing 'running shoes' asked us 'r', 'ru', 'run', 'runn'…"* He scrolls. *"Three of those came back after the user had already typed further. We painted them anyway."*
+<h2 id="estimation">Chapter 2 · Requests per second</h2>
 
-Mara writes three blanks on the board: **keystrokes/s**, **requests/s**, **bytes of index**. *"Fill those, and the architecture draws itself."*
+An old prototype's graph shows the shape of the problem: every search was ten requests. Someone typing "running shoes" asked for "r", "ru", "run", "runn" and so on, and three of those responses arrived after the user had typed further. The system painted them anyway. Three blanks decide the architecture: **keystrokes per second**, **requests per second**, **bytes of index**.
 
-</Scene>
+**Assumptions, stated out loud** (each is a number you would check against real logs):
 
-**Assumptions, stated out loud** (each is a number you'd check against real logs):
+- **100M daily active users**, **5 searches** each per day, so **500M searches/day**.
+- **10 keystrokes** per search before the user picks a suggestion or presses Enter.
+- **Peak = 3 × average**; a day is about **86,400 s**.
 
-- **100M daily active users**, **5 searches** each per day → **500M searches/day**.
-- **10 keystrokes** typed per search before the user picks a suggestion or presses Enter.
-- **Peak = 3 × average**; a day ≈ **86,400 s**.
+**Keystrokes.** 500M × 10 = **5 billion a day**, about 57,870/s on average, so **about 175,000/s at peak** (57,870 × 3 is about 173,600).
 
-**Keystrokes.** 500M × 10 = **5 billion a day** ≈ 57,870/s average → **about 175,000/s at peak** (57,870 × 3 ≈ 173,600).
+**The client's effect.** Not every keystroke becomes a request. A short **debounce** collapses bursts (fast typing, paste). **Cancelling** superseded requests stops wasted work. A **client cache** answers backspaces and can narrow a short list locally (Chapter 7). Assume these cut **10 keystrokes to about 6 requests** per search. That number is one to measure, not to trust.
 
-**The client's effect.** Not every keystroke becomes a request. A short **debounce** collapses bursts (fast typing, paste); **cancelling** superseded requests stops wasted work; and a **client cache** answers backspaces and narrows a short list locally (Chapter 7). Assume these cut **10 keystrokes to about 6 requests** per search — a number to measure, not to trust:
+- 500M × 6 = 3 billion requests/day, about 34,700/s average, so **about 104,000/s at peak**.
+- The **edge** (CDN) answers short, popular prefixes. Assume **40%** of requests hit there (Chapter 8). The origin sees 104,200 × 0.6 = **about 62,500/s at peak**.
 
-- 500M × 6 = 3 billion requests/day ≈ 34,700/s average → **about 104,000/s at peak**.
-- The **edge** (CDN) answers short, popular prefixes. Assume **40%** of requests hit there (Chapter 8) → the origin sees 104,200 × 0.6 ≈ **62,500/s at peak**.
+**Servers.** An in-memory lookup costs microseconds; the real per-node limit is request handling. Plan on a conservative **10,000 requests/s per node, run at 50%**, so 5,000/s each. 62,500 ÷ 5,000 = 12.5, so **about 13 nodes of capacity worldwide**. If the busiest of three regions carries 40% of the origin peak (25,000/s), it needs 5 nodes plus one spare for failures and deploys: **6**. The conclusion to say aloud: *the fleet is small; the hard parts are latency, freshness and safety, not throughput.*
 
-**Servers.** An in-memory lookup costs microseconds; the real per-node limit is request handling. Plan on a conservative **10,000 requests/s per node, run at 50%** → 5,000/s each → 62,500 ÷ 5,000 = **12.5, so about 13 nodes of capacity worldwide**. If the busiest of three regions carries 40% of the origin peak (25,000/s), it needs 5 nodes plus one spare for failures and deploys: **6**. Say the conclusion: *the fleet is small; the hard parts are latency, freshness and safety, not throughput.*
+**Bandwidth.** A response is about 10 suggestions × 25 B plus JSON, so **500 B**. 104,200/s × 500 B is about **52 MB/s, or 420 Mbit/s** worldwide at peak. Say "not a constraint" and move on.
 
-**Bandwidth.** A response is ~10 suggestions × ~25 B plus JSON ≈ **500 B**. 104,200/s × 500 B ≈ **52 MB/s ≈ 420 Mbit/s** worldwide at peak. Non-issue; say "skipping" and move on.
+**The index.** It holds only queries that pass the filters (Chapter 6). Assume **10M distinct suggestible queries** per large locale, **about 20 characters** each.
 
-**The index.** Keep only queries that pass the filters (Chapter 6). Assume **10M distinct suggestible queries** per large locale, **~20 characters** each.
+- Query table: 10M × about 32 B (text, a score and an id) is **320 MB**.
+- Index structure: Chapter 5 computes about **1.2 GB** as a compressed trie with top-10 lists, so **about 1.5 GB** all in.
 
-- Query table: 10M × ~32 B (text plus a score and an id) ≈ **320 MB**.
-- Index structure: Chapter 5 computes it — about **1.2 GB** as a compressed trie with top-10 lists, so **about 1.5 GB** all-in.
+**Logs, the pipeline's input.** 500M searches × about 100 B per record (normalised query, hashed user id, time, locale, whether a suggestion was clicked) = **50 GB/day**. A 30-day window is **1.5 TB**: an ordinary batch job.
 
-**Logs, the pipeline's input.** 500M searches × ~100 B per log record (normalised query, hashed user id, time, locale, whether a suggestion was clicked) = **50 GB/day**; a 30-day window is **1.5 TB**. An ordinary batch job.
-
-<Figure caption="The funnel. Each layer removes load before the next one sees it; the origin handles about a third of the keystrokes typed.">
+<Figure caption="The funnel. Each layer removes load before the next sees it; the origin handles about a third of the keystrokes typed.">
   <Mermaid code={`flowchart LR
     K["Keystrokes\n~175K/s peak"] -->|"debounce, cancel,\nclient cache"| Q["Requests\n~104K/s"]
     Q -->|"40% answered\nat the edge"| O["Origin\n~62.5K/s"]
     O --> N["~13 nodes of capacity\n6 in the busiest region"]`} />
 </Figure>
 
-<Trace title="Fill the three blanks" steps={estimate} takeaway="5 billion keystrokes a day ≈ 175K/s peak; client tricks → ~104K/s; edge → ~62.5K/s at the origin; ~1.5 GB of index. Small fleet, hard latency." />
+<Trace title="Fill the three blanks" steps={estimate} takeaway="5 billion keystrokes a day is about 175K/s at peak; client tricks give about 104K/s; the edge leaves about 62.5K/s at the origin; about 1.5 GB of index. Small fleet, hard latency." />
 
-**Catch the trap:** estimating storage for "all queries ever". The index holds only queries that survive the filters, and that number — not the size of the logs — decides whether it fits in memory. Say which number you're sizing.
+**A common slip:** estimating storage for "all queries ever". The index holds only queries that survive the filters, and that number, not the size of the logs, decides whether it fits in memory. Say which number you are sizing.
+
+<Quiz
+  id="ta-estimation"
+  title="Chapter 2 checkpoint"
+  questions={[
+    {
+      kind: 'scenario',
+      q: 'Peak origin load is 62,500 requests/s. Each node handles 10,000/s at best. You run nodes at 50% and keep one spare in the busiest region. Which statement about capacity is right?',
+      options: [
+        'You need about 7 nodes worldwide, one per 10,000 requests',
+        'About 13 nodes of capacity worldwide; the 1.5 GB index is irrelevant to the count',
+        'You must shard the index, because 13 nodes cannot all hold it',
+      ],
+      answer: 1,
+      why: 'Node count follows request rate at the planned utilisation. The index is small enough to replicate in full.',
+      explain: [
+        'That uses 100% utilisation, which leaves no room for spikes, deploys or a dead node.',
+        'Correct: 62,500 ÷ 5,000 = 12.5. Throughput, not bytes, sizes the fleet.',
+        '1.5 GB fits in every node many times over. Sharding would add routing and hot shards for no benefit.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'The edge cache goes down completely. What happens to origin load at peak, and what is the right response?',
+      options: [
+        'Nothing; the service holds the index in memory, so it is unaffected',
+        'The origin sees all 104,000 requests/s instead of 62,500, about 21 nodes of capacity instead of 13, and scales out stateless replicas',
+        'The index must be rebuilt',
+      ],
+      answer: 1,
+      why: 'The edge absorbed 40% of requests. Without it the origin takes everything, but the replicas are stateless, so more of them is the fix.',
+      explain: [
+        'Each lookup is cheap, but the request handling is the real limit and it rises by two thirds.',
+        'Correct: 104,200 ÷ 5,000 is about 21. Because nodes hold the whole index and share no state, scaling out is the whole fix.',
+        'The index is unaffected by the cache. The cache only stores copies of responses.',
+      ],
+    },
+  ]}
+/>
+
+<ChapterDone id="estimation" />
 
 <h2 id="entities-api">Chapter 3 · The contract</h2>
 
-<Scene chapter="Chapter 3" title="The contract" mood="dusk">
+A POST to `/search/suggest` with a JSON body cannot be helped by any browser cache, CDN or proxy. Every "a" anyone types goes all the way to your servers. The contract should be one the internet can cache.
 
-Theo reads the prototype's API aloud: `POST /search/suggest` with a JSON body. He puts the printout down.
+**Core entities, two minutes, names and relationships:**
 
-*"A POST,"* he says. *"So no browser cache, no CDN, no proxy anywhere in the world is allowed to help you. Every 'a' anyone types comes all the way home."* He slides the marker across. *"Write me one that the internet can cache."*
-
-</Scene>
-
-**Core entities — two minutes, names and relationships:**
-
-- **Query** — a normalised search string in a locale, with a decayed popularity **score**. Built from logs; read-only to the serving path.
-- **Prefix** — not stored as its own row in the trie design; it *is* a path in the tree. (In the KV design it is the key.)
-- **Suggestion list** — the top-K queries for one (locale, prefix). The thing every request reads.
-- **Index snapshot** — an immutable, versioned build of all suggestion lists for a locale. Serving nodes hold one live and one previous.
-- **Trending set** — a few thousand queries per locale whose recent rate spikes above their baseline; refreshed every minute.
-- **User history** — one user's recent searches; lives on the device (and optionally in a per-user store). Never enters the global index.
+- **Query**: a normalised search string in a locale, with a decayed popularity **score**. Built from logs; read-only to the serving path.
+- **Prefix**: not stored as its own row in the trie design; it is a path in the tree. (In the key-value design it is the key.)
+- **Suggestion list**: the top-K queries for one (locale, prefix). The thing every request reads.
+- **Index snapshot**: an immutable, versioned build of all lists for a locale. Serving nodes hold one live and one previous.
+- **Trending set**: a few thousand queries per locale whose recent rate spikes above baseline; refreshed every minute.
+- **User history**: one user's recent searches; lives on the device (and optionally a per-user store). Never enters the global index.
 
 **The API.** One read endpoint, a `GET`, so every cache on the path can help:
 
-```text
+```http
 GET /v1/suggest?q=red%20ru&locale=en-US&limit=10
 
 200 OK
@@ -217,39 +308,69 @@ Cache-Control: public, max-age=300, stale-while-revalidate=60, stale-if-error=86
 
 Each piece earns its place:
 
-- **`GET` with the prefix in the URL**: the URL *is* the cache key at the browser, the CDN and any proxy.
-- **`locale` as a parameter, not a header.** A `Vary: Accept-Language` header splits the cache on every variant of that header ("en-US,en;q=0.9", "en-US,en;q=0.8"…). One explicit, normalised parameter keeps the key space small.
-- **The client normalises `q` before building the URL** — lowercase, trim, collapse spaces, Unicode NFKC — so "Red Ru", "red ru " and "red  ru" share one cache entry. The server normalises again (never trust the client) and rejects `q` longer than ~50 characters with an empty list.
-- **`max-age=300`**: five minutes bounds how stale a trending suggestion can be at the edge; batch lists change only daily. **`stale-while-revalidate`** lets the edge refresh in the background; **`stale-if-error`** keeps serving the last list for a day if the origin is unreachable (both from RFC 5861).
-- **`build`** in the body: lets you debug "why did I see that?" and lets the client discard a response from an older build if it ever matters.
-- **`kind`**: the UI can mark trending or personal items differently.
-- **Personal results are not in this response.** The global list is the same for everyone and cacheable; the user's history is merged on the device, or fetched from a separate `GET /v1/suggest/personal` marked `Cache-Control: private, no-store`. Mixing them would put one person's searches in a shared cache.
+- **`GET` with the prefix in the URL.** The URL is the cache key at the browser, the CDN and any proxy.
+- **`locale` as a parameter, not a header.** `Vary: Accept-Language` splits the cache on every variant of that header ("en-US,en;q=0.9", "en-US,en;q=0.8"). One explicit, normalised parameter keeps the key space small.
+- **The client normalises `q` before building the URL**: lowercase, trim, collapse spaces, Unicode NFKC. "Red Ru", "red ru " and "red  ru" then share one cache entry. The server normalises again (never trust the client) and returns an empty list for `q` longer than about 50 characters.
+- **`max-age=300`.** Five minutes bounds how stale a trending suggestion can be at the edge; batch lists change only daily. **`stale-while-revalidate`** lets the edge refresh in the background. **`stale-if-error`** keeps serving the last list for a day if the origin is unreachable (both from RFC 5861).
+- **`build`** in the body answers "why did I see that?", and lets a client discard a response from an older build.
+- **`kind`** lets the UI mark trending or personal items.
+- **Personal results are not in this response.** The global list is the same for everyone and cacheable. The user's history is merged on the device, or fetched from a separate `GET /v1/suggest/personal` marked `Cache-Control: private, no-store`. Mixing them would put one person's searches in a shared cache.
 
-**Logging, the other half of the contract.** Ranking needs to know what people *searched*, not what they typed on the way. The search endpoint (not the suggest endpoint) logs the final query, a hashed user id, the locale, and whether it came from a clicked suggestion. Logging each keystroke would multiply the log volume by ten and record mostly half-words.
+**Logging, the other half of the contract.** Ranking needs what people *searched*, not what they typed on the way. The search endpoint (not the suggest endpoint) logs the final query, a hashed user id, the locale, and whether it came from a clicked suggestion. Logging each keystroke would multiply log volume by ten and record mostly half-words.
 
 <Trace title="Write the contract" steps={contract} takeaway="A cacheable GET with a normalised prefix and locale in the URL, a five-minute TTL with stale-if-error, and personal results kept out of shared caches." />
 
-**Catch the trap:** an API that can't be cached — a `POST`, a session token in the URL, the user's id in the global response. Each one silently deletes your cheapest layer.
+**A common slip:** an API that cannot be cached: a `POST`, a session token in the URL, the user's id in the global response. Each silently deletes your cheapest layer.
+
+<Quiz
+  id="ta-contract"
+  title="Chapter 3 checkpoint"
+  questions={[
+    {
+      kind: 'predict',
+      q: 'Two users on the same CDN edge request this URL one second apart. What does the second one get?',
+      code: "GET /v1/suggest?q=ca&locale=en-US&limit=10\nCache-Control: public, max-age=300",
+      options: ['A fresh answer from the origin', 'The first user’s cached response, with no origin call', 'A 304 from the origin'],
+      answer: 1,
+      why: 'The URL is the cache key and the response is public with a 300-second TTL, so the edge serves the stored copy.',
+      explain: [
+        'That would happen only with no-store, or a unique URL such as a session id in the query string.',
+        'Correct. This is why the prefix and locale live in the URL, and why nothing user-specific may appear in the response.',
+        'A 304 needs a revalidation request. Within max-age the edge does not contact the origin at all.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'A developer adds the signed-in user’s recent searches to the same public response. What breaks?',
+      options: [
+        'Nothing: the CDN keys on the full URL',
+        'The next person typing the same prefix at that edge may see someone else’s history',
+        'The response becomes too large for the edge',
+      ],
+      answer: 1,
+      why: 'The URL contains no user, so the CDN has one entry for everyone. Personal data in a shared cache is a leak.',
+      explain: [
+        'The URL does not include the user. That is exactly why the key is shared.',
+        'Correct. Keep personal data in a private response or merge it on the device.',
+        'Size is not the issue. Correctness and privacy are.',
+      ],
+    },
+  ]}
+/>
+
+<ChapterDone id="entities-api" />
 
 <Part n="Part Two" title="Draw it (step 4)">
 
-0:15. Two systems on two clocks. Draw the reader first — it is what the user feels — then the builder that feeds it.
+0:15. Two systems on two clocks. Draw the reader first, since it is what the user feels, then the builder that feeds it.
 
 </Part>
 
 <h2 id="high-level">Chapter 4 · Two clocks</h2>
 
-<Scene chapter="Chapter 4" title="Two clocks" mood="dawn">
+A tempting first sketch is one box, SUGGEST SERVICE, with an arrow to the search logs: it reads the logs, counts, and returns the top ten. Ask how many log records it reads for one keystroke. The answer erases the arrow. Draw a line down the middle instead, with **every keystroke** on the left and **every night** on the right.
 
-You start with one box labelled SUGGEST SERVICE and draw an arrow from it to the search logs. *"It reads the logs, counts, and returns the top ten."*
-
-Mara taps the arrow. *"How many log records does it read for one keystroke?"*
-
-You do the arithmetic, and erase the arrow. Then you draw a line down the middle of the board, and write two headings: **every keystroke** on the left, **every night** on the right.
-
-</Scene>
-
-**The design, one requirement at a time.** First the reader: a request arrives, and the fewest boxes that answer it within 100 ms.
+**The design, one requirement at a time.** First the reader: a request arrives, and these are the fewest boxes that answer it within 100 ms.
 
 <Figure caption="The high-level design. Left: the online path, on the keystroke clock. Right: the offline path, on the nightly clock (plus a one-minute trending loop). The only thing that crosses the line is an immutable snapshot.">
   <Mermaid code={`flowchart LR
@@ -269,52 +390,83 @@ You do the arithmetic, and erase the arrow. Then you draw a line down the middle
     TR -.->|"4 · trending set"| S`} />
 </Figure>
 
-> **You:** "A keystroke: the client waits for a short pause, cancels anything still in flight, and checks its local cache. If it needs the server, it sends a GET with the normalised prefix and locale. Short popular prefixes are answered at the CDN edge. Misses go to the nearest region, through a load balancer, to any suggest-service node. Each node holds the **whole index in memory**, so it walks the trie to the prefix and returns the stored top-K list, merged with any trending items — a few microseconds of work. The client paints it only if the prefix still matches the box."
+> **Say it:** "A keystroke: the client waits for a short pause, cancels anything in flight, and checks its local cache. If it needs the server, it sends a GET with the normalised prefix and locale. Short popular prefixes are answered at the CDN edge. Misses go to the nearest region, through a load balancer, to any suggest-service node. Each node holds the **whole index in memory**, so it walks the trie to the prefix and returns the stored top-K list, merged with any trending items: microseconds of work. The client paints it only if the prefix still matches the box."
 >
-> "Every night, a batch job reads the search logs, computes decayed counts per query, drops anything searched by too few distinct users or matching our safety filters, and builds the top-K index. It writes a versioned snapshot; each node loads it beside the old one and swaps a pointer. A small streaming job runs every minute to catch trending queries."
+> "Every night a batch job reads the search logs, computes decayed counts per query, drops anything searched by too few distinct users or matching safety filters, and builds the top-K index. It writes a versioned snapshot; each node loads it beside the old one and swaps a pointer. A small streaming job runs every minute for trending queries."
 
 **Every box earns one sentence:**
 
-- **Client logic** — the cheapest requests are the ones never sent; and only the client knows which response is still relevant.
-- **CDN edge** — a small set of short prefixes carries a large share of requests, and their answers are the same for everyone.
-- **Suggest service, whole index per node** — 1.5 GB fits in memory, so any node answers any prefix with no network hop behind it.
-- **Batch pipeline** — ranking is too expensive for the keystroke path and is allowed to be a day old.
-- **Snapshot store** — the hand-off between clocks is an immutable file: easy to validate, canary, and roll back.
-- **Trending job** — the one requirement the nightly clock can't meet (minutes, not a day).
+- **Client logic**: the cheapest requests are the ones never sent, and only the client knows which response is still relevant.
+- **CDN edge**: a small set of short prefixes carries a large share of requests, and their answers are the same for everyone.
+- **Suggest service, whole index per node**: 1.5 GB fits in memory, so any node answers any prefix with no network hop behind it.
+- **Batch pipeline**: ranking is too expensive for the keystroke path and is allowed to be a day old.
+- **Snapshot store**: the hand-off between clocks is an immutable file, easy to validate, canary and roll back.
+- **Trending job**: the one requirement the nightly clock cannot meet (minutes, not a day).
 
-**What is deliberately missing:** no database on the read path, no search cluster on the read path, no cache in front of the suggest service (the service *is* an in-memory cache of the snapshot). Say why each is missing — that is what "boxes earn their place" means.
+**What is deliberately missing:** no database on the read path, no search cluster on the read path, and no cache in front of the suggest service (the service is itself an in-memory copy of the snapshot). Say why each is missing.
 
 <Reveal q="Why not just keep the search cluster and add a cache in front of it?">
 
-Because the cache would miss on most long prefixes, and every miss is a scatter-gather search query across shards, with a long tail — the prototype's 380 ms. You'd be caching your way around the wrong machine. The search index answers "which documents match these words"; typeahead asks "which popular past queries start with these characters". A precomputed index answers the second question in microseconds, and the search cluster goes back to serving the searches people press Enter on.
+The cache would miss on most long prefixes, and every miss is a scatter-gather search query across shards with a long tail, which is the 380 ms from the prologue. You would be caching your way around the wrong machine. The search index answers "which documents match these words"; typeahead asks "which popular past queries start with these characters". A precomputed index answers the second in microseconds, and the search cluster goes back to serving the searches people press Enter on.
 
 </Reveal>
 
-**Catch the trap:** drawing one box — "suggest service" — with an arrow to "the database". The interviewer will ask what query it runs and how long it takes, and there is no good answer. The offline/online split is the design.
+**A common slip:** drawing one box, "suggest service", with an arrow to "the database". The interviewer will ask what query it runs and how long it takes, and there is no good answer. The offline/online split is the design.
+
+<Quiz
+  id="ta-high-level"
+  title="Chapter 4 checkpoint"
+  questions={[
+    {
+      kind: 'tradeoff',
+      q: 'Why does the suggest service hold the whole index in memory instead of calling a database or Redis per request?',
+      options: [
+        'Databases cannot do prefix queries',
+        'A local lookup has no network hop and no shared dependency, so latency is flat and one failed store cannot take suggestions down',
+        'Memory is cheaper than disk',
+      ],
+      answer: 1,
+      why: 'At 1.5 GB the index fits on every node, so a remote store would add a hop and a failure mode for nothing.',
+      explain: [
+        'They can, and LIKE with an index works. The problem is ranking the matches at query time, not matching.',
+        'Correct. It also means any node can answer any request, which keeps routing and failover trivial.',
+        'Not the reason here. The index is tiny either way; the benefit is no hop and no remote failure.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'The nightly pipeline is down for two days. Which statement describes the system’s behaviour correctly?',
+      options: [
+        'Reads fail once the last build is more than 24 hours old',
+        'Serving nodes keep answering from the last good snapshot; only freshness suffers',
+        'Nodes fall back to scanning the logs',
+      ],
+      answer: 1,
+      why: 'The only thing crossing the clocks is an immutable snapshot. The reader never calls the builder.',
+      explain: [
+        'Nothing in the read path checks the build age; that is a monitoring concern, not a serving one.',
+        'Correct. That independence is the reason for the split. Alert on index age so it is not silent.',
+        'The logs are far too large to read per keystroke. That is the original mistake.',
+      ],
+    },
+  ]}
+/>
+
+<ChapterDone id="high-level" />
 
 <Part n="Part Three" title="Deep dive: the index">
 
-0:25. *"The hardest part is what the index looks like and how it gets built — let me go deep there first."*
+0:25. *"The hardest part is what the index looks like and how it gets built, so I will go deep there first."*
 
 </Part>
 
-<h2 id="data-model">Chapter 5 · A tree that already knows</h2>
+<h2 id="data-model">Chapter 5 · Tries and prefix indexes</h2>
 
-<Scene chapter="Chapter 5" title="A tree that already knows" mood="dusk">
+Say a trie holds a few hundred thousand queries below the letter "c", and somebody types "c" about a thousand times a second. Either the server visits all of them every time, or the "c" node already knows the answer. Precomputing that answer is the whole idea.
 
-Theo draws a tree of letters: c, ca, car, cat. *"Walk the letters the user typed,"* he says, *"and everything below you is a completion."*
+Three machines can answer "top K completions of this prefix". Know all three, commit to one, and say when you would switch.
 
-Mara asks the question that matters. *"How many queries are below 'c'?"*
-
-*"Hundreds of thousands,"* says Theo. *"And somebody types 'c' about a thousand times a second."*
-
-*"So,"* Mara says, *"either you visit them all, every time — or the 'c' node already knows the answer."*
-
-</Scene>
-
-Three machines can answer "top K completions of this prefix". Know all three; commit to one; say when you'd flip.
-
-**Option 1 · Trie with top-K stored at every node.** A **trie** stores strings so every path from the root spells a prefix. Walking the typed characters lands on the prefix's node; every query below it is a completion. On its own that is not enough — for "c" the subtree is enormous. So **every node stores its own top-K list, precomputed**. A lookup walks one hop per typed character and returns the stored list: **O(prefix length + K)**, independent of how many queries lie below.
+**Option 1 · Trie with top-K stored at every node.** A **trie** (prefix tree) stores strings so that every path from the root spells a prefix. Walking the typed characters lands on the prefix's node, and every query below it is a completion. On its own that is not enough, since the subtree under "c" is enormous. So **every node stores its own top-K list, precomputed**. A lookup walks one hop per typed character and returns the stored list: **O(prefix length + K)**, independent of how many queries lie below.
 
 <Figure caption="k = 3. Each node stores the best three of its whole subtree, computed bottom-up. suggest('ca') reads [car, cat, catalog] from the 'ca' node without visiting anything below it. 'cab' and 'cars' have no node, so they return an empty list; the empty prefix returns the root’s list.">
   <Mermaid code={`flowchart TD
@@ -331,9 +483,13 @@ Three machines can answer "top K completions of this prefix". Know all three; co
     DO -->|"…or"| DOOR["door ✓ 350"]`} />
 </Figure>
 
-**Building the lists bottom-up.** A node's top K is the best K of **its own query (if one ends there) plus its children's top-K lists**. Why is that enough? Take any query *outside* a child's top K: K other queries in that same child beat it, and all K of them are candidates at the parent. So it can never make the parent's top K either. One post-order pass builds every list.
+Try it. Type a prefix, watch the path and the list stored at the node, and compare the hops with the number of queries a scan would have to sort. The second half of the widget returns in Chapter 10.
 
-**Ties must be broken deterministically** — score descending, then alphabetically. Otherwise two replicas built from the same data can order equal-score queries differently, and the list flickers between keystrokes as requests land on different nodes.
+<TrieAutocompleteSim />
+
+**Building the lists bottom-up.** A node's top K is the best K of **its own query (if one ends there) plus its children's top-K lists**. Why is that enough? Take any query outside a child's top K. K other queries in that same child beat it, and all K are candidates at the parent, so it can never make the parent's top K either. One post-order pass builds every list.
+
+**Break ties deterministically**: score descending, then alphabetical. Otherwise two replicas built from the same data can order equal scores differently, and the list flickers between keystrokes as requests land on different nodes.
 
 ```java id=typeahead group=typeahead
 /** An immutable prefix tree. Every node stores the best k completions of its whole subtree. */
@@ -387,11 +543,11 @@ static final class TopKTrie {
 }
 ```
 
-**What the checker proves.** `tests/java/typeahead/Check.java` compares `suggest` with a brute-force oracle — *filter every query by the prefix, sort by score descending then alphabetically, take K* — on 3,000 random query sets over small alphabets (so ties and shared prefixes are everywhere), for every prefix up to length 4, the **empty prefix** (the root's list: the global top K), **missing prefixes** (an empty list, including a prefix that runs past the end of a leaf), accented and CJK characters, and the exact lists in the figure above.
+**What the checker proves.** `tests/java/typeahead/Check.java` compares `suggest` with a brute-force oracle (filter every query by the prefix, sort by score descending then alphabetically, take K) on 3,000 random query sets over small alphabets, so ties and shared prefixes are everywhere. It covers every prefix up to length 4, the **empty prefix** (the root's list), **missing prefixes** (an empty list, including one that runs past a leaf), accented and CJK characters, and the exact lists in the figure above.
 
-**Cost.** Build: every node hands at most K candidates to its parent, so about **nodes × K** items are sorted in total, in small batches. Query: **O(P + K)** for a prefix of length P. Memory: **K entries per node** — the price of never searching at read time.
+**Cost.** Build: every node hands at most K candidates to its parent, so about **nodes × K** items are sorted in total, in small batches. Query: **O(P + K)** for a prefix of length P. Memory: **K entries per node**, the price of never searching at read time.
 
-**Catch the bug.** The version that looks right and suggests nothing:
+**A bug that looks right and suggests nothing:**
 
 ```java fragment
 List<String> candidates = new ArrayList<>();
@@ -402,51 +558,106 @@ for (Map.Entry<Character, Node> child : node.children.entrySet()) {
 // BUG: the node's own query is never added. A leaf's list is empty, so nothing ever propagates.
 ```
 
-On the figure's data every list comes out empty — even the root's. The checker builds exactly this version and shows it. A milder cousin forgets it only at nodes with children, and "car" (900) silently disappears from every list while "card" and "care" remain.
+On the figure's data every list comes out empty, even the root's. The checker builds exactly this version and shows it. A milder cousin forgets the node's own query only at nodes with children, and "car" (900) silently disappears from every list while "card" and "care" remain.
 
-**Worked numbers: does a trie fit?** 10M queries × ~20 characters:
+**Worked numbers: does a trie fit?** 10M queries × about 20 characters:
 
-- **Plain trie:** at most one node per character → **≤ 200M nodes**. Store each top-10 list as 4-byte query ids (40 B) plus ~20 B of node structure in a compact array layout ≈ 60 B per node → **up to 12 GB**.
-- **Compressed (radix) trie:** merge chains of single-child nodes into one node with a multi-character edge. Every remaining node either ends a query (at most 10M) or branches (fewer than the number of queries), so **≤ 20M nodes** → 20M × 60 B = **1.2 GB**. A prefix that stops mid-edge ("cata") uses the list of the node at the end of that edge — below a single-child chain the subtree is the same, so the list is the same. Add the 320 MB query table: **about 1.5 GB**. It fits on every node.
-- The Java above is the readable version: a `HashMap` per node and a `String[]` per list cost many times more memory. The offline builder writes the compact format; the serving node memory-maps it.
+- **Plain trie:** at most one node per character, so **≤ 200M nodes**. Storing each top-10 list as 4-byte query ids (40 B) plus about 20 B of node structure in a compact array layout is about 60 B per node: **up to 12 GB**.
+- **Compressed (radix) trie:** merge chains of single-child nodes into one node with a multi-character edge. Every remaining node either ends a query (at most 10M) or branches (fewer than the number of queries), so **≤ 20M nodes**, and 20M × 60 B = **1.2 GB**. A prefix that stops mid-edge ("cata") uses the list of the node at the end of that edge: below a single-child chain the subtree is the same, so the list is the same. Add the 320 MB query table for **about 1.5 GB**. It fits on every node.
+- The Java above is the readable version. A `HashMap` per node and a `String[]` per list cost many times more memory. The offline builder writes the compact format and the serving node memory-maps it.
 
-**Option 2 · Prefix → top-K table in a key-value store.** Store one row per prefix: key `sugg:en-US:red ru`, value the top-K list. A lookup is one `GET`; sharding is trivial (hash the key); you can run it on Redis or a Dynamo-style store instead of custom servers. The cost is storage, because every prefix repeats its list:
+**Option 2 · Prefix → top-K table in a key-value store.** Store one row per prefix: key `sugg:en-US:red ru`, value the top-K list. A lookup is one read, sharding is trivial (hash the key), and you can run it on Redis or a Dynamo-style store instead of custom servers. In Redis a sorted set per prefix is a natural fit:
 
-- Distinct prefixes: up to 10M × 20 = **200M rows**. With the list stored as strings (10 × ~20 B) plus a ~20 B key ≈ 220 B → **up to 44 GB**.
-- Cap prefixes at **10 characters** (a longer prefix falls back to its 10-character list filtered on the server — possibly fewer than K results — or to search): at most **100M rows × 220 B = 22 GB** — plus the store's per-key overhead, often tens of bytes per key; measure it.
-- A network hop to the store on every miss — about 0.5–1 ms in region. Fine within the budget, but it's a hop the trie doesn't have.
+```text
+ZADD sugg:en-US:ca 900 car 700 cat 500 catalog   # written by the build, one set per prefix
+ZREVRANGE sugg:en-US:ca 0 9 WITHSCORES            # the read: top 10 for "ca"
+```
 
-**Option 3 · Edge n-grams in the search index.** Index "lamp" as `l, la, lam, lamp` so a prefix becomes an ordinary term (the n-gram analyzer runs at index time only — Search, Chapter 9). This is the right machine for **completion over documents with filters** — "my listings, in this category" — and the wrong one for global popular queries: it is a search query, with search latency and fan-out, on every keystroke.
+The cost is storage, because every prefix repeats its list:
+
+- Distinct prefixes: up to 10M × 20 = **200M rows**. With the list stored as strings (10 × about 20 B) plus a key of about 20 B, that is about 220 B per row, **up to 44 GB**.
+- Cap prefixes at **10 characters** (a longer prefix falls back to its 10-character list filtered on the server, which may give fewer than K results, or to search): at most **100M rows × 220 B = 22 GB**, plus the store's per-key overhead (often tens of bytes per key; measure it).
+- A network hop on every miss, about 0.5 to 1 ms in region. Fine within the budget, but a hop the trie does not have.
+
+**Option 3 · Edge n-grams in the search index.** Index "lamp" as `l, la, lam, lamp` so a prefix becomes an ordinary term (the n-gram analyzer runs at index time only; Search, Chapter 9). This is the right machine for **completion over documents with filters**, such as "my listings, in this category". It is the wrong one for global popular queries: a search query, with search latency and fan-out, on every keystroke.
 
 | | Trie + top-K per node | Prefix → top-K KV table | Edge n-grams in search |
 |---|---|---|---|
-| Lookup | O(prefix) in local memory, microseconds | One `GET`, ~1 ms in region | A search query, ~10+ ms with tail |
-| Memory (10M queries) | ~1.5 GB compressed | Up to 22 GB (10-char cap) | Index grows several × for that field |
-| Sharding | Usually unnecessary; by locale / range | Hash the prefix | The search cluster's own |
-| Freshness | Rebuild + swap | Rewrite changed rows | Near-real-time indexing |
-| Best for | **Global popular-query suggestions** | Same data, if you'd rather run a KV store | **Documents with filters** |
+| Lookup | O(prefix) in local memory, microseconds | One read, about 1 ms in region | A search query, 10+ ms with tail |
+| Memory (10M queries) | About 1.5 GB compressed | Up to 22 GB (10-char cap) | Index grows several × for that field |
+| Sharding | Usually unnecessary; by locale or range | Hash the prefix | The search cluster's own |
+| Freshness | Rebuild and swap | Rewrite changed rows | Near-real-time indexing |
+| Best for | **Global popular-query suggestions** | The same data, if you would rather run a KV store | **Documents with filters** |
 
-**Commit:** *"A compressed trie with top-10 per node, built offline, held whole in memory on every serving node. About 1.5 GB. If we didn't want to own custom servers, the same lists go into a KV table at about 22 GB; for 'search my own listings' I'd use edge n-grams in the search index instead."*
+**Trie versus "prefix index" in plain words.** A plain database index (`LIKE 'ca%'` on a B-tree) can find every match quickly, but "which ten are best" still needs a read and sort of every match. A trie with stored lists, or a KV row per prefix, answers *top K* directly. The difference is not how you find the prefix. It is whether the ranking was already done.
 
-<Trace title="Pick the index" steps={indexChoice} takeaway="Popular queries: precomputed top-K, in a trie (~1.5 GB) or a prefix table (~22 GB). Documents with filters: edge n-grams. Bottom-up merge works because a child’s non-top-K query is beaten by K of its siblings’ queries." />
+**Commit:** *"A compressed trie with top-10 per node, built offline, held whole in memory on every serving node: about 1.5 GB. If we did not want to own custom servers, the same lists go into a KV table at about 22 GB. For 'search my own listings' I would use edge n-grams in the search index instead."*
+
+<Trace title="Pick the index" steps={indexChoice} takeaway="Popular queries: precomputed top-K, in a trie (about 1.5 GB) or a prefix table (about 22 GB). Documents with filters: edge n-grams. Bottom-up merge works because a child’s non-top-K query is beaten by K others in that child." />
 
 <Reveal q="Why store K for every node instead of only for short prefixes?">
 
-You could: long prefixes have small subtrees, so scanning them at query time is cheap. Some designs store lists only for prefixes up to a depth and scan below it. But in a compressed trie the deep nodes are few (at most about two per query), the lists are already cheap, and a uniform "every node has a list" keeps the read path branch-free and its latency flat. Mention the depth cap as the memory lever if the index grows; don't start with it.
+You could: long prefixes have small subtrees, so scanning them at query time is cheap, and some designs store lists only down to a depth. But in a compressed trie the deep nodes are few (at most about two per query) and their lists are already cheap, and a uniform "every node has a list" keeps the read path branch-free and its latency flat. Mention the depth cap as the memory lever if the index grows. Do not start with it.
 
 </Reveal>
 
-**Catch the trap:** "Walk the subtree and sort by count." Correct output, wrong cost — for "c" or "s" it visits hundreds of thousands of nodes per keystroke. The precomputed list is the whole point.
+**A common slip:** "Walk the subtree and sort by count." The output is right and the cost is wrong: for "c" or "s" it visits hundreds of thousands of nodes per keystroke. The precomputed list is the whole point.
 
-<h2 id="pipeline">Chapter 6 · The night shift</h2>
+<Quiz
+  id="ta-index"
+  title="Chapter 5 checkpoint"
+  questions={[
+    {
+      kind: 'predict',
+      q: 'k = 2, scores: ab 10, ac 8, ad 9. After the bottom-up build, what is stored at the node for "a", and what at "ac"?',
+      options: [
+        '"a": ab, ad. "ac": ac',
+        '"a": ab, ac. "ac": ac',
+        '"a": ab, ad. "ac": empty, because ac has no children',
+      ],
+      answer: 0,
+      why: 'A node’s own query counts as a candidate. "a" takes the best two of ab 10, ad 9, ac 8.',
+      explain: [
+        'Correct. The leaf "ac" holds itself, and the parent merges its children’s lists: ab 10 and ad 9 beat ac 8.',
+        'ac (8) loses to ad (9). The order is by score, not alphabetical, unless scores tie.',
+        'That is the "forgot the node’s own query" bug from this chapter. Leaves must list themselves or nothing propagates.',
+      ],
+    },
+    {
+      kind: 'tradeoff',
+      q: 'The index grows to 10M queries of 20 characters and the product wants completion inside each seller’s own listings, filtered by category. Which index?',
+      options: [
+        'Extend the global trie with a seller id in every key',
+        'A prefix → top-K row per (seller, category, prefix) in a KV store',
+        'Edge n-grams on the title field in the search index, filtered by seller and category',
+      ],
+      answer: 2,
+      why: 'This is completion over documents with filters, which is a search problem. The global trie is built for popular queries across everyone.',
+      explain: [
+        'It multiplies the trie by every seller and still cannot filter by category without more keys.',
+        'Rows multiply by every filter combination. Workable for a handful of sellers, not for a marketplace.',
+        'Correct. The search index already filters, and typeahead volume per seller is small enough for its latency.',
+      ],
+    },
+  ]}
+/>
 
-<Scene chapter="Chapter 6" title="The night shift" mood="night">
+<RevisionCards
+  id="typeahead-index"
+  cards={[
+    { front: 'Why store top-K at every trie node?', back: 'So a lookup is O(prefix + K) no matter how many queries share the prefix. The cost is K entries per node and a build step.' },
+    { front: 'Why is a bottom-up top-K merge exact?', back: 'A query outside a child’s top K is beaten by K queries in that child, and those are also candidates at the parent.' },
+    { front: 'Why deterministic ties?', back: 'Replicas built from the same data must return the same list, or results flicker between keystrokes.' },
+    { front: 'Trie vs KV prefix table size for 10M queries?', back: 'Compressed trie about 1.5 GB. Prefix table up to about 22 GB with a 10-character cap, plus one network hop per read.' },
+    { front: 'When use edge n-grams instead?', back: 'Completion over documents with filters, such as a seller’s own listings. Not for global popular queries.' },
+  ]}
+/>
 
-Theo has the prototype's ranking query on a printout: `GROUP BY query ORDER BY count DESC`. He circles two words.
+<ChapterDone id="data-model" />
 
-*"Count of what?"* he asks. *"Forty searches by one man for his neighbour's phone number is forty. A song that was number one in 2019 is four million, forever."* He taps the printout. *"Your index is only as good as the night shift that builds it."*
+<h2 id="pipeline">Chapter 6 · The nightly build</h2>
 
-</Scene>
+A first ranking query is usually `GROUP BY query ORDER BY count DESC`. Count of what? Forty searches by one person for a neighbour's phone number is forty. A song that was number one in 2019 is four million, forever. The index is only as good as the job that builds it.
 
 The offline pipeline has five stages, run on a schedule:
 
@@ -459,32 +670,43 @@ The offline pipeline has five stages, run on a schedule:
     V --> SW["5 · Swap\nload beside old,\nflip pointer"]`} />
 </Figure>
 
-**1 · Aggregate with time decay.** Group yesterday's logs by (locale, normalised query): count searches and **distinct users** (use hashed ids; HyperLogLog if exact distinct counts get expensive). Then fold the day into a running score with exponential decay, so recent interest counts more:
+**1 · Aggregate with time decay.** Group yesterday's logs by (locale, normalised query): count searches and **distinct users** (hashed ids; HyperLogLog if exact distinct counts get expensive). Then fold the day into a running score with exponential decay, so recent interest counts more:
 
 ```text
 decay  = 2^(−1 / halfLifeDays)                 half-life 7 days → 0.906 per day
-score  = score_yesterday × decay + count_today  one pass over one day of logs, not 28
+score  = score_yesterday × decay + count_today  one day of logs per run, not 28
 ```
 
-**Worked numbers** (half-life 7 days): query A was searched 1,000 times every day for 28 days; query B 7,000 times, all today. A = 1,000 × (1 + 0.906 + 0.906² + … 28 terms) ≈ **9,944**. B = **7,000**. A still ranks higher tonight — a steady favourite beats one day's spike. Tomorrow, if B gets no more searches, it decays to 7,000 × 0.906 ≈ 6,340. If you want B in the box *today*, that is the trending layer's job (Chapter 10), not the batch's. The half-life is a product knob: shorter for news-like domains, longer for a catalogue.
+```python
+HALF_LIFE_DAYS = 7
+DECAY = 2 ** (-1 / HALF_LIFE_DAYS)          # 0.906
 
-**2 · Filter — the stage the prologue skipped.**
+def fold_day(scores: dict[str, float], today: dict[str, int]) -> dict[str, float]:
+    out = {q: s * DECAY for q, s in scores.items()}
+    for q, n in today.items():
+        out[q] = out.get(q, 0.0) + n
+    return {q: s for q, s in out.items() if s >= 1.0}   # drop dead queries so the table stays bounded
+```
 
-- **k distinct users.** A query is suggestible only if at least *k* distinct users searched it in the window (say k = 20 — a policy choice). One person's private search can never reach someone else's box, and one account (or one bot) can't push a phrase up by repetition. This is the core privacy rule; count users, not searches.
+**Worked numbers** (half-life 7 days). Query A was searched 1,000 times every day for 28 days; query B 7,000 times, all today. A = 1,000 × (1 + 0.906 + 0.906² + … 28 terms) ≈ **9,944**. B = **7,000**. A still ranks higher tonight: a steady favourite beats one day's spike. Tomorrow, if B gets no more searches, it decays to 7,000 × 0.906 ≈ 6,340. If you want B in the box *today*, that is the trending layer's job (Chapter 10), not the batch's. The half-life is a product knob: shorter for news-like domains, longer for a catalogue.
+
+**2 · Filter, the stage the first version skipped.**
+
+- **k distinct users.** A query is suggestible only if at least *k* distinct users searched it in the window (say k = 20; a policy choice). One person's private search can never reach someone else's box, and one account or bot cannot push a phrase up by repetition. This is the core privacy rule: count users, not searches.
 - **PII patterns.** Drop anything that looks like an email, phone number, card number, street address or long id, even above the threshold.
-- **Safety blocklist.** Slurs, sexual and violent terms, and "sensitive completions" — a person's name followed by an accusation is not a slur, and still must not be suggested. Usually a list plus a classifier.
+- **Safety blocklist.** Slurs, sexual and violent terms, and "sensitive completions": a person's name followed by an accusation is not a slur and still must not be suggested. Usually a list plus a classifier.
 - **Bot traffic.** Exclude sessions the abuse systems flagged before counting, or coordinated campaigns can buy a suggestion.
 - **Legal removals.** A maintained denylist, applied here *and* at serve time (Chapter 12).
 
-**3 · Build.** Sort the surviving queries, build the compressed trie and its top-K lists bottom-up (Chapter 5), and serialise to a compact, read-only file per locale. Store a few more than you show (say 15 for a K of 10) so serve-time filters can remove an item and still return a full list. Write it to the snapshot store under a version: `en-US/2026-10-08T03`, with a checksum.
+**3 · Build.** Sort the surviving queries, build the compressed trie and its top-K lists bottom-up (Chapter 5), and serialise to a compact, read-only file per locale. Store a few more than you show (say 15 for a K of 10) so serve-time filters can remove an item and still return a full list. Write it to the snapshot store under a version such as `en-US/2026-10-08T03`, with a checksum.
 
-**4 · Validate.** A build is code you didn't review. Before it serves anyone:
+**4 · Validate.** A build is code you did not review. Before it serves anyone:
 
 - **Size diff**: node count and file size within a few percent of yesterday's.
-- **Golden prefixes**: a few hundred fixed prefixes must return mostly the same lists as yesterday's build; a big diff on "k" stops the rollout for a human.
-- **Canary**: one node loads it and serves a small slice of traffic; watch errors and the suggestion click-through rate.
+- **Golden prefixes**: a few hundred fixed prefixes must return mostly the same lists as yesterday's build. A big diff on "k" stops the rollout for a human.
+- **Canary**: one node loads it and serves a small slice of traffic; watch errors and suggestion click-through rate.
 
-**5 · Swap.** Each serving node downloads the snapshot, loads (or memory-maps) it **beside the current one**, runs a smoke test, and flips one reference. Readers already in flight finish on the old snapshot; new requests see the new one; nothing is locked and no request ever sees half of each.
+**5 · Swap.** Each serving node downloads the snapshot, loads (or memory-maps) it **beside the current one**, runs a smoke test and flips one reference. Readers already in flight finish on the old snapshot, new requests see the new one, nothing is locked, and no request sees half of each.
 
 ```java id=swap group=typeahead
 /** Serving nodes read one whole snapshot at a time; a new build goes live with one reference swap. */
@@ -500,56 +722,127 @@ static final class SuggestIndex {
 }
 ```
 
-The checker races four reader threads against 20,000 swaps between two different builds and asserts every answer equals one whole build's answer — never a mix. It works because each `TopKTrie` is **immutable after construction** and is published through the atomic reference. **Memory note:** for the moment of the swap a node holds two snapshots, so budget **2 × 1.5 GB = 3 GB** for the index.
+The checker races four reader threads against 20,000 swaps between two different builds and asserts every answer equals one whole build's answer, never a mix. It works because each `TopKTrie` is **immutable after construction** and is published through the atomic reference. **Memory note:** at the moment of the swap a node holds two snapshots, so budget **2 × 1.5 GB = 3 GB** for the index.
 
-**How often?** **Daily** is the default; **hourly** if the domain moves fast (news, a marketplace with drops). The run is cheap — one day of logs folded into the running scores, then a build — so the limit is usually validation and rollout time, not compute. Faster than hourly is the wrong tool: that is what the trending layer is for.
+**How often?** **Daily** is the default; **hourly** if the domain moves fast (news, a marketplace with drops). The run is cheap (one day of logs folded into running scores, then a build), so the limit is usually validation and rollout time, not compute. Faster than hourly is the wrong tool: that is what the trending layer is for.
 
 <Trace title="Run the night shift" steps={pipeline} takeaway="Decay scores incrementally, count distinct users, filter PII and abuse before building, and keep an urgent denylist at serve time." />
 
-**Catch the trap:** "We'll filter offensive suggestions." That is the blocklist, and it's the easy part. The interviewer is listening for **k distinct users** — the rule that stops a private string from ever becoming public — and for what happens when a removal can't wait for tomorrow's build.
+**A common slip:** "We will filter offensive suggestions." That is the blocklist, and it is the easy part. The interviewer is listening for **k distinct users**, the rule that stops a private string from ever becoming public, and for what happens when a removal cannot wait for tomorrow's build.
+
+<Quiz
+  id="ta-pipeline"
+  title="Chapter 6 checkpoint"
+  questions={[
+    {
+      kind: 'predict',
+      q: 'Half-life 7 days, so decay is 0.906 per day. Yesterday query X scored 1,000 and got 100 searches today. What is tonight’s score?',
+      options: ['1,100', 'About 1,006', 'About 906'],
+      answer: 1,
+      why: 'score = yesterday × decay + today = 1,000 × 0.906 + 100 = 1,006.',
+      explain: [
+        'That adds without decay, so old interest never fades and a 2019 hit outranks everything forever.',
+        'Correct. Yesterday’s score is discounted, then today’s count is added at full weight.',
+        'That applies decay to today as well. Today’s searches are age zero and count fully.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'A new build passes the size check but "k" now suggests the same spam phrase for every list. Which stage should have caught it, and what limits the damage?',
+      options: [
+        'A bigger blocklist; users will report it',
+        'Golden-prefix diff and a canary before the swap; the previous snapshot is still loaded, so rollback is one pointer flip',
+        'Rebuild from scratch tonight',
+      ],
+      answer: 1,
+      why: 'Validation compares the new build with known-good output, and the immutable-snapshot design makes rollback a pointer swap.',
+      explain: [
+        'A blocklist catches words you predicted. This is a new phrase pushed by coordinated searches, and users will already have seen it.',
+        'Correct. Upstream, distinct-user and bot filters should also have stopped the manipulation.',
+        'Waiting a day leaves the spam live. Roll back now, then investigate.',
+      ],
+    },
+  ]}
+/>
+
+<RevisionCards
+  id="typeahead-pipeline"
+  cards={[
+    { front: 'Decay formula, and why incremental?', back: 'score = yesterday × 2^(−1/halfLife) + today’s count. It needs one day of logs per run, not the whole window.' },
+    { front: 'Why count distinct users, not searches?', back: 'One person (or bot) repeating a private string would otherwise reach everyone’s box. Require at least k distinct users.' },
+    { front: 'Four checks before a build serves users?', back: 'Size diff, golden prefixes, a canary node, then an atomic swap with the previous snapshot kept for rollback.' },
+    { front: 'Why does the atomic swap work?', back: 'Each snapshot is immutable once built and published through one reference, so readers see one whole build, never a mix.' },
+    { front: 'Daily or hourly builds?', back: 'Daily by default, hourly for fast-moving domains. Faster than hourly is the trending layer’s job.' },
+  ]}
+/>
+
+<ChapterDone id="pipeline" />
 
 <Part n="Part Four" title="Deep dive: the 100 ms">
 
-Spend the budget line by line, then make sure no single machine — or letter — becomes the bottleneck.
+Spend the budget line by line, then make sure no single machine, or letter, becomes the bottleneck.
 
 </Part>
 
-<h2 id="latency">Chapter 7 · Where the hundred milliseconds go</h2>
+<h2 id="latency">Chapter 7 · The latency budget</h2>
 
-<Scene chapter="Chapter 7" title="Where the hundred milliseconds go" mood="dawn">
+A common proposal is "servers are expensive, so wait until people stop typing: 200 ms of quiet, then ask." Write **100** on the board, and under it **200**. The debounce alone is twice the budget.
 
-Iris has a proposal. *"The servers are expensive, right? So wait until people stop typing. Two hundred milliseconds of quiet, then ask."*
-
-Mara writes **100** on the board. Under it she writes **200**. She doesn't say anything else. Iris looks at the two numbers for a while, and laughs.
-
-</Scene>
-
-**The budget, keystroke to paint, at p99.** Every line is an assumption you'd say out loud:
+**The budget, keystroke to paint, at p99.** Every line is an assumption you would say out loud:
 
 | Step | p99 budget | Why that number |
 |---|---|---|
 | Client debounce | 30 ms | Short: it spends the user's time |
-| Network round trip, phone → nearest edge | 20 ms | A good connection to a nearby PoP |
-| Edge → regional origin (misses only) | 20 ms | Same continent |
+| Network round trip, phone to nearest edge | 20 ms | A good connection to a nearby point of presence |
+| Edge to regional origin (misses only) | 20 ms | Same continent |
 | Load balancer + suggest service | 5 ms | Microsecond lookup; the rest is request handling |
 | Render | 10 ms | Paint a short list |
-| Headroom for jitter | 15 ms | It's p99, not the average |
+| Headroom for jitter | 15 ms | It is p99, not the average |
 | **Total** | **100 ms** | An edge hit skips the origin hop: about **60 ms** |
 
 **Read the table backwards and the design falls out:**
 
-- A cross-ocean round trip is often 100–200 ms by itself → **serve from every region**, short prefixes **at the edge**.
-- A database query or a search scatter-gather has a multi-millisecond median and a long tail → **precomputed and in memory**, one lookup, no fan-out.
-- The origin gets 5 ms of a 100 ms budget. **Most of the latency belongs to the network and the client**, so that's where most of the engineering goes.
+- A cross-ocean round trip is often 100 to 200 ms by itself, so **serve from every region** and put short prefixes **at the edge**.
+- A database query or a search scatter-gather has a multi-millisecond median and a long tail, so **precompute and keep it in memory**: one lookup, no fan-out.
+- The origin gets 5 ms of 100. **Most of the latency belongs to the network and the client**, so most of the engineering goes there.
 
-**Be honest about mobile.** On a congested mobile network the radio alone can take 100 ms at p99. You can't fix physics, so you measure two things — **origin p99 under 10 ms** (yours to keep) and **perceived p99 per network class** (yours to improve) — and make the client hide the rest.
+**Be honest about mobile.** On a congested mobile network the radio alone can take 100 ms at p99, and you cannot fix physics. Measure two things: **origin p99 under 10 ms** (yours to keep) and **perceived p99 per network class** (yours to improve). Make the client hide the rest.
 
 **The client half of the system:**
 
-- **Debounce, briefly.** Wait for a short pause (here 30 ms) before sending, so bursts of fast typing and pastes collapse into one request. A long debounce (Iris's 200 ms) saves more requests but spends twice the whole budget before the request leaves the phone. **In typeahead, debounce is a latency knob first and a load knob second.**
-- **Cancel and ignore stale responses.** Abort the previous in-flight request when a new one starts, and paint a response only if its `q` still matches the box. Without this, a slow response for "la" can arrive after "lamp" and overwrite the right list — the prototype's flicker.
-- **Show something instantly from the local cache.** Keep recent prefix → list in memory. Backspacing from "lamp" to "lam" costs nothing. Typing "cat" after "ca": filter "ca"'s list to entries starting with "cat" and paint that at once, then replace it when the real answer arrives. If "ca"'s list was shorter than K, it already held *every* completion, so the filtered list is exact and no request is needed at all.
-- **Prefetch carefully.** Some clients request the empty-prefix list (the global top K, or the user's history) when the box gets focus, so the first paint is instant.
+- **Debounce, briefly.** Wait for a short pause (here 30 ms) before sending, so bursts of fast typing and pastes collapse into one request. In typeahead, debounce is a latency knob first and a load knob second.
+- **Cancel and ignore stale responses.** Abort the previous in-flight request when a new one starts, and paint a response only if its `q` still matches the box. Without this, a slow response for "la" can arrive after "lamp" and overwrite the right list.
+- **Show something instantly from the local cache.** Keep recent prefix → list in memory. Backspacing from "lamp" to "lam" costs nothing. Typing "cat" after "ca": filter "ca"'s list to entries starting with "cat" and paint that at once, then replace it when the real answer arrives. If "ca"'s list was shorter than K, it already held *every* completion, so the filtered list is exact and no request is needed.
+- **Prefetch carefully.** Some clients request the empty-prefix list (global top K, or the user's history) when the box gets focus, so the first paint is instant.
+
+```js
+let timer, inflight;
+const cache = new Map();                       // normalised prefix -> list
+
+function onInput(box) {
+  const q = box.value.trim().toLowerCase().normalize('NFKC');
+  clearTimeout(timer);                         // debounce: restart the wait on every keystroke
+  timer = setTimeout(() => fetchSuggestions(q, box), 30);
+}
+
+async function fetchSuggestions(q, box) {
+  if (cache.has(q)) return paint(cache.get(q));
+  inflight?.abort();                           // cancel the superseded request
+  inflight = new AbortController();
+  const res = await fetch(`/v1/suggest?q=${encodeURIComponent(q)}&locale=en-US`, { signal: inflight.signal });
+  const body = await res.json();
+  cache.set(q, body.suggestions);
+  if (box.value.trim().toLowerCase().normalize('NFKC') === q) paint(body.suggestions);  // ignore stale answers
+}
+```
+
+**Debounce versus throttle**, two ideas that look alike:
+
+| | Debounce | Throttle |
+|---|---|---|
+| Rule | Wait for N ms of quiet, then fire once | Fire at most once every N ms while input continues |
+| During fast typing | Fires only when typing pauses | Fires steadily every N ms |
+| Typeahead fit | The default: short wait, then one request for the latest text | Useful when a user types continuously and you still want periodic updates |
 
 <Figure caption="One user typing 'lamps'. Debounce means 'lam' is never sent; the client paints a locally filtered list at once, aborts the 'lamp' request when 's' arrives, and paints only the response that matches the box.">
   <Mermaid code={`sequenceDiagram
@@ -575,68 +868,173 @@ Mara writes **100** on the board. Under it she writes **200**. She doesn't say a
 
 <Trace title="Spend the 100 ms" steps={budget} takeaway="Debounce short, cancel stale requests, paint only matching responses, answer from the local cache first. The origin gets about 5 ms of the budget." />
 
-**Catch the trap:** quoting the server's latency as the answer to "under 100 ms". The user feels keystroke to paint. A 2 ms server behind a 200 ms debounce is a 200 ms product.
+**A common slip:** quoting the server's latency as the answer to "under 100 ms". The user feels keystroke to paint. A 2 ms server behind a 200 ms debounce is a 200 ms product.
 
-<h2 id="edge">Chapter 8 · Eighteen thousand prefixes</h2>
+<Quiz
+  id="ta-latency"
+  title="Chapter 7 checkpoint"
+  questions={[
+    {
+      kind: 'predict',
+      q: 'A user types "l", "a", "m" in quick succession (all within 20 ms), pauses, then types "p". The debounce is 30 ms. Which requests are sent?',
+      options: ['l, la, lam, lamp', 'lam, then lamp', 'None until the user stops for good'],
+      answer: 1,
+      why: 'Each keystroke restarts the 30 ms timer. After "m" the user pauses long enough, so one request fires for the latest text, then "p" starts a new cycle.',
+      explain: [
+        'That is no debounce at all: four requests for one word.',
+        'Correct. Bursts collapse into one request for the latest value. Fast typing gives few requests, and a pause gives one.',
+        'The timer fires after any 30 ms of quiet, not after the user is finished.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'Users report the list sometimes flickers back to suggestions for a shorter prefix. Requests are fast. What is the most likely client bug?',
+      options: [
+        'The index is stale',
+        'Responses arrive out of order and an old one is painted after a newer one',
+        'The CDN TTL is too short',
+      ],
+      answer: 1,
+      why: 'A slow response for "la" arriving after "lamp" overwrites the right list unless the client aborts old requests or checks the response against the current box.',
+      explain: [
+        'Staleness would show an old list for the right prefix, not a list for a shorter prefix.',
+        'Correct. Cancel superseded requests and paint only if `q` still matches the box.',
+        'TTL affects freshness, not the order responses arrive in.',
+      ],
+    },
+  ]}
+/>
 
-<Scene chapter="Chapter 8" title="Eighteen thousand prefixes" mood="dusk">
+<ChapterDone id="latency" />
 
-Dev pulls a day of suggest-service logs and sorts by prefix. The top of the list is short: "s", "a", "c", "m", "the". Each was asked hundreds of millions of times. Each got almost exactly the same answer every time.
+<h2 id="edge">Chapter 8 · Caching hot prefixes</h2>
 
-*"We computed 'a' four hundred million times yesterday,"* he says. *"It changed twice."*
+Sort a day of suggest-service logs by prefix and the top of the list is short: "s", "a", "c", "m", "the". Each was asked hundreds of millions of times and got almost the same answer every time. Recomputing "a" four hundred million times a day, when it changed twice, is waste.
 
-</Scene>
+**Count the short prefixes.** With a 26-letter alphabet there are 26 one-character, 676 two-character and 17,576 three-character prefixes: **18,278** in all, per locale. Every search passes through them as it is typed, and their answers are the same for everyone. Caching just those at the CDN edge costs about 18,278 × 500 B = **9 MB per locale per edge location**, and under this chapter's assumption takes about **40%** of requests off the origin. That share depends on how long a debounced request's prefix usually is, so measure it from your own logs.
 
-**Count the short prefixes.** With a 26-letter alphabet there are 26 one-character, 676 two-character and 17,576 three-character prefixes: **18,278** in all, per locale. Every search passes through them as it is typed, and their answers are the same for everyone. Caching just those at the CDN edge costs about 18,278 × 500 B ≈ **9 MB per locale per edge location** and — under this chapter's assumption — takes about **40%** of requests off the origin. (That share depends on how long a debounced request's prefix usually is; measure it from your own logs.)
+**The four promises, for this cache** (from the <a href={`${BASE}sd/lessons/caching/`}>Caching lesson</a>):
 
-**The four promises, said for this cache** (from the <a href={`${BASE}sd/lessons/caching/`}>Caching lesson</a>):
-
-1. **Key.** The URL: `/v1/suggest?q=<normalised prefix>&locale=<locale>&limit=10`. Normalisation on the client (lowercase, trim, NFKC) and a fixed parameter order keep "Ca", "ca " and `locale=en-US&q=ca` from becoming separate entries. Prefixes longer than three characters pass through uncached (or are cached too, with a lower hit ratio — fine either way).
-2. **TTL and why.** **300 seconds**: batch lists change daily, but trending items change by the minute, and five minutes is the staleness we accept for them at the edge. `stale-while-revalidate=60` lets the edge refresh in the background so no user waits on an expiry.
-3. **Invalidation.** None needed for normal builds — the TTL rolls the new build out within five minutes. For an **urgent removal**, purge the affected prefixes (every prefix of the removed query, up to the cached length) through the CDN's purge API.
-4. **Failure plan.** An edge miss falls through to the origin, which holds everything in memory — nothing behind it can stampede. If the origin is unreachable, `stale-if-error=86400` serves the last list for up to a day. If the edge itself fails, the origin can absorb 100% of requests by scaling out its stateless replicas (62,500/s → ~104,000/s at peak: about 21 nodes of capacity instead of 13).
+1. **Key.** The URL: `/v1/suggest?q=<normalised prefix>&locale=<locale>&limit=10`. Client normalisation (lowercase, trim, NFKC) and a fixed parameter order keep "Ca", "ca " and `locale=en-US&q=ca` from becoming separate entries. Longer prefixes can pass through uncached, or be cached with a lower hit ratio; either is fine.
+2. **TTL and why.** **300 seconds**: batch lists change daily, but trending items change by the minute, and five minutes is the staleness accepted for them at the edge. `stale-while-revalidate=60` lets the edge refresh in the background so no user waits on an expiry.
+3. **Invalidation.** None for normal builds: the TTL rolls the new build out within five minutes. For an **urgent removal**, purge the affected prefixes (every prefix of the removed query, up to the cached length) through the CDN's purge API.
+4. **Failure plan.** An edge miss falls through to the origin, which holds everything in memory, so nothing behind it can stampede. If the origin is unreachable, `stale-if-error=86400` serves the last list for up to a day. If the edge itself fails, the origin absorbs 100% of requests by scaling out stateless replicas (62,500/s becomes about 104,000/s at peak: about 21 nodes of capacity instead of 13).
 
 **Never at the edge:** anything personal. The edge key has no user in it, by design.
 
+**Three layers, different jobs.** Each one saves a different thing:
+
+| Layer | Saves | Hit when | Cannot hold |
+|---|---|---|---|
+| Client cache | A whole network round trip | Backspace, or narrowing a short list | Anything the user has not typed yet |
+| CDN edge | The trip to the origin region | Another user asked the same short prefix recently | Personal results |
+| In-process index at the service | The remote database or Redis read | Always (it is the data) | More than fits in node memory |
+
+A Redis cache between the service and its own in-memory index has no row in that table because it would be slower than the lookup it protects.
+
+<Figure caption="Where a request for the prefix 'ca' can be answered. Each layer removes load before the next one sees it.">
+  <Mermaid code={`flowchart LR
+    U["Typed: ca"] --> CC{"Client cache?"}
+    CC -->|hit| P1["Paint"]
+    CC -->|miss| ED{"Edge cache?\nkey = prefix + locale"}
+    ED -->|hit| P2["Paint, ~60 ms"]
+    ED -->|miss| OR["Origin node\nwalk trie, read stored list"]
+    OR --> P3["Paint, under 100 ms"]`} />
+</Figure>
+
 <Reveal q="Why not cache every prefix at the edge, not just short ones?">
 
-You can, and the hit ratio would rise a little — but long prefixes are a long tail: millions of distinct keys, each asked rarely, so most of them are evicted before a second request arrives. Short prefixes are the opposite: few keys, each asked constantly. Caching is worth it when the same key repeats; the prefix length is a cheap proxy for that. A CDN with enough space will simply cache whatever it sees with the TTL you set; the point is not to *count* on the tail.
+You can, and the hit ratio rises a little. But long prefixes are a long tail: millions of distinct keys, each asked rarely, so most are evicted before a second request arrives. Short prefixes are the opposite: few keys, each asked constantly. Caching is worth it when the same key repeats, and prefix length is a cheap proxy for that. A CDN with enough space will simply cache whatever it sees with the TTL you set. The point is not to *count* on the tail.
 
 </Reveal>
 
-**Catch the trap:** "Cache popular prefixes in Redis." In front of what? The service already holds the whole index in memory; a Redis hop would be *slower* than the lookup it protects. The cache that pays is the one that saves a network round trip: the edge, and the client.
+**A common slip:** "Cache popular prefixes in Redis." In front of what? The service already holds the whole index in memory, and a Redis hop would be *slower* than the lookup it protects. The caches that pay are the ones that save a network round trip: the edge and the client.
 
-<h2 id="sharding">Chapter 9 · The letter s</h2>
+<Quiz
+  id="ta-edge"
+  title="Chapter 8 checkpoint"
+  questions={[
+    {
+      kind: 'scenario',
+      q: 'The trending layer pushes "odile" into the suggestion list for "od" at 14:05. The edge holds the old list for "od" with max-age=300. When can all users at that edge see "odile"?',
+      options: [
+        'Immediately, since the origin changed',
+        'Within about five minutes, when the cached copy expires',
+        'At the next nightly build',
+      ],
+      answer: 1,
+      why: 'Without invalidation, the TTL is the staleness bound. Five minutes was chosen to match the freshness requirement.',
+      explain: [
+        'The edge serves its stored copy until it expires or is purged. The origin changing does not tell it.',
+        'Correct. That is why the TTL is 300 s and not a day. A purge could shorten it, but is reserved for removals.',
+        'The trending path exists precisely so this does not wait for the batch.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'The edge is healthy but the origin region is unreachable. A user types "ca". What is the best outcome?',
+      options: [
+        'An error message in the search box',
+        'The edge serves the last cached list under stale-if-error, and the client keeps working',
+        'The client retries "ca" every 100 ms until the origin returns',
+      ],
+      answer: 1,
+      why: 'stale-if-error trades freshness for availability, which matches the requirement.',
+      explain: [
+        'Typeahead is an aid. A visible error is worse than a stale list.',
+        'Correct. Beyond cached prefixes, other regions answer at higher latency, and the worst case is an empty list.',
+        'Retry storms make recovery harder. The next keystroke is the retry.',
+      ],
+    },
+  ]}
+/>
 
-<Scene chapter="Chapter 9" title="The letter s">
+<RevisionCards
+  id="typeahead-latency"
+  cards={[
+    { front: 'The 100 ms budget lines?', back: '30 debounce + 20 to the edge + 20 edge to origin on a miss + 5 service + 10 render + 15 headroom. An edge hit is about 60 ms.' },
+    { front: 'Debounce vs throttle?', back: 'Debounce waits for quiet then fires once for the latest text. Throttle fires at most once per interval while typing continues.' },
+    { front: 'Two client rules that prevent flicker?', back: 'Cancel superseded requests, and paint a response only if its prefix still matches the box.' },
+    { front: 'How many short prefixes are worth caching?', back: '26 + 676 + 17,576 = 18,278 up to three letters per locale, about 9 MB at the edge, around 40% of requests under the stated assumption.' },
+    { front: 'The four promises for the prefix cache?', back: 'Key: normalised prefix + locale. TTL: 300 s. Invalidation: TTL, plus purge for removals. Failure: stale-if-error, origin scales out.' },
+  ]}
+/>
 
-Theo has seen this one before. *"Somebody always shards a trie by first letter,"* he says. *"Twenty-six shards. Very tidy."* He draws them in a row, then draws traffic on top: a skyscraper over "s", "c" and "m", a few sheds over "q", "x" and "z".
+<ChapterDone id="edge" />
 
-*"And every search,"* he adds, *"starts by asking one of those twenty-six shards. Guess which ones."*
+<h2 id="sharding">Chapter 9 · Sharding the trie</h2>
 
-</Scene>
+A common first answer is to shard by first letter: twenty-six shards, very tidy. Then draw the traffic on top: a skyscraper over "s", "c" and "m", a few sheds over "q", "x" and "z". Every search starts by asking one of those shards, and the popular letters carry far more load.
 
 **First question: does it need sharding at all?** The index is about **1.5 GB**. A serving node has tens of gigabytes of memory. So **replicate the whole index on every node**:
 
 - **No routing**: any node answers any prefix; the load balancer can pick any of them.
-- **No hot shard**: "s" traffic is spread across every node like any other traffic.
+- **No hot shard**: "s" traffic spreads across every node like any other.
 - **No data loss on failure**: a dead node is one fewer copy, not a missing range.
-- **The cluster exists for throughput and availability, not capacity** — the same sentence as every other in-memory design in this course. Thirteen nodes of capacity at peak because of requests per second, not bytes.
+- **The cluster exists for throughput and availability, not capacity.** Thirteen nodes at peak because of requests per second, not bytes.
 
-**When it stops fitting.** Imagine years later: 40 locales, longer histories, top-30 lists for personalization (Chapter 11) — 300 GB. Then shard, in this order:
+**When it stops fitting.** Imagine years later: 40 locales, longer histories, top-30 lists for personalisation (Chapter 11), and 300 GB. Then shard, in this order:
 
 1. **By locale.** A natural partition: a query never crosses locales, and each locale is a separate snapshot anyway. Small locales share nodes; a big one gets its own.
-2. **By prefix range, cut by traffic, not by alphabet.** If one locale outgrows a node, split its key space into contiguous ranges — `[a, ca)`, `[ca, cl)`, `[cl, e)`, … — chosen so each range carries a similar share of **requests**, not letters. "s" might need three ranges; "q–z" might share one. A range router (a small, replicated map from range to node group) sends each prefix to its range. This is range partitioning from the <a href={`${BASE}sd/lessons/pattern-partitioning/#ranges`}>Partitioning lesson</a>, with its usual cost: ranges must be rebalanced as traffic shifts.
+2. **By prefix range, cut by traffic, not by alphabet.** If one locale outgrows a node, split its key space into contiguous ranges (`[a, ca)`, `[ca, cl)`, `[cl, e)`, …) chosen so each carries a similar share of **requests**, not letters. "s" might need three ranges, and "q–z" might share one. A range router (a small, replicated map from range to node group) sends each prefix to its range. This is range partitioning from the <a href={`${BASE}sd/lessons/pattern-partitioning/#ranges`}>Partitioning lesson</a>, with its usual cost: ranges must be rebalanced as traffic shifts.
 3. **Replicate hot ranges more.** Throughput skew is handled with replicas, not more splitting: the "s" ranges get more copies than "x".
 
 **The subtle part: short prefixes that span ranges.** If "c" is split into `[ca, cl)` and `[cl, d)`, no single shard holds the answer for "c". Two exact options:
 
-- **Scatter to the shards that overlap the prefix and merge their top-K lists.** This is exact for the same reason the bottom-up build is: any query outside a shard's top K is beaten by K queries on that shard.
-- **Or precompute the short-prefix lists globally** — there are only 18,278 prefixes of up to three characters — and replicate that small table on every node. As long as range boundaries are cut within the first three characters, short prefixes never fan out and longer ones always hit exactly one range.
+- **Scatter to the shards that overlap the prefix and merge their top-K lists.** Exact for the same reason the bottom-up build is: any query outside a shard's top K is beaten by K queries on that shard.
+- **Or precompute the short-prefix lists globally.** There are only 18,278 prefixes of up to three characters, so replicate that small table on every node. If range boundaries are cut within the first three characters, short prefixes never fan out and longer ones always hit exactly one range.
 
-**Why not hash?** Hashing whole queries scatters a prefix's completions across every shard, so each lookup becomes a scatter-gather. Hashing *prefixes* works only if each prefix is its own key with its own list — that's the KV-table design (Option 2), where it is the natural choice; its hot keys ("s", "a") are then handled by the edge and an in-process cache, exactly the <a href={`${BASE}sd/lessons/caching/#hot-keys`}>celebrity-key fix</a>.
+**Why not hash?** Hashing whole queries scatters a prefix's completions across every shard, so each lookup becomes a scatter-gather. Hashing *prefixes* works only if each prefix is its own key with its own list. That is the KV-table design (Option 2), where it is the natural choice. Its hot keys ("s", "a") are then handled by the edge and an in-process cache, exactly the <a href={`${BASE}sd/lessons/caching/#hot-keys`}>celebrity-key fix</a>.
 
-<Figure caption="Left: today — the whole index on every node, any node answers any prefix. Right: if it outgrows memory — shard by locale, then by traffic-balanced prefix ranges, with hot ranges replicated more and short prefixes precomputed everywhere.">
+| Question | Replicate everything | Shard by range |
+|---|---|---|
+| Fits in one node's memory? | Yes: choose this | No: choose this |
+| Routing needed? | No | Yes, a small range map |
+| Hot prefix like "s"? | Spread over all nodes | More replicas for that range |
+| Short prefixes | Local | Precomputed everywhere, or scatter and merge |
+| Node loss | One fewer copy | One fewer replica of a range |
+
+<Figure caption="Left: today, the whole index on every node. Right: if it outgrows memory, shard by locale, then by traffic-balanced prefix ranges, with hot ranges replicated more and short prefixes precomputed everywhere.">
   <Mermaid code={`flowchart LR
     subgraph NOW["Today · 1.5 GB"]
       LB1["LB"] --> N1["node · full index"]
@@ -653,39 +1051,95 @@ Theo has seen this one before. *"Somebody always shards a trie by first letter,"
 
 <Trace title="Split it, or don’t" steps={scaleOut} takeaway="If it fits, replicate the whole index: no routing, no hot shard. If not: locale first, then prefix ranges cut by traffic, hot ranges replicated, short prefixes precomputed everywhere." />
 
-**Catch the trap:** sharding by first letter because the tree has 26 branches at the root. The data structure's shape is not the traffic's shape. Ask whether it fits first; if it doesn't, cut by measured load.
+**A common slip:** sharding by first letter because the tree has 26 branches at the root. The data structure's shape is not the traffic's shape. Ask whether it fits first; if it does not, cut by measured load.
+
+<Quiz
+  id="ta-sharding"
+  title="Chapter 9 checkpoint"
+  questions={[
+    {
+      kind: 'scenario',
+      q: 'The index is now 300 GB. Most traffic is "s" and "c" prefixes in en-US. Which plan is best?',
+      options: [
+        'One shard per first letter',
+        'Shard by locale; split en-US into prefix ranges cut by request volume; give hot ranges more replicas; precompute short prefixes on every node',
+        'Hash each query across all shards and always scatter-gather',
+      ],
+      answer: 1,
+      why: 'Locale is a natural partition, ranges cut by traffic balance load, and replicas absorb hot ranges.',
+      explain: [
+        'First letters do not carry equal traffic, so "s" shards run hot while "x" shards idle.',
+        'Correct. Short prefixes are the ones spanning ranges, and there are only about 18K of them.',
+        'Every keystroke would touch every shard, and the slowest shard sets the latency.',
+      ],
+    },
+    {
+      kind: 'tradeoff',
+      q: 'Why not shard a 1.5 GB index anyway for "future growth"?',
+      options: [
+        'It would break the bottom-up build',
+        'It adds routing, a hot-shard problem and rebalancing work now, to solve a capacity problem that does not exist',
+        'Tries cannot be split',
+      ],
+      answer: 1,
+      why: 'Sharding costs operational complexity. Throughput is solved by replicas, which need no routing.',
+      explain: [
+        'The build is per locale and unaffected by serving layout.',
+        'Correct. Revisit when measured memory or build time says so.',
+        'They can, by locale or range. It is just unnecessary at this size.',
+      ],
+    },
+  ]}
+/>
+
+<ChapterDone id="sharding" />
 
 <Part n="Part Five" title="Deep dive: fresh and personal">
 
-The two requirements the nightly build can't meet on its own: minutes-fresh, and about *you*.
+The two requirements the nightly build cannot meet alone: minutes-fresh, and about *you*.
 
 </Part>
 
-<h2 id="trending">Chapter 10 · The storm at 14:05</h2>
+<h2 id="trending">Chapter 10 · Batch versus streaming</h2>
 
-<Scene chapter="Chapter 10" title="The storm at 14:05" mood="storm">
+A storm named Odile makes landfall at 14:05. By 14:10 a hundred thousand people have typed "od" and been offered "odor eliminator" and "odd socks". The nightly build ran at 03:00 and the next is thirteen hours away. How do new counts reach the index?
 
-A storm named Odile makes landfall at 14:05. By 14:10, a hundred thousand people have typed "od" into Kestrel's search box and been offered "odor eliminator" and "odd socks". The nightly build ran at 03:00. The next one is thirteen hours away.
+**Two ways to update counts, and what differs:**
 
-Iris forwards a screenshot to the channel with no comment at all, which is worse than a comment.
+| | Batch rebuild | Streaming in-place patch |
+|---|---|---|
+| How | Recompute all scores, rebuild every list, swap | Bump the changed query's score, patch lists on its own prefixes |
+| Latency to appear | Hours (the build interval) | Seconds to minutes |
+| Score goes up | Exact | Exact: the new list is the top K of the old list plus that query |
+| Score goes down (decay, removal) | Exact | **Can be wrong**: the rightful replacement may never have been in the list |
+| Filters and validation | Run on every build | Easy to skip; abuse goes in first |
+| Write load | None on the read path | Writes to every prefix list on every replica, under read load |
+| Rollback | Swap back | Hard: state was mutated in place |
 
-</Scene>
+The widget in Chapter 5 shows this. Scroll back to it, pick "car", choose **Streaming**, and press -500. The list for "c" now holds "car" at 100 while "card" (400) was never in it, so the patched list is wrong and only a rebuild fixes it. Decay makes *every* count go down continuously, so a live-patched index drifts from the truth.
 
-**The trending layer.** A small streaming system beside the batch pipeline:
+**So the design is both, with a small streaming layer beside the big batch index.** The trending layer:
 
 1. **Stream** the same search events (from the search endpoint's log) into a stream processor.
-2. **Count recent queries** per locale in short windows — say one-minute buckets over the last hour. To keep memory small for millions of distinct strings, use a **count-min sketch** for counts and a **heap of current leaders** (heavy hitters), as in <a href={`${BASE}sd/lessons/pattern-timeseries/#top-k`}>Time-series · top-K</a> and its <a href={`${BASE}sd/lessons/pattern-timeseries/#sketch-trending`}>trending sketch</a>.
+2. **Count recent queries** per locale in short windows, say one-minute buckets over the last hour. To keep memory small for millions of distinct strings, use a **count-min sketch** for counts and a **heap of current leaders** (heavy hitters), as in <a href={`${BASE}sd/lessons/pattern-timeseries/#top-k`}>Time-series · top-K</a> and its <a href={`${BASE}sd/lessons/pattern-timeseries/#sketch-trending`}>trending sketch</a>.
 3. **Score "trending" as surprise, not volume**: recent rate divided by the query's expected rate (its batch score, scaled to an hour). "weather" is always popular; "odile" going from nothing to thousands per minute is trending.
-4. **Apply the same filters** — distinct users, PII patterns, blocklist — with a *higher* distinct-user bar, because fast paths are where abuse goes first.
-5. **Publish** the top few thousand trending queries per locale to the serving nodes every minute. It's small (a few hundred KB), so every node holds it whole.
+4. **Apply the same filters** (distinct users, PII patterns, blocklist) with a *higher* distinct-user bar, because fast paths are where abuse goes first.
+5. **Publish** the top few thousand trending queries per locale to the serving nodes every minute. It is small (a few hundred KB), so every node holds it whole.
 
 **Merging at query time.** For prefix "od", the node reads the batch list from the trie and the trending candidates that start with "od" (a tiny trie over the trending set, rebuilt every minute). Then:
 
+```python
+def merge(batch: list[str], trending: list[str], k: int = 10, max_fresh: int = 2) -> list[dict]:
+    fresh = [t for t in trending if t not in batch][:max_fresh]      # dedupe, cap the slots
+    base = batch[: k - len(fresh)]
+    return [{"text": q, "kind": "popular"} for q in base] + [{"text": q, "kind": "trending"} for q in fresh]
+```
+
 - **De-duplicate** (a trending query may already be in the batch list).
-- **Reserve at most 1–2 of the K slots** for trending items above a threshold, so freshness always gets a place but a burst of noise can't take the whole list.
+- **Reserve at most 1–2 of the K slots** for trending items above a threshold, so freshness always gets a place and a burst of noise cannot take the whole list.
 - **Mark them** (`"kind": "trending"`) so the UI can show it.
 
-Edge caching still works: the edge's 300-second TTL means a new trend reaches short prefixes within about five minutes — inside the requirement.
+The edge's 300-second TTL means a new trend reaches short prefixes within about five minutes, inside the requirement.
 
 <Figure caption="Two clocks meet in the serving node: the nightly snapshot provides most of every list; the trending set, refreshed every minute, contributes at most two slots.">
   <Mermaid code={`flowchart LR
@@ -698,172 +1152,308 @@ Edge caching still works: the edge's 300-second TTL means a new trend reaches sh
     M --> R["Response\nkind: popular / trending"]`} />
 </Figure>
 
-<Trace title="Catch the storm" steps={fresh} takeaway="Freshness is a second, small, streaming path merged at query time with a capped number of slots — never live updates to the big index." />
+<Trace title="Catch the storm" steps={fresh} takeaway="Freshness is a second, small, streaming path merged at query time with a capped number of slots, never live updates to the big index." />
 
 <Reveal q="Why not update the trie's counts live, on every search?">
 
-Three reasons. **Cost and contention**: every search would write to the lists of every prefix of its query, on every replica, including the hottest nodes ("s", "a") under full read load. **Correctness**: a top-K list can absorb a count going *up* (the new list is the top K of the old list plus that query), but not a count going *down* — the rightful replacement might be a query that was never in the list, and the node can't know which without scanning its subtree. Decay makes every count go down continuously. **Safety**: live updates skip the filters and validation; a coordinated campaign would be in the box within seconds. So the big index is rebuilt and swapped, and only a tiny, filtered set moves fast.
+Three reasons. **Cost and contention**: every search would write to the lists of every prefix of its query, on every replica, including the hottest nodes ("s", "a") under full read load. **Correctness**: a top-K list can absorb a count going *up*, but not one going *down*, because the rightful replacement might be a query that was never in the list and the node cannot know which without scanning its subtree. **Safety**: live updates skip the filters and validation, so a coordinated campaign would be in the box within seconds. The big index is rebuilt and swapped, and only a tiny, filtered set moves fast.
 
 </Reveal>
 
-**Catch the trap:** "Rebuild the index every minute." A full build, validation and rollout every minute turns your safest process into your riskiest one. Keep the big thing slow and the fast thing small.
+**A common slip:** "Rebuild the index every minute." A full build, validation and rollout each minute turns your safest process into your riskiest. Keep the big thing slow and the fast thing small.
 
-<h2 id="personal">Chapter 11 · Your searches, not everyone’s</h2>
+<Quiz
+  id="ta-trending"
+  title="Chapter 10 checkpoint"
+  questions={[
+    {
+      kind: 'tradeoff',
+      q: 'Why does the trending layer score "recent rate ÷ expected rate" instead of raw recent count?',
+      options: [
+        'Raw counts are expensive to compute',
+        'Volume alone would show always-popular queries like "weather" as trending forever; the ratio isolates sudden change',
+        'The ratio is easier to cache',
+      ],
+      answer: 1,
+      why: 'Trending means unusual relative to normal. The batch score supplies the baseline.',
+      explain: [
+        'Both need the same counts. The issue is what the number means.',
+        'Correct. "odile" going from nothing to thousands per minute stands out, and "weather" does not.',
+        'Caching is unrelated. The choice is about ranking quality.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'The trending job crashes for an hour. What should users see?',
+      options: [
+        'Errors until it is fixed',
+        'Batch-only lists, a little less fresh, with an alert raised on the trending job',
+        'An empty box, to avoid showing stale items',
+      ],
+      answer: 1,
+      why: 'Trending is an enhancement over the batch list. Its absence degrades freshness but nothing else.',
+      explain: [
+        'No user-visible failure is warranted for an optional layer.',
+        'Correct. Serve the batch list, stay silent to users, and page the owner of the trending job.',
+        'An empty box removes the value of the whole feature to protect against minutes of staleness nobody can see.',
+      ],
+    },
+  ]}
+/>
 
-<Scene chapter="Chapter 11" title="Your searches, not everyone’s" mood="dawn">
+<RevisionCards
+  id="typeahead-fresh"
+  cards={[
+    { front: 'Why can a score going down break an in-place top-K patch?', back: 'The query that deserves the freed slot may never have been in the list, and the node cannot know without scanning its subtree.' },
+    { front: 'Batch vs streaming update, one line each?', back: 'Batch: exact, filtered, hours late, rollback is a swap. Streaming: seconds late, exact only for increases, skips filters unless added.' },
+    { front: 'How is trending scored?', back: 'Recent rate divided by expected rate (surprise), not raw volume.' },
+    { front: 'How are trending items merged?', back: 'At query time, de-duplicated, at most 1 to 2 of the K slots, marked kind=trending.' },
+    { front: 'Why a higher distinct-user bar for trending?', back: 'The fast path is where manipulation goes first, so it needs stricter filters than the nightly build.' },
+  ]}
+/>
 
-Iris types "ru" on her phone and gets "running shoes", "rugby", "russian dictionary". *"I've searched 'rubber plant care' every week for a month,"* she says. *"Why doesn't it know that?"*
+<ChapterDone id="trending" />
 
-*"Because the last time it 'knew' something about one person,"* Mara says, *"we spent a week apologising. Make it know — without telling anyone else."*
+<h2 id="personal">Chapter 11 · Personalisation</h2>
 
-</Scene>
+A user types "ru" and gets "running shoes", "rugby", "russian dictionary", though they have searched "rubber plant care" every week for a month. Suggestions should know that, without telling anyone else.
 
-**Personalization, in increasing cost:**
+**Personalisation, in increasing cost:**
 
-1. **On-device history (default).** The client keeps the user's recent searches locally. When the user types, it filters its own history by the prefix and shows matches first (marked, often with a clock icon), then the global list from the server, de-duplicated. **Zero server cost, private by construction, works offline, and the global response stays cacheable at the edge.** For signed-in users across devices, sync the history from a per-user store, fetched once per session — not per keystroke.
-2. **Context without identity.** Location and language change rankings for everyone in a region ("football" means different things in Leeds and Dallas). Handle it with **regional variants of the index** — build per (locale, country) where the difference is worth it. Still global per region, still cacheable.
-3. **A thin server-side re-ranker (stretch).** Store a longer candidate list per node (say top 30 instead of 10), fetch it, and re-rank with a small model using the user's features (recent categories, past clicks) read from a per-user feature store. It must fit inside the ~5 ms server slice, so it is a light scoring function, not a heavy model. Its response is **private** — `Cache-Control: private, no-store` — so it bypasses the edge: personalised requests cost origin capacity. Memory cost: 30 ids per node instead of 10 → 20M nodes × (120 + 20) B ≈ **2.8 GB**; still fits, still replicated.
+1. **On-device history (default).** The client keeps the user's recent searches locally. When the user types, it filters its own history by the prefix and shows matches first (often with a clock icon), then the global list from the server, de-duplicated. **Zero server cost, private by construction, works offline, and the global response stays cacheable at the edge.** For signed-in users across devices, sync the history from a per-user store, fetched once per session, not per keystroke.
+2. **Context without identity.** Location and language change rankings for everyone in a region ("football" means different things in Leeds and Dallas). Use **regional variants of the index**, built per (locale, country) where the difference is worth it. Still global per region, still cacheable.
+3. **A thin server-side re-ranker (stretch).** Store a longer candidate list per node (say top 30), fetch it, and re-rank with a small model using the user's features (recent categories, past clicks) from a per-user feature store. It must fit the roughly 5 ms server slice, so it is a light scoring function, not a heavy model. Its response is **private** (`Cache-Control: private, no-store`), so it bypasses the edge and personalised requests cost origin capacity. Memory: 30 ids per node instead of 10, so 20M nodes × (120 + 20) B is about **2.8 GB**; it still fits and is still replicated.
 
-**Commit:** *"History on the device, merged on the client; regional index variants for location; a server re-ranker only if the click-through data shows it's worth losing edge caching for signed-in users."*
+| | On-device merge | Regional variant | Server re-ranker |
+|---|---|---|---|
+| Where personal data lives | Device only | None (not personal) | Per-user store |
+| Edge-cacheable? | Yes (global part) | Yes, per region | No |
+| Extra origin cost | None | Index per region | Every request |
+| Use when | Default | Location changes meaning | Click data proves the lift |
 
-**Many languages — the multi-language note, expanded:**
+**Commit:** *"History on the device, merged on the client; regional index variants for location; a server re-ranker only if click-through data shows it is worth losing edge caching for signed-in users."*
 
-- **One index per locale**, built from that locale's logs; the locale comes from the app setting, not from the IP address.
-- **Normalise the match key, keep the display string.** Case-fold, NFKC-normalise, and — per locale — fold accents, so "cafe" finds "café" in French (but don't fold where accents change meaning, a per-language decision). Store the original form for display.
-- **Characters, not bytes.** The trie's alphabet is whatever characters appear (the Java above uses a map per node, not a 26-slot array). A 26-letter array is a DSA convenience, not a production choice.
-- **Input methods (Chinese, Japanese, Korean).** Users compose characters through an IME; the text box holds romanised input (pinyin, romaji) until a character is committed. Don't query on every composition event — wait for committed text, or **index transliterations as extra keys** pointing to the same suggestion, so "beij" can suggest 北京. Languages without spaces also need word segmentation in the aggregation step.
+**Many languages:**
+
+- **One index per locale**, built from that locale's logs; the locale comes from the app setting, not the IP address.
+- **Normalise the match key, keep the display string.** Case-fold, NFKC-normalise and, per locale, fold accents so "cafe" finds "café" in French (but not where accents change meaning, a per-language decision). Store the original for display.
+- **Characters, not bytes.** The trie's alphabet is whatever characters appear (the Java uses a map per node, not a 26-slot array). A 26-letter array is a DSA convenience, not a production choice.
+- **Input methods (Chinese, Japanese, Korean).** Users compose characters through an IME, and the text box holds romanised input (pinyin, romaji) until a character is committed. Do not query on every composition event: wait for committed text, or **index transliterations as extra keys** pointing to the same suggestion, so "beij" can suggest 北京. Languages without spaces also need word segmentation in aggregation.
 - **Right-to-left scripts** affect rendering, not the index: the prefix is still the logical start of the string.
 
 <Reveal q="A user deletes a search from their history. What has to happen?">
 
-On the device, remove it from the local history — immediately. In the per-user store, delete it and let other devices sync. In the **global** index, nothing: one user's search never entered it unless at least *k* distinct users searched the same thing, and then it is not that user's search anymore — it is everyone's. That separation is exactly why the privacy rule lives in the pipeline: deleting personal data never requires rebuilding the global index.
+On the device, remove it from local history immediately. In the per-user store, delete it and let other devices sync. In the **global** index, nothing: one user's search never entered it unless at least *k* distinct users searched the same thing, and then it is not that user's search any more. That separation is why the privacy rule lives in the pipeline: deleting personal data never requires rebuilding the global index.
 
 </Reveal>
 
-**Catch the trap:** personalizing on the server for everyone, then caching the response at the edge. Either the edge serves one person's history to strangers, or you turn caching off and the origin load jumps by the 40% the edge was taking.
+**A common slip:** personalising on the server for everyone, then caching the response at the edge. Either the edge serves one person's history to strangers, or you turn caching off and origin load jumps by the 40% the edge was taking.
 
-<Part n="Part Six" title="Finish the fight">
+<Quiz
+  id="ta-personal"
+  title="Chapter 11 checkpoint"
+  questions={[
+    {
+      kind: 'tradeoff',
+      q: 'Product wants "my recent searches first" for 100M users, with no extra origin cost. Which design?',
+      options: [
+        'Per-user top-K lists on the server, cached at the edge by user id',
+        'Merge on-device history above the global list on the client; the global response stays public and edge-cached',
+        'Add the user id to the cache key',
+      ],
+      answer: 1,
+      why: 'The device already has the data, so merging there costs nothing server-side and keeps the shared cache clean.',
+      explain: [
+        'Per-user cache entries have almost no hits, and the edge becomes a store for personal data.',
+        'Correct. It is private by construction and works offline.',
+        'That makes every user a separate entry, so hit ratio collapses and a misconfiguration leaks data.',
+      ],
+    },
+    {
+      kind: 'scenario',
+      q: 'A user types "cafe" and the French index has "café noir" as a popular query. What makes it match?',
+      options: [
+        'The server lowercases only',
+        'A normalised match key (case-folded, accent-folded for that locale), with the original string kept for display',
+        'The client sends bytes, not characters',
+      ],
+      answer: 1,
+      why: 'Match on a normalised key and show the original text, with accent folding decided per language.',
+      explain: [
+        'Lowercasing does not equate "cafe" with "café".',
+        'Correct. Folding is per language, because in some languages an accent changes the word.',
+        'Bytes would make "é" two different units. The trie keys on characters.',
+      ],
+    },
+  ]}
+/>
+
+<ChapterDone id="personal" />
+
+<Part n="Part Six" title="Finish">
 
 0:35. What breaks, what the user sees when it does, then the wrap-up and the whole round once more.
 
 </Part>
 
-<h2 id="failure">Chapter 12 · Stale is a feature</h2>
+<h2 id="failure">Chapter 12 · When things break</h2>
 
-<Scene chapter="Chapter 12" title="Stale is a feature" mood="storm">
+Imagine the nightly build fails three nights in a row because of a schema change upstream in the log format. Nobody notices for three days. Click-through and latency dashboards are flat. A three-day-old index was served to a hundred million people, and the only problem is that nobody knew.
 
-The nightly build fails three nights in a row — a schema change upstream in the log format. Nobody notices for three days. When Dev finally does, he checks the dashboards and finds… nothing. Click-through on suggestions is flat. Latency is flat.
-
-*"We served a three-day-old index to a hundred million people,"* he says, *"and the only one who noticed is me."* He pauses. *"Which is the problem."*
-
-</Scene>
-
-**Degrade in steps, and make the worst case silent.** Typeahead is an aid; an empty dropdown is acceptable, an error in the search box is not.
+**Degrade in steps, and make the worst case silent.** Typeahead is an aid. An empty dropdown is acceptable and an error in the search box is not.
 
 | What fails | What the user sees | What the system does |
 |---|---|---|
-| **Nightly pipeline** | Nothing — yesterday's suggestions | Keep serving the last good snapshot. **Alert on index age** (> 36 hours) so it isn't silent for three days |
-| **Bad build** (garbage, spam, offensive) | Nothing, if caught | Validation gates and a canary stop it; if it got out, **roll back by swapping to the previous snapshot**, kept loaded for exactly this |
+| **Nightly pipeline** | Nothing: yesterday's suggestions | Keep serving the last good snapshot. **Alert on index age** (over 36 hours) |
+| **Bad build** (garbage, spam, offensive) | Nothing, if caught | Validation gates and a canary stop it; if it got out, **roll back by swapping to the previous snapshot**, kept loaded for this |
 | **Trending job** | Slightly less fresh lists | Serve batch-only; alert |
 | **One serving node** | Nothing | Health checks remove it; every other node has the whole index |
-| **A whole region** | Slower suggestions | Edge keeps serving cached short prefixes (`stale-if-error`); DNS/anycast fails over to another region at higher latency — maybe over 100 ms, still useful |
+| **A whole region** | Slower suggestions | Edge keeps serving cached short prefixes (`stale-if-error`); DNS or anycast fails over at higher latency, maybe over 100 ms, still useful |
 | **Overload** | Fewer or no suggestions | Shed load: return an empty list fast rather than queueing; the client stops asking for a few seconds after errors |
-| **Urgent removal** | The item disappears in minutes | Serve-time denylist + CDN purge (Chapter 6, 8); next build drops it |
-| **Coordinated manipulation** | Nothing, if caught | Distinct-user threshold, bot filtering, stricter trending thresholds; golden-prefix diffs |
+| **Urgent removal** | The item disappears in minutes | Serve-time denylist + CDN purge (Chapters 6 and 8); the next build drops it |
+| **Coordinated manipulation** | Nothing, if caught | Distinct-user threshold, bot filtering, stricter trending thresholds, golden-prefix diffs |
 
-**Client side:** a request timeout of about 200 ms — after that, the answer is too late to matter — and no retries on timeout (the next keystroke is the retry). On errors, back off for a few seconds and keep showing history-only suggestions.
+**Client side:** a request timeout of about 200 ms (after that the answer is too late to matter) and no retries on timeout, since the next keystroke is the retry. On errors, back off for a few seconds and keep showing history-only suggestions.
 
-**Serve the stale index — on purpose.** The availability-over-consistency choice from Chapter 1 pays off here: because nobody can tell a one-day-old list from a fresh one, the system's most common failure (the pipeline) is invisible to users. That's the design working. The only thing you must add is the **index-age alert**, so "invisible to users" doesn't become "invisible to you".
+**Serve the stale index on purpose.** Because nobody can tell a one-day-old list from a fresh one, the system's most common failure (the pipeline) is invisible to users. That is the design working. The only thing to add is the **index-age alert**, so "invisible to users" does not become "invisible to you".
 
 <Trace title="What breaks first" steps={failure} takeaway="Serve the last good snapshot, alert on its age, gate builds with golden prefixes and a canary, keep the previous snapshot loaded for one-swap rollback." />
 
-**Catch the trap:** "If the service is down, we show an error." For a feature whose absence is barely noticeable, the right failure is silence. Say it explicitly — it shows you know what the feature is *for*.
+**A common slip:** "If the service is down, we show an error." For a feature whose absence is barely noticed, the right failure is silence. Say it explicitly; it shows you know what the feature is for.
 
-<h2 id="wrap-up">Chapter 13 · The last three minutes</h2>
+<Quiz
+  id="ta-failure"
+  title="Chapter 12 checkpoint"
+  questions={[
+    {
+      kind: 'scenario',
+      q: 'A court order says one suggestion must disappear today. The next build is tomorrow at 03:00. What do you do?',
+      options: [
+        'Wait for the build',
+        'Add it to a serve-time denylist (backfilling from the longer stored list) and purge the affected prefixes at the edge; the next build drops it permanently',
+        'Rebuild the entire index immediately and redeploy',
+      ],
+      answer: 1,
+      why: 'Compliance needs minutes, not hours. A denylist at serve time and a CDN purge cover both the origin and the cached copies.',
+      explain: [
+        'Hours of exposure may be unacceptable for a legal removal.',
+        'Correct. That is why the build stores more than K per node: filtering one item still leaves a full list.',
+        'A full build plus rollout takes the pipeline’s whole run, and the edge still holds the old list until it expires or is purged.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'p99 keystroke-to-paint rises from 70 ms to 150 ms in one region. Origin p99 is still 3 ms. Where do you look first?',
+      options: [
+        'The index build',
+        'The network path or edge for that region, and client debounce or render time',
+        'The trie’s top-K size',
+      ],
+      answer: 1,
+      why: 'The origin is fast, so the extra time is outside it: edge, network or client.',
+      explain: [
+        'The build is offline and cannot slow a lookup that is returning in 3 ms.',
+        'Correct. Break the budget down by segment and compare with the table in Chapter 7.',
+        'K changes memory and build time, not a 3 ms lookup.',
+      ],
+    },
+  ]}
+/>
 
-<Scene chapter="Chapter 13" title="The last three minutes" mood="dusk">
+<RevisionCards
+  id="typeahead-failure"
+  cards={[
+    { front: 'What happens when the nightly build fails?', back: 'Keep serving the last good snapshot and alert on index age. Users cannot see a stale list.' },
+    { front: 'How do you stop a bad build?', back: 'Golden prefixes, size diff, canary, then atomic swap. Roll back by flipping to the previous snapshot.' },
+    { front: 'How do you remove one suggestion in minutes?', back: 'Serve-time denylist (backfill from the longer stored list) plus a CDN purge of the affected prefixes.' },
+    { front: 'Client rules on failure?', back: 'About 200 ms timeout, no retry on timeout, back off after errors, keep showing history suggestions.' },
+  ]}
+/>
 
-Dev reads design docs from the bottom up, as he always says. *"Tell me what pages me first,"* he says. *"And what you'd build next, if I gave you a quarter."*
+<ChapterDone id="failure" />
 
-</Scene>
+<h2 id="wrap-up">Chapter 13 · Wrap-up</h2>
+
+An SRE reading a design reads it from the bottom up: what pages me first, and what would you build next. The last three minutes should answer both.
 
 1. **Recap against the requirements.** "Top 10 completions per keystroke from a precomputed top-K trie, about 1.5 GB, replicated on every node in every region; short prefixes cached at the edge for five minutes; a nightly pipeline with decay and a k-distinct-users privacy filter; a one-minute trending layer with capped slots; history merged on the device. About 60 ms on an edge hit, under 100 ms at p99 otherwise."
-2. **Bottleneck at 10× (about 1M requests/s at the edge).** Origin throughput first — stateless replicas scale linearly, so it's a cost question. Then index size if locales and personalization grow: shard by locale, then by traffic-balanced ranges. Then the pipeline's run time: incremental decay keeps it to one day of logs per run.
-3. **Failure modes.** Pipeline down → stale index, index-age alert. Bad build → gates, canary, one-swap rollback. Region down → edge `stale-if-error`, failover.
-4. **Monitor.** p99 keystroke-to-paint per region and network class; origin p99; edge hit ratio; **index age**; suggestion **click-through rate** (the product metric — falling CTR is the first sign of a bad build); empty-list rate by prefix length; denylist hits; trending false positives reported.
-5. **What I'd build next.** Typo-tolerant suggestions (a fuzzy match over the trie for the last word, or spelling correction feeding the prefix); learning-to-rank on clicks instead of raw popularity; a server re-ranker for signed-in users if CTR justifies it; per-country index variants.
+2. **Bottleneck at 10× (about 1M requests/s at the edge).** Origin throughput first: stateless replicas scale linearly, so it is a cost question. Then index size if locales and personalisation grow: shard by locale, then traffic-balanced ranges. Then pipeline run time: incremental decay keeps it to one day of logs per run.
+3. **Failure modes.** Pipeline down gives a stale index and an index-age alert. A bad build gives gates, canary and one-swap rollback. A region down gives edge `stale-if-error` and failover.
+4. **Monitor.** p99 keystroke-to-paint per region and network class; origin p99; edge hit ratio; **index age**; suggestion **click-through rate** (the product metric; falling CTR is the first sign of a bad build); empty-list rate by prefix length; denylist hits; trending false positives reported.
+5. **What I would build next.** Typo-tolerant suggestions (a fuzzy match over the trie for the last word, or spelling correction feeding the prefix); learning-to-rank on clicks instead of raw popularity; a server re-ranker for signed-in users if CTR justifies it; per-country index variants.
 
-**The one-breath version:** *"At 10× it's replica count and then index size — shard by locale, then traffic-balanced ranges. I'd page on index age, origin p99 and a drop in suggestion click-through."*
+**The one-breath version:** *"At 10× it is replica count and then index size: shard by locale, then traffic-balanced ranges. I would page on index age, origin p99 and a drop in suggestion click-through."*
 
-<h2 id="walkthrough">Chapter 14 · The fight, out loud</h2>
+<Quiz
+  id="ta-wrapup"
+  title="Chapter 13 checkpoint"
+  questions={[
+    {
+      kind: 'scenario',
+      q: 'Traffic grows 10×. Which bottleneck do you name first, and why?',
+      options: [
+        'Index size, since 10× the traffic means 10× the queries',
+        'Origin request throughput; stateless replicas scale linearly, so the answer is more nodes (a cost question)',
+        'Trie depth',
+      ],
+      answer: 1,
+      why: 'More traffic means more requests, not more distinct queries. The index grows slowly with locales and personalisation.',
+      explain: [
+        'Distinct queries grow far slower than requests. Index size is the second bottleneck, not the first.',
+        'Correct. Then name index size and pipeline run time as the next ones.',
+        'Depth is bounded by query length and is not a scaling limit.',
+      ],
+    },
+  ]}
+/>
 
-<Scene chapter="Chapter 14" title="The fight, out loud" mood="night">
+<ChapterDone id="wrap-up" />
 
-A week later, Friday. Mara sets the phone face-down. *"Design typeahead for a search box with a hundred million daily users,"* she says, in the flat voice she uses for mocks. *"I won't help you."*
+<h2 id="walkthrough">Chapter 14 · The round, out loud</h2>
 
-You write **9 · 15 · 25 · 38** in the corner of the board, and pick up the marker.
-
-</Scene>
-
-A 45-minute round, compressed to its spoken lines. Read it aloud once; then fight it cold.
+A 45-minute round, compressed to its spoken lines. Write **9 · 15 · 25 · 38** in the corner of the board as your four checkpoints. Read it aloud once, then run it cold.
 
 **0:03 · Roadmap and requirements**
 
-> **You:** "Here's how I'd like to use our time: about six minutes on requirements and scale, a couple on entities and the API, a simple end-to-end design, then two or three deep dives, and a short wrap-up. Capacity numbers up front or as they matter?"
+> **You:** "I would like about six minutes on requirements and scale, a couple on entities and the API, a simple end-to-end design, then two or three deep dives and a short wrap-up. Are capacity numbers wanted up front or as they matter?"
 >
 > **Interviewer:** "As they matter."
 >
-> **You:** "Functional: as the user types, return the top 10 completions of the prefix — whole past queries, not documents. Ranked by popularity with recency, so this week beats last year. Trending queries should show up within minutes. And never suggest private or harmful strings. Stretch: personalization and typo tolerance. Out of scope: the results page, spelling correction, ads. One index per locale; I'll mention input-method languages later."
+> **You:** "Functional: as the user types, return the top 10 completions of the prefix, whole past queries rather than documents, ranked by popularity with recency. Trending queries appear within minutes, and nothing private or harmful is ever suggested. Stretch: personalisation and typo tolerance. Out of scope: the results page, spelling correction, ads. One index per locale."
 
 **0:06 · Non-functionals with numbers**
 
-> **You:** "p99 under 100 ms from keystroke to painted list — that's the requirement that shapes everything. Availability over consistency: nobody can tell a day-old list from a fresh one, so we serve stale rather than fail. Scale: 100 million daily users, five searches each, about ten keystrokes per search — 5 billion keystrokes a day, roughly 175,000 a second at peak. Client debounce and caching bring that to about 104,000 requests a second; if the edge takes 40%, the origin sees about 62,500. At a conservative 5,000 per node, that's about 13 nodes — the fleet is small. Index: 10 million filtered queries of about 20 characters is about 1.5 GB as a compressed trie, so it fits in memory everywhere."
+> **You:** "p99 under 100 ms from keystroke to painted list; that shapes everything. Availability over consistency: nobody can tell a day-old list from a fresh one. At 100 million daily users, five searches each and about ten keystrokes per search, that is 5 billion keystrokes a day, roughly 175,000 a second at peak. Client debounce and caching bring it to about 104,000 requests a second, the edge takes 40%, and the origin sees about 62,500: roughly 13 nodes. The index is 10 million filtered queries, about 1.5 GB as a compressed trie, so it fits in memory everywhere."
 
-**0:08 · The bridge**
+**0:09 · Entities and 0:11 · API**
 
-> **You:** "So: top-10 completions by decayed popularity, trending within minutes, safe, under 100 ms, stale over unavailable, about 60,000 origin requests a second and a 1.5 GB index. Does that match?"
->
-> **Interviewer:** "Yes."
-
-**0:09 · Core entities**
-
-> **You:** "A Query — normalised text, locale, decayed score. A Suggestion list — top K for a locale and prefix. An Index snapshot — an immutable, versioned build of all lists. A Trending set, refreshed every minute. And user History, which stays on the device and never enters the global index."
-
-**0:11 · API**
-
-> **You:** "One cacheable GET: `/v1/suggest` with the normalised prefix, the locale and a limit. Public cache headers — max-age five minutes, stale-while-revalidate, stale-if-error — because the same short prefixes are asked millions of times. The response carries the build id and a kind per item. Personal results are never in this response; they're merged on the device or come from a private endpoint. Searches, not keystrokes, are logged for ranking."
+> **You:** "Entities: Query, Suggestion list, Index snapshot, Trending set, and User history, which stays on the device. API: one cacheable GET, `/v1/suggest`, with the normalised prefix, locale and limit; public cache headers with a five-minute max-age and stale-if-error. Personal results are never in this response. Searches, not keystrokes, are logged for ranking."
 
 **0:15 · High-level design**
 
-> **You:** "Two clocks. Online: the client debounces about 30 ms, cancels stale requests and checks its local cache; short prefixes are answered at the CDN edge; misses go to the nearest region, to any suggest node, each holding the whole index in memory. It walks the trie to the prefix, returns the stored list, merged with trending. Offline: a nightly batch over the search logs computes decayed counts, filters, builds the top-K index and writes a versioned snapshot; nodes load it beside the old one and swap. A streaming job publishes a trending set every minute. No database or search cluster on the read path."
+> **You:** "Two clocks. Online: the client debounces about 30 ms, cancels stale requests and checks a local cache; short prefixes are answered at the CDN edge; misses go to the nearest region and any suggest node, which holds the whole index in memory and returns the stored list merged with trending. Offline: a nightly batch computes decayed counts, filters, builds the top-K index and writes a versioned snapshot; nodes load it beside the old one and swap. A streaming job publishes a trending set every minute."
 
-**0:25 · Deep dive 1 — the index and the build**
+**0:25 · Deep dive 1: the index and the build**
 
-> **You:** "The index is a trie where every node stores its top 10, built bottom-up: a node's list is the best 10 of its own query plus its children's lists, which is exact because anything outside a child's top 10 is beaten by 10 of that child's queries. Ties break alphabetically so replicas agree. Lookup is the prefix length plus K. Memory: a plain trie is up to 200 million nodes, 12 GB; compressed, at most 20 million, about 1.2 GB plus the query table. The alternatives: a prefix-to-list KV table, up to 22 GB with a 10-character cap; or edge n-grams in the search index, which I'd use for completion over documents with filters, not here."
->
-> "The build: decayed score — yesterday's score times 0.906 plus today's count, a 7-day half-life. Filter: at least k distinct users — that's the privacy rule — plus PII patterns, a blocklist, and bot traffic removed. Validate: size diff, golden prefixes, a canary. Swap: atomic reference, previous snapshot kept for rollback. Daily, hourly if the domain moves fast."
+> **You:** "A trie where every node stores its top 10, built bottom-up: a node's list is the best 10 of its own query plus its children's lists, which is exact because anything outside a child's top 10 is beaten by 10 of that child's queries. Ties break alphabetically so replicas agree. Lookup is the prefix length plus K. A compressed trie is at most 20 million nodes, about 1.2 GB. The alternatives are a prefix-to-list KV table at up to 22 GB, or edge n-grams in the search index, which I would use for documents with filters. The build: decayed score, filter by at least k distinct users plus PII, blocklist and bots, validate with golden prefixes and a canary, then swap, keeping the previous snapshot for rollback."
 
-**0:31 · Deep dive 2 — latency and scale**
+**0:31 · Deep dive 2: latency and scale**
 
-> **You:** "The budget: 30 ms debounce, 20 to the edge, 20 edge to origin on a miss, 5 in the service, 10 to render, 15 of headroom. An edge hit is about 60 ms. The edge caches the 18,000-odd prefixes up to three characters, about 9 MB per locale per location, with a five-minute TTL. I replicate rather than shard: 1.5 GB fits, so there's no routing and no hot 's' shard. If it grows past a node: locale first, then prefix ranges cut by traffic, hot ranges with more replicas, and short prefixes precomputed everywhere so they never fan out."
+> **You:** "Budget: 30 ms debounce, 20 to the edge, 20 edge to origin on a miss, 5 in the service, 10 to render, 15 of headroom; an edge hit is about 60. The edge caches the 18,000-odd prefixes up to three characters with a five-minute TTL. I replicate rather than shard: 1.5 GB fits, so there is no routing and no hot 's' shard. If it outgrows a node: locale first, then prefix ranges cut by traffic, hot ranges with more replicas, short prefixes precomputed everywhere."
 
-**0:35 · Deep dive 3 — freshness and failure**
+**0:35 · Deep dive 3: freshness and failure, then wrap-up**
 
-> **You:** "Trending: a stream job counts the last hour in one-minute windows with a sketch and heavy hitters, scores surprise against the batch baseline, applies stricter filters, and pushes a few thousand queries to every node each minute. At query time I merge, de-duplicate, and give trending at most two of the ten slots. I wouldn't update the big index live — decreases can't be applied to top-K lists, and it would bypass the filters. Failure: the pipeline failing means a stale index, which users can't see — so I alert on index age. A bad build is rolled back with one swap. Region down: the edge serves stale, DNS fails over. The worst case is an empty dropdown, never an error."
+> **You:** "Trending: a stream job counts one-minute windows with a sketch and heavy hitters, scores surprise against baseline, filters strictly and pushes a few thousand queries to every node each minute, merged into at most two of the ten slots. I would not patch the big index live: decreases cannot be applied to top-K lists, and it would bypass the filters. If the pipeline fails the index goes stale, which users cannot see, so I alert on index age. A bad build rolls back with one swap. The worst case is an empty dropdown, never an error. At 10× it is replicas, then index size. I would monitor index age, origin p99, edge hit ratio and click-through. Next: typo tolerance and learning-to-rank on clicks."
 
-**0:38 · Wrap-up**
+**Check the numbers yourself:** 100M × 5 × 10 = 5B/day; ÷ 86,400 ≈ 57,870/s; × 3 ≈ 173,600/s. 500M × 6 = 3B/day ≈ 34,720/s; × 3 ≈ 104,170/s; × 0.6 ≈ 62,500/s; ÷ 5,000 = 12.5, so 13 nodes; busiest region 0.4 × 62,500 = 25,000 ÷ 5,000 = 5, so 6 with a spare. 104,170 × 500 B ≈ 52 MB/s. 10M × 20 × 60 B = 12 GB; 2 × 10M × 60 B = 1.2 GB; 10M × 32 B = 320 MB. 10M × 10 × 220 B = 22 GB. 26 + 676 + 17,576 = 18,278; × 500 B ≈ 9 MB. 2^(−1/7) ≈ 0.906; 1,000 × (1 − 0.906²⁸) ÷ (1 − 0.906) ≈ 9,944. 30 + 20 + 20 + 5 + 10 + 15 = 100; 30 + 20 + 10 = 60.
 
-> **You:** "To recap: precomputed top-K, replicated in memory, edge-cached short prefixes, a nightly build with a k-distinct-users filter, a one-minute trending layer, history on the device. At 10×, replicas, then index size — shard by locale. I'd monitor index age, origin p99, edge hit ratio and suggestion click-through. Next I'd add typo tolerance and learning-to-rank on clicks."
+<Reveal q="Which step would you most likely skip silently, and what would it cost?">
 
-**0:41.** Mara turns the phone over. *"Four minutes for questions,"* she says. Then, after a moment: *"You said 'k distinct users' before I asked."* From her, that is a standing ovation.
-
-**Check the numbers yourself:** 100M × 5 × 10 = 5B/day; ÷ 86,400 ≈ 57,870/s; × 3 ≈ 173,600/s. 500M × 6 = 3B/day ≈ 34,720/s; × 3 ≈ 104,170/s; × 0.6 ≈ 62,500/s; ÷ 5,000 = 12.5 → 13 nodes; busiest region 0.4 × 62,500 = 25,000 ÷ 5,000 = 5 → 6 with a spare. 104,170 × 500 B ≈ 52 MB/s. 10M × 20 × 60 B = 12 GB; 2 × 10M × 60 B = 1.2 GB; 10M × 32 B = 320 MB. 10M × 10 × 220 B = 22 GB. 26 + 676 + 17,576 = 18,278; × 500 B ≈ 9 MB. 2^(−1/7) ≈ 0.906; 1,000 × (1 − 0.906²⁸) ÷ (1 − 0.906) ≈ 9,944. 30 + 20 + 20 + 5 + 10 + 15 = 100; 30 + 20 + 10 = 60.
-
-<Reveal q="Which step would you most likely have skipped silently — and what would it have cost?">
-
-For most people it is the **privacy filter** and the **client**. Without the first, the interviewer asks "what stops one person's search from appearing for everyone?" and you invent it on the spot — the prologue's incident, in interview form. Without the second, your 100 ms budget is only the server's 5 ms, and "what about responses arriving out of order?" lands as a gotcha instead of something you already covered.
+For most people it is the **privacy filter** and the **client**. Without the first, "what stops one person's search from appearing for everyone?" gets invented on the spot. Without the second, your 100 ms budget is only the server's 5 ms, and "what about responses arriving out of order?" lands as a gotcha instead of something you already covered.
 
 </Reveal>
+
+<ChapterDone id="walkthrough" />
 
 <h2 id="decision-drills">Decision drills · Make the calls</h2>
 
@@ -871,94 +1461,139 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
 
 <Trace title="The typeahead review" steps={drills} takeaway="Two clocks: rank offline, read in microseconds. Replicate what fits, cache short prefixes at the edge, filter by distinct users, keep fresh things small, and fail silently." />
 
-<Quiz questions={[
-  {
-    q: 'Why does each trie node store its own top-K list?',
-    options: [
-      'To save memory',
-      'So a lookup is O(prefix length + K) instead of scanning a possibly huge subtree on every keystroke',
-      'Because tries cannot be traversed at query time',
-      'To make the build faster'
-    ],
-    answer: 1,
-    why: 'The lists cost memory and build time; they buy a read path that does not depend on how many queries share the prefix. For "s" that is the difference between microseconds and a subtree scan.'
-  },
-  {
-    q: 'A suggestion appears that only one user ever searched (40 times). Which pipeline rule failed?',
-    options: [
-      'The blocklist',
-      'The time decay',
-      'The minimum number of distinct users',
-      'The edge cache TTL'
-    ],
-    answer: 2,
-    why: 'Counting searches lets one person push their own text into everyone’s box. Count distinct users and require at least k.'
-  },
-  {
-    q: 'The nightly build has failed for two days. The best behaviour is:',
-    options: [
-      'Return errors until a fresh index exists',
-      'Serve the last good snapshot and alert on index age',
-      'Query the search cluster per keystroke instead',
-      'Serve trending suggestions only'
-    ],
-    answer: 1,
-    why: 'Availability over freshness: a two-day-old list is nearly as useful. The alert keeps the staleness from becoming silent.'
-  },
-  {
-    q: 'Which response may the CDN edge cache?',
-    options: [
-      'A signed-in user’s merged list including their history',
-      'The global top-10 for a normalised short prefix and locale',
-      'Any response, keyed by session cookie',
-      'None: suggestions change too often'
-    ],
-    answer: 1,
-    why: 'Global lists are identical for everyone and change slowly. Personal data never goes into a shared cache.'
-  },
-]} />
+<Quiz
+  id="ta-final"
+  title="Typeahead review"
+  questions={[
+    {
+      kind: 'tradeoff',
+      q: 'Why does each trie node store its own top-K list?',
+      options: [
+        'To save memory',
+        'So a lookup is O(prefix length + K) instead of scanning a possibly huge subtree on every keystroke',
+        'Because tries cannot be traversed at query time',
+        'To make the build faster',
+      ],
+      answer: 1,
+      why: 'The lists cost memory and build time and buy a read path that does not depend on how many queries share the prefix.',
+      explain: [
+        'It costs memory: K entries per node.',
+        'Correct. For "s" that is the difference between microseconds and a subtree scan.',
+        'They can be traversed. The issue is how much of the tree a keystroke would have to visit.',
+        'The build does extra work to fill the lists.',
+      ],
+    },
+    {
+      kind: 'scenario',
+      q: 'A suggestion appears that only one user ever searched (40 times). Which pipeline rule failed?',
+      options: ['The blocklist', 'The time decay', 'The minimum number of distinct users', 'The edge cache TTL'],
+      answer: 2,
+      why: 'Counting searches lets one person push their own text into everyone’s box.',
+      explain: [
+        'A blocklist catches words you predicted, not a private string.',
+        'Decay only changes how old counts are weighed.',
+        'Correct. Count distinct users and require at least k.',
+        'TTL controls how long a list is cached, not what gets into it.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'The nightly build has failed for two days. The best behaviour is:',
+      options: [
+        'Return errors until a fresh index exists',
+        'Serve the last good snapshot and alert on index age',
+        'Query the search cluster per keystroke instead',
+        'Serve trending suggestions only',
+      ],
+      answer: 1,
+      why: 'A two-day-old list is nearly as useful, and the alert keeps the staleness from being silent.',
+      explain: [
+        'It trades slight staleness for no suggestions at all.',
+        'Correct: availability over freshness, with an alert.',
+        'At 62,500 requests/s that would overload the search cluster.',
+        'Trending is a few thousand items and cannot cover all prefixes.',
+      ],
+    },
+    {
+      kind: 'scenario',
+      q: 'Which response may the CDN edge cache?',
+      options: [
+        'A signed-in user’s merged list including their history',
+        'The global top-10 for a normalised short prefix and locale',
+        'Any response, keyed by session cookie',
+        'None: suggestions change too often',
+      ],
+      answer: 1,
+      why: 'Global lists are identical for everyone and change slowly. Personal data never goes into a shared cache.',
+      explain: [
+        'History in a shared cache leaks to the next user with the same prefix.',
+        'Correct.',
+        'Keying by session makes every user a separate entry, so there are almost no hits.',
+        'They change hourly or daily; a five-minute TTL is harmless.',
+      ],
+    },
+  ]}
+/>
 
-<h2 id="interview-script">Say it in the room</h2>
+<h2 id="interview-script">Interview answers</h2>
 
-<Scene title="The interview room" mood="night">
+When asked "Design search autocomplete", ask two clarifying questions, say a few sentences, and draw a line down the middle of the board: online on the left, offline on the right.
 
-The Interviewer reads the prompt — *"Design search autocomplete"* — and waits. A month ago you'd have drawn a trie in the first minute. Today you ask two questions, say a few sentences, and draw a line down the middle of the board.
+<AnswerModes id="typeahead-design" q="Design search autocomplete for a site with 100 million daily users.">
+  <Fragment slot="short">
 
-</Scene>
+Precompute, do not search. Offline, a nightly job aggregates search logs into decayed scores, filters by at least k distinct users, and builds a trie with the top 10 stored at every node. About 1.5 GB, so every node holds it whole in memory. Online, a keystroke is a cacheable GET: the client debounces, the CDN caches short prefixes for five minutes, and a miss walks the trie in microseconds. A one-minute trending layer adds at most two slots. Personal history is merged on the device. If the pipeline fails, serve the stale index and alert on its age.
 
-**The 90-second answer** (adapt the nouns):
+  </Fragment>
+  <Fragment slot="medium">
 
-> "Top 10 completions per keystroke, ranked by **decayed popularity**, trending within minutes, never private or harmful; **p99 under 100 ms** keystroke to paint, **availability over consistency**. At 100 million daily users that's about **175,000 keystrokes a second** at peak, about **62,500 requests a second** at the origin after client debouncing and edge caching. I split it into **two clocks**. **Offline**, nightly: aggregate search logs into decayed scores, **filter by k distinct users**, PII patterns and a blocklist, build a **trie with the top 10 stored at every node**, bottom-up, validate it, and swap it in atomically. It's about **1.5 GB**, so **every node holds the whole index** — no sharding, no hot 's' shard. **Online**: the client debounces briefly, cancels stale requests and filters its local cache; the **CDN caches short prefixes for five minutes**; misses walk the trie in microseconds. A **streaming trending layer** pushes a few thousand fresh queries every minute, merged at query time into at most two slots. **Personal history** is merged on the device, so the global response stays cacheable. If the pipeline fails we **serve the stale index** and alert on its age."
+Requirements: top 10 completions per keystroke by decayed popularity, trending within minutes, never private or harmful; p99 under 100 ms keystroke to paint; availability over consistency. At 100 million daily users that is about 175,000 keystrokes a second at peak and about 62,500 requests a second at the origin after debouncing and edge caching, so roughly 13 nodes.
 
-**Five follow-ups you will get:**
+I split it into two clocks. Offline, nightly: aggregate logs into decayed scores, filter by k distinct users, PII patterns and a blocklist, build a trie with top 10 at every node, validate it with golden prefixes and a canary, and swap it atomically. Online: the client debounces about 30 ms, cancels stale requests and filters its local cache; the CDN caches short prefixes for five minutes; misses walk the trie. A streaming job pushes a few thousand fresh queries each minute, merged into at most two slots. History is merged on the device, so the global response stays cacheable.
+
+  </Fragment>
+  <Fragment slot="deep">
+
+Everything in the medium answer, plus the reasoning behind each choice.
+
+The bottom-up merge is exact because a query outside a child's top 10 is beaten by 10 queries in that same child, which are also candidates at the parent. Ties break alphabetically so replicas agree. A compressed trie is at most 20 million nodes, about 1.2 GB; a KV prefix table is up to 22 GB with a 10-character cap; edge n-grams suit documents with filters.
+
+I replicate the index instead of sharding it, since 1.5 GB fits. If it outgrows a node I shard by locale, then by prefix ranges cut by traffic, with hot ranges replicated more and the 18,278 prefixes of up to three characters precomputed everywhere. I do not patch the live index with streaming updates because decreases cannot be applied to top-K lists in place and live writes skip the filters; the batch rebuild stays authoritative and the trending set stays small.
+
+Failure: a failed pipeline leaves a stale index, alerted on by index age; a bad build is rolled back by swapping to the previous snapshot; a region failure falls back to edge stale-if-error and failover. I would monitor p99 per region, edge hit ratio, index age and suggestion click-through.
+
+  </Fragment>
+</AnswerModes>
+
+### Five follow-ups you will get
 
 <Reveal q="1 · Why not just run a prefix query on the database or the search cluster?">
 
-`LIKE 'ca%'` with an index finds matching rows, but ranking them means reading every match — for "c", a huge set — on every keystroke. A search cluster does a scatter-gather with a long tail, which the prototype measured at 380 ms p99, and it steals capacity from real searches. Both answer "which records match" at query time; typeahead needs "which K are best", and that is cheapest to compute once, offline, and store at every prefix.
+`LIKE 'ca%'` with an index finds matching rows, but ranking them means reading every match (for "c", a huge set) on every keystroke. A search cluster does a scatter-gather with a long tail, which the first version measured at 380 ms p99, and it steals capacity from real searches. Both answer "which records match" at query time. Typeahead needs "which K are best", and that is cheapest to compute once, offline, and store at every prefix.
 
 </Reveal>
 
 <Reveal q="2 · How do suggestions stay fresh?">
 
-Two paths. The batch index rebuilds daily (hourly if needed) with exponentially decayed scores — `score × 0.906 + today` for a 7-day half-life — so recent interest outweighs old. For minutes-level freshness, a streaming job counts the last hour in one-minute windows with a count-min sketch and heavy hitters, scores queries by surprise against their baseline, filters them strictly, and pushes a small trending set to every node each minute; the service merges it into at most two of the ten slots. The big index is never updated live.
+Two paths. The batch index rebuilds daily (hourly if needed) with decayed scores, `score × 0.906 + today` for a 7-day half-life, so recent interest outweighs old. For minutes-level freshness, a streaming job counts the last hour in one-minute windows with a count-min sketch and heavy hitters, scores queries by surprise against their baseline, filters them strictly, and pushes a small trending set to every node each minute, merged into at most two of the ten slots. The big index is never updated live.
 
 </Reveal>
 
 <Reveal q="3 · How do you stop private or offensive suggestions?">
 
-In the pipeline, before the build: a suggestion needs at least k distinct users (not k searches), so one person's search can't become public and one account can't buy a suggestion; PII patterns (emails, phone numbers, ids) are dropped regardless; a blocklist and classifier remove harmful completions; bot sessions are excluded before counting. Builds are diffed on golden prefixes and canaried. For urgent removals, a serve-time denylist plus a CDN purge takes effect in minutes.
+In the pipeline, before the build: a suggestion needs at least k distinct users (not k searches), so one person's search cannot become public and one account cannot buy a suggestion. PII patterns are dropped regardless, a blocklist and classifier remove harmful completions, and bot sessions are excluded before counting. Builds are diffed on golden prefixes and canaried. For urgent removals, a serve-time denylist plus a CDN purge takes effect in minutes.
 
 </Reveal>
 
 <Reveal q="4 · Do you shard the index? What about hot prefixes like 's'?">
 
-Not while it fits: about 1.5 GB, so every node holds the whole index, and "s" traffic spreads across all nodes like any other. The cluster is sized for requests per second and availability. If it outgrows a node, I shard by locale first, then by prefix ranges cut by measured traffic rather than by letter, give hot ranges more replicas, and precompute the 18,000-odd short prefixes on every node so they never fan out. The hottest prefixes are also absorbed by the edge cache.
+Not while it fits: 1.5 GB, so every node holds the whole index and "s" traffic spreads across all nodes. The cluster is sized for requests per second and availability. If it outgrows a node I shard by locale, then by prefix ranges cut by measured traffic, give hot ranges more replicas, and precompute the 18,000-odd short prefixes on every node so they never fan out. The edge cache absorbs the hottest prefixes too.
 
 </Reveal>
 
-<Reveal q="5 · How do you personalize without breaking caching?">
+<Reveal q="5 · How do you personalise without breaking caching?">
 
-Keep personal data out of the shared response. The device holds the user's recent searches and merges matching ones above the global list — private, free, and the global list stays edge-cacheable. Location is handled with regional index variants, still global per region. A server-side re-ranker over a longer candidate list (top 30) is a stretch: it fits the 5 ms slice if it's a light model, but its responses are private and skip the edge, so I'd add it only if click-through data justifies the cost.
+Keep personal data out of the shared response. The device holds recent searches and merges matching ones above the global list: private, free, and the global list stays edge-cacheable. Location is handled with regional index variants. A server re-ranker over a longer candidate list (top 30) fits the 5 ms slice if it is a light model, but its responses are private and skip the edge, so add it only if click-through data justifies the cost.
 
 </Reveal>
 
@@ -966,46 +1601,38 @@ Keep personal data out of the shared response. The device holds the user's recen
 
 | When you see… | Say… |
 |---|---|
-| "Design typeahead / autocomplete" | Top K per keystroke, decayed popularity, trending in minutes, safe; p99 &lt; 100 ms keystroke to paint; stale over unavailable |
-| Estimation | DAU × searches × keystrokes → keystrokes/s; client tricks → requests/s; edge share → origin/s; filtered queries × length → index size |
+| "Design typeahead / autocomplete" | Top K per keystroke, decayed popularity, trending in minutes, safe; p99 under 100 ms keystroke to paint; stale over unavailable |
+| Estimation | DAU × searches × keystrokes gives keystrokes/s; client tricks give requests/s; edge share gives origin/s; filtered queries × length gives index size |
 | The data structure | Trie with top-K at every node, built bottom-up; lookup O(prefix + K) |
 | "Why is bottom-up exact?" | A query outside a child's top K is beaten by K of that child's queries |
-| "How big?" | Plain trie ≤ queries × length nodes; compressed ≤ 2 × queries; ~60 B/node → ~1.2 GB for 10M |
-| KV alternative | Prefix → top-K rows; ≤ queries × min(length, cap) rows; ~22 GB with a 10-char cap |
-| Completion over documents with filters | Edge n-grams in the search index (index-time analyzer only) |
-| Ranking | Decayed score: `score × 2^(−1/halfLife) + today`, incremental |
-| Privacy | k distinct users, PII patterns, blocklist, bot filtering — before the build |
+| "How big?" | Plain trie ≤ queries × length nodes; compressed ≤ 2 × queries; about 60 B/node, so about 1.2 GB for 10M |
+| KV alternative | Prefix → top-K rows; ≤ queries × min(length, cap) rows; about 22 GB with a 10-char cap |
+| Completion over documents with filters | Edge n-grams in the search index |
+| Ranking | `score × 2^(−1/halfLife) + today`, incremental |
+| Privacy | k distinct users, PII patterns, blocklist, bot filtering, before the build |
 | Getting a build live | Validate (size, golden prefixes, canary), load beside, atomic swap, keep previous for rollback |
-| Freshness in minutes | Streaming trending layer, sketch + heavy hitters, ≤ 2 slots merged at query time |
-| Latency | 30 debounce + 20 edge + 20 origin + 5 service + 10 render + 15 headroom = 100 ms |
+| Freshness in minutes | Streaming trending layer, sketch + heavy hitters, ≤ 2 slots merged at query time; never patch the big index live |
+| Latency | 30 + 20 + 20 + 5 + 10 + 15 = 100 ms |
 | Client | Short debounce, cancel stale, paint only matching `q`, local cache filters a short list |
 | Edge cache | Short normalised prefixes, locale in URL, max-age 300, SWR, stale-if-error |
-| Shard or replicate? | Fits → replicate. Doesn't → locale, then traffic-balanced ranges, hot ranges replicated |
-| Personalization | On-device history merge; regional variants; private re-ranker as stretch |
+| Shard or replicate? | Fits: replicate. Does not: locale, then traffic-balanced ranges, hot ranges replicated |
+| Personalisation | On-device history merge; regional variants; private re-ranker as stretch |
 | Languages | Index per locale; normalise match key, keep display; IME: committed text or transliteration keys |
 | Pipeline fails | Serve stale snapshot; alert on index age |
 
 ## Five mistakes to leave behind
 
-1. **"I'll use a trie."** A data structure is not a design. Requirements, numbers, then the offline/online split.
+1. **"I will use a trie."** A data structure is not a design. Requirements, numbers, then the offline/online split.
 2. **Ranking at query time.** Walking and sorting the subtree for "s" on every keystroke. Precompute top-K per node.
-3. **Counting searches instead of people.** One user's 40 searches made the prologue's incident. Require k distinct users.
-4. **Sharding by first letter by reflex.** Ask whether 1.5 GB fits first; if it doesn't, cut by traffic.
+3. **Counting searches instead of people.** One user's 40 searches caused the incident in the prologue. Require k distinct users.
+4. **Sharding by first letter by reflex.** Ask whether 1.5 GB fits first; if it does not, cut by traffic.
 5. **Quoting server latency as the 100 ms.** The user feels keystroke to paint: debounce, network and render are most of it.
 
-<Scene title="Mara’s last word" mood="dusk">
+**After this lesson:** redo it cold within three days, with no notes, all six steps out loud and the four checkpoints in the corner. Then drill the three sentences that carry this design: the index choice with its memory math and flip condition; the pipeline sentence (decay, k distinct users, validate, swap); and the edge-cache sentence with all four promises.
 
-A month later a minor celebrity's name trends, and with it a cruel rumour that someone types into a thousand search boxes in an hour. Kestrel's trending layer sees the spike. Its distinct-user bar is met, but the safety classifier flags it, and the phrase never appears.
+Related: <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> (the six steps and the clock) · <a href={`${BASE}sd/lessons/search/#typeahead`}>Search · typeahead, the trie and prefix stores</a> (chapters 7–9) · <a href={`${BASE}dsa/lessons/tries/`}>Tries</a> (and its <a href={`${BASE}dsa/lessons/tries/#top-k-autocomplete`}>top-K autocomplete side quest</a>) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (the four promises, hot keys) · <a href={`${BASE}sd/lessons/blob-cdn/#cdn`}>Blob storage & CDN</a> (edge caching and headers) · <a href={`${BASE}sd/lessons/pattern-timeseries/#top-k`}>Time-series · top-K and trending</a> · <a href={`${BASE}sd/lessons/pattern-partitioning/#ranges`}>Partitioning · range partitioning and hot keys</a> · <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a> · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> (the previous walkthrough) · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a>.
 
-What does appear, at 14:07 on a stormy Thursday, is "odile storm track" — two minutes after the first searches.
-
-Nobody is paged. In the morning Dev posts two screenshots in the channel without comment. Mara reacts with a single checkmark, which is as close as she gets to applause.
-
-</Scene>
-
-**After this walkthrough:** redo it cold within three days — no notes, all six steps out loud, the four checkpoints in the corner — ideally with the buddy in mock mode. Then run the **commit drill** on the three sentences that carry this design: the index choice with its memory math and flip condition; the pipeline sentence (decay, k distinct users, validate, swap); and the edge-cache sentence with all four promises.
-
-Related: <a href={`${BASE}sd/lessons/delivery-framework/`}>Delivery framework</a> (the six steps and the clock) · <a href={`${BASE}sd/lessons/search/#typeahead`}>Search · typeahead, the trie and prefix stores</a> (chapters 7–9) · <a href={`${BASE}dsa/lessons/tries/`}>Tries</a> (and its <a href={`${BASE}dsa/lessons/tries/#top-k-autocomplete`}>top-K autocomplete side quest</a>) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (the four promises, hot keys) · <a href={`${BASE}sd/lessons/blob-cdn/#cdn`}>Blob storage & CDN</a> (edge caching and headers) · <a href={`${BASE}sd/lessons/pattern-timeseries/#top-k`}>Time-series · top-K and trending</a> · <a href={`${BASE}sd/lessons/pattern-partitioning/#ranges`}>Partitioning · range partitioning and hot keys</a> · <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a> · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> (the previous warm-up fight) · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a>.
+<ChapterDone id="interview-script" />
 
 <h2 id="beyond">Beyond this page</h2>
 

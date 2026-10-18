@@ -1,7 +1,7 @@
 import { row, step } from '../../lib/trace.ts';
 
 export const scoping = [
-  step('Iris says: "Suggestions should be personal, trending, multilingual, typo-tolerant and instant." It is minute four. What do you write under functional requirements?', [], 2, [
+  step('The stakeholder says: "Suggestions should be personal, trending, multilingual, typo-tolerant and instant." It is minute four. What do you write under functional requirements?', [], 2, [
     ['All five, as core features', 'Five features means five deep dives you will never reach. Typo tolerance and personalization each change the index; promising them all spends the clock before you draw a box.'],
     ['Only "return suggestions", and ask nothing', 'Too thin. How many suggestions, ranked by what, how fresh? Those answers decide the index, the pipeline and the cache.'],
     ['Top 10 completions per keystroke ranked by popularity with recency, trending within minutes; personalization and typo tolerance as stretch goals', 'Right. The core is a popularity-ranked prefix completion with a freshness rule. Naming stretch goals out loud shows you saw them and chose not to start there.'],
@@ -68,7 +68,7 @@ export const pipeline = [
     ['They tie at 28,000 against 7,000', '28,000 is A without decay. With a 7-day half-life the older days count much less.'],
   ]),
   step('A query is searched 400 times — all by one user. Should it be suggestible?', [], 1, [
-    ['Yes, 400 is above the minimum count', 'Count alone lets one person (or one bot) put their private text into everyone’s search box. That is the prologue’s incident.'],
+    ['Yes, 400 is above the minimum count', 'Count alone lets one person (or one bot) put their private text into everyone’s search box. That is the private-phone-number failure from the prologue.'],
     ['No: require a minimum number of distinct users, not just searches', 'Right. A k-distinct-users threshold keeps one person’s name, phone number or address out of other people’s suggestions, and makes manipulation by a single account useless.'],
     ['Yes, but only for that user', 'That is personalization — their own history, on their own device. The global index still must not learn it.'],
   ]),

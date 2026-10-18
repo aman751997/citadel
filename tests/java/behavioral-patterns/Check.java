@@ -436,7 +436,7 @@ public class Check {
         eq(List.of("A1"), m.dispensed, "dispensed A1");
         eq(List.of(5), m.change, "5 change");
         eq("SoldOut", m.state(), "last item -> SoldOut");
-        throwsOn(IllegalStateException.class, () -> m.insert(10), "SoldOut refuses coins (Bram's bug)");
+        throwsOn(IllegalStateException.class, () -> m.insert(10), "SoldOut refuses coins (the SoldOut bug)");
         eq(0, m.credit(), "refused coin not counted");
         m.restock("B2", 2);
         eq("Idle", m.state(), "restock -> Idle");

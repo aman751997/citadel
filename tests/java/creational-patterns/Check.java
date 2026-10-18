@@ -278,7 +278,7 @@ public class Check {
         B_booking.Booking tele = b.teleconsultFor(slot);
         yes(tele.teleconsult() && tele.roomId().isEmpty() && tele.patientId().equals("P-1042") && tele.doctorId().equals("D-07") && tele.slot() == slot, "teleconsult booking");
         B_booking.Booking fixed = b.orThursdaysMistakeFixed(slot);
-        yes(!fixed.teleconsult() && fixed.roomId().equals(Optional.of("R-3")) && fixed.followUp(), "Oona's booking, correct");
+        yes(!fixed.teleconsult() && fixed.roomId().equals(Optional.of("R-3")) && fixed.followUp(), "the clinic booking, correct");
         eq(Optional.empty(), fixed.referral(), "no referral");
         throwsOn(IllegalStateException.class, () -> B_booking.Booking.builder().doctor("D").slot(slot).teleconsult(true).build(), "missing patient");
         throwsOn(IllegalStateException.class, () -> B_booking.Booking.builder().patient("P").slot(slot).teleconsult(true).build(), "missing doctor");

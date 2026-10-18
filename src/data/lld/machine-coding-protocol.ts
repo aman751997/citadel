@@ -210,7 +210,7 @@ export const behind = [
 ];
 
 export const round = [
-  step('Minute 4 of the Lantern Lane round. The card says “borrow and return books; late fees”. Which question finds the axis of change?', [], 2, [
+  step('Minute 4 of the library-lending round. The card says “borrow and return books; late fees”. Which question finds the axis of change?', [], 2, [
     ['“How many books does the library hold?”', 'It changes your data structures at most. It does not tell you what the follow-up will vary.'],
     ['“Can a member borrow the same title twice?”', 'A good edge-case question, but it does not reveal what varies.'],
     ['“Do the lending rules — limits, loan length, fees — differ between members?”', 'Right. The answer (“standard and premium, same rules for now”) is the hint that creates LendingPolicy.'],

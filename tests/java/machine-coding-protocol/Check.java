@@ -6,7 +6,7 @@ import java.util.concurrent.atomic.*;
 
 // Exercises every compiled design in src/lld-lessons/machine-coding-protocol.mdx:
 //  - the reusable skeleton (generic in-memory repository, ids, manual clock, domain exceptions, test helpers),
-//  - the Lantern Lane lending round: the demo transcript the lesson prints, every edge case it names, the
+//  - the library-lending round: the demo transcript the lesson prints, every edge case it names, the
 //    launch wiring (premium treated as standard) versus the follow-up wiring (one new policy class),
 //    1000 random operation sequences against an independent oracle, and the locked wrapper under real threads,
 //  - the three concurrency tools (atomic map ops, per-resource locks with ordering, optimistic versions).

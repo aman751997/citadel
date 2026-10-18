@@ -7,8 +7,16 @@ minutes: 9
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import Quiz from '../../components/Quiz.astro';
+import Reveal from '../../components/Reveal.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
 
 Security interviewers do not want the list of features. They want to hear you _attack your own system_ and name the exact line that stops each attack. This page is written that way: an attacker's move, what the engine does, and why it is enough.
+
+<StatusBadge kind="implemented" /> Each claim below was re-read against the code on 2026-10-18 (state of `develop` at 2026-09-11 for `reporting-service`, plus the shared `healthcare-common` filters). Where the code does not support an earlier claim, this page now says so. Three attacks (4, 6 and 7) changed materially after that check, so read those carefully. Do not repeat the old versions in an interview.
 
 ## The one rule everything hangs on
 
@@ -51,7 +59,7 @@ Security interviewers do not want the list of features. They want to hear you _a
 { "agg": "COUNT", "field": "count", "alias": "x\" FROM patient.patients; --" }
 ```
 
-**What happens.** Aliases are the one place a user string reaches the SQL text. The compiler strips everything outside `[A-Za-z0-9_ ]`, de-duplicates against other aliases, and wraps in double quotes: `AS "x FROM patientpatients "`. Harmless. GROUP BY and ORDER BY never use the alias; they use ordinals, so a mangled alias cannot change the statement's shape.
+**What happens.** Aliases are the one place a user string reaches the SQL text. The compiler strips everything outside `[A-Za-z0-9_ ]`, de-duplicates against other aliases, and wraps in double quotes: `AS "x FROM patientpatients"` (the compiler also trims the result). Harmless. GROUP BY and ORDER BY never use the alias; they use ordinals, so a mangled alias cannot change the statement's shape.
 
 ## Attack 4 — spoofing tenant or branch via headers
 
@@ -62,13 +70,19 @@ X-Branch-Id: BR-XYZ
 Authorization: Bearer <my real JWT for tenant acme, branch BR-DIL>
 ```
 
-**What happens.** Headers are ignored. `JwtTokenFilter → BranchContextFilter → TenantContextFilter` derive tenant and branch from the token claims only. `ReportAccessPolicy.resolve` then produces `(acme, RESTRICTED, [BR-DIL])` from roles + claims. The compiler injects `tenant_id = :tenant_id` unconditionally and `branch_id::text IN (:branch_ids)` for RESTRICTED scope. The user still sees only their own branch.
+**Tenant: the attack fails.** `TenantContextFilter` takes the tenant from the token's tenant claim first. The `X-Tenant-Id` header is only a fallback when the token has no tenant claim (it exists for unauthenticated flows such as registration). With a normal token the spoofed tenant header is ignored. The compiler then injects `tenant_id = :tenant_id` unconditionally. <StatusBadge kind="implemented" />
 
-**Soundbite.** "Tenant scope is a property of the token, not a parameter of the request."
+**Branch: the code does not stop it.** `BranchContextFilter` reads `X-Branch-Id` _first_ and falls back to the token's branch claim only when the header is absent. `ReportAccessPolicy.resolve` then takes the branch for a `BRANCH_ADMIN` from that branch context, so a branch admin who sends a different `X-Branch-Id` is compiled as `(acme, RESTRICTED, [BR-XYZ])`. Tenant isolation still holds; branch isolation inside the tenant depends on something else, and I found no check in the filter, the policy or the compiler that compares the header with the branches in the token. <StatusBadge kind="implemented" label="Confirmed in code" /> The filter's own comment says the header "allows multi-branch switching", so this may be deliberate. <StatusBadge kind="unverified" /> I could not see whether a gateway strips or overwrites the header before it reaches the service; confirm this yourself before you describe it as exploitable or as safe.
+
+**What the old text said, and why not to repeat it.** "Headers are ignored; everything derives from the token" is true for tenant and false for branch. If an interviewer reads the shared filter, that sentence fails.
+
+**What I would do about it.** Make the policy intersect the header with the branches in the token, and add a test that sends a spoofed `X-Branch-Id`. <StatusBadge kind="hypothetical" /> Not built, and I found no existing test for it.
+
+**Soundbite (accurate version).** "Tenant scope comes from the token. Branch scope comes from the branch context, which currently prefers the header, and that is the first thing I would tighten."
 
 ## Attack 5 — a datasource someone forgot to scope
 
-Suppose a future migration adds a datasource with `tenant_column = NULL`. **The compiler refuses to compile it** and throws. A missing tenant column is not "no filter", it is "no report". Fail closed.
+Suppose a future migration adds a datasource with `tenant_column = NULL`. **The compiler refuses to compile it** and throws `IllegalStateException`. A missing tenant column is not "no filter", it is "no report". Fail closed. The caller sees a 5xx rather than a 400, because only validation exceptions map to 400. The same refusal applies to a branch-restricted caller on a datasource with no branch column.
 
 ## Attack 6 — pulling PII columns
 
@@ -76,13 +90,15 @@ Suppose a future migration adds a datasource with `tenant_column = NULL`. **The 
 { "field": "phone_hash" }   or   { "field": "aadhaar_vault_id" }
 ```
 
-**What happens.** Two layers. First, the catalog simply does not list raw identifiers; the catalog is an allow-list and anything unlisted "does not exist". Second, the validator applies a regex block `.*_(vault_id|token|hash)$` (case-insensitive) to both the field key _and_ the physical column, so even a mistaken catalog row cannot expose a tokenised identifier. The `privacy.excludePatientIdentifiers` flag in the DSL is enforced server-side; it is not a client courtesy.
+**What happens.** Two layers. First, the catalog simply does not list raw identifiers; the catalog is an allow-list and anything unlisted "does not exist". Second, the validator applies a regex block `.*_(vault_id|token|hash)$` (case-insensitive) to both the field key _and_ the physical column, so even a mistaken catalog row cannot expose a tokenised identifier. <StatusBadge kind="unverified" /> The old text also said the `privacy.excludePatientIdentifiers` flag is enforced server-side. In the code, that flag is stored in the DSL but nothing in the validator or compiler reads it. Do not claim it protects anything; the protection is the catalog allow-list and the name-pattern block. The regex only catches names ending in `_vault_id`, `_token` or `_hash`, so a raw identifier column with a different name would be blocked only by never being in the catalog.
 
 ## Attack 7 — re-identifying a patient from a tiny group
 
 "Patients seen by Dr X with consultation type PANCHAKARMA on 2026-09-03" might return a group of 1. With a date filter and a branch, that one row is a person.
 
-**What happens.** `privacy.minimumGroupSize` compiles to `HAVING COUNT(*) >= :min_group_size`. Groups smaller than k are removed _inside the database_, before rows leave. A client cannot post-process its way around it because it never receives the small groups. This is [k-anonymity](https://en.wikipedia.org/wiki/K-anonymity) applied at the aggregate level; we do not claim the stronger l-diversity or differential privacy, and saying so out loud earns credibility.
+**What happens.** `privacy.minimumGroupSize` compiles to `HAVING COUNT(*) >= :min_group_size`. Groups smaller than k are removed _inside the database_, before rows leave, so a client cannot post-process its way around it. This is [k-anonymity](https://en.wikipedia.org/wiki/K-anonymity) applied at the aggregate level; we do not claim the stronger l-diversity or differential privacy, and saying so out loud earns credibility.
+
+**The limits you must know.** <StatusBadge kind="implemented" /> k is not chosen by the server. It is the value in the report's own `privacy` block. The compiler adds `HAVING` only when the query has both dimensions and measures and `minimumGroupSize` is above 0, and I found no server-side minimum or default. `preview` accepts a DSL from the request, and report authors can save their own definitions, so anyone who can submit a DSL also chooses k. The real V19 migration even seeds a revenue report with `minimumGroupSize` 1, on purpose, with the comment "pure revenue aggregate, no patient-level data to protect". The accurate claim is: "k-anonymity is enforced in SQL for whatever k the report carries, and system templates set it deliberately." A server-side floor per datasource (for example in the catalog) would close the gap. <StatusBadge kind="hypothetical" />
 
 ## Attack 8 — a background job with no user
 
@@ -97,7 +113,7 @@ A user (or a buggy UI loop) submits a 5-dimension, 90-day, hour-bucketed report 
 | Validator bounds (≤5 dims, ≤10 filters, ≤100 values, limit ≤5000) | query _shape_ | 400 before SQL exists |
 | `SET LOCAL statement_timeout = '3000ms'` | time per statement | report error after 3 s; connection freed |
 | `LIMIT :row_limit` (hard cap 5000) after a forced ORDER BY | rows into JVM memory | `meta.truncated=true`, biggest groups kept |
-| Read-only Hikari pool per source DB | connections to OLTP | waits on pool, never starves writers |
+| Read-only Hikari pool per source DB | connections reporting can open to OLTP | waits on the pool |
 | resilience4j bulkhead, 10 concurrent, `maxWaitDuration=0` | threads in the reporting JVM | immediate 429 "try again" |
 | Redis result cache 60 s / 30 s, key includes tenant + branches + DSL + params | repeated identical runs | `meta.cached=true`, no DB hit |
 
@@ -116,10 +132,10 @@ Two tenants run byte-identical report definitions. Could tenant B get tenant A's
     L2 --> L3["CatalogValidator<br>unknown field, PII regex, bounds"]
     L3 --> L4["QueryCompiler<br>refuses DENY scope · refuses unscoped datasource · injects predicates"]
     L4 --> L5["PostgresJdbcAdapter<br>read-only tx · timeout · bulkhead"]
-    L5 --> L6["Postgres role: SELECT only on source schemas"]
+    L5 --> L6["Postgres role: SELECT only on source schemas (unverified)"]
     style L2 fill:#ffe0b2,stroke:#e65100`} />
 
-The highlighted layer is the load-bearing one for **platform staff** (PLATFORM\_\* roles): they have no tenant claim, so if the policy let them through, the compiler would have nothing to inject. That is why the policy throws `AccessDeniedException` for any PLATFORM\_\* role before anything else runs. Knowing _which_ layer matters most is what separates "we have defence in depth" from understanding it.
+The highlighted layer is the load-bearing one for **platform staff** (PLATFORM\_\* roles). The controller's `@PreAuthorize` lets those roles in, so the policy is what stops them; if it did not, the compiler would have nothing to inject. (The shared Hibernate tenant filter also has a platform bypass for specific cross-tenant roles on our own database; it is separate from source-database reads.) That is why the policy throws `AccessDeniedException` for any PLATFORM\_\* role before anything else runs. Knowing _which_ layer matters most is what separates "we have defence in depth" from understanding it.
 
 ## Read-only, enforced three times
 
@@ -127,11 +143,11 @@ The highlighted layer is the load-bearing one for **platform staff** (PLATFORM\_
 2. `DataSourceTransactionManager.enforceReadOnly=true` (issues `SET TRANSACTION READ ONLY`).
 3. `TransactionTemplate.readOnly=true` around the adapter call.
 
-Plus, ideally, a database role that only has SELECT. Belt, braces, and a second belt. A compiler bug that emitted `UPDATE` would still be refused by Postgres.
+A compiler bug that emitted `UPDATE` would still be refused by Postgres, because the transaction is read-only. <StatusBadge kind="unverified" /> A database role that only has SELECT would be a fourth layer; I could not see the grants, so confirm whether it exists before you claim it.
 
 ## Audit trail (DPDP / regulator conversation)
 
-Every run writes one row to `report_run_audit`: user id, definition id, sha256 of the SQL, datasource key, truncated flag, tenant, timestamp. It is written **synchronously** after the query, inside try/catch, and a failure to audit is logged but never fails the report. Why synchronous: `@Async` loses the thread-local tenant context and can drop rows on a crash; we had a real incident pattern with after-commit writes not committing. India's [DPDP Act](https://www.meity.gov.in/data-protection-framework) framing: "who accessed what, when" must be demonstrable.
+Every executed run writes one row to `report_run_audit`: user id, sha256 of the compiled SQL, datasource key, row count, truncated flag, elapsed ms, tenant and the created timestamp. The table has a `report_definition_id` column, but the adapter never sets it, so it is empty. A result served from the Redis cache returns before the adapter and writes no audit row. It is written **synchronously** after the query, inside try/catch, and a failure to audit is logged but never fails the report. Why synchronous: `@Async` loses the thread-local tenant context and can drop rows on a crash; we had a real incident pattern with after-commit writes not committing. India's [DPDP Act](https://www.meity.gov.in/data-protection-framework) framing: "who accessed what, when" must be demonstrable.
 
 ## Self-test
 
@@ -141,4 +157,95 @@ Every run writes one row to `report_run_audit`: user id, definition id, sha256 o
 4. Name the load-bearing authorisation layer for PLATFORM\_\* roles.
 5. Explain k-anonymity in one sentence and where the HAVING clause comes from.
 6. Why is the audit row synchronous?
+7. Which header can change the branch scope of a branch admin, and which cannot change the tenant?
+8. Who chooses k for k-anonymity, and what happens if it is 0?
 
+## Mock interview: security
+
+<Quiz id="re-security" title="Security checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'A user submits the filter value COMPLETED\') OR 1=1 -- for the status field. What happens?',
+    options: ['The compiler concatenates it and the query returns every row', 'It is bound as a parameter, matches no status, and returns zero rows', 'The validator rejects it with a 400 because it contains a quote'],
+    answer: 1,
+    why: 'Values are bound parameters; they never become SQL text.',
+    explain: [
+      'That is the classic injection; it cannot happen because appendFilter never concatenates values.',
+      'Correct: the literal string is compared to the status column and matches nothing.',
+      'The validator checks field names, operators and bounds, not the content of values.'
+    ]
+  },
+  {
+    kind: 'failure',
+    q: 'A report author saves a definition with privacy.minimumGroupSize set to 0. What does the compiler do?',
+    options: ['Substitutes a server default of 5', 'Omits the HAVING clause, so small groups are returned', 'Rejects the definition at save with a 400'],
+    answer: 1,
+    why: 'HAVING is added only when the value is above 0; there is no server-side floor.',
+    explain: [
+      'I found no server default in the code.',
+      'Correct: no HAVING means groups of any size come back. This is a known gap in the original claim "a client cannot skip it".',
+      'The validator does not check the privacy block.'
+    ]
+  },
+  {
+    kind: 'tradeoff',
+    q: 'A BRANCH_ADMIN sends a valid token plus X-Branch-Id for another branch of the same tenant. In the code as read, whose branch is used?',
+    options: ['The token claim, because headers are ignored', 'The header value, because the branch filter reads it first', 'Neither; the request is rejected as a mismatch'],
+    answer: 1,
+    why: 'BranchContextFilter prefers the header and falls back to the token claim; no later check compares them.',
+    explain: [
+      'That is true for the tenant claim, not for branch.',
+      'Correct as the code reads. Whether a gateway removes the header is unverified.',
+      'I found no mismatch check in the filter, policy or compiler.'
+    ]
+  }
+]} />
+
+<Reveal q="Basic: in one sentence, why is this not a SQL injection machine?">
+
+Values are bound parameters, identifiers are looked up in the catalog, operators and aggregations are enums, aliases are sanitised and quoted, and GROUP BY and ORDER BY use ordinals, so no user string shapes the statement.
+
+</Reveal>
+
+<Reveal q="Intermediate: the catalog's column names go straight into SQL text. Why is that acceptable?">
+
+Because the catalog is seeded by Flyway and reviewed in a pull request, not editable by users. The trust boundary is the migration review. If the catalog were editable through a UI, those physical column and table names would become an injection surface, which is exactly why catalog changes are treated as security changes.
+
+</Reveal>
+
+<Reveal q="Advanced: attack your own system. What are the weakest points?">
+
+Branch scope can be set by a request header (tenant cannot); k-anonymity depends on the k the report carries and has no server floor; `excludePatientIdentifiers` is not enforced; the PII regex only matches three name suffixes; a datasource with no tenant column fails as a 5xx rather than being caught at startup. Each of these is a real, code-confirmed gap, and each has a small fix. <StatusBadge kind="hypothetical" /> Naming them before the interviewer does is the strongest answer.
+
+</Reveal>
+
+<AnswerModes id="re-sec-injection" q="How do you stop SQL injection in a system where users define reports?">
+<Fragment slot="short">
+
+Users never supply SQL structure. Values are bound parameters, identifiers come from a server-controlled catalog, operators and aggregations are enums, aliases are sanitised and quoted, and GROUP BY and ORDER BY use ordinals. Exactly one class builds SQL text.
+
+</Fragment>
+<Fragment slot="medium">
+
+You cannot bind a column name, so we made column names a lookup: the validator rejects unknown field keys with a 400, and the compiler also resolves fields through the catalog and throws on an unknown key. Aliases are the one place a user string reaches the SQL text, so they are stripped to letters, digits, underscore and space, de-duplicated and double-quoted. The statement's shape is fixed by ordinals, so a mangled alias cannot change it.
+
+</Fragment>
+<Fragment slot="deep">
+
+Defence layers: validator, compiler second lookup, read-only transaction (a stray UPDATE would be refused), 3 second timeout. The trust anchor is the Flyway-seeded catalog, because physical names and `{f}.` computed expressions are inserted as text. Gaps to volunteer: the PII name pattern is narrow, and the SELECT-only database role is unverified. <StatusBadge kind="unverified" />
+
+</Fragment>
+</AnswerModes>
+
+<RevisionCards id="re-security-cards" cards={[
+  { front: 'The one safety rule', back: 'Values are bound. Identifiers are looked up. Structure is ordinals.' },
+  { front: 'Why can a column name not be a bind parameter?', back: 'Prepared statements bind values; the planner needs identifiers at prepare time. So identifiers must come from a server-known list: the catalog.' },
+  { front: 'Where do user strings reach SQL text?', back: 'Only aliases: stripped to [A-Za-z0-9_ ], trimmed, de-duplicated, double-quoted.' },
+  { front: 'Tenant vs branch spoofing', back: 'Tenant: token claim wins, header is a fallback. Branch: X-Branch-Id header is read first. Gateway behaviour unverified.' },
+  { front: 'PII protection actually in code', back: 'Catalog allow-list plus regex .*_(vault_id|token|hash)$ on field key and physical column. excludePatientIdentifiers is not read.' },
+  { front: 'k-anonymity caveat', back: 'HAVING COUNT(*) >= k only if the DSL k is above 0 and the query is grouped. No server floor. Real V19 seeds k = 1 on purpose.' },
+  { front: 'Load-bearing layer for platform roles', back: 'ReportAccessPolicy: @PreAuthorize lets them in, the policy throws AccessDenied (403).' },
+  { front: 'Audit row contents', back: 'User, SQL sha256, datasource, row count, truncated, elapsed ms, tenant. No definition id. Cache hits not audited. Written synchronously.' }
+]} />
+
+<ChapterDone id="re-security" />

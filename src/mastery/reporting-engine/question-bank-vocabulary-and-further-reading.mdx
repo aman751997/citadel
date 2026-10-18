@@ -6,7 +6,13 @@ order: 7
 minutes: 10
 ---
 
-Forty questions grouped by who is asking. For each: the 15-second answer, then where to go deeper. Say the short answer out loud before reading it. Add real questions you get asked at the bottom after every interview.
+import StatusBadge from '../../components/StatusBadge.astro';
+import Reveal from '../../components/Reveal.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
+
+Forty questions grouped by who is asking. For each: the 15-second answer, then where to go deeper. Say the short answer out loud before reading it. Add real questions you get asked at the bottom after every interview. Answers below were re-checked against the code on 2026-10-18; where the code disagreed with the earlier text, the row says so. Skip to the interactive mock interview at the end if you want to practise with the answers hidden.
 
 ## A. Hiring manager / product-minded (why did you build this?)
 
@@ -16,7 +22,7 @@ Forty questions grouped by who is asking. For each: the 15-second answer, then w
 | Why build rather than embed Metabase / Superset / Grafana? | Embedded BI does not understand our tenant + branch model, vault-tokenised PII or k-anonymity. We would re-implement authorisation inside its model and still need a service for schedules and templates. Our DSL is 8 fields, compiler \~500 lines. | Page 3, row 1 |
 | How is this like Grafana + Prometheus? | Catalog datasource = data source; catalog field = metric + labels; definition = panel query; dashboard = dashboard JSON; Flyway seeding = provisioning from Git. What Grafana lacks: tenancy, PII, k-anonymity, per-tenant timezone, audit. | Brief §1 table |
 | Prove it is flexible. | V33 made revenue GST-exclusive; product reversed a week later; V36 made it inclusive. Two data migrations, no Java. 25 of 38 migrations are pure data. | Page 5, timeline |
-| Who uses it and is it live? | Tenant admins and branch admins across hospitals. Live: a 2026-09-01 prod tuning (bulkhead 3 → 10) was triggered by real dashboard loads returning 429. | Page 4, story 7 |
+| Who uses it and is it live? | Tenant admins and branch admins across hospitals. Live: a 2026-09-01 prod tuning (bulkhead 3 → 10) was triggered by real dashboard loads returning 429. <StatusBadge kind="unverified" /> Usage numbers are not in the source; add your own. | Page 4, story 7 |
 | What would you do differently? | Per-tenant bulkheads instead of global; compile dry-run at save; async job path for heavy exports; SCAN instead of KEYS for eviction. All known, none blocking. | Page 4, "What I would improve" |
 
 ## B. System design interviewer (how does it scale, fail, isolate?)
@@ -27,10 +33,10 @@ Forty questions grouped by who is asking. For each: the 15-second answer, then w
 | How do you protect the OLTP database? | Read-only pool per source DB, SET LOCAL statement_timeout 3 s, LIMIT 5000 after forced sort, bulkhead 10 fail-fast, 60 s result cache. The adapter is a seam; replica was a URL change. | Page 6, attack 9 |
 | What breaks first at 10× load? | The global bulkhead (429s), then the source DB for large tenants. Next steps: per-tenant bulkheads, materialised views or an OLAP store behind the same adapter interface, async jobs with polling for heavy reports. | Page 3 |
 | Why a bulkhead _and_ a pool limit? Aren't they the same? | Pool bounds connections to the DB; bulkhead bounds threads in our JVM and fails fast instead of queueing. A hung spinner is worse than a fast 429 for interactive UI. | Page 3, "Four knobs" |
-| How do you handle multi-tenancy? | Two mechanisms. Own DB: Hibernate @Filter armed by the request aspect. Source DBs: compiler injects tenant_id from the JWT unconditionally and refuses unscoped datasources. Headers ignored. Cache keys include tenant. Two-tenant IT guards it. | Page 6, attacks 4–5 |
+| How do you handle multi-tenancy? | Two mechanisms. Own DB: Hibernate @Filter armed by a shared aspect. Source DBs: compiler injects tenant_id from the security context (token claim first) unconditionally and refuses unscoped datasources. Branch comes from the branch context, which reads the X-Branch-Id header before the token claim (a gap to volunteer). Cache keys include tenant. Two-tenant IT guards tenant isolation. | Page 6, attacks 4–5 (read the corrected attack 4) |
 | Why separate pools per service DB? | Production is one database per service; a Postgres connection cannot span databases. Bonus: a slow billing query cannot starve patient reports. | Page 1 |
 | How does the scheduler avoid double-sending on 3 pods? | ShedLock on our own DB: lockAtLeastFor 30 s, lockAtMostFor 9 min, poll every 60 s. Chosen over Redis (optional in our stack) and K8s CronJob (moves logic out of the service). | Page 3 |
-| Cache design? | Key = rpt:run:&#123;definitionId&#125;:sha256(tenant, branches, canonical DSL, sorted params). TTL 60 s run / 30 s preview. Prefix eviction on edit. Only when a Redis bean exists. | Page 6, attack 10 |
+| Cache design? | Key = rpt:run:&#123;definitionId&#125;:sha256(tenant, branches, canonical DSL, sorted params). TTL 60 s run / 30 s preview. Prefix eviction on edit (KEYS scan). Only when a Redis bean exists. A cache hit writes no audit row. | Page 6, attack 10 |
 | How do dashboards load? | Dashboard row lists tile definition ids; UI fires one /run per tile in parallel. That fan-out is why a bulkhead of 3 produced 429s on a 4-tile dashboard. | Page 4, story 7 |
 | Cross-database joins? | Not supported by design. We ask the owning service for a view (billing.v_invoice_revenue_line) so every report stays single-table. Same-DB lookup joins to master tables are supported for display names. | Page 5, step 0; page 2, example 3 |
 
@@ -40,10 +46,10 @@ Forty questions grouped by who is asking. For each: the 15-second answer, then w
 | --- | --- | --- |
 | How is this not a SQL injection machine? | Values are bound, identifiers are looked up in the catalog, structure uses ordinals, operators and aggregations are enums, aliases are sanitised and quoted. Exactly one class builds SQL text and it is tested. | Page 6, attacks 1–3 |
 | Why can't you bind a column name? | SQL prepared statements bind values, not identifiers; the planner needs identifiers at prepare time. So the only safe identifier is one the server already knows: hence the catalog. | Page 6, attack 2 |
-| How do you prevent PII leakage? | Allow-list catalog (raw identifiers are not listed) plus a regex block on \*\_vault_id / \*\_token / \*\_hash applied to field key and physical column. Plus k-anonymity via HAVING for small groups. | Page 6, attacks 6–7 |
+| How do you prevent PII leakage? | Allow-list catalog (raw identifiers are not listed) plus a regex block on \*\_vault_id / \*\_token / \*\_hash applied to field key and physical column. Plus k-anonymity via HAVING for small groups, for whatever k the report carries (no server floor; the excludePatientIdentifiers flag is not read). | Page 6, attacks 6–7 |
 | What about platform staff? | PLATFORM\_\* roles get 403 from the access policy before anything runs. They have no tenant claim, so this policy layer is load-bearing. | Page 6, defence in depth |
-| Audit? | Synchronous INSERT per run with user, definition, SQL hash, datasource, truncated flag, tenant. Async would lose tenant context and could drop rows on crash. | Page 6, audit |
-| Read-only guarantee? | Hikari readOnly, enforceReadOnly on the tx manager, TransactionTemplate readOnly, and a SELECT-only DB role. Even a compiler bug cannot write. | Page 6 |
+| Audit? | Synchronous INSERT per executed run with user, SQL hash, datasource, row count, truncated flag, elapsed ms, tenant (the definition id column exists but is not filled; cache hits are not audited). Async would lose tenant context and could drop rows on crash. | Page 6, audit |
+| Read-only guarantee? | Hikari readOnly, enforceReadOnly on the tx manager, TransactionTemplate readOnly. A compiler bug that emitted UPDATE would be refused by the read-only transaction. A SELECT-only DB role would be a further layer. <StatusBadge kind="unverified" /> I could not see the grants; confirm before claiming it. | Page 6 |
 
 ## D. Hands-on / coding interviewer
 
@@ -54,19 +60,101 @@ Forty questions grouped by who is asking. For each: the 15-second answer, then w
 | How do time buckets work? | date_trunc('month', col AT TIME ZONE :tz). HOUR_OF_DAY uses EXTRACT(HOUR FROM col AT TIME ZONE :tz) for a 0–23 distribution. TZ is a bound param from admin-service, cached 10 min, fallback Asia/Kolkata. | Page 2, example 2 |
 | Why ordinals in GROUP BY / ORDER BY? | So no user string shapes the statement. Aliases only appear in SELECT, sanitised. "Appointments" resolves to position 2 at compile time. | Page 2 |
 | How do lookup joins work without breaking existing SQL? | A field with lookup_table / lookup_key / lookup_display_column registers LEFT JOIN lead.lead_sources lk0 ON lk0.id = f.source_id once per FK, projects lk0.name, and the fact table gets alias f only when a lookup exists. Computed columns use a &#123;f&#125;. placeholder. Non-lookup SQL stayed byte-identical. | Page 2, example 3; page 4, story 4 |
-| How is the date range picker implemented? | ExportDateRangeResolver turns TODAY / THIS_WEEK / THIS_MONTH into a BETWEEN on the datasource's default_date_column in the tenant zone; upper bound = start of next period minus 1 µs so boundaries never double count. | Page 2, step 7 |
+| How is the date range picker implemented? | ExportDateRangeResolver turns TODAY / YESTERDAY / THIS_WEEK / THIS_MONTH / CUSTOM into a BETWEEN on the datasource's default_date_column in the tenant zone; upper bound = start of next period minus 1 µs so boundaries never double count. | Page 2, step 7 |
 | How is the catalog loaded? | Immutable snapshot in an AtomicReference, rebuilt every 5 min by CatalogLoader (and on POST /catalog/refresh). Readers never lock; a half-loaded catalog is impossible. | Page 1 |
 | What does the engine flag do? | reporting.engine.stub selects CompilingReportEngineService or StubReportEngineService behind one interface. Ships dark, flips per environment, UI develops against canned data. | Page 1 |
-| What do the tests cover? | 33 classes: QueryCompilerTest (invariants), CatalogValidatorTest, ReportAccessPolicyTest, PostgresJdbcAdapter unit + IT, TenantIsolationIT (two tenants, one table), seven real-engine E2E ITs by business domain (appointments, billing, pharmacy, telecaller, refunds ×3), controller slices. | Brief §5 |
-| Honest gaps? | Save validates but does not compile (a definition can validate yet fail at run). Audit dsl_hash hashes the SQL not the DSL. Global bulkhead. KEYS scan eviction. Stale Javadoc on CompiledReport. | Page 4 |
+| What do the tests cover? | 33 Java files under src/test (a few are base or config helpers): QueryCompilerTest (invariants), CatalogValidatorTest, ReportAccessPolicyTest, PostgresJdbcAdapter unit + IT, TenantIsolationIT (two tenants; get, list and system-template reads), six real-engine *E2EIT classes by business domain (appointments, billing, pharmacy stock type, telecaller, refunds, patient refund requests), controller slices. There is no test that sends a spoofed X-Branch-Id. | Brief §5 |
+| Honest gaps? | Save validates but does not compile (a definition can validate yet fail at run). Audit dsl_hash hashes the SQL not the DSL, and definition id is not recorded. Global bulkhead. KEYS scan eviction. Stale Javadoc on CompiledReport. Branch header precedence. k and excludePatientIdentifiers handling. | Pages 4 and 6 |
 
 ## E. Behavioural hooks (STAR stories on page 4)
 
-* "Tell me about a time you pushed back on a requirement" → GST flip-flop: did not push back, made the reversal cheap instead (story 8).
+* "Tell me about a time you pushed back on a requirement" → GST flip-flop: did not push back, made the reversal cheap instead (story 8). <StatusBadge kind="unverified" /> The migrations were authored by another contributor; describe your own part.
 * "A bug you found before production" → scheduler ALL scope (story 1); tenant filter never enabled (story 2).
 * "A production incident" → 429 on dashboard load, bulkhead 3 → 10 (story 7).
 * "A design you are proud of" → the compiler's "values bound, identifiers looked up, structure ordinals" rule.
 * "Something you would redo" → per-tenant bulkheads; compile dry-run at save.
+
+## Interactive mock interview
+
+Answer out loud, then open the box. Three levels: Basic (explain it), Intermediate (defend it), Advanced (break it).
+
+### Basic
+
+<Reveal q="Draw the architecture and name the components.">
+
+UI with a JWT calls `reporting-service`. Inside: access policy, catalog validator, query compiler, Postgres JDBC adapter (read-only, 3 s timeout, bulkhead 10, 5000-row cap), audit row. It writes definitions, dashboards, schedules and audit to its own `reporting_db`, and reads from one read-only pool per service database. Optional pieces: Redis result cache, admin-service for tenant timezone, notification-service for scheduled CSV email.
+
+</Reveal>
+
+<Reveal q="What is in a report definition?">
+
+An eight-field JSON DSL: datasource, chartType, dimensions, measures, filters, sort, limit, privacy. It references catalog fields by key, never raw columns.
+
+</Reveal>
+
+<Reveal q="What does a scheduled report do, and who is it run as?">
+
+A poller runs every 60 s under a ShedLock (lockAtLeastFor 30 s, lockAtMostFor 9 min), finds due schedules, runs the definition with the creator's stored branch scope, saves a CSV artifact, then emails it through notification-service. Delivery failure marks the artifact failed but the file is kept. Next run time always advances, even on failure.
+
+</Reveal>
+
+### Intermediate
+
+<Reveal q="Why seed the catalog with Flyway and not an admin UI?">
+
+Catalog rows widen what can be queried and their physical names go into SQL text, so changes are security changes and go through PR review, versioning and rollback.
+
+</Reveal>
+
+<Reveal q="Why is the row cap applied after a forced sort?">
+
+Without a deterministic order the cap would return arbitrary rows and the chart would lie. With no user sort on a grouped query the compiler orders by the first measure descending so the biggest groups survive. A result with 5000 rows sets the truncated flag.
+
+</Reveal>
+
+<Reveal q="Why a bulkhead and a pool limit? Are they the same thing?">
+
+No. The pool bounds connections to the database. The bulkhead bounds concurrent executions in our JVM and fails fast with a 429 instead of queueing, which suits an interactive UI.
+
+</Reveal>
+
+### Advanced
+
+<Reveal q="A branch admin reports seeing another branch's data. Where do you look?">
+
+First the branch context: the `X-Branch-Id` header is read before the token claim, and nothing compares the header with the branches in the token (unless a gateway handles it, which I have not verified). Then the access policy output for that user, the emitted SQL (branch predicate present?), and the cache key (it includes branches). Fix direction: intersect header and token branches in the policy and add a spoofed-header test. <StatusBadge kind="hypothetical" />
+
+</Reveal>
+
+<Reveal q="Product wants every report to hide groups smaller than 5. Is that already guaranteed?">
+
+No. The compiler uses the report's own `minimumGroupSize` and omits the HAVING when it is 0 or missing; some seeded revenue reports deliberately use 1. To guarantee it you need a server-side minimum, for example per datasource in the catalog, applied as the larger of the two. <StatusBadge kind="hypothetical" />
+
+</Reveal>
+
+<Reveal q="How would you let a power user write ad-hoc queries safely?">
+
+Not through this DSL. Options: an embedded BI tool with row-level security on a read replica, or a constrained query builder that still compiles against the catalog. Either needs a decision on how tenant and branch rules are enforced inside it. Discussion only. <StatusBadge kind="hypothetical" />
+
+</Reveal>
+
+<AnswerModes id="re-qb-incident" q="Tell me about a production incident you handled.">
+<Fragment slot="short">
+
+On 2026-09-01 dashboards with four or more tiles returned 429. The bulkhead was 3 with zero wait and the UI fires one run per tile in parallel. We raised it to 10 by config, kept the protection, and wrote down per-tenant bulkheads and staggered tile loads as follow-ups.
+
+</Fragment>
+<Fragment slot="medium">
+
+Situation: real users hit HTTP 429 loading dashboards. Task: explain it and fix it without removing the protection. Action: traced it to the bulkhead doing what it was designed to do, sized for single reports, not dashboard fan-out; changed `maxConcurrentCalls` from 3 to 10 in the default and production profiles (PR #1706). Result: dashboards load; not quantified in source. Lesson: size limits from the caller's fan-out, and a fail-fast limit that fires is a limit that works.
+
+</Fragment>
+<Fragment slot="deep">
+
+Add the honest limits: the bulkhead is still global, so a noisy tenant can 429 a quiet one; 3 to 10 bought time, not a fix. <StatusBadge kind="planned" /> The commit author is another contributor, so state your own role in the diagnosis. <StatusBadge kind="unverified" />
+
+</Fragment>
+</AnswerModes>
 
 ## Vocabulary (one line each)
 
@@ -77,7 +165,7 @@ Forty questions grouped by who is asking. For each: the 15-second answer, then w
 | Catalog / semantic layer | Allow-list of datasources and fields with roles, types, allowed aggregations and operators. The type system. |
 | Dimension / measure | What you group by / what you aggregate. Borrowed from OLAP and Cube.dev. |
 | Time bucket | HOUR, HOUR_OF_DAY, DAY, WEEK, MONTH, QUARTER, YEAR granularity for a time dimension. |
-| Access scope | (tenantId, ALL \| RESTRICTED \| DENY, branchIds) derived from the JWT by ReportAccessPolicy. |
+| Access scope | (tenantId, ALL \| RESTRICTED \| DENY, branchIds) derived from roles plus the tenant and branch context by ReportAccessPolicy. |
 | k-anonymity | Suppress any group with fewer than k members; here HAVING COUNT(\*) >= k. |
 | Bulkhead | Concurrency limiter; ship-hull metaphor. resilience4j, fail-fast at 10. |
 | SET LOCAL | Postgres setting scoped to the current transaction; our statement_timeout lives there. |
@@ -110,3 +198,15 @@ Forty questions grouped by who is asking. For each: the 15-second answer, then w
 * \[ \] Answer I fumbled and the better version:
 * \[ \] Number I did not know:
 
+<RevisionCards id="re-qbank" cards={[
+  { front: 'The 30-second pitch', back: 'Metadata-driven reporting: JSON DSL rows compiled to safe, tenant-scoped SQL against a Flyway-seeded catalog, run read-only with timeout, cap and bulkhead.' },
+  { front: 'Why not Metabase/Superset/Grafana?', back: 'They do not know our tenant/branch model or vault-tokenised PII; we would re-implement authorisation inside them. Kept the Grafana shape.' },
+  { front: 'Scheduler facts', back: 'Poll 60 s, ShedLock lockAtLeastFor 30 s and lockAtMostFor 9 min, creator stored scope, CSV by email, next run always advances.' },
+  { front: 'Cache facts', back: 'Only with a Redis bean. rpt:run key hash of tenant, branches, DSL, params. 60 s run, 30 s preview. Hits skip the audit row.' },
+  { front: 'Tests to name', back: 'QueryCompilerTest, CatalogValidatorTest, ReportAccessPolicyTest, TenantIsolationIT, PostgresJdbcAdapter tests, six E2EIT classes.' },
+  { front: 'Gaps to volunteer first', back: 'Branch header precedence, k not enforced server-side, excludePatientIdentifiers unused, global bulkhead, no compile at save, KEYS eviction.' },
+  { front: 'Things you must confirm yourself', back: 'Your exact role, usage and tenant counts, the replica move, SELECT-only DB role, whether a gateway handles X-Branch-Id.' },
+  { front: 'Numbers recap', back: '8 DSL fields; 5/10/100/5000 bounds; 3000 ms; bulkhead 10; 5 min catalog reload; 10 min timezone cache; 8088 port.' }
+]} />
+
+<ChapterDone id="re-qbank" />

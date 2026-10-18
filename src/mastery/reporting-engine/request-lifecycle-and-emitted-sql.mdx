@@ -7,10 +7,39 @@ minutes: 10
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import DryRun from '../../components/DryRun.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import Quiz from '../../components/Quiz.astro';
+import Reveal from '../../components/Reveal.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
+import { recorder, tvars } from '../../lib/dryrun';
 
-Three worked examples, from simple to tricky. Each shows the saved DSL, the SQL the compiler emits, and a clause-by-clause explanation. Cast for all three: tenant `acme`, timezone Asia/Kolkata. Code pinned to `develop` 2026-09-11.
+export const runFrames = (() => {
+  const r = recorder();
+  r.frame('A branch admin posts to /reports/{id}/run. The request enters the security filter chain.', [tvars({ endpoint: 'POST /reports/{id}/run', role: 'BRANCH_ADMIN' })]);
+  r.frame('The token filter authenticates the request. The branch filter sets the branch context (the X-Branch-Id header if sent, otherwise the token claim). The tenant filter sets the tenant from the token claim.', [tvars({ tenant: 'acme', branch: 'BR-DIL' }, { tenant: '-', branch: '-' })]);
+  r.frame('@TenantScoped checks that a tenant context exists. The Hibernate tenant filter for our own database is armed separately, around repository calls. @PreAuthorize is the coarse gate.', [tvars({ gate: 'REPORT_VIEW or admin role' })]);
+  r.frame('The service loads the definition. A tenant-filtered lookup runs first; if it finds nothing, a native-query fallback looks for a system template. No match means 404.', [tvars({ definition: 'found (tenant row or system template)' })]);
+  r.frame('The access policy turns roles into scope: PLATFORM-type roles get 403, SUPER_ADMIN or ADMIN get ALL, BRANCH_ADMIN gets RESTRICTED to the branch context (403 if it is missing).', [tvars({ scope: 'RESTRICTED', branches: '[BR-DIL]' }, { scope: '-', branches: '-' })], { question: 'Why does the compiler add a branch predicate for this caller?', options: ['The DSL asked for it', 'The scope is RESTRICTED', 'The datasource requires it for everyone'], answer: 1, explain: 'The predicate comes from the access scope, never from the DSL. A SUPER_ADMIN running the same definition would not get that line.' });
+  r.frame('If the body has a range (for example THIS_MONTH), the resolver computes the window in the tenant timezone and adds a BETWEEN filter on the datasource default date column. Upper bound is start of next period minus 1 microsecond.', [tvars({ range: 'THIS_MONTH (optional)' })]);
+  r.frame('If Redis is enabled, the cache key is built from definition id plus a SHA-256 of tenant, branches, canonical DSL and sorted params. A hit returns now with meta.cached true, and no audit row is written.', [tvars({ cache: 'only when a Redis bean exists', ttl: '60 s run / 30 s preview' })]);
+  r.frame('The validator checks the DSL against the catalog snapshot: unknown fields, PII name pattern, allowed aggregations and operators, and size bounds. Problems come back together as one HTTP 400 with field-level messages.', [tvars({ validator: 'catalog allow-list + bounds' })]);
+  r.frame('The compiler builds SQL and parameters. It refuses a DENY scope and a datasource with no tenant column, injects tenant and branch predicates, bound filter values, an optional HAVING, ORDER BY and LIMIT by ordinal and bind parameter.', [tvars({ sql: 'text + named params', 'row limit': 'min(dsl.limit, 5000)' })]);
+  r.frame('The adapter takes a bulkhead slot, finds the datasource pool, and in a read-only transaction runs SET LOCAL statement_timeout = 3000ms and then the query.', [tvars({ pool: 'by source_connection', timeout: '3000 ms', bulkhead: 'fail fast at 10' })]);
+  r.frame('Truncated is set when the result reaches 5000 rows. One audit row is inserted synchronously; if that insert fails it is logged and the report still returns.', [tvars({ truncated: 'rows >= 5000', audit: 'sync, non-blocking on failure' })]);
+  r.frame('The engine overlays the compiler column aliases and roles and the tenant timezone onto the result, the service stamps elapsed time and writes the cache, and the caller gets 200 JSON.', [tvars({ status: 200, 'meta.timezone': 'Asia/Kolkata' })]);
+  return r.frames;
+})();
+
+Three worked examples, from simple to tricky. Each shows the saved DSL, the SQL the compiler emits, and a clause-by-clause explanation. Cast for all three: tenant `acme`, timezone Asia/Kolkata. Code pinned to `develop` 2026-09-11 and re-checked 2026-10-18. <StatusBadge kind="implemented" /> The SQL shapes below match `QueryCompiler.java` at that state; sample parameter values and result rows are illustrative.
 
 ## The twelve steps every run goes through
+
+Step through the whole path first, then use the table and diagram as reference.
+
+<DryRun title="One report run, end to end" frames={runFrames} predict />
 
 <Mermaid code={`sequenceDiagram
     autonumber
@@ -45,17 +74,17 @@ Three worked examples, from simple to tricky. Each shows the saved DSL, the SQL 
 
 | # | Step | Where | What to say |
 | --- | --- | --- | --- |
-| 1 | JWT filters | `config/SecurityConfig.java` | Stateless. `JwtTokenFilter` → `BranchContextFilter` → `TenantContextFilter`. Tenant and branch **headers are ignored**; everything derives from the token. |
-| 2 | `@TenantScoped` | `ReportRunController` (class level) | Shared AOP aspect: HTTP 400 if no tenant in context. Also arms the Hibernate tenant filter for our own DB. |
+| 1 | JWT filters | `config/SecurityConfig.java` | Stateless. `JwtTokenFilter` → `BranchContextFilter` → `TenantContextFilter`. **Tenant:** the token's tenant claim wins; the `X-Tenant-Id` header is only a fallback when the token has no tenant claim. **Branch:** the `X-Branch-Id` header is read _first_ and the token claim only if the header is absent (shared filter code; page 6 explains why this matters). |
+| 2 | `@TenantScoped` | `ReportRunController` (class level) | Shared AOP aspect: HTTP 400 if no tenant in context (the tenant filter defaults to `default_tenant` when it finds nothing, so this check rarely fires). It does not arm the Hibernate filter; a separate shared aspect, `TenantFilterAspect`, does that around repository calls for our own DB. |
 | 3 | `@PreAuthorize` | controller method | `REPORT_VIEW` authority or admin roles. Coarse gate; the policy in step 6 is the real one. |
 | 4 | Controller | `ReportRunController.run` | Unpack optional body (`params`, `range`, dates). Nothing else. |
 | 5 | Load definition | `ReportRunServiceImpl.run` | Tenant-filtered lookup, **or** a native-query fallback for `is_system=true` templates (Hibernate filters do not apply to native queries — deliberate, so any tenant can _run_ a platform template). 404 otherwise. |
 | 6 | Resolve scope | `ReportAccessPolicy.resolve` | PLATFORM\_\* platform roles → 403. SUPER_ADMIN / ADMIN → `ALL`. BRANCH_ADMIN → `RESTRICTED` with the branch claim; missing claim → 403. |
-| 7 | Date window | `ExportDateRangeResolver.applyRange` | If the body had `range=THIS_MONTH`: compute the full calendar month in the **tenant's timezone** and append a `BETWEEN` filter on the datasource's `default_date_column`; upper bound = start of next period minus 1 µs. No range → DSL unchanged. |
+| 7 | Date window | `ExportDateRangeResolver.applyRange` | If the body had a `range` (`TODAY`, `YESTERDAY`, `THIS_WEEK`, `THIS_MONTH` or `CUSTOM` with start and end dates): compute the full calendar window in the **tenant's timezone** and append a `BETWEEN` filter on the datasource's `default_date_column` (replacing any existing filter on that column); upper bound = start of next period minus 1 µs. No range → DSL unchanged. |
 | 8 | Cache | `ReportRunServiceImpl` | Only if a Redis bean exists. Key = `rpt:run:&#123;definitionId&#125;:sha256(tenant | branches | canonical DSL | sorted params)`. Hit → `meta.cached=true`. |
 | 9 | Validate | `CompilingReportEngineService` → `CatalogValidator` | Unknown field, disallowed agg / operator, PII column pattern, bounds → 400 with per-field messages. |
-| 10 | Compile | `QueryCompiler.compile` | Produces the SQL below. Refuses DENY scope and any datasource without a tenant column. |
-| 11 | Execute + audit | `PostgresJdbcAdapter.execute` | Bulkhead → registry lookup by source key (unknown = fail fast with the missing config key named) → read-only tx → `SET LOCAL statement_timeout` → query → `truncated = rows ≥ 5000` → synchronous audit row (failure logged, never fails the report). |
+| 10 | Compile | `QueryCompiler.compile` | Produces the SQL below. Refuses DENY scope and any datasource without a tenant column (and a RESTRICTED scope on a datasource without a branch column). |
+| 11 | Execute + audit | `PostgresJdbcAdapter.execute` | Bulkhead → registry lookup by source key (unknown = fail fast with the missing config key named) → read-only tx → `SET LOCAL statement_timeout` → query → `truncated = rows ≥ 5000` → synchronous audit row (failure logged, never fails the report). The row records user id (`SYSTEM` for scheduled runs), SQL hash, datasource, row count, truncated flag, elapsed ms and tenant; it does **not** record the definition id even though the column exists. |
 | 12 | Overlay + return | engine + service | Compiler's column metadata (human alias + dimension / measure role) replaces the adapter's inferred names; `meta.timezone`, `meta.elapsedMs`; write cache; return. |
 
 ## Example 1 — the simple bar: "Appointments by status" as a branch admin
@@ -98,8 +127,8 @@ Clause by clause:
 * `tenant_id = :tenant_id` — injected by the compiler. Not in the DSL.
 * `branch_id::text IN (:branch_ids)` — injected because scope is RESTRICTED. A SUPER_ADMIN would not get this line.
 * `GROUP BY 1` / `ORDER BY 2 DESC` — output ordinals. "Appointments" resolved to position 2; no user string shapes the statement.
-* `HAVING COUNT(*) >= :min_group_size` — k-anonymity in the SQL itself; a group of 3 patients is suppressed.
-* `LIMIT :row_limit` — 20 here; hard cap 5000 regardless of the DSL. With no user sort, the compiler forces `ORDER BY <first measure> DESC` so the biggest groups survive truncation.
+* `HAVING COUNT(*) >= :min_group_size` — k-anonymity in the SQL itself; a group of 3 patients is suppressed. The 5 comes from this DSL's `privacy.minimumGroupSize`; the compiler adds the clause only when that value is above 0 and the query has both dimensions and measures.
+* `LIMIT :row_limit` — 20 here; hard cap 5000 regardless of the DSL. With no user sort and a grouped query, the compiler forces `ORDER BY <first measure> DESC` so the biggest groups survive truncation.
 
 ```json
 { "columns": [ {"alias":"Status","role":"dimension"}, {"alias":"Appointments","role":"measure"} ],
@@ -193,7 +222,7 @@ LIMIT :row_limit
 
 What to point at:
 
-* **The fact table gets alias** `f` **only because a lookup exists.** Without lookups the SQL is byte-identical to before V13 (no alias, no qualification). This was the promise made when the feature shipped, and `QueryCompilerTest` asserts it.
+* **The fact table gets alias** `f` **only because a lookup exists.** Without lookups the SQL is byte-identical to before V13 (no alias, no qualification). This was the promise made when the feature shipped. A `QueryCompilerTest` case asserts that the computed-column placeholder collapses so the SQL is unchanged when no lookup is present; I did not find one test asserting byte-identity for every non-lookup query, so say "covered by tests" rather than "proved identical".
 * **One** `LEFT JOIN` **per distinct FK**, aliased `lk0`, `lk1`… Two dimensions on the same FK share one join. `LEFT` so a lead with a deleted source still counts, under a NULL label.
 * **Filters bind on the fact column** (`f.source_id` if you filtered by source), never on the joined label. Index-friendly and unambiguous.
 * `{f}.` **placeholder in computed columns.** The catalog stores `days_to_convert` as `EXTRACT(EPOCH FROM ({f}.converted_at - {f}.created_at)) / 86400`. The compiler substitutes `f.` when aliased and empty string otherwise. This exists because master tables share column names (`created_at`, `status`, `tenant_id`) and an unqualified reference became ambiguous the day the first join landed (war story 4).
@@ -202,13 +231,13 @@ What to point at:
 ## When things go wrong — the error paths
 
 <Mermaid code={`flowchart TD
-    R["POST /run"] --> T{"tenant in token?"}
+    R["POST /run"] --> T{"tenant in context?"}
     T -- no --> E400a["400 no tenant context"]
-    T -- yes --> A{"role allowed?"}
-    A -- "PLATFORM_* or no branch claim" --> E403["403 AccessDenied"]
-    A -- yes --> D{"definition visible?"}
+    T -- yes --> D{"definition visible?"}
     D -- no --> E404["404"]
-    D -- yes --> V{"validator"}
+    D -- yes --> A{"role allowed?"}
+    A -- "PLATFORM_* or no branch context" --> E403["403 AccessDenied"]
+    A -- yes --> V{"validator"}
     V -- "unknown field / PII / bounds" --> E400b["400 with field errors"]
     V -- ok --> B{"bulkhead slot?"}
     B -- "10 busy" --> E429["429 try again"]
@@ -216,15 +245,70 @@ What to point at:
     X -- "> 3 s" --> E500["error: statement timeout<br>connection freed"]
     X -- ok --> OK["200 rows · truncated flag · audit row"]`} />
 
+In the code, `run` loads the definition before it resolves the access scope, so a caller with no access to a definition gets 404 before any 403. (`preview` resolves scope first, because there is no definition to load.)
+
 | Status | Cause | Who fixes it |
 | --- | --- | --- |
-| 400 | No tenant context; unknown field; disallowed agg/operator; PII field; too many dims/filters/values; limit > 5000; datasource without tenant column | Report author (UI shows field-level messages) |
+| 400 | No tenant context; unknown field; disallowed agg/operator; PII field; too many dims/filters/values; limit > 5000; invalid or missing range dates | Report author (UI shows field-level messages) |
 | 403 | PLATFORM\_\* platform role; BRANCH_ADMIN without branch claim | Identity / roles |
 | 404 | Definition not in tenant and not a system template | Caller |
 | 429 | Bulkhead full (10 concurrent source queries) | UI retries; ops tune the instance |
-| 5xx | Statement timeout at 3 s; unknown source key (config missing); DB down | Ops; catalog author |
+| 5xx | Statement timeout at 3 s; unknown source key (config missing); DB down; datasource with no tenant column (the compiler throws `IllegalStateException`, which the generic handler maps to 500) | Ops; catalog author |
 
 **Footprint of one successful run.** Source DB: one read-only transaction, one statement, ≤3 s, ≤5000 rows, every predicate bound. Own DB: one audit INSERT. Redis: one GET and one SET. That is the whole cost of a report.
+
+## Check yourself
+
+<Quiz id="re-lifecycle" title="Request lifecycle checkpoint" questions={[
+  {
+    kind: 'predict',
+    q: 'A SUPER_ADMIN and a BRANCH_ADMIN run the same saved definition. What differs in the emitted SQL?',
+    options: ['The branch admin gets an extra branch_id predicate', 'The super admin gets an extra tenant predicate', 'Nothing; scope only affects the cache key'],
+    answer: 0,
+    why: 'Tenant is always injected. The branch predicate is added only for RESTRICTED scope.',
+    explain: [
+      'Correct: RESTRICTED scope adds branch_id::text IN (:branch_ids). The DSL is identical.',
+      'The tenant predicate is injected for every caller, so it is not what differs.',
+      'Scope also changes the cache key, but it changes the SQL too.'
+    ]
+  },
+  {
+    kind: 'failure',
+    q: 'A datasource row is seeded with no tenant column. What happens when someone runs a report on it?',
+    options: ['The query runs without a tenant predicate', 'HTTP 400 with a field error', 'The compiler throws and the caller gets a 5xx'],
+    answer: 2,
+    why: 'The compiler throws IllegalStateException; only validation exceptions map to 400, so the generic handler returns 500.',
+    explain: [
+      'It fails closed: an unscoped query is never run.',
+      'The 400 path is for CatalogValidationException; this is a different exception type.',
+      'Correct: fail closed, but surfaced as a server error. A save-time or startup check would be friendlier (hypothetical improvement).'
+    ]
+  },
+  {
+    kind: 'tradeoff',
+    q: 'Why cast the bound parameter (:flt_0_lo::timestamptz) instead of the column?',
+    options: ['Casting the column would stop Postgres using the index on it', 'Postgres cannot cast columns', 'It makes the timezone conversion faster'],
+    answer: 0,
+    why: 'A function or cast on the column hides it from the index; casting the parameter keeps the predicate sargable.',
+    explain: [
+      'Correct, as the Use The Index, Luke link on this page explains.',
+      'Postgres can cast columns; that is exactly the problem for indexes.',
+      'The timezone conversion is a separate expression in the SELECT.'
+    ]
+  }
+]} />
+
+<Reveal q="Intermediate: why does the time-series example convert to the tenant timezone before date_trunc?">
+
+`start_at` is `timestamptz`, stored as UTC. A 02:00 IST appointment on 1 September is 20:30 UTC on 31 August, so truncating in UTC puts it in August. `date_trunc('day', start_at AT TIME ZONE :tz)` converts to the tenant zone first, in the database, and the zone is a bound parameter.
+
+</Reveal>
+
+<Reveal q="Advanced: a report passes save but fails at run. How is that possible and what would you change?">
+
+Save runs the catalog validator but does not compile, so compiler-only failures (for example a lookup misconfiguration or a missing tenant column) appear at run. Run validates again and compiles because scope, timezone and date window are request-time inputs. Adding a compile dry-run at save is cheap because compilation takes microseconds. <StatusBadge kind="planned" />
+
+</Reveal>
 
 ## Read more
 
@@ -233,3 +317,15 @@ What to point at:
 * [GROUP BY with ordinals](https://www.postgresql.org/docs/current/queries-table-expressions.html#QUERIES-GROUP) — supported in Postgres; the reason our structure can be user-string-free.
 * [Spring NamedParameterJdbcTemplate](https://docs.spring.io/spring-framework/reference/data-access/jdbc/core.html#jdbc-NamedParameterJdbcTemplate) — how `:flt_0` lists expand safely into `IN (?, ?, ?)`.
 
+<RevisionCards id="re-lifecycle-cards" cards={[
+  { front: 'First four filters/gates in order', back: 'JWT filter, branch context filter, tenant context filter, then @TenantScoped and @PreAuthorize on the controller.' },
+  { front: 'Where does the branch predicate come from?', back: 'The access scope (RESTRICTED for BRANCH_ADMIN), never from the DSL. The branch comes from the branch context.' },
+  { front: 'Why ::text casts on enum and uuid columns?', back: 'Bound parameters arrive as varchar and Postgres has no enum = varchar or uuid = varchar operator.' },
+  { front: 'Why cast the parameter for dates?', back: 'So the column stays index-friendly: :p::timestamptz instead of col::text.' },
+  { front: 'Date range upper bound', back: 'Start of next period minus 1 microsecond, so a midnight row is not counted in two periods.' },
+  { front: 'Why AT TIME ZONE before date_trunc?', back: 'timestamptz is UTC; bucketing in UTC puts 02:00 IST on 1 Sep into August.' },
+  { front: 'Lookup joins', back: 'Same-database LEFT JOIN per distinct FK (lk0, lk1); fact table aliased f only when a lookup exists; {f}. placeholder in computed columns.' },
+  { front: 'Error mapping', back: '400 validation, 403 policy, 404 missing definition, 429 bulkhead, 5xx timeout, missing source config, or a datasource with no tenant column.' }
+]} />
+
+<ChapterDone id="re-lifecycle" />

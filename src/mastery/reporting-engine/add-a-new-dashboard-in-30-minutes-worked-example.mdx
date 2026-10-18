@@ -7,8 +7,15 @@ minutes: 9
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import Reveal from '../../components/Reveal.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
 
-This is the page that proves the Grafana + Prometheus claim. We add a brand-new business dashboard, "Revenue by Consultation Type", with **zero Java changes**. Everything below is modelled on the real migration `V19__billing_consultation_type_revenue.sql` (178 lines, 2026-08) and the starter seed `V9__seed_acme_starters.sql`.
+This is the page that proves the Grafana + Prometheus claim. We add a brand-new business dashboard, "Revenue by Consultation Type", with **zero Java changes**. Everything below is modelled on the real migration `V19__billing_consultation_type_revenue.sql` (178 lines, added 2026-07-09) and the starter seed `V9__seed_acme_starters.sql`.
+
+<StatusBadge kind="implemented" /> Steps 1 and 2 follow the real V19 datasource and field rows. <StatusBadge kind="hypothetical" /> The definition in step 3, the dashboard in step 4, the ids, the preview output and the `V39` file name are teaching variants, not a shipped migration. For example, the real V19 definition uses `limit` 10, `minimumGroupSize` 1 (its comment says "pure revenue aggregate, no patient-level data to protect") and a different status list, and `V39` was already taken by another migration when I checked.
 
 ## The Grafana mental model, applied
 
@@ -25,7 +32,7 @@ In Grafana you would click through the UI for steps 1 to 4 and export JSON. Here
 
 Revenue must be attributed per invoice line, not per invoice, because one invoice can mix a consultation and a pharmacy sale. Billing exposes a view for exactly this: `billing.v_invoice_revenue_line` (line joined to its invoice for status / tenant / branch; `net_revenue` = line total with the invoice-level discount apportioned by line share). Pointing a datasource at a **view** is the trick that keeps every report single-table: the join logic lives in the owning service's schema, and our compiler never needs multi-table joins.
 
-> **Interview line:** "When a report needed a join, we did not teach the compiler joins. We asked the owning service for a view. The compiler stayed 489 lines; the complexity stayed with the team that understands the tables."
+> **Interview line:** "When a report needed a join, we did not teach the compiler joins. We asked the owning service for a view, or put the logic in a computed catalog column. The compiler stayed 489 lines; the complexity stayed with the team that understands the tables."
 
 ## Step 1 — register the data source (one row)
 
@@ -49,7 +56,7 @@ INSERT INTO catalog_datasource (
 | `tenant_column` | Which column holds the tenant | Compiler injects `tenant_id = :tenant_id`. A datasource _without_ one is refused at compile time |
 | `branch_column` | Which column holds the branch | Injected as `IN (:branch_ids)` for BRANCH_ADMIN scope |
 | `default_date_column` | Column the date-range picker applies to | TODAY / THIS_WEEK / THIS_MONTH become a BETWEEN on this column |
-| `soft_delete_column` | Nullable "deleted_at" style column | If set, `IS NULL` is appended automatically. Here NULL because the view already excludes deletes |
+| `soft_delete_column` | Nullable "deleted_at" style column | If set, `IS NULL` is appended automatically. Here NULL. <StatusBadge kind="unverified" /> The original said the view already excludes deletes; the billing view definition I read has no delete filter, so confirm this yourself |
 | `source_connection` | Which read-only Hikari pool | Production has separate DBs per service; a Postgres connection cannot span them. Unknown key = fail fast naming the missing config |
 
 ## Step 2 — declare the fields (the "metrics and labels")
@@ -80,6 +87,8 @@ VALUES
 ```
 
 Read the `roles` array as _permissions_: `net_revenue` can be summed but never grouped by; `consultation_type` can be grouped and filtered but never summed. `allowed_operators` is why a user cannot run `LIKE '%'` on a column we did not open to it. The validator enforces all of this before a single character of SQL exists.
+
+Since V35 the `net_revenue` field on this datasource is no longer the bare view column: it is a computed expression that also nets approved refunds, so `SUM(net_revenue)` today emits a correlated subquery. The SQL in step 5 is the V19-era shape.
 
 Two special forms worth knowing:
 
@@ -164,6 +173,7 @@ Notice what is _not_ there: no `branch_id` predicate (scope is ALL), no soft-del
 Response shape:
 
 ```json
+// illustrative values, not real data
 { "columns": [ {"alias":"Consultation Type","role":"dimension"},
                {"alias":"Revenue","role":"measure"}, {"alias":"Lines","role":"measure"} ],
   "rows": [ ["GENERAL", 412500.00, 318], ["PANCHAKARMA", 286000.00, 57], ["FOLLOW_UP", 91200.00, 228] ],
@@ -172,18 +182,19 @@ Response shape:
 
 ## Step 6 — ship it
 
-Put steps 1 to 4 into `V39__revenue_by_consultation_type.sql`, open a PR. The reviewer checks exactly two things: _does every new field respect the PII rule_ (no `*_vault_id`, `*_token`, `*_hash`; the validator would block them anyway) and _is the datasource scoped_ (tenant column present). Merge. The catalog snapshot reloads within 5 minutes on every pod; no restart. Provisioning from Git, exactly like Grafana.
+Put steps 1 to 4 into the next free migration file (for example `V<next>__revenue_by_consultation_type.sql`; Flyway has `out-of-order: false`, so use a version higher than the latest), open a PR. The reviewer checks exactly two things: _does every new field respect the PII rule_ (no `*_vault_id`, `*_token`, `*_hash`; the validator would block them anyway) and _is the datasource scoped_ (tenant column present). Merge. The catalog snapshot reloads within 5 minutes on every pod; no restart. Provisioning from Git, exactly like Grafana.
 
 ## What happens when product changes its mind (the real V33 → V36 story)
 
-On 2026-09-02 product asked for "Revenue by Branch" to exclude GST (to match pharmacy receipts). Migration V33 repointed the measure to `net_of_gst_amount`. On 2026-09-09 product reversed the decision. Migration V36 repointed it back to `total_amount`. Two definition-row UPDATEs, one week apart, **zero Java changes, zero releases of application code**. Both were verified by running the stored definition through the live app, not by reading the DB row.
+On 2026-09-02 product asked for "Revenue by Branch" to exclude GST (to match pharmacy receipts). Migration V33 added a computed catalog field `net_of_gst_amount` and repointed the measure to it. On 2026-09-09 product reversed the decision. Migration V36 repointed it back to `total_amount` (measure, alias and sort). Two data migrations, one week apart, **zero Java changes, zero releases of application code**. Both match definitions by name and datasource, because live tenants carry their own copies with random ids; those need the seed re-run or a manual patch. Both were verified by running the stored definition through the live app, not by reading the DB row.
 
 <Mermaid code={`timeline
     title One product reversal, handled as data
+    2026-08-18 : V31 · invoice total_amount netted for approved refunds
+    2026-09-01 : V32 · front-office refund status summary
     2026-09-02 : V33 · measure → net_of_gst_amount (GST-exclusive)
-    2026-09-04 : V31-V32 · refunds netted out via approved-refund views
     2026-09-09 : V36 · measure → total_amount (GST-inclusive again)
-    2026-09-10 : V37-V38 · Lead Source ROI gated on paid invoices`} />
+    2026-09-10 : V37-V38 · Lead Source ROI gated on paid invoices and netted for refunds`} />
 
 > **Interview line:** "The strongest evidence for a metadata-driven design is not the launch. It is the week product flip-flopped on GST and both directions were a migration."
 
@@ -197,6 +208,44 @@ On 2026-09-02 product asked for "Revenue by Branch" to exclude GST (to match pha
 6. Preview with a BRANCH_ADMIN token and a SUPER_ADMIN token; read the emitted SQL for both.
 7. Flyway PR. Reviewed as a security change. Live within 5 minutes of merge.
 
+## Check yourself
+
+<Reveal q="Basic: which four rows make a new dashboard, in order?">
+
+A `catalog_datasource` row (where the data is), `catalog_field` rows (what can be grouped, filtered, summed), a `report_definition` row (the JSON DSL), and a `report_dashboard` row (the list of definition ids with layout hints). Then preview, read the emitted SQL, and ship as a Flyway PR.
+
+</Reveal>
+
+<Reveal q="Intermediate: why do fields have a roles array and allowed aggregations and operators?">
+
+They are permissions. `net_revenue` can be summed but never grouped by; `consultation_type` can be grouped and filtered but never summed. The validator rejects anything else with a field-level 400 before any SQL exists, so you cannot, for example, run a `LIKE` on a column that was not opened for it.
+
+</Reveal>
+
+<Reveal q="Advanced: product wants the change for one tenant only. What breaks about 'it is just an INSERT'?">
+
+System templates are shared (`owner=PLATFORM`, `is_system=true`), and tenants that cloned them hold their own copies with random ids. A migration that matches by name and datasource updates the copies it can match, but anything renamed or hand-edited is missed, so tenant-specific changes need the seed re-run or a manual patch (V33 and V36 both say so). A per-tenant approach would be a clone-and-edit flow, not an edit of the template. <StatusBadge kind="hypothetical" />
+
+</Reveal>
+
+<AnswerModes id="re-add-dashboard" q="Walk me through how a new dashboard goes live without a code release.">
+<Fragment slot="short">
+
+Four INSERTs in a Flyway migration: a datasource row, field rows, a definition row and a dashboard row. I preview it with a branch-admin and a super-admin token, read the emitted SQL, and open a PR. After merge the catalog snapshot reloads within five minutes on every pod.
+
+</Fragment>
+<Fragment slot="medium">
+
+First I check there is one table or view with tenant, branch and date columns; if not, I ask the owning service for a view. The datasource row names the physical table, the pool and the tenant, branch, date and soft-delete columns. Field rows carry roles, type, allowed aggregations and operators, with no PII-pattern names. The definition row is the eight-field DSL. The dashboard row lists definition ids and layout hints. The reviewer treats it as a security change.
+
+</Fragment>
+<Fragment slot="deep">
+
+The UI loads the dashboard and then fires one run per tile in parallel, so the number of tiles matters for the bulkhead (war story 7). A system template is runnable by any tenant and editable only by the platform; tenants clone it for a private copy. Limits: no cross-database joins, so the owning team provides a view; and tenant copies are not touched by the template migration unless it matches them by name.
+
+</Fragment>
+</AnswerModes>
+
 ## Read more
 
 * [Grafana provisioning from files](https://grafana.com/docs/grafana/latest/administration/provisioning/) — the closest industry analogue to seeding catalog and dashboards via Flyway.
@@ -205,3 +254,15 @@ On 2026-09-02 product asked for "Revenue by Branch" to exclude GST (to match pha
 * [Flyway versioned migrations](https://documentation.red-gate.com/fd/migrations-184127470.html) — why V-numbers, and why out-of-order is off by default.
 * [PostgreSQL CREATE VIEW](https://www.postgresql.org/docs/current/sql-createview.html) — the tool that let us keep the compiler single-table.
 
+<RevisionCards id="re-dashboard" cards={[
+  { front: 'The four rows of a new dashboard', back: 'catalog_datasource, catalog_field rows, report_definition (DSL JSON), report_dashboard (items with layoutHint).' },
+  { front: 'What does the datasource row name?', back: 'datasource_key, physical table or view, source_connection (pool), tenant, branch, default date and soft-delete columns.' },
+  { front: 'What are roles on a field?', back: 'DIMENSION, MEASURE, TIME, FILTER, used as permissions, with allowed aggregations and operators.' },
+  { front: 'What is a system template?', back: 'owner PLATFORM, is_system true: runnable by any tenant, editable only by platform, cloneable into a tenant copy.' },
+  { front: 'How do you ship it?', back: 'A Flyway PR reviewed as a security change; the catalog snapshot reloads within 5 minutes per pod.' },
+  { front: 'GST reversal dates', back: 'V33 on 2026-09-02 (GST-exclusive), V36 on 2026-09-09 (inclusive again). Definitions matched by name and datasource.' },
+  { front: 'Why a view for revenue lines?', back: 'v_invoice_revenue_line joins line items to invoices and apportions the invoice total by line share, keeping the datasource single-table.' },
+  { front: 'What is illustrative on this page?', back: 'The step 3 and 4 rows, ids, preview output and the V39 name. The real V19 uses limit 10 and k = 1.' }
+]} />
+
+<ChapterDone id="re-dashboard" />

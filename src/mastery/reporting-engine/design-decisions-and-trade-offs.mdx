@@ -6,7 +6,13 @@ order: 3
 minutes: 9
 ---
 
-Interviewers score _why_ more than _what_. Each decision below has four parts: what we chose, what else was on the table, why, and when I would revisit. New in this version: a plain-language "explain it to a friend" line per decision, two decisions from the last month (views as datasources; product reversals as data), and reading links.
+import StatusBadge from '../../components/StatusBadge.astro';
+import Reveal from '../../components/Reveal.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
+
+Interviewers score _why_ more than _what_. Each decision below has four parts: what we chose, what else was on the table, why, and when I would revisit. Every "Revisit when" cell, and every "at higher scale" line on this page, is a <StatusBadge kind="hypothetical" /> discussion point, not something built. New in this version: a plain-language "explain it to a friend" line per decision, two decisions from the last month (views as datasources; product reversals as data), and reading links.
 
 ## How to use this page in an interview
 
@@ -16,16 +22,16 @@ Pick the decision closest to the question, give the friend-version first (one br
 
 | Decision | Explain it to a friend | Alternatives | Why this | Revisit when |
 | --- | --- | --- | --- | --- |
-| **Build** a DSL compiler | "We wrote a tiny language for reports and a translator to SQL, instead of buying a dashboard tool that does not know our rules." | Metabase / Superset embedded; per-service hand-written endpoints | Embedded BI does not understand our tenant / branch model or vault-tokenised PII; we would re-implement authorisation inside its model. Hand-written endpoints were the problem. DSL is 8 fields, compiler 489 lines. | If we ever expose ad-hoc SQL to power users, an embedded tool with row-level security is worth re-evaluating. |
+| **Build** a DSL compiler | "We wrote a tiny language for reports and a translator to SQL, instead of buying a dashboard tool that does not know our rules." | Metabase / Superset embedded; per-service hand-written endpoints | Embedded BI does not understand our tenant / branch model or vault-tokenised PII; we would re-implement authorisation inside its model. Hand-written endpoints were the problem. DSL is 8 fields, compiler 489 lines at 2026-09-11 (516 when I looked later). <StatusBadge kind="unverified" /> The comparison with embedded BI is your reasoning; the repository records no evaluation of Metabase or Superset. | If we ever expose ad-hoc SQL to power users, an embedded tool with row-level security is worth re-evaluating. |
 | **Grafana-shaped data model** (datasource → fields → definition → dashboard) | "Same four layers Grafana has: where the data is, what you can plot, one panel, a page of panels." | Flat "report = SQL string + params" table | Layers let us attach permissions at the right level: PII at field, tenancy at datasource, layout at dashboard. A SQL-string table would need a SQL parser to enforce anything. | Never; the layering is what makes the safety rules enforceable. |
 | **Postgres-first**, no new infra in v1 | "The data is small enough that the databases we already have can answer in under 3 seconds. No warehouse yet." | ClickHouse / Cube / CDC pipeline | Volumes are small (thousands of appointments per tenant, not billions). New infra = ops cost + a freshness story we did not need. The adapter seam keeps the door open. | When one tenant's fact table makes 3 s timeouts routine, or cross-DB joins (billing × appointments) are needed. |
 | **Compile to a SQL string** | "We build the SQL text ourselves, carefully, in one class, rather than through an ORM that does not know these tables." | JPA Criteria / QueryDSL / jOOQ | Source tables belong to other services; no entities for them, no coupling wanted. jOOQ adds codegen against schemas we do not own. A 489-line class with strict, tested rules is auditable. | If the compiler passes \~1000 lines or needs multi-table joins beyond lookups. |
-| **Views as datasources** instead of compiler joins | "When a report needed two tables, we asked the team that owns them for a view. Our engine still sees one table." | Teach the compiler arbitrary joins; denormalise columns onto the fact table | `billing.v_invoice_revenue_line` apportions invoice discounts per line; `v_*_net_of_approved_refunds` views net refunds. The join logic lives with the team that understands the tables; the compiler stays single-table and small. | If view proliferation becomes its own maintenance burden, a proper semantic layer (Cube-style) is the next step. |
+| **Views and computed catalog columns** instead of compiler joins | "When a report needed two tables, we asked the team that owns them for a view, or we wrote the join logic into a catalog column. Our engine still sees one table." | Teach the compiler arbitrary joins; denormalise columns onto the fact table | `billing.v_invoice_revenue_line` (a real billing-service view) apportions each invoice's total across its lines. Refund netting was done by rewriting computed `catalog_field` expressions with correlated subqueries (V30, V31, V35, V38) using the `{f}.` placeholder, so one UPDATE fixed every report built on a field. The compiler stays single-table and small. Trade-off from the migration comments: a same-named column in the subquery scope can silently shadow the correlation, "hit twice while writing this" (V35). | If these expressions get hard to read or test, a proper semantic layer (Cube-style) or views owned by billing is the next step. |
 | **Catalog seeded by Flyway** | "Adding a column people can query is a security change, so it goes through a code review, not a settings screen." | Admin UI to edit catalog rows | Catalog changes widen what can be queried. Flyway gives review, versioning, rollback via PR. Same reason Grafana teams provision from Git in production. | If tenants need per-tenant custom fields: a governed admin flow with approval. |
-| **Product reversals handled as data** | "When product changed its mind about GST twice in a week, both changes were one-line data updates, not code releases." | Hard-code the measure in a report class | V33 (GST-exclusive) then V36 (GST-inclusive). The measure is a catalog field reference inside JSON; repointing it is an UPDATE. Verified by running the stored definition through the live app. | Never; this is the payoff of metadata-driven. |
+| **Product reversals handled as data** | "When product changed its mind about GST twice in a week, both changes were one-line data updates, not code releases." | Hard-code the measure in a report class | V33 (2026-09-02, GST-exclusive) then V36 (2026-09-09, GST-inclusive). The measure is a catalog field reference inside JSON; repointing it is an UPDATE (V33 also added the computed `net_of_gst_amount` field first). Both match definitions by name and datasource because live tenants carry their own copies with random ids, so tenants not covered need the seed re-run or a manual patch. Verified by running the stored definition through the live app. | Never; this is the payoff of metadata-driven. |
 | **Per-service read-only pools** | "Each service's database gets its own small, read-only connection pool." | One consolidated read connection | Production is separate databases per service; a Postgres connection cannot span databases. Also isolates a slow billing query from patient reports. | Would only change with an OLAP store that unifies sources. |
 | **ShedLock on our own DB** for the scheduler | "Three copies of the service run; a row-lock in our database makes sure only one sends the 8 a.m. email." | Redis lock; Kubernetes CronJob; single scheduler pod | Redis is optional in our stack; a DB lock adds no dependency. A CronJob would move report logic out of the service. Poll 60 s, lockAtLeastFor 30 s, lockAtMostFor 9 min. | If schedule volume makes the lock table hot. Unlikely. |
-| **Synchronous audit insert** | "We write the 'who ran what' row before returning, because an async write can vanish and loses who the user was." | Async via `@Async` / queue | Async loses thread-local tenant context and can drop rows on crash; we had a real incident pattern with after-commit writes not committing. Cost is one INSERT. | If audit volume needs its own store: outbox pattern, still written synchronously. |
+| **Synchronous audit insert** | "We write the 'who ran what' row before returning, because an async write can vanish and loses who the user was." | Async via `@Async` / queue | Async loses thread-local tenant context and can drop rows on crash; we had a real incident pattern with after-commit writes not committing. Cost is one INSERT. Honest limits: a failed insert is only logged, and the row does not record the definition id even though the column exists. | If audit volume needs its own store: outbox pattern, still written synchronously. |
 | **Row cap 5000 after a forced sort** | "If a chart would have a million bars we keep the 5000 biggest, not 5000 random ones." | Cap only, no default order | Without a deterministic order the cap returns arbitrary rows and the chart lies. Biggest-first is what a truncated bar chart should show. | Post-replica: paging or async export for large tables instead of a cap. |
 | **Timezone as a bound parameter** (`AT TIME ZONE :tz`) | "A 2 a.m. appointment in Delhi is still yesterday in UTC. We convert to the hospital's zone inside the database before grouping by day." | Convert in the JVM; store local time | Bucketing must happen in the tenant zone, in the DB, before `date_trunc`. Bound, so no injection; cached 10 min with an IST fallback; only successful non-default lookups are cached so an admin-service outage cannot pin a wrong zone. | Multi-zone tenants (a chain across countries) would need per-branch zones. |
 | **Fail-fast bulkhead** (`maxWaitDuration=0`) | "If ten reports are already running, the eleventh gets an instant 'try again' instead of a spinner." | Queue with wait; per-tenant bulkheads | Interactive UI: a fast 429 beats a hung spinner. Per-tenant bulkheads were in the LLD; the shipped instance is global. Tuned 3 → 10 after real dashboards fanned out to 4+ tiles. | If one noisy tenant starves others: per-tenant instances keyed on `tenantId`. |
@@ -39,7 +45,7 @@ Pick the decision closest to the question, give the friend-version first (one br
 | Metadata-driven | One engine interprets declarative config; SQL itself is the classic example. | 8-field DSL record persisted as JSONB; one compiler; \~25 of 38 migrations are pure data. | "New report is an INSERT, not a release." | [Fowler on DSLs](https://martinfowler.com/bliki/DomainSpecificLanguage.html) |
 | Allow-list over deny-list | Deny-lists fail open on anything new; allow-lists fail closed. | Catalog lists every queryable field with allowed aggregations and operators; validator + compiler both check it. | "If it is not in the catalog, it does not exist." | [OWASP input validation](https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html) |
 | Injection boundary | Values can be bound; identifiers and keywords cannot. | Identifiers from catalog, values bound, aliases sanitised, GROUP BY / ORDER BY by ordinal, operators are enums. | "Values are bound, identifiers are looked up, structure is ordinals." | [OWASP query parameterization](https://cheatsheetseries.owasp.org/cheatsheets/Query_Parameterization_Cheat_Sheet.html) |
-| Multi-tenancy | Shared schema with a tenant column is cheapest and relies on every query being scoped. | Own DB: Hibernate filter armed by the request. Source DBs: compiler injects the predicate and refuses datasources without a tenant column. Headers ignored. | "Tenant scope is a property of the token, not a parameter of the request." | [Multitenant tenancy models](https://learn.microsoft.com/en-us/azure/architecture/guide/multitenant/considerations/tenancy-models) |
+| Multi-tenancy | Shared schema with a tenant column is cheapest and relies on every query being scoped. | Own DB: Hibernate filter armed by a shared aspect. Source DBs: compiler injects the predicate and refuses datasources without a tenant column. Tenant comes from the token claim (the header is only a fallback); the branch header currently takes precedence over the branch claim (page 6). | "Tenant scope is a property of the token, not a parameter of the request." (true for tenant; see page 6 for the branch caveat) | [Multitenant tenancy models](https://learn.microsoft.com/en-us/azure/architecture/guide/multitenant/considerations/tenancy-models) |
 | Read / write separation | Analytics and OLTP compete for cache, locks, connections. | Writable own DB; read-only pool per source DB; replica is a URL change. | "The adapter is the seam; the compiler never knew where the data lived." | [Postgres hot standby](https://www.postgresql.org/docs/current/hot-standby.html) |
 | Four OLTP knobs | Each limit catches a different failure. | Timeout bounds time, LIMIT bounds memory, pool size bounds the DB, bulkhead bounds the JVM. | "Four knobs, four failure modes." | [resilience4j bulkhead](https://resilience4j.readme.io/docs/bulkhead) |
 | Defence in depth | No single layer is trusted. | `@PreAuthorize` → policy → compiler refuses DENY → refuses unscoped datasource → read-only tx → timeout. The policy is the load-bearing layer for platform roles. | "Know which layer is load-bearing." | Page 6 |
@@ -49,5 +55,115 @@ Pick the decision closest to the question, give the friend-version first (one br
 
 ## The "what would you do differently" answer (rehearsed)
 
+<StatusBadge kind="planned" /> All three items below are written down as follow-ups; none is in the code.
+
 "Three things. First, per-tenant bulkheads: the global one means a noisy tenant can 429 a quiet one; resilience4j supports instances keyed on a tag, so it is a small change. Second, a compile dry-run at save: today save validates against the catalog but does not compile, so a definition can pass save and fail at run; compilation is microseconds, there is no reason not to. Third, an async path for heavy exports: everything is synchronous, and a 5000-row CSV over a slow tenant should be a job with a status endpoint. None of these blocked launch; all are written down."
 
+## Decision drills: problem, options, choice, why, trade-off, at higher scale
+
+Each box below is one decision in the shape interviewers like. Answer out loud first, then open the box and pick a depth.
+
+<AnswerModes id="re-dec-build-vs-embed" q="Why did you build a DSL compiler instead of embedding Metabase, Superset or Grafana?">
+<Fragment slot="short">
+
+Embedded BI does not understand our tenant and branch model or our vault-tokenised PII, so we would re-implement authorisation inside its model and still need a service for schedules and templates. We kept the Grafana shape (data source, fields, panel, dashboard) and wrote a small compiler that enforces our rules.
+
+</Fragment>
+<Fragment slot="medium">
+
+The problem was that every report was a code change. The options were embedded BI or per-service endpoints (which were the original problem). We chose our own engine because the DSL is only eight fields and the compiler is about 500 lines, so the cost of owning it is low, while the control over tenancy, PII and k-anonymity is high. The trade-off is that we own the bugs and the feature gaps, such as no cross-database joins.
+
+</Fragment>
+<Fragment slot="deep">
+
+Layering is the real argument: PII is handled at field level, tenancy at datasource level, layout at dashboard level. A flat "report = SQL string" table would need a SQL parser to enforce any of that. At higher scale, if power users need ad-hoc SQL, an embedded tool with row-level security is worth re-evaluating. <StatusBadge kind="hypothetical" /> The decision rationale is your account; the repository does not record a tool comparison. <StatusBadge kind="unverified" />
+
+</Fragment>
+</AnswerModes>
+
+<AnswerModes id="re-dec-flyway-catalog" q="Why is the catalog seeded by Flyway migrations and not edited in an admin UI?">
+<Fragment slot="short">
+
+Adding a queryable column widens what can be read, so it is a security change. Flyway gives review, versioning and rollback through a pull request, the same reason Grafana teams provision from Git.
+
+</Fragment>
+<Fragment slot="medium">
+
+The problem was keeping the allow-list trustworthy. An admin screen would let anyone with access widen it, and the catalog's physical column and table names go straight into the SQL text, so they must be trusted. The reviewer checks two things: no PII-pattern names, and a tenant column on every datasource. The trade-off is that a new report needs a PR, and live tenants that hold their own copies of definitions may need a manual patch (seen in V33 and V36).
+
+</Fragment>
+<Fragment slot="deep">
+
+If tenants ever need their own custom fields, the next step is a governed admin flow with an approval step, not a free editor. <StatusBadge kind="hypothetical" /> The catalog snapshot reloads every 5 minutes on each pod without a restart, so a merged migration is live within about five minutes plus deploy time. <StatusBadge kind="implemented" />
+
+</Fragment>
+</AnswerModes>
+
+<AnswerModes id="re-dec-sql-string" q="Why build SQL as a string in one class instead of JPA Criteria, QueryDSL or jOOQ?">
+<Fragment slot="short">
+
+The source tables belong to other services, so we have no entities and do not want that coupling. One class with strict, tested rules (identifiers from the catalog, values bound, ordinals) is easy to audit.
+
+</Fragment>
+<Fragment slot="medium">
+
+jOOQ would add code generation against schemas we do not own; Criteria and QueryDSL need entity metamodels. The compiler is the only class that produces SQL text, so the injection boundary is one file. The trade-off is that we hand-write cast and alias rules and carry the risk of a mistake in string building, which is why `QueryCompilerTest` exists. Revisit if the class passes about 1000 lines or needs joins beyond lookups. <StatusBadge kind="hypothetical" />
+
+</Fragment>
+</AnswerModes>
+
+<AnswerModes id="re-dec-bulkhead" q="Why a fail-fast bulkhead, and why did you raise it from 3 to 10?">
+<Fragment slot="short">
+
+For an interactive UI, an instant 429 beats a hung spinner. The limit of 3 was sized for single reports, but a dashboard fires one run per tile in parallel, so the fourth tile got a 429. We raised it to 10 by config (PR #1706) and kept the protection.
+
+</Fragment>
+<Fragment slot="medium">
+
+Four knobs bound four failure modes: timeout bounds time, LIMIT bounds memory, pool size bounds the database, and the bulkhead bounds threads in our JVM. The failure was the bulkhead doing exactly what it was configured to do. The lesson is to size concurrency limits from the caller's fan-out. The trade-off is that the bulkhead is global, so a noisy tenant can 429 a quiet one; 3 to 10 bought time, not a fix.
+
+</Fragment>
+<Fragment slot="deep">
+
+Higher scale: per-tenant bulkhead instances keyed on tenant id (resilience4j supports it), staggered tile loads in the UI, and a queue with a bounded wait only if the UI can tolerate it. <StatusBadge kind="planned" /> I did not verify who diagnosed the 429s or who wrote PR #1706; the commit author is another contributor. <StatusBadge kind="unverified" /> Say what you did in the diagnosis.
+
+</Fragment>
+</AnswerModes>
+
+<AnswerModes id="re-dec-sync-audit" q="Why is the audit row written synchronously?">
+<Fragment slot="short">
+
+A regulatory trail must not vanish. Async writes lose the thread-local tenant context and can drop rows on a crash. It costs one INSERT, and a failure is logged but never fails the report.
+
+</Fragment>
+<Fragment slot="medium">
+
+The adapter inserts the audit row right after the query returns, inside try and catch. The row has user id, SQL hash, datasource, row count, truncated flag, elapsed time and tenant. Two honest gaps: the definition id column is never filled, and a result served from the cache writes no audit row. If audit volume grows, an outbox written synchronously feeds a separate store. <StatusBadge kind="hypothetical" />
+
+</Fragment>
+</AnswerModes>
+
+<Reveal q="Intermediate: you said views keep the compiler single-table. How did refunds get netted without views?">
+
+By rewriting computed `catalog_field` expressions: a correlated subquery sums refunds per invoice (excluding pending-approval and failed ones) and the measure becomes the invoice amount minus that. The `{f}.` placeholder keeps the references correct whether or not a lookup join aliases the fact table. One UPDATE on the field fixes every report built on it. The cost is that the SQL lives inside catalog data and is easy to get subtly wrong, as the V35 comment admits.
+
+</Reveal>
+
+<Reveal q="Advanced: which of these decisions would you revisit first at ten times the load?">
+
+The global bulkhead (per-tenant instances), then the synchronous request path for heavy reports (async jobs with a status endpoint), then the source databases themselves (pre-aggregation or an OLAP store behind the same adapter interface). The compiler and the catalog snapshot are not the bottleneck. All of this is <StatusBadge kind="hypothetical" />.
+
+</Reveal>
+
+<RevisionCards id="re-decisions" cards={[
+  { front: 'Why build instead of embed BI?', back: 'Embedded BI does not know our tenant/branch model or vault-tokenised PII. DSL is 8 fields; compiler about 500 lines. Keep the Grafana shape.' },
+  { front: 'Why Flyway-seeded catalog?', back: 'Catalog changes widen what can be queried, so they are security changes: review, versioning, rollback by PR.' },
+  { front: 'Why compile to a SQL string?', back: 'Source tables belong to other services; no entities. One tested, auditable class is the injection boundary.' },
+  { front: 'How are joins avoided?', back: 'Views from the owning team (v_invoice_revenue_line) and computed catalog columns with correlated subqueries ({f}. placeholder). Same-DB lookup joins for display names.' },
+  { front: 'Four OLTP knobs', back: 'Timeout bounds time, LIMIT bounds memory, pool bounds DB connections, bulkhead bounds JVM threads.' },
+  { front: 'Why fail-fast at 10?', back: 'Instant 429 beats a hung spinner. 3 was sized for single reports, dashboards fan out per tile. Global, so per-tenant is the follow-up (planned).' },
+  { front: 'Why synchronous audit?', back: 'Async loses tenant context and can drop rows. One INSERT, failure logged only. Definition id not recorded; cache hits not audited.' },
+  { front: 'The three "do differently" items', back: 'Per-tenant bulkheads, compile dry-run at save, async path for heavy exports. All planned, none built.' }
+]} />
+
+<ChapterDone id="re-decisions" />

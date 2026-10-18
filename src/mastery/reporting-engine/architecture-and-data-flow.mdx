@@ -7,6 +7,25 @@ minutes: 7
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import DryRun from '../../components/DryRun.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import Reveal from '../../components/Reveal.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
+import { recorder, tvars } from '../../lib/dryrun';
+
+export const dashFrames = (() => {
+  const r = recorder();
+  r.frame('The admin opens a dashboard. The UI calls GET /dashboards/{id} and gets back the list of tiles: four definition ids with a layout hint each (half or full).', [tvars({ tiles: 4, 'bulkhead limit': 3, 'slots in use': 0 })]);
+  r.frame('The UI fires one POST /reports/{id}/run per tile, all in parallel. Each request passes the JWT filters, the access policy, the validator and the compiler before it reaches the database adapter.', [tvars({ 'runs in flight': 4, 'slots in use': 0 }, { 'runs in flight': 0, 'slots in use': 0 })]);
+  r.frame('Tile 1 takes bulkhead slot 1 and its SELECT runs on the read-only pool for patient_db.', [tvars({ 'slots in use': 1, 'bulkhead limit': 3 }, { 'slots in use': 0, 'bulkhead limit': 3 })]);
+  r.frame('Tile 2 takes slot 2, tile 3 takes slot 3. All three limits are now in use.', [tvars({ 'slots in use': 3, 'bulkhead limit': 3 }, { 'slots in use': 1, 'bulkhead limit': 3 })]);
+  r.frame('Tile 4 arrives while all three slots are busy. maxWaitDuration is 0, so it does not queue: the bulkhead fallback throws and the service returns HTTP 429.', [tvars({ 'slots in use': 3, 'tile 4': 'HTTP 429' }, { 'slots in use': 3, 'tile 4': 'waiting' })], { question: 'With a limit of 3 and zero wait, what happens to the fourth parallel run?', options: ['It queues until a slot frees', 'It gets an immediate 429', 'It runs on a second pool'], answer: 1, explain: 'maxWaitDuration=0 means fail fast. The fallback converts the full-bulkhead exception into a 429.' });
+  r.frame('The fix on 2026-09-01 (PR #1706) was config only: maxConcurrentCalls 3 to 10 in the default and production profiles. The protection stays; it is now sized for dashboard fan-out.', [tvars({ 'bulkhead limit': 10, 'tile 4': 'runs' }, { 'bulkhead limit': 3, 'tile 4': 'HTTP 429' })]);
+  r.frame('Each successful run writes one audit row after its query, and the UI draws the four charts. A run served from the Redis cache (when Redis is enabled) returns before the adapter, so it writes no audit row.', [tvars({ 'audit rows': 'one per executed query', 'cached runs': 'no audit row' })]);
+  return r.frames;
+})();
 
 ## In plain words first
 
@@ -32,7 +51,7 @@ Two arrows to remember: **writes go to our own database; reads fan out to the se
 ## Picture 2 — what happens inside the engine
 
 <Mermaid code={`flowchart LR
-    A["Access scope<br>from JWT roles + claims"] --> V["Validate<br>vs catalog snapshot"]
+    A["Access scope<br>from roles + tenant and branch context"] --> V["Validate<br>vs catalog snapshot"]
     V --> C["Compile<br>DSL → SQL + params"]
     C --> X["Execute<br>read-only · 3 s · bulkhead 10"]
     X --> R["Result rows<br>+ column metadata<br>+ audit row"]
@@ -72,8 +91,8 @@ A dashboard with four tiles is four parallel runs. With `maxConcurrentCalls: 3` 
 | **QueryCompiler** | PromQL engine | The only class that builds SQL text. DSL + access scope → parameterised SQL + column metadata + timezone. | Identifiers from catalog, values bound, aliases sanitised, GROUP BY / ORDER BY by ordinal. Injects tenant, branch, k-anonymity, LIMIT, soft-delete, timezone. |
 | **PostgresJdbcAdapter** | Data source plugin | Executes the compiled query on the datasource's own read-only pool. | Bulkhead of 10, `SET LOCAL statement_timeout = '3000ms'`, truncation flag at 5000 rows, synchronous audit row. |
 | **ReportEngineService** | — | Seam: validate → compile → execute. Two beans behind one flag. | `reporting.engine.stub=false` selects the real engine; `true` selects canned data. Lets the engine ship dark and flip per environment. |
-| **ReportAccessPolicy** | Org / team permissions (but from JWT) | JWT roles → scope. | SUPER_ADMIN / ADMIN → ALL; BRANCH_ADMIN → RESTRICTED to the branch claim; platform PLATFORM\_\* roles → denied (break-glass only). |
-| **ExportDateRangeResolver** | Time range picker | TODAY / THIS_WEEK / THIS_MONTH → BETWEEN on the datasource's default date column, in the tenant's timezone. | Upper bound is start-of-next-period minus 1 µs so boundaries never double count. One definition serves all ranges. |
+| **ReportAccessPolicy** | Org / team permissions (but from JWT) | Roles → scope. | SUPER_ADMIN / ADMIN → ALL; BRANCH_ADMIN → RESTRICTED to the branch in the branch context (the `X-Branch-Id` header if sent, else the token claim; see page 6); platform PLATFORM\_\* roles → denied (break-glass only). |
+| **ExportDateRangeResolver** | Time range picker | TODAY / YESTERDAY / THIS_WEEK / THIS_MONTH / CUSTOM (start and end date) → BETWEEN on the datasource's default date column, in the tenant's timezone. | Upper bound is start-of-next-period minus 1 µs so boundaries never double count. A range replaces any existing filter on that column. One definition serves all ranges. |
 | **Scheduler** | Alerting / reports | Cron delivery of a saved definition as CSV by email. | ShedLock on our own DB so one pod fires. Compiles with the _creator's_ stored scope, not ALL. |
 | **Dashboards** (`report_dashboard`) | Dashboard JSON | `items` JSONB = list of `{definitionId, layoutHint}`; default date range and branch scope. | The UI runs one report per tile in parallel; that is the fan-out in picture 3. |
 
@@ -81,12 +100,12 @@ A dashboard with four tiles is four parallel runs. With `maxConcurrentCalls: 3` 
 
 | Database | Purpose | Isolation mechanism |
 | --- | --- | --- |
-| `reporting_db` (own, `@Primary`, writable) | `report_definition`, `report_dashboard`, `report_schedule`, `report_artifact`, `report_run_audit`, `catalog_*`, `shedlock` | Hibernate `@Filter` on `tenant_id`, armed by the request's tenant context |
+| `reporting_db` (own, `@Primary`, writable) | `report_definition`, `report_dashboard`, `report_schedule`, `report_artifact`, `report_run_audit`, `catalog_*`, `shedlock` | Hibernate `@Filter` on `tenant_id`, armed by a shared aspect (`TenantFilterAspect`) around repository calls, using the request's tenant context |
 | Source DBs (`patient_db`, `billing_db`, `pharmacy_db`, `lead_db`) | Fact tables and views the catalog exposes | One **read-only Hikari pool per service DB**; compiler injects `tenant_id = :tenant_id` unconditionally and refuses a datasource without a tenant column |
 
-Read-only is enforced three times: Hikari `readOnly`, `DataSourceTransactionManager.enforceReadOnly`, `TransactionTemplate.readOnly`. Pointing a pool at the read replica is a URL change; that swap happened with zero code change when the CloudNativePG cluster landed. Why per-service pools: production is separate databases per service, and a Postgres connection cannot span databases. A blank URL (`LEAD_DB_URL` today) means the pool is skipped with a warning, and a datasource pointing at it fails fast naming the missing config key.
+Read-only is enforced three times: Hikari `readOnly`, `DataSourceTransactionManager.enforceReadOnly`, `TransactionTemplate.readOnly`. Pointing a pool at the read replica is a URL change, because each source is configured by its own URL. <StatusBadge kind="unverified" /> The original text says the swap happened with zero code change when a CloudNativePG cluster landed; nothing in the repository confirms that, so confirm it yourself before saying it. Why per-service pools: production is separate databases per service, and a Postgres connection cannot span databases. A blank URL (`LEAD_DB_URL` today) means the pool is skipped with a warning, and a datasource pointing at it fails fast naming the missing config key.
 
-## Guardrails, always applied
+## Guardrails (most are unconditional; k-anonymity depends on the report's settings)
 
 | Guardrail | Where it lives | Failure it prevents |
 | --- | --- | --- |
@@ -94,12 +113,12 @@ Read-only is enforced three times: Hikari `readOnly`, `DataSourceTransactionMana
 | Branch predicate | compiler, `branch_id::text IN (:branch_ids)` for RESTRICTED | branch admin seeing other branches |
 | Soft-delete predicate | compiler, `deleted_at IS NULL` when the datasource declares the column | counting deleted rows |
 | Allow-list | catalog + validator | querying an unlisted column, raw PII columns |
-| k-anonymity | compiler, `HAVING COUNT(*) >= :min_group_size` | re-identifying a patient from a tiny group |
+| k-anonymity | compiler, `HAVING COUNT(*) >= :min_group_size`, only when the report's `privacy.minimumGroupSize` is above 0 and the query is grouped | re-identifying a patient from a tiny group (page 6 explains the gap) |
 | Row cap after forced sort | compiler `LIMIT`, adapter `truncated` flag | a million rows into JVM memory; arbitrary truncation |
 | Statement timeout | adapter, `SET LOCAL` | one query holding a connection |
 | Bulkhead | adapter, resilience4j | reporting flooding its own JVM / the DB |
 | Timezone bucketing | compiler, `date_trunc(..., col AT TIME ZONE :tz)` | 02:00 IST on Jun 1 landing in May |
-| Audit row | adapter, synchronous insert | no trail of who ran what (DPDP) |
+| Audit row | adapter, synchronous insert (a cache hit returns before the adapter, so it writes no audit row) | no trail of who ran what (DPDP) |
 
 ## The API surface (for "what endpoints exist?")
 
@@ -113,6 +132,44 @@ Read-only is enforced three times: Hikari `readOnly`, `DataSourceTransactionMana
 | `/schedules` CRUD | Cron + recipients + stored creator scope. |
 | `GET /catalog`, `POST /catalog/refresh` | What the UI's report builder can offer; force a snapshot reload. |
 
+## Walkthrough: one dashboard load, hop by hop
+
+Step through it. Every hop comes from the pictures and the table above; nothing is added. Turn on Predict to guess the outcome of the tile that hits the old limit.
+
+<DryRun title="Dashboard load with four tiles (bulkhead was 3)" frames={dashFrames} predict />
+
+## Design decisions in this chapter
+
+<AnswerModes id="re-arch-read-pools" q="Why one read-only connection pool per source database, instead of one shared read pool?">
+<Fragment slot="short">
+
+Production keeps a separate database per service, and one Postgres connection cannot span databases. So each datasource row names its pool (`source_connection`), and the compiler never needs to know where the data lives. A slow billing query also cannot use up the patient pool.
+
+</Fragment>
+<Fragment slot="medium">
+
+The catalog row carries a routing key. The adapter looks up the pool by that key and fails fast, naming the missing config key, if it is not configured. A blank URL means the pool is skipped with a warning at boot. Each pool is read-only three ways: Hikari `readOnly`, `enforceReadOnly` on the transaction manager, and a read-only `TransactionTemplate`. The cost is one config block per service.
+
+</Fragment>
+<Fragment slot="deep">
+
+Alternatives were one consolidated read connection (impossible across databases) or cross-database joins (not supported by design). When a report needs data from two tables in the same database we use a lookup join or a view the owning team provides. Billing even denormalised the branch name onto the invoice row because "branch_id cannot be lookup-joined to the branch master from the billing connection". <StatusBadge kind="implemented" /> At higher scale the answer would be a store that unifies sources, such as an OLAP database behind the same adapter interface. <StatusBadge kind="hypothetical" />
+
+</Fragment>
+</AnswerModes>
+
+<Reveal q="Intermediate: where do writes go and where do reads go, and why does that matter?">
+
+Writes (definitions, dashboards, schedules, audit rows, the shedlock table) go to our own `reporting_db`. Reads fan out to the source databases through read-only pools. That keeps analytics reads off the writable path of other services and lets us bound each source with its own timeout and pool.
+
+</Reveal>
+
+<Reveal q="Advanced: what breaks first if a dashboard has ten tiles?">
+
+The bulkhead. The UI fires one run per tile in parallel and the limit is 10 concurrent source queries with zero wait, so a tenth tile is fine but two admins loading at once will return 429s. The shipped bulkhead is global, so one busy tenant can affect another. Planned fixes are per-tenant bulkheads and staggering tile loads in the UI. <StatusBadge kind="planned" />
+
+</Reveal>
+
 ## Read more
 
 * [Grafana data sources](https://grafana.com/docs/grafana/latest/datasources/) and [dashboard JSON model](https://grafana.com/docs/grafana/latest/dashboards/build-dashboards/view-dashboard-json-model/) — compare with `catalog_datasource` and `report_dashboard.items`.
@@ -120,3 +177,15 @@ Read-only is enforced three times: Hikari `readOnly`, `DataSourceTransactionMana
 * [Database per service](https://microservices.io/patterns/data/database-per-service.html) — why one read-only pool per service DB.
 * [PostgreSQL hot standby](https://www.postgresql.org/docs/current/hot-standby.html) — what "the replica is a URL change" relies on.
 
+<RevisionCards id="re-arch" cards={[
+  { front: 'Which arrows write and which read?', back: 'Writes go to our own reporting_db. Reads fan out through one read-only pool per source database (patient, billing, pharmacy, lead).' },
+  { front: 'Engine pipeline in four words', back: 'Scope, validate, compile, execute. The catalog snapshot feeds validate and compile.' },
+  { front: 'How is the catalog held in memory?', back: 'An immutable snapshot in an AtomicReference, reloaded every 5 minutes per pod and on POST /catalog/refresh. A failed reload keeps the previous snapshot.' },
+  { front: 'What does reporting.engine.stub do?', back: 'Selects the stub or the compiling engine behind one interface. The code default is now false (real engine).' },
+  { front: 'Why did the fourth tile get a 429?', back: 'Bulkhead maxConcurrentCalls was 3 with maxWaitDuration 0. Raised to 10 on 2026-09-01 (PR #1706).' },
+  { front: 'Where does the datasource route?', back: 'catalog_datasource.source_connection picks the pool; unknown key fails fast naming the missing config.' },
+  { front: 'Which guardrail is NOT unconditional?', back: 'k-anonymity: HAVING is emitted only when privacy.minimumGroupSize is above 0 and the query has measures and dimensions.' },
+  { front: 'Read-only is enforced where?', back: 'Hikari readOnly, DataSourceTransactionManager.enforceReadOnly, TransactionTemplate.readOnly. A SELECT-only DB role is unverified.' }
+]} />
+
+<ChapterDone id="re-arch" />

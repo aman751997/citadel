@@ -7,10 +7,58 @@ minutes: 8
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import StatusLegend from '../../components/StatusLegend.astro';
+import LessonProgress from '../../components/LessonProgress.astro';
+import Reveal from '../../components/Reveal.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
+
+<LessonProgress />
+
+<StatusLegend />
 
 **What this is:** a self-contained course on `reporting-service`, written so you can read it once and explain the whole system out loud. Every page has plain-language explanations, real code artefacts (DSL JSON, emitted SQL, catalog rows), Mermaid diagrams and links to read more. Read in order the first time; jump around after that.
 
-> **Honesty guard (updated 2026-09-11).** The service is _deployed and in daily use_: 148 commits between 2026-06-15 and 2026-09-10, 38 Flyway migrations, and a production tuning change on 2026-09-01 (bulkhead 3 → 10) that was triggered by real users seeing HTTP 429 on dashboard load. Say "live" with confidence. The row cap (5000), timeout (3 s) and bulkhead (10) are _design parameters_, not measured limits; the Redis result cache exists only when a Redis bean is present.
+> **Honesty guard (updated 2026-09-11, re-checked against the code 2026-10-18).** The service is _deployed and in daily use_: 148 commits between 2026-06-15 and 2026-09-10, 38 Flyway migrations at that snapshot (40 by the end of 2026-09-11), and a production tuning change on 2026-09-01 (bulkhead 3 → 10) that was triggered by real users seeing HTTP 429 on dashboard load. The row cap (5000), timeout (3 s) and bulkhead (10) are _design parameters_, not measured limits; the Redis result cache exists only when a Redis bean is present (it needs `spring.data.redis.enabled=true`, which defaults to false).
+>
+> <StatusBadge kind="unverified" /> "In daily use" and "real users" come from your own account. The repository proves the commits and the production-profile change (PR #1706), not usage. Be ready to say who uses it and how often, from your own knowledge.
+
+## What it does, who it is for, and what was built
+
+**Business problem.** Hospital staff need reports (revenue by branch, no-shows by doctor, top medicines) and product keeps changing what those reports must say. Writing SQL, a controller and a release for each one does not keep up.
+
+**Who uses it.** Tenant admins and branch admins of the hospital platform. The access policy in the code maps `SUPER_ADMIN` and `ADMIN` to the whole tenant and `BRANCH_ADMIN` to one branch. <StatusBadge kind="implemented" /> How many tenants or users run it is not in the source. <StatusBadge kind="unverified" /> Confirm this yourself.
+
+**My responsibilities.** The original text says "I designed and led `reporting-service`". <StatusBadge kind="unverified" /> Confirm this yourself. A read-only look at the git history (2026-10-18) shows 164 commits touching the folder from 18 author names. The first commit, the bulkhead PR #1706 and the GST migrations V33 and V36 were written by other contributors; about 50 commits are under two author names that look like yours. Safe wording in an interview: "I designed the approach and reviewed it; the team built it", then name the specific parts you personally wrote or debugged. Do not claim more than you can defend line by line.
+
+### Implemented vs proposed
+
+| Item | Status | Basis |
+| --- | --- | --- |
+| Catalog, validator, compiler, read-only adapter, audit row, Redis cache, ShedLock scheduler, dashboards, system templates | <StatusBadge kind="implemented" /> | Read in `reporting-service` at the 2026-09-11 state of `develop`. |
+| Two-tenant isolation test and per-domain real-engine tests | <StatusBadge kind="tested" /> | The test classes exist (`TenantIsolationIT`, `QueryCompilerTest`, six `*E2EIT` classes). I did not run them. |
+| Bulkhead 3 → 10 (PR #1706, 2026-09-01) | <StatusBadge kind="implemented" /> | Commit changes `application.yml` and `application-prod.yml`. |
+| GST flip V33 → V36 handled as data | <StatusBadge kind="implemented" /> | Both migrations exist (2026-09-02 and 2026-09-09). |
+| Per-tenant bulkheads, compile dry-run at save, async export, `SCAN` instead of `KEYS` | <StatusBadge kind="planned" /> | Written down as known gaps; not in the code. |
+| Pre-aggregation or an OLAP store, async report jobs at 10× scale | <StatusBadge kind="hypothetical" /> | Discussion only. |
+| "Moving to the read replica was a URL change" | <StatusBadge kind="unverified" /> | Per-source URLs are config, so the mechanism is real. The replica move itself is not in the repository. Confirm this yourself. |
+| A SELECT-only Postgres role for the source pools | <StatusBadge kind="unverified" /> | The code sets the pool read-only, but I could not see the database grants. Confirm this yourself. |
+| "Five service teams hand-rolled reports" | <StatusBadge kind="unverified" /> | Background story, not checkable in code. |
+
+### Corrections found when I checked the code (2026-10-18)
+
+The chapters now carry these fixes inline. Learn them, because an interviewer who reads the code will find them:
+
+1. **Branch header.** The shared `BranchContextFilter` prefers the `X-Branch-Id` header over the token's branch claim. The tenant filter prefers the token. So "headers are ignored" is true for tenant (when the token has a tenant claim) but not for branch. Details on page 6.
+2. **`excludePatientIdentifiers`** is stored in the DSL but nothing in the validator or compiler reads it. The PII protection is the catalog allow-list and the name-pattern block.
+3. **k-anonymity** uses the `minimumGroupSize` the DSL carries. The compiler adds `HAVING` only when the query is grouped and the value is above zero. There is no server-side minimum.
+4. **Audit row** has a `report_definition_id` column, but the adapter never fills it. It records user, SQL hash, datasource, row count, truncated flag, elapsed time and tenant.
+5. A datasource with no tenant column throws `IllegalStateException`, which the global handler turns into a 500, not a 400.
+6. **Refund netting** was done by rewriting computed catalog columns (correlated subqueries with the `{f}.` placeholder in V30, V31, V35, V38), not by repointing datasources at views named `v_*_net_of_approved_refunds`. Those view names are not in the repository. `v_invoice_revenue_line` is a real billing view.
+7. **Counts.** Six `*E2EIT` classes (not seven). 40 migrations by end of 2026-09-11. V19 was added 2026-07-09, not August.
+8. **Platform roles.** The real role prefix in the code differs from the neutral `PLATFORM_*` wording used here.
 
 ## 1. Why this project is worth 10 minutes of an interviewer's time
 
@@ -26,9 +74,9 @@ The analogy that lands with every interviewer: **this is Grafana + Prometheus fo
 | A **dashboard** (JSON of panels in a grid) | `report_dashboard` row: `items` JSONB list of `{definitionId, layoutHint}`, default date range, default branch scope | 4 tiles, `layoutHint: "half"|"full"` |
 | **PromQL engine** that evaluates the query | `QueryCompiler` (489 lines): DSL → parameterised SQL, injecting tenant / branch / k-anonymity / LIMIT / timezone | Page 2 shows the exact SQL |
 | **Time range picker** at the top of the dashboard | `ExportDateRangeResolver`: TODAY / THIS_WEEK / THIS_MONTH computed in the tenant's timezone, appended as a BETWEEN filter | one definition serves all three ranges |
-| **Provisioning** dashboards from files in Git | Flyway migrations seed catalog rows and starter definitions; a PR review is the approval gate | V3, V4, V9, V16–V38 are pure data |
+| **Provisioning** dashboards from files in Git | Flyway migrations seed catalog rows and starter definitions; a PR review is the approval gate | V3, V4, V9 and most of V16–V40 are data-only (my count: 28 of the 40 files at 2026-09-11 contain no CREATE or ALTER) |
 | **Alerting / scheduled reports** | `report_schedule` + ShedLock poller: cron delivery of a definition as CSV by email, with the creator's stored scope | polls every 60 s, lock 30 s–9 min |
-| What Grafana does **not** give you | Tenant + branch isolation from the JWT, PII allow-list, k-anonymity, per-tenant timezone, regulator-grade audit row. This is why we built instead of embedding. | Pages 1, 3, 6 |
+| What Grafana does **not** give you | Tenant + branch isolation from the security context, PII allow-list, k-anonymity, per-tenant timezone, a per-run audit row. This is why we built instead of embedding. | Pages 1, 3, 6 |
 
 One sentence to memorise: **"Catalog is the type system, the DSL is the program, the compiler is the interpreter, and the guardrails are compiled in so nobody can forget them."**
 
@@ -58,13 +106,13 @@ One sentence to memorise: **"Catalog is the type system, the DSL is the program,
 
 ## 3. The 60-second pitch (say it out loud)
 
-"I designed and led `reporting-service`, a metadata-driven reporting engine for our multi-tenant hospital platform. Instead of hand-writing SQL per report, a tenant admin composes a report in the UI; we persist it as an eight-field JSON DSL, and at run time a compiler turns it into parameterised SQL against a server-controlled catalog. The catalog is an allow-list: which tables, which columns, which aggregations and operators. The compiler injects tenant and branch predicates from the JWT, k-anonymity via HAVING, a hard row cap after a deterministic sort, and timezone-correct bucketing. Execution goes through a read-only pool per source database with a 3-second statement timeout and a bulkhead. There is a synchronous audit row per run, a short-TTL result cache, and a ShedLock-based scheduler that emails CSVs with the creator's stored scope. Thirty-eight migrations later, roughly two-thirds of them are pure data: new dashboards ship as INSERTs. It is live and iterating weekly with product."
+"I designed and led `reporting-service`, a metadata-driven reporting engine for our multi-tenant hospital platform. Instead of hand-writing SQL per report, a tenant admin composes a report in the UI; we persist it as an eight-field JSON DSL, and at run time a compiler turns it into parameterised SQL against a server-controlled catalog. The catalog is an allow-list: which tables, which columns, which aggregations and operators. The compiler injects the tenant predicate from the token and the branch predicate from the branch context, k-anonymity via HAVING when the report sets a minimum group size, a hard row cap after a deterministic sort, and timezone-correct bucketing. Execution goes through a read-only pool per source database with a 3-second statement timeout and a bulkhead. There is a synchronous audit row per run (a cache hit skips it), a short-TTL result cache, and a ShedLock-based scheduler that emails CSVs with the creator's stored scope. Thirty-eight migrations later, roughly two-thirds of them are pure data: new dashboards ship as INSERTs. It is live and iterating weekly with product."
 
 ## 4. The 3-minute version (when they say "tell me more")
 
 1. **Problem.** Five service teams, each hand-rolling report endpoints. Every product tweak ("GST-inclusive or exclusive?") was a code change and a release. No shared tenancy or PII rules across them.
 2. **Insight.** Every report is the same shape: _from one table, group by some columns, aggregate some columns, filter, sort, limit_. That shape is small enough to be a DSL and safe enough to compile if identifiers come from a catalog and values are bound.
-3. **Guardrails compiled in.** Tenant predicate always. Branch predicate for branch admins. HAVING COUNT(\*) >= k for privacy. LIMIT with a forced ORDER BY so truncation is meaningful. `AT TIME ZONE :tz` so a 2 a.m. IST appointment lands in the right month.
+3. **Guardrails compiled in.** Tenant predicate always. Branch predicate for branch admins. HAVING COUNT(\*) >= k for privacy, using the k the report carries. LIMIT with a forced ORDER BY so truncation is meaningful. `AT TIME ZONE :tz` so a 2 a.m. IST appointment lands in the right month.
 4. **Protecting the OLTP databases.** Read-only Hikari pools, `SET LOCAL statement_timeout`, resilience4j bulkhead with fail-fast 429, Redis result cache. The adapter is a seam: moving to the read replica was a URL change.
 5. **Operations.** Catalog snapshot reloaded every 5 minutes. ShedLock scheduler. Synchronous audit row. Two-tenant integration test. Real-engine E2E tests per business domain (appointments, billing, pharmacy, telecaller, refunds).
 6. **Proof it works.** Product reversed a GST decision in one week (V33 exclusive → V36 inclusive). Both were data migrations. No Java changed. That is the whole argument for metadata-driven.
@@ -81,9 +129,9 @@ One sentence to memorise: **"Catalog is the type system, the DSL is the program,
 | 5 min | Catalog snapshot reload interval per pod | `CatalogLoader` |
 | 10 min / 100 | Tenant timezone Caffeine cache TTL / max size; fallback Asia/Kolkata | `ReportTimezoneResolver` |
 | 60 s / 30 s–9 min | Scheduler poll interval / ShedLock lockAtLeastFor–lockAtMostFor | `ScheduledReportRunner` |
-| 38 / \~25 | Flyway migrations / of which pure data (catalog + definitions) | `db/migration` |
+| 38 (40 by end of 2026-09-11) / \~25 | Flyway migrations / of which pure data (catalog + definitions) | `db/migration` |
 | 106 / \~5.5k / 489 | Java files / lines / compiler lines | `src/main/java` |
-| 33 | Test classes, including 7 real-engine E2E ITs and a two-tenant isolation IT | `src/test/java` |
+| 33 | Java files under `src/test` (a few are base or config helpers), including 6 `*E2EIT` real-engine classes and a two-tenant isolation IT | `src/test/java` |
 | 8088 | Port; API base `/api/v1/reporting`; own DB `reporting_db` schema `reporting` | `application.yml` |
 
 ## 6. Read in this order
@@ -117,3 +165,55 @@ One sentence to memorise: **"Catalog is the type system, the DSL is the program,
 
 _Last refreshed 2026-09-11 against_ `develop`_. Numbers above are checked against the code, not remembered._
 
+## 9. Mock interview: overview level
+
+Say each answer out loud first. Open the box only after you have tried.
+
+<Reveal q="Basic: in one minute, what is reporting-service and why does it exist?">
+
+It is a metadata-driven reporting engine for a multi-tenant hospital platform. A report is a small JSON recipe stored in a table. At run time a compiler turns the recipe into parameterised SQL, checked against a server-controlled catalog of allowed tables, columns, aggregations and operators. Tenant and branch scope, a row cap, a timeout and timezone-correct bucketing are applied by the engine, so a new report is a data change and not a release.
+
+</Reveal>
+
+<Reveal q="Basic: name the four tables that make up the model and their Grafana equivalents.">
+
+`catalog_datasource` is the data source, `catalog_field` is the metric names and labels, `report_definition` is a panel query, and `report_dashboard` is the dashboard JSON. Catalog rows are seeded by Flyway so that widening what can be queried goes through code review.
+
+</Reveal>
+
+<Reveal q="Basic: what did you personally do on it?">
+
+This is your answer, not mine. <StatusBadge kind="unverified" /> The source says "designed and led", and git shows other contributors on key parts. Prepare three concrete things you wrote, reviewed or debugged (for example the question you raised about scheduled-report scope in story 1), and use "we" for the rest.
+
+</Reveal>
+
+<AnswerModes id="re-why-metadata-driven" q="Why did you build a metadata-driven reporting engine instead of writing endpoints per report?">
+<Fragment slot="short">
+
+Every report has the same shape: one table, group by, aggregate, filter, sort, limit. That shape fits a small JSON DSL, so we store reports as rows and compile them to safe SQL in one place. A new report is an INSERT, not a release, and the tenancy and privacy rules live in the compiler where nobody can forget them.
+
+</Fragment>
+<Fragment slot="medium">
+
+The problem was that each report was a ticket: SQL, controller, test, release, and no shared tenancy or PII rules. The insight was that all reports are the same shape. So the DSL has eight fields, a catalog says which tables and columns are allowed, and a compiler builds the SQL. Identifiers come from the catalog, values are bound, and group and order use ordinals. The guardrails (tenant predicate, branch predicate, row cap, timeout, bulkhead) are compiled in. The best proof was the GST decision: product reversed it within a week and both directions were data migrations, with no Java change.
+
+</Fragment>
+<Fragment slot="deep">
+
+Layers: catalog (type system), DSL (program), validator (type checker), compiler (interpreter), adapter (sandboxed runtime). Safety comes from the layering: PII is handled at field level, tenancy at datasource level, layout at dashboard level. A flat "report equals SQL string" table would need a SQL parser to enforce any of it. Trade-offs: the compiler is single-table plus same-database lookup joins, so anything else needs a view or a computed catalog column; and catalog changes are PR-reviewed rather than self-service. Not yet built: per-tenant bulkheads, a compile dry-run at save, async exports. <StatusBadge kind="planned" />
+
+</Fragment>
+</AnswerModes>
+
+<RevisionCards id="re-overview" cards={[
+  { front: 'One-sentence description of the engine', back: 'A report is a JSON DSL row; a compiler turns it into parameterised, tenant-scoped SQL against a catalog allow-list, run read-only with a timeout, row cap and bulkhead.' },
+  { front: 'The memorable rule for safety', back: 'Values are bound. Identifiers are looked up in the catalog. Structure uses ordinals.' },
+  { front: 'The eight DSL fields', back: 'datasource, chartType, dimensions, measures, filters, sort, limit, privacy.' },
+  { front: 'Four model tables and Grafana analogues', back: 'catalog_datasource = data source; catalog_field = metrics and labels; report_definition = panel; report_dashboard = dashboard.' },
+  { front: 'Limits to recite', back: 'Max 5 dimensions, 10 filters, 100 values per IN, limit 5000. Statement timeout 3000 ms. Bulkhead 10 (was 3), fail-fast. Cache 60 s run, 30 s preview.' },
+  { front: 'Strongest proof of the design', back: 'GST decision reversed within a week (V33 on 2026-09-02, V36 on 2026-09-09). Both were data migrations.' },
+  { front: 'What is unverified in your story', back: 'Daily usage, how many tenants, your exact share of the work, the replica move, a SELECT-only database role.' },
+  { front: 'Corrections to remember', back: 'Branch header beats the token claim; excludePatientIdentifiers is not read; k comes from the DSL; audit row has no definition id.' }
+]} />
+
+<ChapterDone id="re-overview" />

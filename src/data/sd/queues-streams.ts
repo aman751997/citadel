@@ -178,7 +178,7 @@ export const sizing = [
 ];
 
 export const delay = [
-  step('Iris wants a “still thinking about it?” email 3 days after a cart is abandoned. Where does the 3-day wait live?', [], 1, [
+  step('Product wants a “still thinking about it?” email 3 days after a cart is abandoned. Where does the 3-day wait live?', [], 1, [
     ['A queue message with a 3-day delivery delay', 'Queue delays are short — SQS, for example, caps per-message delay at minutes (check current docs). And a message cannot be cancelled when the buyer checks out.'],
     ['A durable row with a due time, polled by a scheduler that enqueues when it is due', 'Right. A table indexed on due time handles days or months, can be cancelled or rescheduled, and survives restarts. The queue only carries the work once it is due.'],
     ['A consumer that sleeps for 3 days before processing', 'A sleeping consumer holds the message (and, on a log, the whole partition) hostage. The first deploy loses or redelivers everything.'],
@@ -217,7 +217,7 @@ export const eventDriven = [
 ];
 
 export const drills = [
-  step('Mara asks for the one-breath description of Kestrel’s order pipeline. Which answer passes?', [], 1, [
+  step('An interviewer asks for the one-breath description of your order pipeline. Which answer passes?', [], 1, [
     ['"We put orders on Kafka."', 'No key, no semantics, no failure story. The async version of “cache it in Redis”.'],
     ['"OrderPlaced via an outbox, keyed by order_id on 48 partitions, at-least-once with idempotent consumers, retries with backoff then a DLQ, lag alerts in seconds."', 'Right: how it gets in (outbox), how it is ordered (key), what delivery means (at-least-once + idempotence), how it fails (retry, DLQ), and how you know (lag).'],
     ['"Exactly-once delivery with Kafka transactions."', 'Overclaims. Kafka transactions cover Kafka-to-Kafka; your emails and database writes are outside.'],

@@ -1,12 +1,11 @@
 ---
-title: 'Queues & Streams: Kafka, SQS, Delivery Semantics'
-description: 'The night a slow email provider took down Kestrel’s checkout, and everything a message has to promise afterwards. Queues vs logs, delivery semantics, idempotency, the outbox, ordering, lag, and the numbers behind partitions and retention.'
+title: 'Queues & Streams: Kafka, RabbitMQ, SQS, Delivery Semantics'
+description: 'What a message has to promise once you take a slow call off the request path. Queues vs logs, consumer groups, ordering and partition keys, delivery guarantees, acks and redelivery, DLQs, back-pressure, offsets and replay, idempotent consumers, the outbox, and the numbers behind partitions and retention.'
 module: 2
 order: 3
-minutes: 80
+minutes: 95
 ---
 import PatternHub from '../components/PatternHub.astro';
-import Scene from '../components/Scene.astro';
 import Part from '../components/Part.astro';
 import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
@@ -14,63 +13,50 @@ import ArrayStrip from '../components/ArrayStrip.astro';
 import Trace from '../components/Trace.astro';
 import Reveal from '../components/Reveal.astro';
 import Quiz from '../components/Quiz.astro';
+import ChapterDone from '../components/ChapterDone.astro';
+import LessonProgress from '../components/LessonProgress.astro';
+import RevisionCards from '../components/RevisionCards.astro';
+import AnswerModes from '../components/AnswerModes.astro';
 import { whyAsync, queueOrLog, fanOut, delivery, idempotency, outbox, ordering, poison, lag, sizing, delay, schemas, eventDriven, drills } from '../data/sd/queues-streams';
 import { BASE } from '../paths';
 
 <PatternHub
   pattern="sd-queues-streams"
   start="prologue"
-  logline="A message is a promise that something will happen later. Say how it gets in, what order it keeps, how many times it can arrive, what happens when it can’t be processed, and how you’ll know it’s falling behind — and the async half of most designs is done."
-  cast={[
-    { name: 'You', role: 'A month into your job at Kestrel. You run Kafka in your day job, so you know the knobs. Interviews want the reasons.' },
-    { name: 'Mara Quell', role: 'Principal engineer. Draws boxes, asks questions, never answers first.' },
-    { name: 'Dev Okafor', role: 'SRE. Gets paged at 3 a.m. Narrates incidents in a very calm voice.' },
-    { name: 'Iris Tan', role: 'Product lead. Every “oh, and also…” is a new consumer of your events.' },
-    { name: 'Theo Brandt', role: 'Database whisperer. Has watched every way two systems can disagree.' },
-    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
-  ]}
+  logline="A message is a promise that something will happen later. Say how it gets in, what order it keeps, how many times it can arrive, what happens when it can’t be processed, and how you’ll know it’s falling behind, and the async half of most designs is done."
+  cast={[]}
   parts={[
-    { name: 'Part One · Why the line exists', description: 'What async buys and costs, queues versus logs, fan-out versus work queues.', links: [['why-async', 'The checkout that waited for an email'], ['queue-vs-log', 'Two kinds of line'], ['fan-out', 'One event, many listeners']] },
-    { name: 'Part Two · What a message promises', description: 'Delivery semantics, idempotency, the outbox, ordering.', links: [['delivery', 'The receipt that arrived twice'], ['idempotency', 'Making twice harmless'], ['outbox', 'The order nobody heard about'], ['ordering', 'Shipped before packed']] },
-    { name: 'Part Three · When it breaks', description: 'Poison messages, dead letters, lag and back-pressure.', links: [['poison', 'The message that wouldn’t die'], ['lag', 'The line grows']] },
-    { name: 'Part Four · Designing with it', description: 'Sizing, delays, schemas, and when to use events at all.', links: [['sizing', 'Partitions and terabytes'], ['delay', 'Not yet'], ['schemas', 'The field that changed'], ['event-driven', 'Events or requests?']] },
+    { name: 'Part One · Why the line exists', description: 'What async buys and costs, queues versus logs, fan-out versus work queues.', links: [['why-async', 'Taking a slow call off the request path'], ['queue-vs-log', 'Two kinds of line'], ['fan-out', 'One event, many listeners']] },
+    { name: 'Part Two · What a message promises', description: 'Delivery semantics, idempotency, the outbox, ordering.', links: [['delivery', 'Acks, redelivery and duplicates'], ['idempotency', 'Making twice harmless'], ['outbox', 'The dual-write problem'], ['ordering', 'Partition keys and order']] },
+    { name: 'Part Three · When it breaks', description: 'Poison messages, dead letters, lag and back-pressure.', links: [['poison', 'Poison messages and DLQs'], ['lag', 'Lag and back-pressure']] },
+    { name: 'Part Four · Designing with it', description: 'Sizing, delays, schemas, and when to use events at all.', links: [['sizing', 'Partitions and terabytes'], ['delay', 'Doing it later'], ['schemas', 'Changing an event'], ['event-driven', 'Events or requests?']] },
   ]}
   extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
   routes={[
-    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#prologue', title: '📖 Read the lesson', text: 'Problem → mechanism → numbers → trap' },
     { href: '#decision-drills', title: '🧭 Decision drills', text: 'Make the calls interviewers probe, with feedback' },
-    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 30-second to detailed answer and five follow-ups' },
   ]}
-  note="Read one part per sitting. Part Two is the one interviewers probe hardest; the drills at the end mix everything."
+  note="Read one part per sitting. Part Two is the one interviewers probe hardest; the drills at the end mix everything. Broker defaults and limits change between versions: where a number is version-specific, the text says to check current docs."
 />
 
-<h2 id="prologue">Prologue · The Midnight Drop</h2>
+<LessonProgress />
 
-<Scene chapter="Prologue" title="00:04" mood="night">
+<h2 id="prologue">Prologue · The five promises</h2>
 
-At midnight Kestrel Market opens the Midnight Drop: two thousand pairs of a sneaker nobody can find anywhere else. At 00:04 Dev posts in the incident channel: *"Checkout p99 is 31 seconds. Payments fine. Stock fine. The email provider is answering in four seconds instead of forty milliseconds."*
+Imagine an e-commerce flash sale. Checkout charges the card, reserves stock, sends a receipt email, records analytics and refreshes recommendations, one after another, and only then answers "order placed". The email provider has a bad night and answers in 4 seconds instead of 40 ms. Every checkout thread now waits on the email. Checkout p99 goes from 200 ms to 30 seconds, although payments and stock are fine.
 
-Checkout charged the card, reserved the pair, then waited for the receipt email to send before it said "order placed". Every checkout thread is now standing in line behind a slow email. Buyers stare at spinners. Some give up. Some tap Buy again.
+The buyer was never waiting for the email. The fix is to cut that call off the request path and write the work down somewhere durable. That somewhere is a queue or a log. This lesson covers the cutting, and everything the system must promise once you have cut.
 
-In the morning Mara draws the checkout box with five arrows coming out of it: payments, stock, email, analytics, recommendations. She taps each arrow in turn.
+Interviewers rarely ask "what is Kafka?". They ask the follow-ups: what if the consumer crashes, can a message run twice, what about order, what if it falls behind. So treat an async hop as **five promises, said out loud**:
 
-*"Which of these,"* she asks, *"is the buyer actually waiting for?"*
+1. **How it gets in.** The producer's write is durable, and not lost between your database and the broker.
+2. **What order it keeps.** The partition or group key, and why that entity.
+3. **How many times it can arrive.** At-least-once, and how the consumer makes duplicates harmless.
+4. **What happens when it can't be processed.** Retries with backoff, a dead-letter queue, an alert.
+5. **How you'll know it's behind.** Lag, in messages and in seconds, and what scales when it grows.
 
-</Scene>
-
-This lesson is about the arrows you can cut — and everything you have to promise once you cut them. Message queues and logs appear in almost every design interview: notifications, video pipelines, feeds, payments, crawlers, metrics. The interviewer rarely asks "what is Kafka?" They ask the follow-ups: *what if the consumer crashes? Can it run twice? What about order? What if it falls behind?*
-
-You run Kafka in your day job. That is an advantage and a trap: you know the knobs, so it is tempting to name them instead of the reasons. This lesson turns what you already do into interview sentences.
-
-**The rule. An async hop in your design is five promises, spoken out loud, or it doesn't count:**
-
-1. **How it gets in** — the producer's write is durable, and not lost between your database and the broker.
-2. **What order it keeps** — the partition or group key, and why that entity.
-3. **How many times it can arrive** — at-least-once, and how the consumer makes duplicates harmless.
-4. **What happens when it can't be processed** — retries with backoff, a dead-letter queue, an alert.
-5. **How you'll know it's behind** — lag, in messages and in seconds, and what scales when it grows.
-
-<Figure caption="The five promises. Every chapter below deepens one of them.">
+<Figure caption="The five promises. Each chapter below deepens one of them.">
   <Mermaid code={`flowchart LR
     I["1 · Gets in\noutbox, acks=all"] --> O["2 · Order\nkey = order_id"]
     O --> D["3 · Delivery\nat-least-once +\nidempotent consumer"]
@@ -78,48 +64,65 @@ You run Kafka in your day job. That is an advantage and a trap: you know the kno
     F --> L["5 · Lag\nalert in seconds,\nscale to partitions"]`} />
 </Figure>
 
+<Quiz
+  id="qs-prologue"
+  title="Prologue checkpoint"
+  questions={[
+    {
+      kind: 'scenario',
+      q: 'An interviewer says: "Add a queue between checkout and the notification service." Which answer shows you understand the hop?',
+      options: [
+        'I would use Kafka because it scales horizontally.',
+        'Checkout writes the event durably, order is per order id, delivery is at-least-once with idempotent consumers, bad messages go to a DLQ, and I alert on lag in seconds.',
+        'I would use SQS because it is managed.',
+      ],
+      answer: 1,
+      why: 'The five promises describe behaviour; a product name describes none of it.',
+      explain: [
+        'A product and a slogan. It says nothing about order, duplicates, failure or lag, which is what the interviewer probes next.',
+        'Correct: it covers entry, order, delivery count, failure and lag, so the follow-ups are already answered.',
+        'Managed is an operations choice. It does not say what the queue promises.',
+      ],
+    },
+  ]}
+/>
+
+<ChapterDone id="prologue" />
+
 <Part n="Part One" title="Why the line exists">
 
 Before you add a queue, know what it buys, what it costs, and which kind of line you need.
 
 </Part>
 
-<h2 id="why-async">Chapter 1 · The checkout that waited for an email</h2>
+<h2 id="why-async">Chapter 1 · Taking a slow call off the request path</h2>
 
-<Scene chapter="Chapter 1" title="The checkout that waited for an email" mood="dawn">
+A synchronous call ties the caller's fate to the callee's. If the callee is slow, the caller is slow; if it is down, the caller fails. A queue cuts that tie. Instead of "do this now, and if you're slow or dead the user suffers", the caller says "write down that this must happen, and something will make it happen."
 
-Dev pulls up the thread-pool graph. Every checkout server has two hundred threads, and every one of them is busy waiting on the same email call. *"Payments could have done ten times the traffic,"* he says. *"We ran out of threads waiting for a receipt."*
+**Worked numbers: why one slow dependency sank checkout.** A thread serves one request at a time, so throughput is at most threads ÷ time per request (Little's law, rearranged). Assumption for this example: 200 threads per server.
 
-Mara writes two numbers on the board: 40 milliseconds, 4 seconds. *"How many checkouts a second can one server's two hundred threads do with each?"*
-
-</Scene>
-
-A synchronous call ties the caller's fate to the callee's. If the callee is slow, the caller is slow; if it is down, the caller fails. A queue cuts that tie: instead of *"do this now, and if you're slow or dead the user suffers"*, the caller says *"write down that this must happen, and something will make it happen."*
-
-**Worked numbers: why one slow dependency sank checkout.** A thread can serve one request at a time, so throughput is at most threads ÷ time per request (this is Little's law, rearranged).
-
-| | Time per checkout | Ceiling per server (200 threads) |
+| | Time per checkout | Ceiling per server |
 |---|---|---|
-| Normal (email answers in 40 ms) | about 100 ms | 200 ÷ 0.1 s = **2,000 checkouts/s** |
+| Email answers in 40 ms | about 100 ms | 200 ÷ 0.1 s = **2,000 checkouts/s** |
 | Email answers in 4 s | about 4.06 s | 200 ÷ 4.06 s ≈ **49 checkouts/s** |
 
-The payment and stock services were fine. Every checkout server's capacity collapsed about fortyfold because it waited for something the buyer didn't need. Adding servers wouldn't have saved it: they'd all wait on the same slow provider.
+Capacity fell about fortyfold because checkout waited for something the buyer didn't need. Adding servers wouldn't help: they would all wait on the same slow provider.
 
-**What a queue buys you — three things, each worth a sentence in an interview:**
+**A queue buys three things:**
 
-- **Decoupling.** The producer doesn't know who consumes, how many there are, or whether they're up right now. Email can be down for ten minutes and checkout never notices.
-- **Buffering.** Bursts are absorbed and drained at the consumer's pace. The queue is a shock absorber between a spiky producer and a steady consumer.
-- **Retries.** A failure re-runs instead of vanishing. The work is written down, so a crash doesn't erase it.
+- **Decoupling.** The producer doesn't know who consumes, how many there are, or whether they're up. Email can be down for ten minutes and checkout never notices.
+- **Buffering.** Bursts are absorbed and drained at the consumer's pace: a shock absorber between a spiky producer and a steady consumer.
+- **Retries.** A failure re-runs instead of vanishing, because the work is written down.
 
-**Worked numbers: the queue as shock absorber.** The Midnight Drop sends 3,000 orders/s for 2 minutes, then settles at 100/s. The email provider accepts 500 sends/s.
+**Worked numbers: the shock absorber.** Assumptions: the sale sends 3,000 orders/s for 2 minutes, then 100/s. The email provider accepts 500 sends/s.
 
-- During the burst the backlog grows at 3,000 − 500 = 2,500/s, so after 120 s it holds **300,000 emails**.
-- After the burst, new orders still arrive at 100/s, so the backlog drains at 500 − 100 = **400/s**.
+- During the burst the backlog grows at 3,000 − 500 = 2,500/s. After 120 s it holds **300,000 emails**.
+- After the burst, orders still arrive at 100/s, so the backlog drains at 500 − 100 = **400/s**.
 - 300,000 ÷ 400 = 750 s = **12.5 minutes** until the last receipt goes out.
 
-Synchronously, 2,500 of every 3,000 checkouts per second would have waited or failed. With the queue, every order succeeds and some receipts arrive twelve minutes late. That is the trade you are making — say it in exactly those words.
+Synchronously, most checkouts would wait or fail. With the queue, every order succeeds and some receipts arrive twelve minutes late. That is the trade; say it in exactly those words.
 
-<Figure caption="The recurring shape: the request path does only what the user waits for; everything else is written down and done after the response.">
+<Figure caption="The recurring shape: the request path does only what the user waits for. Everything else is written down and done after the response.">
   <Mermaid code={`flowchart LR
     U["buyer"] --> API["checkout: charge,\nreserve, persist order,\nrecord event"]
     API -->|"order placed (fast)"| U
@@ -129,40 +132,81 @@ Synchronously, 2,500 of every 3,000 checkouts per second would have waited or fa
     K --> R["recommendations"]`} />
 </Figure>
 
-**What it costs.** Async is not free, and the senior move is to say the price before the interviewer does:
+**What it costs.** Say the price before the interviewer does:
 
 | Cost | What it means | What you add |
 |---|---|---|
-| **Eventual, not immediate** | The work happens soon, not now; the user can't see its result in the response | A status the client can poll, or a push when done |
-| **Duplicates** | Retries mean some messages arrive more than once (Chapter 4) | Idempotent consumers (Chapter 5) |
-| **Ordering** | Parallel consumers and retries reorder work (Chapter 7) | A partition key; accept reorder where it's harmless |
-| **Hidden failure** | A broken consumer doesn't fail the request — the backlog just grows quietly | Lag and age-of-oldest-message alerts (Chapter 9) |
-| **Harder debugging** | One user action becomes many hops across services and time | A correlation id carried in every message, distributed tracing |
-| **A new system to run** | Brokers need capacity, upgrades, disks, on-call | Managed service, or a team that owns it |
+| **Eventual, not immediate** | The user can't see the result in the response | A status to poll, or a push when done |
+| **Duplicates** | Retries mean some messages arrive twice (Chapter 4) | Idempotent consumers (Chapter 5) |
+| **Ordering** | Parallel consumers and retries reorder work (Chapter 7) | A partition key; accept reorder where harmless |
+| **Hidden failure** | A broken consumer doesn't fail the request, the backlog just grows quietly | Lag and oldest-message-age alerts (Chapter 9) |
+| **Harder debugging** | One user action becomes many hops across time | A correlation id in every message, tracing |
+| **A new system to run** | Capacity, upgrades, disks, on-call | Managed service, or a team that owns it |
 
-<Trace title="Cut the right arrows" steps={whyAsync} takeaway="Keep synchronous what the user is waiting for. Queue what must happen eventually. A queue converts an outage into a delay — and the delay is arithmetic you can do." />
+<Trace title="Cut the right arrows" steps={whyAsync} takeaway="Keep synchronous what the user is waiting for. Queue what must happen eventually. A queue converts an outage into a delay, and the delay is arithmetic you can do." />
 
-**Catch the trap:** "We'll make it async so it's faster." The end-to-end work is usually *slower* — there's an extra hop and a wait in line. What gets faster is the user's response, and what gets better is isolation. And never queue the part the user is waiting for: putting the card charge on a queue means telling a buyer "done" before you know whether it worked.
+**A common slip:** "We'll make it async so it's faster." End-to-end work is usually slower (an extra hop plus a wait in line). What gets faster is the user's response, and what improves is isolation. And never queue the part the user is waiting for: putting the card charge on a queue tells a buyer "done" before you know it worked.
+
+<Quiz
+  id="qs-why-async"
+  title="Chapter 1 checkpoint"
+  questions={[
+    {
+      kind: 'predict',
+      q: 'A queue-fed worker pool can send 500 emails/s. A burst adds 1,000/s for 60 s, then input falls to 100/s. How long after the burst until the backlog is empty?',
+      code: 'backlog = (1000 - 500) * 60 = 30,000\ndrain   = 500 - 100 = 400/s',
+      options: ['60 s', '75 s', '300 s'],
+      answer: 1,
+      why: '30,000 ÷ 400 = 75 s. Drain rate is spare capacity, not full capacity.',
+      explain: [
+        'The backlog cannot vanish the moment the burst ends; it was built during those 60 s.',
+        'Correct: 30,000 ÷ (500 − 100) = 75 s.',
+        '30,000 ÷ 100 uses the input rate. The workers drain at 400/s net, not 100/s.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'The email consumer is down for two hours and nobody notices. Why did the design hide it, and what would have shown it?',
+      options: [
+        'The queue is broken; use a synchronous call so failures are visible',
+        'Async failures do not fail the request, so the backlog grows silently; alert on age of the oldest message',
+        'Nothing could have shown it until users complained',
+      ],
+      answer: 1,
+      why: 'Decoupling removes the error from the request path, so you must add a signal for it.',
+      explain: [
+        'That brings back the original outage: checkout then fails whenever email does.',
+        'Correct: checkout is healthy while the backlog grows, so the signal has to be lag in time.',
+        'Lag and oldest-message-age are standard metrics on every broker.',
+      ],
+    },
+  ]}
+/>
+
+<RevisionCards
+  id="queues-streams-why-async"
+  cards={[
+    { front: 'Why did one slow email call collapse checkout?', back: 'Throughput per server is at most threads ÷ time per request. Waiting 4 s instead of 40 ms cut the ceiling about 40x.' },
+    { front: 'Three things a queue buys?', back: 'Decoupling, buffering of bursts, and retries because the work is written down.' },
+    { front: 'Drain time after a burst?', back: 'Backlog ÷ (consumer capacity − new input rate).' },
+    { front: 'What must stay synchronous?', back: 'Whatever the user is waiting on, such as the charge and the stock reservation.' },
+    { front: 'Main hidden cost of async?', back: 'Failures do not surface in the request, so you need lag and oldest-message-age alerts.' },
+  ]}
+/>
+
+<ChapterDone id="why-async" />
 
 <h2 id="queue-vs-log">Chapter 2 · Two kinds of line</h2>
 
-<Scene chapter="Chapter 2" title="Two kinds of line">
+Imagine two requests on one ticket. "Make a thumbnail for every uploaded photo." And "the fraud team wants the last three days of orders to train on, then to follow new ones live." Both say "queue", but they need two different machines.
 
-Iris has two requests on one sticky note. *"Thumbnails for every uploaded photo. And — oh, and also — the new fraud team wants the last three days of orders to train on."*
+**A message queue** (RabbitMQ, SQS, ActiveMQ) is a to-do list shared by workers. In a line at a counter, each person is served once and leaves.
 
-Theo draws two pictures. In the first, a line of people at a counter: each one is served once and leaves. In the second, a long scroll that nobody erases, with several readers each holding a bookmark. *"Same word, 'queue',"* he says. *"Completely different machines."*
-
-</Scene>
-
-There are two families of messaging system. Interviewers test whether you know which one you're drawing.
-
-**A message queue** (SQS, RabbitMQ, ActiveMQ) is a to-do list shared by workers.
-
-- A producer **sends** a message. Any idle consumer **receives** it — consumers *compete*, and each message goes to one of them.
-- While a consumer works on it, the message is **in flight**: hidden from other consumers, but not yet gone. In SQS this hiding period is the **visibility timeout** (30 seconds by default — check current docs); RabbitMQ instead holds it as unacknowledged until the consumer acks or nacks it, or its channel closes (RabbitMQ also enforces a long delivery-acknowledgement timeout — check current docs).
-- When the work succeeds, the consumer **acks** (SQS: delete the message). Then it is gone for good.
-- If the consumer **nacks** (RabbitMQ `basic.nack` with requeue; in SQS, set the visibility timeout to zero), or crashes, or the timeout expires, the message becomes **visible again** and someone retries it.
-- The broker counts receives. After too many, the message is moved to a **dead-letter queue** (Chapter 8).
+- A producer **sends** a message. Any idle consumer **receives** it. Consumers *compete*, and each message goes to one of them.
+- While a consumer works on it, the message is **in flight**: hidden from others but not gone. In SQS this is the **visibility timeout** (30 seconds by default; check current docs). In RabbitMQ the message stays **unacknowledged** until the consumer acks or nacks it, or its channel closes.
+- When the work succeeds, the consumer **acks** (SQS: deletes the message). Now it is gone for good.
+- If the consumer **nacks**, crashes, or the timeout expires, the message becomes **visible again** and someone retries it.
+- After too many receives, it is moved to a **dead-letter queue** (Chapter 8).
 
 <Figure caption="A message’s life in a work queue. Nothing is deleted until a consumer says it’s done.">
   <Mermaid code={`stateDiagram-v2
@@ -174,15 +218,15 @@ There are two families of messaging system. Interviewers test whether you know w
     Deleted --> [*]`} />
 </Figure>
 
-**A log** (Kafka, Kinesis, Pulsar, Redpanda) is an append-only record that consumers read like a book.
+**A log** (Kafka, Kinesis, Pulsar, Redpanda) is an append-only record that consumers read like a book, each with their own bookmark.
 
 - A **topic** is split into **partitions**. Each partition is an ordered, append-only sequence; every record gets the next **offset** (0, 1, 2…).
-- Reading does not delete. Each **consumer group** keeps its own committed offset per partition — a bookmark meaning "the next record I will read".
-- Records are kept for a **retention** period (time or size; Kafka's default is 7 days — check your configuration), whether or not anyone has read them. **Log compaction** is the alternative policy: keep only the latest record per key, for changelog-style topics.
-- Because data stays, a consumer can **replay**: reset its offset to yesterday and read again. A brand-new consumer group can start from the beginning.
-- Within one group, each partition is read by **at most one consumer**. Groups divide partitions among their members; different groups each read everything.
+- Reading does not delete. Each **consumer group** keeps its own committed offset per partition: "the next record I will read".
+- Records are kept for a **retention** period (time or size; Kafka's default is 7 days, check your configuration) whether or not anyone has read them. **Log compaction** is the alternative policy: keep only the latest record per key.
+- Because data stays, a consumer can **replay**: reset its offset to yesterday and read again. A new consumer group can start from the beginning.
+- Within one group, each partition is read by **at most one consumer**. Groups divide partitions among members; different groups each read everything.
 
-<Figure caption="One partition of the orders topic, offsets 0–7. Each consumer group’s bookmark points at the next record it will read: analytics at offset 4, email at offset 7. Nothing is deleted by reading — only by retention.">
+<Figure caption="One partition of the orders topic, offsets 0–7. Each consumer group’s bookmark points at the next record it will read: analytics at offset 4, email at offset 7. Nothing is deleted by reading, only by retention.">
   <ArrayStrip name="Partition 3" values={['o-11', 'o-14', 'o-15', 'o-19', 'o-20', 'o-22', 'o-23', 'o-27']} pointers={[{ at: 4, label: 'analytics next', tone: 'blue' }, { at: 7, label: 'email next', tone: 'gold' }]} tones={{ 0: 'done', 1: 'done', 2: 'done', 3: 'done' }} regions={[{ from: 0, to: 3, label: 'read by both', tone: 'green' }, { from: 4, to: 6, label: 'email has read, analytics hasn’t', tone: 'blue' }]} />
 </Figure>
 
@@ -192,34 +236,96 @@ There are two families of messaging system. Interviewers test whether you know w
 | Consumers | compete for individual messages | each **consumer group** reads the full stream; inside a group, partitions are divided |
 | Acknowledgement | per message (ack/nack) | per partition: "everything before offset N is done" |
 | Retry of one message | built in: nack or timeout makes it visible again | not built in: you can't skip past one record without committing past it (Chapter 8) |
-| Replay | no — once acked, it's gone | yes — rewind the offset, within retention |
-| Ordering | best-effort (SQS standard) or per group (SQS FIFO message group); a RabbitMQ queue delivers in order, but parallel consumers process out of order | per partition |
+| Replay | no, once acked it's gone | yes, rewind the offset within retention |
+| Ordering | see the RabbitMQ and Kafka table below | per partition |
 | Scaling consumers | add workers freely | at most one consumer per partition per group |
 | Typical use | task distribution: resize this image, send this email | event distribution: order-placed → email, analytics and fraud all react; replay; stream processing |
 
 **Rule of thumb: one kind of worker doing independent tasks → queue. Many independent reactions to the same events, ordering per entity, or replay → log.**
 
-The lines are blurring — RabbitMQ has a log-style "streams" feature, Pulsar offers both models, and Kafka has been adding queue-style "share groups" (check the current status). In an interview, name the *model* you need, then the product.
+### What RabbitMQ and Kafka each guarantee
+
+Say exactly this much and no more. Defaults and limits change between versions, so check current docs for anything numeric.
+
+| Topic | RabbitMQ (classic or quorum queue) | Kafka |
+|---|---|---|
+| Ordering | A queue is FIFO to its consumers. With several consumers, or after a requeue or redelivery, messages can be processed out of order | Order within a partition only. None across partitions |
+| Producer durability | Publisher confirms: the broker confirms after taking responsibility. Durable queue plus persistent messages for restart survival. Quorum queues replicate via Raft | `acks=all` plus `min.insync.replicas` and replication factor: the write is acknowledged once enough in-sync replicas have it |
+| Consumer side | Per-message ack. Auto-ack mode acks on delivery, so it is at-most-once. Manual ack after processing is at-least-once | Offset commit per partition. Commit before processing: at-most-once. After: at-least-once |
+| Redelivery | Unacked messages are requeued when the channel closes. A `redelivered` flag marks them | Resume from the last committed offset after a crash or rebalance |
+| Duplicates | Possible: crash after work, before ack; publisher retries without dedup | Possible for the same reason. The idempotent producer removes duplicates from the producer's own retries into a partition |
+| Back-pressure | Push model: `prefetch` caps unacked messages per consumer | Pull model: consumers fetch at their pace; lag grows |
+| Replay | Not for classic or quorum queues. RabbitMQ **streams** are a separate log-style type that can be re-read | Yes, within retention |
+| Dead-lettering | Built in: dead-letter exchange | A pattern you build (DLQ topic) |
+| Exactly-once | No. At-least-once plus idempotent consumers | Kafka-to-Kafka only (Chapter 4) |
+
+The lines are blurring: RabbitMQ has streams, Pulsar offers both models, and Kafka has been adding queue-style "share groups" (check current status). In an interview, name the *model* you need, then the product.
 
 <Trace title="Which line?" steps={queueOrLog} takeaway="Queue: each task done once by whoever is free, deleted on ack, retried on timeout. Log: retained, ordered per partition, read independently by each group, replayable." />
 
 <Reveal q="How long should a visibility timeout be?">
 
-Longer than the slowest *normal* processing time, with margin — if p99 processing is 45 s, a 30 s timeout means every slow message is handed to a second worker while the first is still working. But not huge: if a worker dies, its message is invisible for the whole timeout before anyone retries. The usual answer is a timeout comfortably above p99 plus a **heartbeat**: a long job extends its own timeout as it goes (SQS `ChangeMessageVisibility`), so the timeout can stay short for crashed workers.
+Longer than the slowest *normal* processing time, with margin. If p99 processing is 45 s, a 30 s timeout hands every slow message to a second worker while the first is still working. But not huge: if a worker dies, its message stays invisible for the whole timeout before anyone retries. The usual answer is a timeout comfortably above p99 plus a **heartbeat**: a long job extends its own timeout as it goes (SQS `ChangeMessageVisibility`).
 
 </Reveal>
 
-**Catch the trap:** drawing Kafka and then saying "the consumer takes the message off the queue". Nothing is taken off a log. Mixing the two vocabularies is the fastest way to show you've only used one of them.
+**A common slip:** drawing Kafka and then saying "the consumer takes the message off the queue". Nothing is taken off a log. Mixing the two vocabularies shows you've used only one.
+
+<Quiz
+  id="qs-queue-vs-log"
+  title="Chapter 2 checkpoint"
+  questions={[
+    {
+      kind: 'scenario',
+      q: 'Three teams must each react to every order, a fourth team may join next quarter and wants last week of history, and per-order ordering matters. Which fits best?',
+      options: [
+        'One RabbitMQ queue with four consumers',
+        'A log (Kafka topic keyed by order id) with one consumer group per team',
+        'One SQS standard queue per team, filled by hand',
+      ],
+      answer: 1,
+      why: 'Independent readers, replay for a late joiner, and per-key order are exactly what a retained, partitioned log gives.',
+      explain: [
+        'Competing consumers split the stream, so each team would see a quarter of the orders, and acked messages are gone.',
+        'Correct: a new team is a new group that starts from an old offset, and the key keeps per-order order.',
+        'Separate queues give fan-out but no replay and no ordering guarantee, and you copy every message by hand.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'A RabbitMQ consumer uses auto-ack and crashes while processing 20 prefetched messages. What happens to them?',
+      options: [
+        'They are redelivered to another consumer',
+        'They are lost, because auto-ack acknowledged them on delivery',
+        'They move to the dead-letter exchange',
+      ],
+      answer: 1,
+      why: 'Auto-ack is at-most-once: the broker considers the message handled once it is handed over.',
+      explain: [
+        'Redelivery only happens for unacknowledged messages. Auto-ack already acked them.',
+        'Correct: use manual acks after the work completes to get at-least-once.',
+        'Dead-lettering is triggered by rejects, expiry or length limits, not by a crash.',
+      ],
+    },
+  ]}
+/>
+
+<RevisionCards
+  id="queues-streams-queue-vs-log"
+  cards={[
+    { front: 'Queue vs log in one sentence each?', back: 'Queue: shared to-do list, a message goes to one worker and is deleted on ack. Log: retained ordered record, each group keeps its own offset and can replay.' },
+    { front: 'Where does ordering exist in Kafka?', back: 'Within a partition only.' },
+    { front: 'What does the visibility timeout do?', back: 'Hides an in-flight message; if no ack arrives in time it becomes visible again and is retried.' },
+    { front: 'RabbitMQ auto-ack semantics?', back: 'At-most-once, because the message counts as acked on delivery. Manual ack after work gives at-least-once.' },
+    { front: 'Why can a new Kafka consumer group read old events?', back: 'Reading does not delete. Records stay until retention expires and each group has its own committed offset.' },
+  ]}
+/>
+
+<ChapterDone id="queue-vs-log" />
 
 <h2 id="fan-out">Chapter 3 · One event, many listeners</h2>
 
-<Scene chapter="Chapter 3" title="One event, many listeners" mood="dusk">
-
-A week after the Midnight Drop, analytics reports a third of the orders they expected. Email reports a third. Fraud reports a third. Dev reads the config twice before he says it aloud: all three services are consuming from the same work queue.
-
-*"They're not missing orders,"* he says. *"They're splitting them."*
-
-</Scene>
+A common bug: analytics reports a third of the expected orders, and so do email and fraud. All three services are consuming from the same work queue. They aren't missing orders, they are splitting them.
 
 Two delivery shapes, and confusing them is a silent bug:
 
@@ -249,11 +355,59 @@ Real systems combine them: every subscriber gets every message, and *within* a s
 | RabbitMQ | A fanout or topic **exchange** bound to one queue per subscriber | Many consumers on one queue |
 | Kafka | One **consumer group** per subscriber | Instances within a group split the partitions |
 
-**Worked numbers.** 20,000 OrderPlaced events/s, three subscribers. With a queue per subscriber, the broker stores and delivers 60,000 message copies/s. With a log, the data is written once and read three times — 20,000 writes/s, 60,000 reads/s. That's one reason logs win when the number of subscribers grows: a new subscriber is a new bookmark, not a new copy of everything.
+**Consumer groups, step by step.** Say a topic has 6 partitions and the email group has 3 instances.
+
+1. Each instance joins the group by sending the broker a `group.id`. The group coordinator assigns partitions: two per instance.
+2. Each instance polls only its partitions and commits offsets for them under the group's name.
+3. If an instance dies or stops polling, the coordinator **rebalances**: its partitions move to the survivors, who resume from the last committed offset. Whatever the dead instance processed but hadn't committed is processed again.
+4. The analytics group, with a different `group.id`, has its own offsets and is unaffected.
+
+**Worked numbers.** Assumption: 20,000 OrderPlaced events/s and three subscribers. With a queue per subscriber, the broker stores and delivers 60,000 message copies/s. With a log, data is written once (20,000 writes/s) and read three times (60,000 reads/s). A new subscriber is a new bookmark, not a new copy of everything, which is one reason logs win as subscribers grow.
 
 <Trace title="Every listener, or one worker?" steps={fanOut} takeaway="Different services each need every event: one subscription (queue or consumer group) per service. Instances of one service share the work inside their subscription." />
 
-**Catch the trap:** "fan-out" also names the feed-building pattern — pushing a post into every follower's timeline (<a href={`${BASE}sd/lessons/pattern-fanout/`}>the fan-out lesson</a>). That pattern *uses* the pub/sub and work queues from this chapter, but it isn't the same thing. Say which one you mean.
+**A common slip:** "fan-out" also names the feed-building pattern, pushing a post into every follower's timeline (<a href={`${BASE}sd/lessons/pattern-fanout/`}>the fan-out lesson</a>). That pattern *uses* the pub/sub and work queues here but is not the same thing. Say which you mean.
+
+<Quiz
+  id="qs-fan-out"
+  title="Chapter 3 checkpoint"
+  questions={[
+    {
+      kind: 'predict',
+      q: 'A topic has 4 partitions. Group A has 6 consumers, group B has 2. Which statement holds?',
+      options: [
+        'Group A uses all 6 consumers; B reads half the data',
+        'Group A has 2 idle consumers; each of B reads 2 partitions; both groups read all records',
+        'The topic splits its records between group A and group B',
+      ],
+      answer: 1,
+      why: 'Within a group a partition has at most one consumer; across groups, each group reads everything.',
+      explain: [
+        'A partition goes to one consumer per group, so only 4 of the 6 can be busy. B reads all data, split between its two members.',
+        'Correct: groups are independent subscriptions; the partition count caps parallelism inside each group.',
+        'Groups do not share records. Each group gets the full stream.',
+      ],
+    },
+    {
+      kind: 'tradeoff',
+      q: 'You need fan-out to 3 services on AWS with SQS and want one slow service not to delay the others. What do you do?',
+      options: [
+        'All three read one SQS queue',
+        'SNS topic fanning out to one SQS queue per service',
+        'Three producers send each message three times',
+      ],
+      answer: 1,
+      why: 'One queue per subscriber isolates their pace and lets each retry independently.',
+      explain: [
+        'Competing consumers split the stream instead of copying it.',
+        'Correct: each service has its own queue, backlog, DLQ and scaling.',
+        'The producer couples to every subscriber, and a crash between sends gives some services the event and others not.',
+      ],
+    },
+  ]}
+/>
+
+<ChapterDone id="fan-out" />
 
 <Part n="Part Two" title="What a message promises">
 
@@ -261,25 +415,19 @@ The questions interviewers ask after you draw the arrow: how many times, in what
 
 </Part>
 
-<h2 id="delivery">Chapter 4 · The receipt that arrived twice</h2>
+<h2 id="delivery">Chapter 4 · Acks, redelivery and duplicates</h2>
 
-<Scene chapter="Chapter 4" title="The receipt that arrived twice" mood="night">
+Imagine a buyer receives the same receipt email three times. The logs show: the worker sent the email, then a deploy killed it before it acked. The message came back, a second worker sent it again, and a rolling deploy killed that one too. A third finally sent it and acked.
 
-The queue fixed checkout. Two days later, support forwards a screenshot: a buyer received the same receipt email three times. Dev finds the logs. The email worker sent the email, then was killed by a deploy before it deleted the message. The message reappeared. Another worker sent it again — and the rolling deploy killed that one too. A third worker finally sent it and deleted the message.
-
-*"Can we make it send exactly once?"* Iris asks. Mara doesn't answer. She draws two boxes — the broker and the email provider — and asks where the line between them is.
-
-</Scene>
-
-Three delivery promises, and what each costs:
+"Can we make it send exactly once?" To answer, look at the line between the broker and the email provider.
 
 | Semantics | How you get it | Can lose? | Can duplicate? | Fits |
 |---|---|---|---|---|
 | **At-most-once** | Ack (or commit the offset) *before* processing; producer doesn't retry | Yes | No | Metrics you can afford to drop, presence pings |
 | **At-least-once** | Process, *then* ack; producer retries until the broker confirms | No | Yes | **The real-world default** |
-| **Exactly-once (effectively-once)** | At-least-once delivery + idempotent or transactional processing | No | Duplicates arrive, but have no extra effect | Money, counts, anything a user would notice twice |
+| **Exactly-once effect** | At-least-once delivery + idempotent or transactional processing | No | Duplicates arrive but have no extra effect | Money, counts, anything a user would notice twice |
 
-**Why duplicates are unavoidable.** The consumer does the work, then crashes before acknowledging. The broker can't tell "crashed before doing it" from "crashed after doing it", so it must redeliver or risk loss. The side effect (an email, a charge, a database row) and the ack live in two different systems, and nothing makes a write to two independent systems atomic. No broker setting fixes this. Only the consumer can. (Some brokers add duplicates of their own, too: an SQS standard queue occasionally delivers a message more than once even when nothing crashed.)
+**Why duplicates are unavoidable.** The consumer does the work, then crashes before acknowledging. The broker can't tell "crashed before doing it" from "crashed after doing it", so it must redeliver or risk loss. The side effect (an email, a charge, a database row) and the ack live in two different systems, and no write to two independent systems is atomic. No broker setting fixes this; only the consumer can. Some brokers add duplicates of their own too (an SQS standard queue can occasionally deliver a message twice even with no crash).
 
 <Figure caption="The duplicate every at-least-once system produces. The email provider did its job; the broker never heard.">
   <Mermaid code={`sequenceDiagram
@@ -295,99 +443,253 @@ Three delivery promises, and what each costs:
     C->>P: send receipt (second time)`} />
 </Figure>
 
-**At-least-once starts at the producer.** A producer that sends and doesn't wait for confirmation is at-most-once before the consumer even gets a chance. In Kafka terms: `acks=all` (the leader waits for all in-sync replicas), a replication factor of 3 and `min.insync.replicas=2`, so an acknowledged write survives losing a broker; plus retries on failure. Retries can duplicate, which is why Kafka's **idempotent producer** (on by default in recent versions) tags each send with a producer id and sequence number so the broker can drop retried copies within a partition.
+**Acks and redelivery, side by side.** The pair looks alike but works differently:
 
-**What Kafka's "exactly-once" actually covers — say this precisely:**
+| | Queue ack (RabbitMQ, SQS) | Kafka offset commit |
+|---|---|---|
+| What is acknowledged | One message | Everything up to offset N in one partition |
+| Failure signal | Channel closes, nack, or visibility timeout | No heartbeat or poll in time, so a rebalance |
+| What is redelivered | Only the unacked messages | Everything after the last committed offset |
+| Skipping one bad message | Reject it (to a DLQ) | Impossible without committing past it |
+
+**At-least-once starts at the producer.** A producer that sends without waiting for confirmation is at-most-once before the consumer gets a chance. In RabbitMQ use publisher confirms with durable queues and persistent messages. In Kafka use `acks=all` with a replication factor of 3 and `min.insync.replicas=2`, so an acknowledged write survives losing a broker, plus retries. Retries can duplicate, which is why Kafka's **idempotent producer** (default in recent versions, check yours) tags each send with a producer id and sequence number so the broker drops retried copies within a partition.
+
+**What Kafka's "exactly-once" actually covers:**
 
 - The **idempotent producer** removes duplicates caused by the producer's own retries into a partition.
-- **Transactions** let one producer write to several partitions *and* commit the consumer offsets it read, as one atomic unit. Consumers using `isolation.level=read_committed` never see records from aborted transactions.
-- Together they give exactly-once for **read from Kafka → process → write to Kafka** pipelines (Kafka Streams exposes this as a processing-guarantee setting).
-- They do **not** cover side effects outside Kafka. An email, a card charge or a Postgres write is outside the transaction. For those you're back to at-least-once plus an idempotent effect — or storing the consumed offset in the *same* database transaction as the result, so the database itself knows what it has applied.
+- **Transactions** let one producer write to several partitions *and* commit the consumer offsets it read as one atomic unit. Consumers using `isolation.level=read_committed` never see records from aborted transactions.
+- Together they give exactly-once for **read from Kafka → process → write to Kafka** pipelines (Kafka Streams exposes this as a setting).
+- They do **not** cover side effects outside Kafka. An email, a card charge or a MySQL write is outside the transaction. For those, use at-least-once plus an idempotent effect, or store the consumed offset in the *same* database transaction as the result.
 
 <Trace title="Count the deliveries" steps={delivery} takeaway="Commit-then-process loses; process-then-commit duplicates. Kafka’s exactly-once is Kafka-to-Kafka. Everything else is at-least-once plus idempotence." />
 
-<Scene title="Interlude · The interview room" mood="night">
+**A common slip:** "We'll use exactly-once delivery." Exactly-once *delivery* across a network to an independent system isn't on offer. Exactly-once *effect* is, and you build it in the consumer (next chapter).
 
-The Interviewer leans back. *"Can you guarantee each payment event is processed exactly once?"*
+<Quiz
+  id="qs-delivery"
+  title="Chapter 4 checkpoint"
+  questions={[
+    {
+      kind: 'failure',
+      q: 'A Kafka consumer polls 100 records, processes 60, then is killed. enable.auto.commit is true with a 5 s interval, and the last auto-commit happened after 30 records. What is redelivered on restart?',
+      options: [
+        'Nothing; the broker tracked the 60 processed',
+        'Records after the last committed offset: possibly some already processed (duplicates), and none lost',
+        'Only the 40 unprocessed records',
+      ],
+      answer: 1,
+      why: 'Kafka only knows the committed offset; it replays from there, so already-processed records repeat.',
+      explain: [
+        'Kafka does not track per-record processing, only the committed offset.',
+        'Correct: restart resumes at the committed offset, so the processed-but-uncommitted records come again. Auto-commit can also commit offsets for records you have not finished, so check what it commits.',
+        'The broker cannot know which 40 were unprocessed; it replays from the committed offset.',
+      ],
+    },
+    {
+      kind: 'tradeoff',
+      q: 'A consumer sends an SMS for each event. Which order is the better default, and why?',
+      options: [
+        'Ack first, then send: no duplicate SMS ever',
+        'Send, then ack: a rare duplicate SMS is better than a lost one',
+        'Either; they are equivalent',
+      ],
+      answer: 1,
+      why: 'Pick the failure you can live with. For a notification, a duplicate is usually less harmful than a silent loss.',
+      explain: [
+        'Ack-first makes a crash silently drop the SMS, which is at-most-once.',
+        'Correct for notifications, ideally with the provider\'s idempotency key to remove most duplicates too.',
+        'They fail differently: one loses, one duplicates.',
+      ],
+    },
+  ]}
+/>
 
-A year ago you'd have said "Kafka has exactly-once". Today you say: *"Delivery will be at-least-once — a consumer can always crash between doing the work and acknowledging it. So I make the effect exactly-once instead: the consumer records the event id in the same transaction as the payment update, and a redelivery becomes a no-op."* The Interviewer writes something down and moves on.
+<RevisionCards
+  id="queues-streams-delivery"
+  cards={[
+    { front: 'At-most-once vs at-least-once?', back: 'Ack or commit before the work: can lose, never duplicates. Ack or commit after: never loses, can duplicate.' },
+    { front: 'Why can no broker give exactly-once delivery to an email provider?', back: 'The effect and the ack are two independent systems; a crash between them is indistinguishable from a crash before the work.' },
+    { front: 'What does Kafka exactly-once cover?', back: 'Consume from Kafka, process, produce to Kafka, committing offsets atomically (idempotent producer plus transactions, read_committed consumers).' },
+    { front: 'Producer-side settings for durable writes?', back: 'Kafka: acks=all, replication factor 3, min.insync.replicas=2. RabbitMQ: publisher confirms, durable queue, persistent messages.' },
+    { front: 'Exactly-once effect formula?', back: 'At-least-once delivery plus an idempotent consumer.' },
+  ]}
+/>
 
-</Scene>
-
-**Catch the trap:** "We'll use exactly-once delivery." Exactly-once *delivery* across a network to an independent system isn't on offer. Exactly-once *effect* is — and you build it in the consumer, which is the next chapter.
+<ChapterDone id="delivery" />
 
 <h2 id="idempotency">Chapter 5 · Making twice harmless</h2>
 
-<Scene chapter="Chapter 5" title="Making twice harmless" mood="dawn">
+Imagine a photo with 1,204 likes that shows 1,291. Every redelivered LikeAdded event added one more. The fix isn't fewer duplicates; it's that the second one shouldn't do anything.
 
-Theo has the like counter open. A photo with 1,204 likes shows 1,291. Every redelivered LikeAdded event added one more.
-
-*"The fix isn't fewer duplicates,"* he says. *"It's that the second one shouldn't do anything."* He writes `likes = likes + 1` on the board, crosses out the `+ 1`, and waits.
-
-</Scene>
-
-An operation is **idempotent** if doing it twice has the same effect as doing it once. At-least-once delivery plus idempotent processing *is* exactly-once in effect. Three ways to get there, in order of preference:
+An operation is **idempotent** if doing it twice has the same effect as doing it once. At-least-once delivery plus idempotent processing *is* exactly-once in effect. Three ways, in order of preference:
 
 **1. Make the operation naturally idempotent.** `SET status = 'shipped'` is idempotent; `likes = likes + 1` is not.
 
-- Record facts, not increments: insert `(user_id, photo_id)` into a likes table with a unique key; the count is derived. A duplicate insert hits the key and does nothing.
-- Upsert by a natural key: `INSERT … ON CONFLICT (order_id) DO UPDATE …`.
-- Conditional writes with a version: `UPDATE … SET state = 'paid', version = 8 WHERE id = 123 AND version = 7`. A replay finds version 8 and changes nothing — this also stops an *older* event overwriting a newer state.
+- Record facts, not increments: insert `(user_id, photo_id)` into a likes table with a unique key; the count is derived.
+- Upsert by a natural key: `INSERT … ON DUPLICATE KEY UPDATE …`.
+- Conditional writes with a version: `UPDATE orders SET state = 'paid', version = 8 WHERE id = 123 AND version = 7`. A replay finds version 8 and changes nothing, and an *older* event can't overwrite a newer state.
 
-**2. A dedup table, in the same transaction as the effect.** When the operation can't be made idempotent, remember which events you've applied.
+**2. A dedup table, in the same transaction as the effect.** When the operation can't be made idempotent, remember which events you've applied. This is the pattern interviewers want to see in code.
 
-```text
-BEGIN;
-  INSERT INTO processed_events (consumer, event_id)
-  VALUES ('like-counter', :event_id)
-  ON CONFLICT DO NOTHING;                 -- 0 rows inserted = seen before
-  -- if 0 rows: ROLLBACK, ack the message, stop
-  UPDATE photos SET likes = likes + 1 WHERE id = :photo_id;
-COMMIT;
--- only now: ack the message / commit the offset
+```sql
+CREATE TABLE processed_events (
+  consumer   VARCHAR(64)  NOT NULL,
+  event_id   CHAR(36)     NOT NULL,
+  applied_at TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (consumer, event_id)
+) ENGINE=InnoDB;
 ```
 
-The marker and the effect commit together or not at all. If the process dies before `COMMIT`, neither happened and the redelivery does the work. If it dies after `COMMIT` but before the ack, the redelivery finds the id and skips.
+```python
+import json
+import pymysql
+from confluent_kafka import Consumer
 
-**3. An idempotency key at the API edge.** When the *client* might retry (a phone on a train re-sending "place order"), the client generates a key and the server stores the result under it. That's the same idea one hop earlier — <a href={`${BASE}sd/lessons/pattern-contention/`}>the contention lesson</a> builds it in full.
+db = pymysql.connect(host="db", user="app", password="...", database="shop",
+                     autocommit=False)
+consumer = Consumer({
+    "bootstrap.servers": "kafka:9092",
+    "group.id": "like-counter",
+    "enable.auto.commit": False,      # we commit after the DB commit
+    "auto.offset.reset": "earliest",
+})
+consumer.subscribe(["likes"])
+
+def apply_once(evt):
+    with db.cursor() as cur:
+        cur.execute(
+            "INSERT IGNORE INTO processed_events (consumer, event_id) VALUES (%s, %s)",
+            ("like-counter", evt["event_id"]),
+        )
+        if cur.rowcount == 0:             # seen before: duplicate
+            db.rollback()
+            return
+        cur.execute("UPDATE photos SET likes = likes + 1 WHERE id = %s",
+                    (evt["photo_id"],))
+    db.commit()                           # marker and effect commit together
+
+while True:
+    msg = consumer.poll(1.0)
+    if msg is None or msg.error():
+        continue
+    apply_once(json.loads(msg.value()))
+    consumer.commit(message=msg, asynchronous=False)   # only after the DB commit
+```
+
+The marker and the effect commit together or not at all. If the process dies before `db.commit()`, neither happened and the redelivery does the work. If it dies after the commit but before `consumer.commit`, the redelivery finds the id and skips.
+
+<Figure caption="One event, delivered twice. The second delivery is a no-op because the primary key rejects the marker.">
+  <Mermaid code={`sequenceDiagram
+    participant K as Kafka
+    participant C as Consumer
+    participant DB as MySQL
+    K->>C: record evt-9
+    C->>DB: INSERT IGNORE processed_events evt-9
+    C->>DB: UPDATE photos likes + 1
+    C->>DB: COMMIT
+    Note over C: crash before offset commit
+    K->>C: record evt-9 again after restart
+    C->>DB: INSERT IGNORE evt-9 (0 rows)
+    C->>DB: ROLLBACK
+    C->>K: commit offset (skip)`} />
+</Figure>
+
+This sketch is not production-ready. A real consumer also needs: batching (commit offsets per batch, not per record), a rebalance listener so uncommitted work is dropped cleanly, a retry and DLQ path for failures (Chapter 8), and a pruning job for old marker rows.
+
+**3. An idempotency key at the API edge.** When the *client* might retry (a phone re-sending "place order"), the client generates a key and the server stores the result under it. Same idea one hop earlier; <a href={`${BASE}sd/lessons/pattern-contention/`}>the contention lesson</a> builds it in full.
+
+**Idempotent consumer, side by side with outbox.** They look similar (both use an extra table) but guard opposite ends:
+
+| | Outbox (Chapter 6) | Idempotent consumer (this chapter) |
+|---|---|---|
+| Guards against | A *lost* event (dual write) | A *repeated* event |
+| Where | Producer's database | Consumer's database |
+| Table holds | Events waiting to be published | Ids of events already applied |
 
 **Details interviewers poke:**
 
-- **Which id?** A producer-assigned **event id** (a UUID created when the event is first written). Not the broker's offset or message id: if the producer republishes the same event (Chapter 6), it gets a *new* offset, but it's the same event.
-- **How long to remember?** Longer than the longest possible redelivery: retention, plus DLQ redrive, plus replays you might run. A few days is common; expire old rows with a TTL or partition the table by day. (SQS FIFO's built-in deduplication only covers producer sends within a 5-minute window — check current docs — so it doesn't replace this.)
-- **Effects you can't put in a transaction.** An email or a third-party API call can't join your database transaction. Pick a side deliberately: *record, then send* risks a lost email if you crash in between (at-most-once); *send, then record* risks a duplicate (at-least-once). For a receipt, a rare duplicate is better than a lost one. If the provider accepts an idempotency key, pass your event id and let it dedupe.
+- **Which id?** A producer-assigned **event id** (a UUID created when the event is first written). Not the broker's offset or message id: if the producer republishes the same event (Chapter 6), it gets a *new* offset but is the same event.
+- **How long to remember?** Longer than the longest possible redelivery: retention, plus DLQ redrive, plus replays you might run. A few days is common; expire old rows by date, ideally by dropping a partition of the table. (SQS FIFO's built-in deduplication covers only a short window of producer sends, 5 minutes at the time of writing; check current docs.)
+- **Effects you can't put in a transaction.** An email or a third-party call can't join your database transaction. *Record, then send* risks a lost email if you crash in between (at-most-once); *send, then record* risks a duplicate (at-least-once). For a receipt, a duplicate is better than a lost one. If the provider accepts an idempotency key, pass your event id.
 
 <Trace title="Where does the marker go?" steps={idempotency} takeaway="The ‘I did it’ record must commit atomically with the effect. Before it is at-most-once; after it, in a separate step, is at-least-once with a gap." />
 
 <Reveal q="Two consumers receive the same message at the same moment (a visibility timeout expired while the first was slow). Does the dedup table still work?">
 
-Yes, if it's enforced by a unique key inside the transaction. Both transactions try to insert the same `(consumer, event_id)`; the database lets exactly one commit, and the other gets a conflict (or, with `ON CONFLICT DO NOTHING`, zero rows inserted) and skips. A check-then-insert done *outside* a transaction — "is it in Redis? no? then process" — fails exactly here, because both checks can pass before either writes.
+Yes, if it's enforced by a unique key inside the transaction. Both transactions try to insert the same `(consumer, event_id)`; InnoDB makes the second wait on the first's row lock. If the first commits, the second sees the duplicate and inserts zero rows, then skips. If the first rolls back, the second inserts and does the work. A check-then-insert done *outside* a transaction ("is it in Redis? no? then process") fails exactly here, because both checks can pass before either writes.
 
 </Reveal>
 
-**Catch the trap:** "Make the consumer idempotent" said as a slogan. Say *how*: which id, where it's stored, and that the marker commits atomically with the effect.
+**A common slip:** "make the consumer idempotent" as a slogan. Say *how*: which id, where it's stored, and that the marker commits atomically with the effect.
 
-<h2 id="outbox">Chapter 6 · The order nobody heard about</h2>
+<Quiz
+  id="qs-idempotency"
+  title="Chapter 5 checkpoint"
+  questions={[
+    {
+      kind: 'predict',
+      q: 'Delivery order: evt-9 arrives, commits, then evt-9 arrives again. What do the two statements return on the second delivery?',
+      code: "INSERT IGNORE INTO processed_events (consumer, event_id) VALUES ('c', 'evt-9');\n-- affected rows?\nUPDATE photos SET likes = likes + 1 WHERE id = 5;  -- executed?",
+      options: [
+        '1 affected row; the UPDATE runs, so likes double-count',
+        '0 affected rows; the code rolls back and skips the UPDATE',
+        'An error is thrown for the duplicate key',
+      ],
+      answer: 1,
+      why: 'INSERT IGNORE swallows the duplicate-key error and reports 0 rows. The consumer checks rowcount and stops.',
+      explain: [
+        'The primary key already holds (c, evt-9), so nothing is inserted.',
+        'Correct: rowcount 0 means duplicate. Skip the effect, then ack so it is not redelivered again.',
+        'INSERT IGNORE downgrades the error to a warning. Plain INSERT would raise it, which also works if you catch it.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'The consumer inserts the dedup row and commits, then in a second transaction applies the update, and the process dies between them. Outcome?',
+      options: [
+        'The effect happens twice',
+        'The effect is lost: the retry sees the marker and skips',
+        'MySQL rolls both back automatically',
+      ],
+      answer: 1,
+      why: 'Marking before doing is at-most-once in disguise. The marker and effect need one transaction.',
+      explain: [
+        'The retry finds the marker and skips, so it is not applied twice.',
+        'Correct: nothing ever applies the update.',
+        'They were two separate commits. The first is durable.',
+      ],
+    },
+  ]}
+/>
 
-<Scene chapter="Chapter 6" title="The order nobody heard about" mood="storm">
+<RevisionCards
+  id="queues-streams-idempotency"
+  cards={[
+    { front: 'Three ways to get idempotency?', back: 'Naturally idempotent operations (facts, upserts, version checks), a dedup table in the same transaction, and an idempotency key at the API edge.' },
+    { front: 'Which id to dedup on?', back: 'A producer-assigned event id, not the broker offset, because a republished event gets a new offset.' },
+    { front: 'Why must the marker and effect share a transaction?', back: 'Marker first in its own commit loses the effect; effect first in its own commit duplicates it.' },
+    { front: 'How long to keep dedup rows?', back: 'Longer than the longest possible redelivery: retention plus DLQ redrive plus replays.' },
+    { front: 'Why is check-in-Redis-then-process unsafe?', back: 'Two concurrent deliveries can both pass the check before either writes, and a crash between effect and Redis write double-counts.' },
+  ]}
+/>
 
-A seller emails: an order sits in their dashboard as paid, but they were never notified, the buyer never got a receipt, and analytics has never heard of it. Theo finds the pod. It committed the order to Postgres, then was evicted by the scheduler in the 3 milliseconds before it published OrderPlaced to Kafka.
+<ChapterDone id="idempotency" />
 
-*"Two systems,"* he says. *"Two writes. No transaction that spans them. Which one do you trust when they disagree?"*
+<h2 id="outbox">Chapter 6 · The dual-write problem</h2>
 
-</Scene>
+Imagine a seller emails: an order shows as paid, but they were never notified, the buyer got no receipt, and analytics has never heard of it. The order service committed the order to MySQL, then its pod was evicted in the 3 ms before it published OrderPlaced to Kafka. Two systems, two writes, no transaction that spans them.
 
-**The dual-write problem.** Any service that writes to its database *and* publishes an event is writing to two systems that share no transaction. Either order breaks:
+**The dual-write problem.** Any service that writes to its database *and* publishes an event writes to two systems that share no transaction. Either order breaks:
 
 - **Commit, then publish:** a crash in between leaves an order with no event. Nobody downstream ever hears.
 - **Publish, then commit:** a failed commit (a constraint, a deadlock, a crash) leaves an event for an order that doesn't exist.
 
-Retrying the publish in memory doesn't help — the retry dies with the process. Two-phase commit across Postgres and Kafka isn't available (Kafka doesn't take part in XA-style transactions with your database), and you wouldn't want your write path coupled to both systems' availability anyway.
+Retrying in memory doesn't help, because the retry dies with the process. Two-phase commit across MySQL and Kafka isn't available (Kafka doesn't take part in XA transactions with your database), and you wouldn't want your write path coupled to both systems' availability.
 
 <Figure caption="The dual write. Each system is correct on its own; together they disagree forever.">
   <Mermaid code={`sequenceDiagram
     participant S as Order service
-    participant DB as Postgres
+    participant DB as MySQL
     participant K as Kafka
     S->>DB: INSERT order 123, COMMIT
     DB-->>S: committed
@@ -396,12 +698,20 @@ Retrying the publish in memory doesn't help — the retry dies with the process.
     Note over DB,K: the order exists, the event does not`} />
 </Figure>
 
-**The transactional outbox.** Write the event into an `outbox` table *in the same database transaction* as the business change. The database's own atomicity now guarantees: order and event, or neither. A separate **relay** reads the outbox and publishes to the broker.
+**The transactional outbox.** Write the event into an `outbox` table *in the same database transaction* as the business change. The database's own atomicity now guarantees order and event, or neither. A separate **relay** reads the outbox and publishes to the broker.
+
+```sql
+BEGIN;
+  INSERT INTO orders (id, buyer_id, total) VALUES (123, 42, 2999);
+  INSERT INTO outbox (event_id, aggregate_id, type, payload)
+  VALUES (UUID(), '123', 'OrderPlaced', '{"order_id":123,"total":2999}');
+COMMIT;   -- both rows or neither
+```
 
 <Figure caption="The outbox. One local transaction makes the event durable; the relay delivers it at least once; the consumer’s dedup makes ‘at least once’ harmless.">
   <Mermaid code={`sequenceDiagram
     participant S as Order service
-    participant DB as Postgres
+    participant DB as MySQL
     participant R as Outbox relay
     participant K as Kafka
     participant C as Consumer
@@ -409,7 +719,7 @@ Retrying the publish in memory doesn't help — the retry dies with the process.
     S->>DB: INSERT INTO orders (123)
     S->>DB: INSERT INTO outbox (evt-9, OrderPlaced 123)
     S->>DB: COMMIT (both rows or neither)
-    R->>DB: read unpublished outbox rows in order
+    R->>DB: read unpublished outbox rows in id order
     R->>K: publish evt-9, key = order 123
     K-->>R: ack
     R->>DB: mark evt-9 published
@@ -418,40 +728,105 @@ Retrying the publish in memory doesn't help — the retry dies with the process.
     C->>C: skip if evt-9 already processed`} />
 </Figure>
 
+A minimal polling relay in Python:
+
+```python
+while True:
+    cur.execute("SELECT id, event_id, aggregate_id, payload FROM outbox "
+                "WHERE published_at IS NULL ORDER BY id LIMIT 100")
+    rows = cur.fetchall()
+    for id_, event_id, agg, payload in rows:
+        producer.produce("orders", key=agg, value=payload,
+                         headers={"event_id": event_id})
+    producer.flush()                       # wait for acks=all confirmations
+    if rows:
+        cur.execute("UPDATE outbox SET published_at = NOW() WHERE id IN (%s)"
+                    % ",".join(str(r[0]) for r in rows))
+        db.commit()
+    else:
+        time.sleep(0.2)
+```
+
+A crash between `flush()` and the `UPDATE` republishes those rows, which is why this is at-least-once. Run one active relay per outbox so per-order order holds.
+
 **Two ways to build the relay:**
 
 | Relay | How | Watch out |
 |---|---|---|
-| **Polling publisher** | Every few hundred ms: select unpublished rows in id order, publish, mark them published (or delete) | Adds polling load and latency; run one active relay per outbox (with failover) so per-aggregate order holds |
-| **Change-data capture** | Tail the database's write-ahead log or binlog (e.g. Debezium, which ships an outbox router) and turn outbox inserts into events | One more system to run; very low latency and no polling queries |
+| **Polling publisher** | Every few hundred ms, select unpublished rows in id order, publish, mark them | Polling load and latency; one active relay with failover |
+| **Change-data capture** | Tail the database's binlog (for MySQL; Debezium ships an outbox router) and turn outbox inserts into events | One more system to run; low latency, no polling queries |
 
-**What it guarantees, exactly:** the event is published **at least once** if and only if the transaction committed. The relay can publish a row twice (crash after publish, before marking), so consumers dedupe by event id — the outbox and idempotent consumers are a pair. Key the event by the aggregate (order id) so all events for one order stay in order. Clean up published rows on a schedule so the table doesn't grow forever.
-
-The consumer-side mirror image is sometimes called the **inbox**: the dedup table from Chapter 5, written in the same transaction as the consumer's own changes. Outbox on the way out, inbox on the way in.
+**What it guarantees, exactly:** the event is published **at least once if and only if the transaction committed**. Consumers dedupe by event id, so the outbox and idempotent consumers are a pair. Key the event by the aggregate (order id) so one order's events stay in order. Clean up published rows on a schedule so the table doesn't grow forever. The consumer-side mirror is sometimes called the **inbox**: the dedup table from Chapter 5. Outbox on the way out, inbox on the way in.
 
 <Trace title="Close the dual write" steps={outbox} takeaway="Never write to a database and a broker as two independent steps. Write the event into the database’s transaction (outbox), relay it at least once, and dedupe on the way in." />
 
 <Reveal q="The async-jobs lesson says ‘persist the job row first, then enqueue its id, with a reconciler for stuck rows’. How is that related?">
 
-It's the same insight with a different relay. The database row is the truth; the queue is a delivery mechanism. "Insert row, then enqueue" is a dual write, and the reconciler that re-enqueues rows stuck in `queued` is the relay that closes the gap — at least once, so the job is idempotent. The outbox makes that relay generic. See <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>async jobs & pipelines</a>.
+It's the same insight with a different relay. The database row is the truth; the queue is a delivery mechanism. "Insert row, then enqueue" is a dual write, and the reconciler that re-enqueues rows stuck in `queued` is the relay that closes the gap, at least once, so the job must be idempotent. The outbox makes that relay generic. See <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>async jobs & pipelines</a>.
 
 </Reveal>
 
-**Catch the trap:** "We'll use Kafka transactions to make the database write and the publish atomic." Kafka transactions cover Kafka partitions and offsets only. Your Postgres commit is not in them.
+**A common slip:** "We'll use Kafka transactions to make the database write and the publish atomic." Kafka transactions cover Kafka partitions and offsets only. Your MySQL commit is not in them.
 
-<h2 id="ordering">Chapter 7 · Shipped before packed</h2>
+<Quiz
+  id="qs-outbox"
+  title="Chapter 6 checkpoint"
+  questions={[
+    {
+      kind: 'failure',
+      q: 'The outbox relay publishes 100 rows, then crashes before marking them published. What do consumers see after the relay restarts?',
+      options: [
+        'Nothing: the rows were published',
+        'The same 100 events again, which idempotent consumers drop by event id',
+        'The 100 events are lost',
+      ],
+      answer: 1,
+      why: 'Publish-then-mark is at-least-once by design. Duplicates are expected and handled downstream.',
+      explain: [
+        'The relay cannot know it published them, since the mark never committed.',
+        'Correct: this is why the outbox needs idempotent consumers and a stable event id.',
+        'The rows are still in the outbox with published_at NULL, so nothing is lost.',
+      ],
+    },
+    {
+      kind: 'tradeoff',
+      q: 'Why choose CDC (binlog tailing) over a polling relay, and what does it cost?',
+      options: [
+        'It gives exactly-once publishing with no duplicates',
+        'Lower latency and no polling query load, at the cost of running another system',
+        'It removes the need for an outbox table',
+      ],
+      answer: 1,
+      why: 'CDC reads the log the database already writes, but it is still at-least-once and needs operating.',
+      explain: [
+        'CDC connectors also restart from a stored position, so duplicates can occur.',
+        'Correct: lower latency and no extra reads; you must run and monitor the connector.',
+        'The outbox table is still how you make event and change atomic. CDC only replaces the polling relay.',
+      ],
+    },
+  ]}
+/>
 
-<Scene chapter="Chapter 7" title="Shipped before packed">
+<RevisionCards
+  id="queues-streams-outbox"
+  cards={[
+    { front: 'What is the dual-write problem?', back: 'Writing a database and a broker as two steps with no shared transaction; a crash between them leaves them permanently disagreeing.' },
+    { front: 'What does the outbox guarantee?', back: 'The event is published at least once if and only if the transaction committed.' },
+    { front: 'Two relay options?', back: 'Polling publisher, or change-data capture on the binlog (e.g. Debezium).' },
+    { front: 'Why can the relay publish twice?', back: 'It can crash after publishing but before marking the row, so consumers must dedupe by event id.' },
+    { front: 'Why not Kafka transactions for this?', back: 'They cover Kafka partitions and offsets only, not your MySQL commit.' },
+  ]}
+/>
 
-A buyer's tracking page reads *Shipped*, then, an hour later, *Packed*. The warehouse emitted the events in the right order. The consumer processed them in the wrong one.
+<ChapterDone id="outbox" />
 
-Mara asks the room: *"Who actually needs order? All of Kestrel? One seller? One order?"* The room is quiet. *"Then that's the thing we key by."*
+<h2 id="ordering">Chapter 7 · Partition keys and order</h2>
 
-</Scene>
+Imagine a tracking page that reads *Shipped*, then an hour later *Packed*. The warehouse emitted the events in the right order; the consumer processed them in the wrong one. The question that fixes it: who actually needs order? All orders? One seller? One order? That is the key.
 
-**Kafka (and Kinesis, and every partitioned log) guarantees order within a partition only.** There is no order between partitions. The producer chooses a record's partition from its **key** — for keyed records, the default partitioner hashes the key and takes it modulo the partition count — so every record with the same key lands in the same partition, in the order it was written.
+**Kafka (and Kinesis, and every partitioned log) guarantees order within a partition only.** There is no order between partitions. The producer picks a record's partition from its **key**. For keyed records the default partitioner hashes the key and takes it modulo the partition count, so every record with the same key lands in the same partition, in write order.
 
-<Figure caption="Keys decide partitions. All of order 123’s events share partition 1, so they stay in order. Order 123 and order 456 have no order relative to each other — and don’t need one.">
+<Figure caption="Keys decide partitions. All of order 123’s events share partition 1, so they stay in order. Orders 123 and 456 have no order relative to each other, and don’t need one.">
   <Mermaid code={`flowchart LR
     E1["order 123: created"] --> H{"hash(key)\nmod 4"}
     E2["order 456: created"] --> H
@@ -463,30 +838,89 @@ Mara asks the room: *"Who actually needs order? All of Kestrel? One seller? One 
     P3 --> C2["consumer B"]`} />
 </Figure>
 
-**Choosing the key.** Key by the **smallest entity whose events must be ordered** — usually the aggregate the events describe:
+**Choosing the key.** Key by the **smallest entity whose events must be ordered**, usually the aggregate the events describe:
 
-- "All events for order 123 in order" → key by `order_id`. Ordering per order, parallelism across orders.
-- "All events for user 42 in order" (a chat, a balance) → key by `user_id`.
-- **Global total order** across everything → one partition, so one consumer, so a hard throughput ceiling. It is almost never the real requirement — say so, then ask what actually needs ordering.
+- Order 123's events in order → key by `order_id`. Ordering per order, parallelism across orders.
+- User 42's events in order (a chat, a balance) → key by `user_id`.
+- **Global total order** → one partition, so one consumer and a hard throughput ceiling. It is almost never the real requirement; ask what actually needs order.
 
-**Things that quietly break ordering — name them:**
+**What each system guarantees about order.** Compare, because "ordered" means different things:
 
-- **Changing the partition count.** `hash(key) mod 12` and `hash(key) mod 24` disagree, so new events for a key can land on a different partition than its old ones. Kafka lets you add partitions (never remove them) but doesn't move old data. Over-provision up front (Chapter 10).
-- **Parallelism inside a consumer.** Handing records from one partition to a thread pool processes them out of order. Parallelize by key (one lane per key hash) if you need more speed from one partition.
+| | Guarantee | Breaks when |
+|---|---|---|
+| **Kafka** | Per partition, so per key | Partition count changes; consumer processes one partition in parallel; retries go to another topic |
+| **RabbitMQ** | A queue is FIFO to its consumers | Several consumers on the queue process concurrently; requeue or redelivery puts a message back behind others |
+| **SQS FIFO** | Per message group id, groups processed in parallel | Using one group id for everything serialises the queue |
+| **SQS standard** | Best effort only | Always possible |
+
+**Things that quietly break order on a log:**
+
+- **Changing the partition count.** `hash(key) mod 12` and `hash(key) mod 24` disagree, so new events for a key may land on a different partition than its old ones. Kafka lets you add partitions (never remove them) but doesn't move old data. Over-provision up front (Chapter 10).
+- **Parallelism inside a consumer.** Handing records from one partition to a thread pool processes them out of order. Parallelize by key (one lane per key hash) instead.
 - **Retries out of line.** Sending a failed record to a retry topic lets later records for the same key overtake it (Chapter 8).
-- **Hot keys.** One key always lives on one partition. If a single seller produces 40% of traffic and you key by seller, one partition (and its one consumer) carries 40% of the load. More partitions don't help. Re-key by a finer entity if ordering allows (order instead of seller); if that key's events don't need order at all, **salt** it (`seller-9#0` … `seller-9#7`) to spread it. Salting a key that needs order breaks the order.
-
-Queues have the same idea under other names: an **SQS FIFO** queue orders messages within a **message group id** and processes groups in parallel; a RabbitMQ queue delivers in order, but several consumers (or requeued messages) mean work is not processed in order.
+- **Hot keys.** One key always lives on one partition. If one seller makes 40% of traffic and you key by seller, one partition (and its one consumer) carries 40% of the load, and more partitions don't help. Re-key by a finer entity if ordering allows (order instead of seller). If that key's events don't need order, **salt** it (`seller-9#0` … `seller-9#7`). Salting a key that needs order breaks the order.
 
 <Trace title="Order, per what?" steps={ordering} takeaway="Order exists per partition, and the key picks the partition. Key by the smallest entity that needs order. Partition changes, in-consumer parallelism, retries and salting all break it." />
 
-<Reveal q="Iris asks for ‘events in timestamp order across all sellers’ for a live dashboard. What do you say?">
+<Reveal q="A product manager asks for ‘events in timestamp order across all sellers’ for a live dashboard. What do you say?">
 
-Ask what the dashboard does with order. A chart of orders per minute doesn't need total order — it needs records grouped into the right minute, which is a windowing problem (event time plus a little allowed lateness; see <a href={`${BASE}sd/lessons/pattern-timeseries/`}>time-series & aggregation</a>). Real total order means one partition and one consumer. If that's genuinely required and the rate is small, it's fine; at 20,000 events/s it's the bottleneck.
+Ask what the dashboard does with order. A chart of orders per minute doesn't need total order; it needs records grouped into the right minute, a windowing problem (event time plus a little allowed lateness; see <a href={`${BASE}sd/lessons/pattern-timeseries/`}>time-series & aggregation</a>). Real total order means one partition and one consumer. If genuinely required and the rate is small, fine; at 20,000 events/s it's the bottleneck.
 
 </Reveal>
 
-**Catch the trap:** "Kafka guarantees ordering." Per partition. Always finish the sentence with the key.
+**A common slip:** "Kafka guarantees ordering." Per partition. Always finish the sentence with the key.
+
+<Quiz
+  id="qs-ordering"
+  title="Chapter 7 checkpoint"
+  questions={[
+    {
+      kind: 'scenario',
+      q: 'Account balance events (credit, debit) are keyed by account_id on 12 partitions. Throughput doubles; ops proposes going to 24 partitions in place. What is the risk?',
+      options: [
+        'None: Kafka rebalances keys automatically',
+        'New events for an account may map to a different partition than its older events, so the two can be consumed out of order',
+        'Kafka refuses to add partitions to a keyed topic',
+      ],
+      answer: 1,
+      why: 'Partition = hash(key) mod count, and the count changed. Old data does not move.',
+      explain: [
+        'Kafka never moves existing records, and the mapping changes for new ones.',
+        'Correct: drain the old topic first, or migrate to a new topic with the larger count.',
+        'Adding partitions is allowed; it just does not preserve key placement.',
+      ],
+    },
+    {
+      kind: 'tradeoff',
+      q: 'One tenant is 40% of events and the topic is keyed by tenant_id. Events must stay ordered per user, not per tenant. Best fix?',
+      options: [
+        'Add partitions',
+        'Re-key by user_id',
+        'Salt tenant_id with a random suffix',
+      ],
+      answer: 1,
+      why: 'The key must be the smallest entity that needs ordering. A finer key spreads load and keeps the ordering that matters.',
+      explain: [
+        'A key maps to one partition regardless of the partition count, so the hot tenant stays hot.',
+        'Correct: user ids spread evenly, and each user keeps their order.',
+        'Random salt scatters one user\'s events across partitions and breaks per-user order.',
+      ],
+    },
+  ]}
+/>
+
+<RevisionCards
+  id="queues-streams-ordering"
+  cards={[
+    { front: 'How does the Kafka producer pick a partition for a keyed record?', back: 'Hash of the key modulo the partition count, so equal keys share a partition and keep order.' },
+    { front: 'How to choose the key?', back: 'The smallest entity whose events must be ordered, such as order_id or user_id.' },
+    { front: 'Four things that break per-key order?', back: 'Changing the partition count, in-consumer thread pools, retry topics, salting a key that needs order.' },
+    { front: 'How do you fix a hot key?', back: 'Re-key by a finer entity if order allows; salt it only if its events need no order. More partitions do not help.' },
+    { front: 'RabbitMQ ordering?', back: 'FIFO into the queue, but several consumers or requeues mean processing is not in order.' },
+  ]}
+/>
+
+<ChapterDone id="ordering" />
 
 <Part n="Part Three" title="When it breaks">
 
@@ -494,36 +928,28 @@ The chapters that show whether you've run a queue, or only drawn one.
 
 </Part>
 
-<h2 id="poison">Chapter 8 · The message that wouldn’t die</h2>
+<h2 id="poison">Chapter 8 · Poison messages and DLQs</h2>
 
-<Scene chapter="Chapter 8" title="The message that wouldn’t die" mood="storm">
+Imagine email queue depth is 400,000 and climbing while workers are healthy. One order has a seller name the template engine can't render. Every worker that picks it up crashes, the message reappears, another worker picks it up. Around it, 400,000 receipts wait.
 
-Saturday, 2 a.m. Dev's calm voice: *"Email queue depth is 400,000 and climbing. Workers are healthy. They're just all very busy failing."*
-
-One order has a seller name with a character the email template engine can't render. Every worker that picks it up crashes, the message reappears, and another worker picks it up. Around it, 400,000 receipts wait.
-
-</Scene>
-
-A **poison message** fails every time, no matter how often you retry: malformed data, a bug in one code path, a reference to something deleted. Retries help transient failures (a timeout, a deadlock, a 503) and are useless against permanent ones.
+A **poison message** fails every time, however often you retry: malformed data, a bug in one code path, a reference to something deleted. Retries help transient failures (a timeout, a deadlock, a 503) and are useless against permanent ones.
 
 **The retry policy every async design should state:**
 
-1. **Classify the error.** Permanent (validation error, unknown schema, 4xx) → don't retry; dead-letter it now. Transient (timeout, 5xx, throttled) → retry.
+1. **Classify the error.** Permanent (validation error, unknown schema, 4xx) → dead-letter now. Transient (timeout, 5xx, throttled) → retry.
 2. **Retry with exponential backoff and jitter.** Wait 1 s, 2 s, 4 s, 8 s… each with a random spread, so a struggling dependency gets room to recover and thousands of workers don't retry in lockstep.
-3. **Cap the attempts.** After N tries, move the message to a **dead-letter queue (DLQ)**, so one bad message can't hold workers or block a partition forever.
-4. **Alert on the DLQ and plan the redrive.** A DLQ nobody watches is a slower way to lose data. Once the bug is fixed, move the messages back (**redrive**) — which is safe because consumers are idempotent.
-
-How each family does it:
+3. **Cap the attempts.** After N tries, move the message to a **dead-letter queue (DLQ)**, so one bad message can't hold workers or a partition forever.
+4. **Alert on the DLQ and plan the redrive.** A DLQ nobody watches is a slower way to lose data. After the fix, move messages back (**redrive**), which is safe because consumers are idempotent.
 
 | | Retry | Dead-lettering |
 |---|---|---|
-| **SQS** | Message reappears after the visibility timeout; back off by changing its timeout | Redrive policy: after `maxReceiveCount` receives, move to the DLQ; DLQ redrive moves messages back |
-| **RabbitMQ** | `nack` with requeue (immediate) or delay via a TTL'd retry queue | Dead-letter exchange on reject-without-requeue, TTL expiry, or length limit; quorum queues can cap redeliveries (check current docs) |
-| **Kafka** | No per-record retry: your consumer retries in place, or republishes to retry topics | A pattern, not a broker feature: publish the record to a DLQ topic, then commit past it (Kafka Connect sink connectors and frameworks such as Spring Kafka offer dead-letter support) |
+| **SQS** | Reappears after the visibility timeout; back off by changing its timeout | Redrive policy: after `maxReceiveCount` receives, move to the DLQ; DLQ redrive moves messages back |
+| **RabbitMQ** | `nack` with requeue (immediate) or delay via a TTL'd retry queue | Dead-letter exchange on reject-without-requeue, TTL expiry or length limit; quorum queues can cap redeliveries (check current docs) |
+| **Kafka** | No per-record retry: retry in place, or republish to retry topics | A pattern, not a broker feature: publish to a DLQ topic, then commit past it |
 
-**Kafka's special problem: head-of-line blocking.** A partition has one committed offset. If record 5,012 can't be processed, the consumer can't commit 5,013 without declaring 5,012 done. Retry it forever and the whole partition stops; skip it silently and it's lost. The answer is a bounded number of in-place retries, then publish to a retry or dead-letter topic and commit past it.
+**Kafka's special problem: head-of-line blocking.** A partition has one committed offset. If record 5,012 can't be processed, the consumer can't commit 5,013 without declaring 5,012 done. Retry forever and the partition stops; skip silently and it's lost. The answer: a bounded number of in-place retries, then publish to a retry or dead-letter topic and commit past it.
 
-<Figure caption="Tiered retries on a log. The main topic keeps flowing; slow retries happen off to the side; the DLQ is watched by a human.">
+<Figure caption="Tiered retries on a log. The main topic keeps flowing; slow retries happen to the side; the DLQ is watched by a human.">
   <Mermaid code={`flowchart LR
     M[("orders")] --> C["consumer"]
     C -->|"transient failure"| R1[("retry-1m")]
@@ -536,208 +962,472 @@ How each family does it:
     A -.->|"fix, then redrive"| M`} />
 </Figure>
 
-**The cost of retry topics: ordering.** Once record 5,012 moves to `retry-1m`, the records after it for the same key are processed before it. If that's unacceptable (a payment state machine), the consumer must also park later records for that key until the failed one resolves — or the design must tolerate the reorder (versioned updates from Chapter 5 reject the stale one).
+```python
+def handle(msg):
+    try:
+        apply_once(json.loads(msg.value()))
+    except PermanentError:
+        send_dlq(msg, reason="permanent")        # produce to orders-dlq with headers
+    except TransientError:
+        attempt = int(dict(msg.headers() or []).get("attempt", b"0")) + 1
+        if attempt >= 5:
+            send_dlq(msg, reason="retries exhausted")
+        else:
+            send_retry(msg, attempt)             # to retry-1m or retry-10m
+    consumer.commit(message=msg, asynchronous=False)   # move past it either way
+```
+
+**The cost of retry topics: ordering.** Once 5,012 moves to `retry-1m`, later records for the same key are processed before it. If that's unacceptable (a payment state machine), also park later records for that key until the failed one resolves, or tolerate the reorder (the versioned update from Chapter 5 rejects the stale one).
 
 <Trace title="Quarantine, don’t loop" steps={poison} takeaway="Classify, back off with jitter, cap attempts, dead-letter, alert, redrive. On a log, a stuck record blocks its partition until you move it aside." />
 
-**Catch the trap:** "Failed messages go to a DLQ." And then? Name the alert, who looks, and how messages get back. A DLQ without a redrive story is a bin.
+**A common slip:** "Failed messages go to a DLQ." And then? Name the alert, who looks, and how messages get back.
 
-<h2 id="lag">Chapter 9 · The line grows</h2>
+<Quiz
+  id="qs-poison"
+  title="Chapter 8 checkpoint"
+  questions={[
+    {
+      kind: 'failure',
+      q: 'The pricing service returns 503 for ten minutes. Your workers retry each message immediately, five times, then dead-letter it. What goes wrong?',
+      options: [
+        'Nothing; five retries is the standard',
+        'The retries hammer the struggling service, and a ten-minute outage dead-letters thousands of good messages',
+        'Workers are blocked for ten minutes',
+      ],
+      answer: 1,
+      why: 'Immediate retries multiply load on a failing dependency and exhaust the attempt budget before it recovers.',
+      explain: [
+        'Five immediate attempts fit inside a few seconds, far shorter than the outage.',
+        'Correct: use exponential backoff with jitter, a retry budget measured in minutes, and perhaps a circuit breaker; redrive anything dead-lettered.',
+        'Workers fail fast here; the problem is wasted attempts and false dead-letters.',
+      ],
+    },
+    {
+      kind: 'scenario',
+      q: 'A Kafka consumer must not lose a payment event but one record at offset 5,012 can never be parsed. What do you do?',
+      options: [
+        'Retry forever so nothing is lost',
+        'Retry a bounded number of times, publish the record to a DLQ topic with the error, commit past it, alert',
+        'Commit past it silently and move on',
+      ],
+      answer: 1,
+      why: 'You keep the record (in the DLQ) and unblock the partition.',
+      explain: [
+        'The partition is stuck and everything behind it waits.',
+        'Correct: nothing is lost, the partition keeps flowing, and a human can fix and redrive.',
+        'Silent skipping loses the event with no trace.',
+      ],
+    },
+  ]}
+/>
 
-<Scene chapter="Chapter 9" title="The line grows" mood="night">
+<RevisionCards
+  id="queues-streams-poison"
+  cards={[
+    { front: 'Retry policy in four steps?', back: 'Classify the error, exponential backoff with jitter, cap attempts and dead-letter, alert and redrive.' },
+    { front: 'What is head-of-line blocking on Kafka?', back: 'One committed offset per partition, so an unprocessable record blocks everything behind it until you move it aside.' },
+    { front: 'Who does DLQ for Kafka?', back: 'You do: a DLQ topic pattern. SQS and RabbitMQ have it built in.' },
+    { front: 'Cost of retry topics?', back: 'Retried records leave their partition, so per-key order is lost unless you park later records for the key.' },
+    { front: 'What makes redrive safe?', back: 'Idempotent consumers.' },
+  ]}
+/>
 
-A Monday deploy breaks the analytics consumers for twenty minutes. Nobody notices: checkout is fine, the topic is fine, nothing returns an error. The first sign is a product manager asking why the live dashboard has been stuck at 9:04 for a quarter of an hour.
+<ChapterDone id="poison" />
 
-Dev rolls back and watches a number on his screen fall. *"That's our lag,"* he says. *"The question is whether it falls faster than the world adds to it."*
+<h2 id="lag">Chapter 9 · Lag and back-pressure</h2>
 
-</Scene>
+Imagine a deploy breaks the analytics consumers for twenty minutes. Nobody notices: checkout is fine, the topic is fine, nothing returns an error. The first sign is someone asking why the live dashboard has been stuck at 9:04 for a quarter of an hour.
 
 **Consumer lag** is how far a consumer is behind the head of the stream.
 
 - **In messages**, per partition: the log-end offset minus the group's committed offset. Easy to measure; hard to interpret (is 50,000 a lot?).
-- **In time**: how old the oldest unprocessed record is. This is what users feel and what you alert on ("analytics is 4 minutes behind"). On SQS the equivalent metric is the age of the oldest message.
+- **In time**: how old the oldest unprocessed record is. This is what users feel and what you alert on ("analytics is 4 minutes behind"). On SQS the equivalent is the age of the oldest message.
 
-<Figure caption="Lag on one partition. The committed offset (4) is the group’s next record to read; the log-end offset (10) is one past the newest record. Everything in between is waiting.">
+<Figure caption="Lag on one partition. The committed offset (4) is the group’s next record to read; the log-end offset (10) is one past the newest record. Everything between is waiting.">
   <ArrayStrip name="Partition 7" values={[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]} indices={false} pointers={[{ at: 4, label: 'committed (next to read)', tone: 'blue' }, { at: 9, label: 'newest', tone: 'gold' }]} tones={{ 0: 'done', 1: 'done', 2: 'done', 3: 'done', 4: 'hot', 5: 'hot', 6: 'hot', 7: 'hot', 8: 'hot', 9: 'hot' }} regions={[{ from: 0, to: 3, label: 'processed', tone: 'green' }, { from: 4, to: 9, label: 'lag = 10 − 4 = 6 records', tone: 'red' }]} />
 </Figure>
 
-**Worked numbers: catching up.** The analytics topic averages 20,000 events/s. Consumers are down for 20 minutes.
+**Worked numbers: catching up.** Assumptions: the topic averages 20,000 events/s; consumers are down for 20 minutes; 24 instances each process 2,500 events/s.
 
 - Backlog = 20,000 × 1,200 s = **24,000,000 events** (lag in time: 20 minutes).
-- 24 consumer instances × 2,500 events/s = 60,000/s capacity. New events keep arriving at 20,000/s, so the backlog drains at **40,000/s**.
-- 24,000,000 ÷ 40,000 = 600 s = **10 minutes** to catch up.
-- Scale to 48 instances (the topic has 48 partitions — Chapter 10 shows where that number comes from): capacity 120,000/s, drain 100,000/s, **4 minutes** — *if* the database the consumers write to can absorb 120,000 writes/s. Scaling consumers moves the bottleneck downstream; check it.
+- Capacity = 24 × 2,500 = 60,000/s. New events keep arriving at 20,000/s, so the backlog drains at **40,000/s**.
+- 24,000,000 ÷ 40,000 = 600 s = **10 minutes**.
+- At 48 instances (the topic has 48 partitions; Chapter 10 shows why): capacity 120,000/s, drain 100,000/s, **4 minutes**, *if* the database the consumers write to can absorb 120,000 writes/s. Scaling consumers moves the bottleneck downstream.
 
 **Back-pressure** is how a slow consumer pushes back instead of drowning. Where it lives depends on the model:
 
-- **Pull (Kafka, SQS):** consumers fetch at their own pace, so they can't be overwhelmed — the broker's disk is the buffer, and lag grows instead. Lag *is* the back-pressure signal.
-- **Push (RabbitMQ):** the broker pushes to consumers; a **prefetch limit** caps how many unacknowledged messages each consumer holds, so a slow consumer stops receiving rather than buffering unboundedly in memory.
-- **At the producer:** when the buffer itself must be bounded (a max queue length, a producer's full send buffer), the producer blocks or gets errors and must slow down — and ultimately the API returns 429 or 503, or sheds low-priority work.
+- **Pull (Kafka, SQS):** consumers fetch at their own pace, so they can't be overwhelmed. The broker's disk is the buffer, and lag grows. Lag *is* the back-pressure signal.
+- **Push (RabbitMQ):** the broker pushes, and a **prefetch limit** (`basic.qos`) caps unacked messages per consumer, so a slow consumer stops receiving rather than buffering unboundedly in memory.
+- **At the producer:** when the buffer must be bounded (a max queue length, a full producer send buffer), the producer blocks or gets errors and must slow down. Ultimately the API returns 429 or 503, or sheds low-priority work.
 
-**Scaling consumers, and its ceiling.** Autoscale the group on lag in time. But **within a group, consumers beyond the partition count sit idle**. Past that ceiling, make each consumer faster (batch database writes, cut per-record round trips, parallelize by key inside a partition), add partitions (accepting the key remap from Chapter 7), or shed load.
+**Scaling consumers, and its ceiling.** Autoscale the group on lag in time. But **within a group, consumers beyond the partition count sit idle.** Past that, make each consumer faster (batch DB writes, cut per-record round trips, parallelize by key inside a partition), add partitions (accepting the key remap from Chapter 7), or shed load.
 
 **Two lag failures that hurt for real:**
 
-- **Lag longer than retention means data loss.** Kafka deletes old segments on schedule, read or not. A consumer whose committed offset falls off the end is then reset by `auto.offset.reset` — and the Java client's default, `latest`, jumps to the newest record without an error. Alert on lag in time long before it approaches retention.
-- **Rebalance storms.** If one poll's records take longer to process than the consumer's maximum poll interval (five minutes by default in the Java client — check your version), the group decides the consumer is dead, reassigns its partitions, and the uncommitted work is redelivered to someone else, who may also be too slow. Process smaller batches, or move slow work off the poll loop.
+- **Lag longer than retention means data loss.** Kafka deletes old segments on schedule, read or not. A consumer whose committed offset falls off the end is reset by `auto.offset.reset`; with the default `latest` it jumps to the newest record without an error. Alert on lag in time long before it nears retention.
+- **Rebalance storms.** If one poll's records take longer than the maximum poll interval (`max.poll.interval.ms`, 5 minutes by default in the Java client; check your version), the group decides the consumer is dead, reassigns its partitions, and uncommitted work is redelivered to someone who may also be too slow. Process smaller batches, or move slow work off the poll loop.
 
 <Trace title="Read the lag" steps={lag} takeaway="Drain time = backlog ÷ (capacity − input). Consumers past the partition count are idle. Lag beyond retention is silent loss. Alert in seconds, not messages." />
 
-<Reveal q="Each event needs a 20 ms call to a pricing service, and the consumer processes one partition strictly in order. What does that do to partition count?">
+<Reveal q="Each event needs a 20 ms call to a pricing service, and one partition is processed strictly in order. What does that do to partition count?">
 
-Serial processing means one partition delivers at most 1 ÷ 0.020 s = 50 events/s. At a 60,000/s peak you'd need 1,200 partitions — and 1,200 consumers. That's the real lesson: per-record latency, not broker speed, usually sets partition count. Batch the calls (one request for 100 events), cache the prices, or process different keys of the same partition concurrently while keeping each key in order.
+Serial processing means one partition delivers at most 1 ÷ 0.020 s = 50 events/s. At a 60,000/s peak you'd need 1,200 partitions and 1,200 consumers. Per-record latency, not broker speed, usually sets partition count. Batch the calls (100 events per request), cache the prices, or process different keys of one partition concurrently while keeping each key in order.
 
 </Reveal>
 
-**Catch the trap:** "We'll just add more consumers." Up to the partition count. Then what? Have the answer ready.
+**A common slip:** "We'll just add more consumers." Up to the partition count. Then what? Have the answer ready.
+
+<Quiz
+  id="qs-lag"
+  title="Chapter 9 checkpoint"
+  questions={[
+    {
+      kind: 'predict',
+      q: 'Backlog 6,000,000. Group of 10 consumers at 1,000/s each, new input 4,000/s. Time to catch up?',
+      code: 'capacity = 10 * 1000 = 10,000/s\ndrain    = 10,000 - 4,000 = 6,000/s',
+      options: ['600 s', '1,000 s', '1,500 s'],
+      answer: 1,
+      why: '6,000,000 ÷ 6,000 = 1,000 s. Input still arrives while you drain.',
+      explain: [
+        '6,000,000 ÷ 10,000 ignores the 4,000/s still arriving.',
+        'Correct: backlog ÷ (capacity − input).',
+        '6,000,000 ÷ 4,000 divides by the input rate instead of the spare capacity.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'A group was off for 9 days; retention is 7 days; auto.offset.reset is the default. After restart the dashboard shows no errors but is missing two days of data. Why?',
+      options: [
+        'Kafka rebuilt the missing data from replicas',
+        'The offset was out of range, so the consumer jumped to the latest record silently',
+        'The consumer crashed and was restarted',
+      ],
+      answer: 1,
+      why: 'With `latest`, an out-of-range offset resets to the end of the log and nothing is raised.',
+      explain: [
+        'Retention deletes data on every replica.',
+        'Correct: alert on lag in time long before retention, and consider `earliest` or `none` for consumers that must not skip.',
+        'A crash would show an error; this failure is silent.',
+      ],
+    },
+  ]}
+/>
+
+<RevisionCards
+  id="queues-streams-lag"
+  cards={[
+    { front: 'Lag in messages vs in time?', back: 'Messages: log-end offset minus committed offset per partition. Time: age of the oldest unprocessed record, which is what to alert on.' },
+    { front: 'Drain time?', back: 'Backlog ÷ (consumer capacity − input rate).' },
+    { front: 'Where does back-pressure live in Kafka vs RabbitMQ?', back: 'Kafka: pull model, lag grows on disk. RabbitMQ: push model with a prefetch limit on unacked messages.' },
+    { front: 'Consumer ceiling?', back: 'Consumers beyond the partition count in a group sit idle.' },
+    { front: 'Two silent lag failures?', back: 'Lag exceeding retention (auto.offset.reset=latest skips data) and rebalance storms from slow polls.' },
+  ]}
+/>
+
+<ChapterDone id="lag" />
 
 <Part n="Part Four" title="Designing with it">
 
-Numbers, delays, contracts — and the question underneath them all: should this be an event?
+Numbers, delays, contracts, and the question underneath them all: should this be an event?
 
 </Part>
 
 <h2 id="sizing">Chapter 10 · Partitions and terabytes</h2>
 
-<Scene chapter="Chapter 10" title="Partitions and terabytes" mood="dawn">
+Say a team plans one engagement-events topic for every like, view and purchase. "How many partitions?" "A hundred, to be safe." "How much disk?" "A lot." Neither answer is a design. Use the formulas.
 
-Kestrel is building one engagement-events topic for every like, view and purchase. Theo asks how many partitions. Someone says "a hundred, to be safe". Theo asks how much disk. Someone says "a lot".
-
-Mara hands over the marker. *"Peak sixty thousand a second, average twenty thousand, one kilobyte each, seven days. Show me."*
-
-</Scene>
-
-**Partition count.** Partitions are the unit of parallelism on both sides: each one is written by producers and read by at most one consumer per group. So:
+**Partition count.** Partitions are the unit of parallelism on both sides: each is written by producers and read by at most one consumer per group.
 
 **partitions ≥ max(target throughput ÷ per-partition producer throughput, target throughput ÷ per-partition consumer throughput)**
 
-Size for **peak** (bursts must be served), then add headroom, because adding partitions later remaps keys.
+Size for **peak**, then add headroom, because adding partitions later remaps keys.
 
-**Storage.** Retention fills at the **average** rate over the retention window, not the peak:
+**Storage.** Retention fills at the **average** rate over the window, not the peak:
 
 **disk = average rate × message size × seconds per day × retention days × replication factor**
 
-**Worked numbers for Kestrel.** Assumptions (decimal units, 1 KB = 1,000 bytes): peak 60,000 events/s, average 20,000 events/s, 1 KB per event, 7-day retention, replication factor 3. From benchmarks on *your* hardware — not vendor marketing — assume one partition sustains about 10 MB/s of writes, and one consumer instance processes about 2,500 events/s (its database writes are the bottleneck).
+**Worked numbers.** Assumptions (decimal units): peak 60,000 events/s, average 20,000/s, 1 KB per event, 7-day retention, replication factor 3. From benchmarks on *your* hardware, assume one partition sustains about 10 MB/s of writes and one consumer instance processes about 2,500 events/s (its database writes are the bottleneck).
 
 | Quantity | Arithmetic | Result |
 |---|---|---|
 | Peak ingress | 60,000 × 1 KB | 60 MB/s |
 | Producer-bound partitions | 60 MB/s ÷ 10 MB/s | 6 |
 | Consumer-bound partitions | 60,000 ÷ 2,500 | **24** |
-| With 2× growth headroom | 24 × 2 | **48 partitions** (so up to 48 consumers per group) |
+| With 2× growth headroom | 24 × 2 | **48 partitions** |
 | Average ingress | 20,000 × 1 KB | 20 MB/s |
 | Per day | 20 MB/s × 86,400 s | 1.728 TB |
 | 7-day retention | 1.728 × 7 | 12.1 TB |
 | × replication factor 3 | 12.1 × 3 | **≈ 36 TB on disk** |
-| If you'd used peak instead | 60 MB/s × 86,400 × 7 × 3 | ≈ 109 TB — 3× too much |
+| If you'd used peak | 60 MB/s × 86,400 × 7 × 3 | ≈ 109 TB, 3× too much |
 
-Two adjustments to say aloud: **compression** (producers compress batches; text-like payloads often shrink several-fold — measure on real data) and **headroom on disk** (never plan brokers to run full; leave room for a broker loss and its re-replication).
+<Figure caption="Which rate feeds which number.">
+  <Mermaid code={`flowchart LR
+    PK["peak rate\n60,000/s"] --> PC["partitions\nmax(6, 24) x 2 = 48"]
+    AV["average rate\n20,000/s"] --> DK["disk\n20 MB/s x 86,400 x 7 x 3\n= 36 TB"]`} />
+</Figure>
 
-**Durability settings that go with those numbers.** Replication factor 3, producers with `acks=all`, `min.insync.replicas=2`: an acknowledged write exists on at least two brokers, and the topic keeps accepting writes with one broker down.
+Two adjustments to say aloud: **compression** (producers compress batches; text-like payloads often shrink several-fold, so measure) and **disk headroom** (leave room for a broker loss and re-replication).
 
-**Why not ten thousand partitions "to be safe"?** Each partition is files, memory, replication traffic and leader-election work on the brokers, and more partitions means longer failovers and rebalances. The ceiling varies by version and hardware — check current guidance — but size from the formula, not from fear.
+**Durability settings that go with those numbers.** Replication factor 3, `acks=all`, `min.insync.replicas=2`: an acknowledged write exists on at least two brokers, and the topic keeps accepting writes with one broker down.
+
+**Why not ten thousand partitions "to be safe"?** Each partition is files, memory, replication traffic and leader-election work, and more partitions mean longer failovers and rebalances. The ceiling varies by version and hardware (check current guidance), but size from the formula, not from fear.
 
 | Choice | Too few | Too many |
 |---|---|---|
-| **Partitions** | Consumer ceiling too low; hot partitions; painful remap later | Broker overhead, slower failover and rebalances |
-| **Retention** | Can't replay after an outage longer than retention; lagging consumers lose data | Disk cost; old data that privacy rules say you should have deleted |
+| **Partitions** | Consumer ceiling too low; hot partitions; painful remap | Broker overhead, slower failover and rebalances |
+| **Retention** | Can't replay after a long outage; lagging consumers lose data | Disk cost; data privacy rules say to delete |
 | **Replication factor** | Broker loss = data loss or unavailability | Disk and network cost |
 
 <Trace title="Do the arithmetic" steps={sizing} takeaway="Partitions from the slower per-partition rate at peak, plus headroom. Disk from the average rate × size × retention × replication." />
 
-**Catch the trap:** sizing retention from the peak rate, or forgetting replication. The first overbuys threefold here; the second underbuys threefold.
+**A common slip:** sizing retention from the peak (overbuys 3× here) or forgetting replication (underbuys 3×).
 
-<h2 id="delay">Chapter 11 · Not yet</h2>
+<Quiz
+  id="qs-sizing"
+  title="Chapter 10 checkpoint"
+  questions={[
+    {
+      kind: 'predict',
+      q: 'Peak 10,000 events/s, one consumer handles 500/s, one partition accepts 20 MB/s, events are 2 KB. Minimum partitions before headroom?',
+      code: 'producer: 10,000 * 2 KB = 20 MB/s  ->  20 / 20 = 1\nconsumer: 10,000 / 500 = 20',
+      options: ['1', '20', '40'],
+      answer: 1,
+      why: 'Take the larger bound: the consumers are the limit, so 20.',
+      explain: [
+        'That is only the producer bound. Consumers are 20x slower per partition than the broker here.',
+        'Correct: max(1, 20) = 20, then add headroom.',
+        '40 would already include 2x headroom, which is a separate step.',
+      ],
+    },
+    {
+      kind: 'tradeoff',
+      q: 'A team wants 30-day retention so analysts can replay. Average 20 MB/s, replication 3. What do you weigh?',
+      options: [
+        'Nothing: retention is free',
+        'About 155 TB of disk (20 MB/s × 86,400 × 30 × 3) versus tiered storage or a data lake for long-term history',
+        'Use peak rate so it is safe',
+      ],
+      answer: 1,
+      why: 'Retention cost scales linearly with days; long history is often cheaper in object storage.',
+      explain: [
+        'Disk, recovery time and cost all grow with retention.',
+        'Correct: 20 × 86,400 × 30 × 3 ≈ 155 TB. Weigh tiered storage or a lake for old data, and privacy rules.',
+        'Using peak overbuys by the peak-to-average ratio.',
+      ],
+    },
+  ]}
+/>
 
-<Scene chapter="Chapter 11" title="Not yet" mood="dusk">
+<RevisionCards
+  id="queues-streams-sizing"
+  cards={[
+    { front: 'Partition count formula?', back: 'max(T ÷ per-partition producer rate, T ÷ per-partition consumer rate) at peak, then headroom.' },
+    { front: 'Disk formula?', back: 'Average rate × size × 86,400 × retention days × replication factor.' },
+    { front: 'Which rate for which?', back: 'Peak for partitions and consumers; average for storage.' },
+    { front: 'Durability settings?', back: 'Replication factor 3, acks=all, min.insync.replicas=2.' },
+    { front: 'Why not thousands of partitions?', back: 'Broker overhead, slower failover and rebalances; check current guidance for limits.' },
+  ]}
+/>
 
-Iris, cheerful: *"Oh, and also — if someone leaves a pair of sneakers in their cart, send a 'still thinking about it?' email three days later. Unless they've bought them."*
+<ChapterDone id="sizing" />
 
-Someone suggests a queue with a three-day delay. Theo asks what happens when the buyer checks out on day two.
+<h2 id="delay">Chapter 11 · Doing it later</h2>
 
-</Scene>
-
-Some work should happen *later*, not now: a reminder in three days, a retry in ten minutes, a reservation that expires in fifteen. Pick the tool by **how long** and **whether it can be cancelled**:
+Say product wants a "still thinking about it?" email 3 days after a cart is abandoned, unless the buyer checks out first. A queue with a three-day delay looks tempting. What happens when the buyer checks out on day two? Pick the tool by **how long** and **whether it can be cancelled**:
 
 | Delay | Tool | Notes |
 |---|---|---|
-| Seconds to minutes, fixed | **Delay queue / message timer** | SQS supports a per-queue or per-message delay of up to 15 minutes (check current docs). RabbitMQ: a community delayed-message plugin (check its current status), or a queue with a message TTL that dead-letters into the real queue. |
-| Retry backoff | **Visibility timeout** (queue) or **retry topics** (log) | Push the message's next visibility into the future; on Kafka, tiered retry topics whose consumers wait until each record is due (Chapter 8). Kafka has no per-message delivery delay. |
-| Hours to months, or cancellable | **A durable schedule in a database** | A row with a due time, indexed on it; a scheduler enqueues work when it's due. Cancel by deleting or flagging the row. |
+| Seconds to minutes, fixed | **Delay queue / message timer** | SQS supports a per-queue or per-message delay of up to 15 minutes (check current docs). RabbitMQ: a delayed-message plugin (check status) or a TTL'd queue that dead-letters into the real queue |
+| Retry backoff | **Visibility timeout** (queue) or **retry topics** (log) | Push the next visibility into the future; on Kafka, tiered retry topics whose consumers wait until each record is due. Kafka has no per-message delivery delay |
+| Hours to months, or cancellable | **A durable schedule in a database** | A row with a due time, indexed on it; a scheduler enqueues work when due. Cancel by deleting or flagging the row |
 
-**The cart reminder, designed.** On cart abandonment, insert `(cart_id, due_at = now + 3 days, status = pending)`. A scheduler queries `WHERE due_at <= now AND status = 'pending'` in small batches, enqueues a SendReminder job per row, and marks it. On checkout, mark the row cancelled. The email worker re-checks the cart before sending (the buyer may have checked out after the job was enqueued) and is idempotent on the reminder id. Replicated schedulers need a lease or a partitioned job space so a reminder isn't fired twice — the scheduling half of <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>async jobs</a> covers that.
+**The cart reminder, designed.**
+
+```sql
+CREATE TABLE reminders (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  cart_id BIGINT NOT NULL,
+  due_at DATETIME NOT NULL,
+  status ENUM('pending','sent','cancelled') NOT NULL DEFAULT 'pending',
+  KEY idx_due (status, due_at)
+);
+-- scheduler, every minute, small batches:
+SELECT id, cart_id FROM reminders
+ WHERE status = 'pending' AND due_at <= NOW() LIMIT 100 FOR UPDATE SKIP LOCKED;
+```
+
+On abandonment, insert the row with `due_at = NOW() + INTERVAL 3 DAY`. The scheduler enqueues a SendReminder job per row and marks it. On checkout, mark the row `cancelled`. The email worker re-checks the cart before sending (the buyer may have checked out after enqueue) and is idempotent on the reminder id. Replicated schedulers need a lease or a partitioned job space, or `SKIP LOCKED` as above, so a reminder isn't fired twice; <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>async jobs</a> covers the scheduling half.
+
+<Figure caption="Where ‘later’ lives depends on how long and whether it is cancellable.">
+  <Mermaid code={`flowchart TD
+    Q{"How long, and\ncancellable?"}
+    Q -->|"seconds to minutes"| D["delay queue / message timer"]
+    Q -->|"retry backoff"| R["visibility timeout or retry topics"]
+    Q -->|"days, or cancellable"| T["due-time table + scheduler\nenqueues when due"]`} />
+</Figure>
 
 <Trace title="Where does ‘later’ live?" steps={delay} takeaway="Short, fixed delays: the broker. Retries: visibility timeouts or retry topics. Long or cancellable: a due-time table and a scheduler." />
 
-**Catch the trap:** a consumer that sleeps until a message is due. It holds the message (on a log, the whole partition) hostage, and the first deploy loses or redelivers everything it was holding.
+**A common slip:** a consumer that sleeps until a message is due. It holds the message (on a log, the whole partition) hostage, and the first deploy loses or redelivers everything it was holding.
 
-<h2 id="schemas">Chapter 12 · The field that changed</h2>
+<Quiz
+  id="qs-delay"
+  title="Chapter 11 checkpoint"
+  questions={[
+    {
+      kind: 'scenario',
+      q: 'You need to expire an unpaid order after 15 minutes, cancelling it if payment arrives. What is the simplest correct design?',
+      options: [
+        'A consumer that sleeps 15 minutes then checks',
+        'Store expires_at on the order; a sweeper or delayed message checks "still unpaid" before cancelling, and payment sets the state first',
+        'A Kafka message with a 15-minute delivery delay',
+      ],
+      answer: 1,
+      why: 'The state in the database is the source of truth; the delayed trigger only re-checks it.',
+      explain: [
+        'It blocks a worker (or a partition) for 15 minutes and loses state on every deploy.',
+        'Correct: the trigger can fire twice or late and still be safe, because the cancel is a conditional update on state.',
+        'Kafka has no per-message delivery delay.',
+      ],
+    },
+  ]}
+/>
 
-<Scene chapter="Chapter 12" title="The field that changed" mood="night">
+<ChapterDone id="delay" />
 
-The pricing team renames `amount` to `total` in OrderPlaced. Their tests pass. Nineteen minutes later, Dev's calm voice: *"Fraud, loyalty and finance consumers are all crashing on the same null."*
+<h2 id="schemas">Chapter 12 · Changing an event</h2>
 
-Mara, the next day: *"An event isn't a message to one service. It's a public API — to everyone who will ever read it, including whoever replays last week."*
+Imagine the pricing team renames `amount` to `total` in OrderPlaced. Their tests pass. Nineteen minutes later fraud, loyalty and finance consumers all crash on the same null. An event isn't a message to one service. It's a public API to everyone who will ever read it, including whoever replays last week.
 
-</Scene>
-
-Producers and consumers deploy independently, and a log keeps old records for days. At any moment, **old and new versions of an event coexist** — in flight, in retention, in replays. Changes must be compatible in the direction that matters.
-
-**Tools.** A schema format with explicit evolution rules (Avro, Protobuf, or JSON Schema) and a **schema registry** that stores every version and rejects incompatible changes before they ship.
+Producers and consumers deploy independently, and a log keeps old records for days. At any moment, **old and new versions of an event coexist** in flight, in retention and in replays. Changes must be compatible in the direction that matters. Use a schema format with evolution rules (Avro, Protobuf or JSON Schema) and a **schema registry** that stores every version and rejects incompatible changes before they ship.
 
 | Compatibility mode | Guarantee | Safe changes | Upgrade first |
 |---|---|---|---|
-| **Backward** | Consumers on the new schema can read data written with the old one | Delete fields; add optional fields with defaults | **Consumers** |
-| **Forward** | Consumers on the old schema can read data written with the new one | Add fields; delete optional fields | **Producers** |
+| **Backward** | Consumers on the new schema can read old data | Delete fields; add optional fields with defaults | **Consumers** |
+| **Forward** | Consumers on the old schema can read new data | Add fields; delete optional fields | **Producers** |
 | **Full** | Both | Add or remove optional fields with defaults | Either |
 
-These are the rules as Confluent's Schema Registry defines them; other registries are similar. Add **transitive** variants (compatible with *all* earlier versions, not just the last) when consumers may replay old data.
+These are Confluent Schema Registry's rules; other registries are similar. Use **transitive** variants (compatible with *all* earlier versions) when consumers may replay old data.
 
 **Rules that keep you out of trouble:**
 
-- **Add, don't change.** New fields are optional with sensible defaults. Consumers ignore fields they don't know.
-- **Never reuse or retype a field.** A rename is a delete plus an add in disguise. Do it as **expand → migrate → contract**: add `total`, publish both for a while, move every consumer to `total`, then deprecate `amount`.
-- **Version the event type only for real breaks** (`OrderPlaced.v2` on a new topic), and run both until the old consumers are gone.
+- **Add, don't change.** New fields are optional with defaults. Consumers ignore fields they don't know.
+- **Never reuse or retype a field.** A rename is a delete plus an add. Do **expand → migrate → contract**.
+- **Version the event type only for real breaks** (`OrderPlaced.v2` on a new topic), and run both until old consumers are gone.
 
-**What goes in the message.** A *thin* event (`OrderPlaced 123`) makes every consumer call back for details — coupling and load on the source. A *fat* event (event-carried state) includes what consumers need — larger, and every field is now part of the contract. Most designs land in between: the facts of the change, plus the ids to look up the rest. Very large payloads (an image, a document) don't go through the broker at all: store them in blob storage and send a reference (the **claim-check** pattern) — brokers cap message size (Kafka's default is around 1 MB; check current docs).
+<Figure caption="Renaming amount to total without breaking anyone.">
+  <Mermaid code={`flowchart LR
+    A["1 · Expand\nadd total,\nstill write amount"] --> B["2 · Migrate\nconsumers read total"]
+    B --> C["3 · Contract\nstop writing amount"]`} />
+</Figure>
+
+**What goes in the message.** A *thin* event (`OrderPlaced 123`) makes every consumer call back for details: coupling and load on the source. A *fat* event (event-carried state) includes what consumers need: larger, and every field is now contract. Most designs land between: the facts of the change plus ids for the rest. Very large payloads (an image, a document) don't go through the broker: store them in blob storage and send a reference (the **claim-check** pattern). Brokers cap message size (Kafka's default is around 1 MB; check current docs).
 
 <Trace title="Evolve the contract" steps={schemas} takeaway="Events are a public API with old versions still in the log. Add optional fields; never reuse one; rename by expand → migrate → contract; the compatibility mode tells you who upgrades first." />
 
-**Catch the trap:** treating event schemas as internal. Every consumer, and every replay of retained data, is a client you can't redeploy.
+**A common slip:** treating event schemas as internal. Every consumer, and every replay of retained data, is a client you can't redeploy.
+
+<Quiz
+  id="qs-schemas"
+  title="Chapter 12 checkpoint"
+  questions={[
+    {
+      kind: 'scenario',
+      q: 'The registry enforces BACKWARD compatibility. You add a required field `currency` with no default. What happens, and what should you do?',
+      options: [
+        'It passes; backward compatibility only checks producers',
+        'It is rejected: new consumers could not read old records lacking it. Add it as optional with a default',
+        'It passes if you upgrade producers first',
+      ],
+      answer: 1,
+      why: 'Backward compatibility means a reader on the new schema can read old data, so a new required field with no default breaks it.',
+      explain: [
+        'The mode is about new readers reading old data.',
+        'Correct: an optional field with a default lets new readers fill the gap on old records.',
+        'Upgrade order matters only after the schema is compatible in that direction.',
+      ],
+    },
+  ]}
+/>
+
+<ChapterDone id="schemas" />
 
 <h2 id="event-driven">Chapter 13 · Events or requests?</h2>
 
-<Scene chapter="Chapter 13" title="Events or requests?" mood="dusk">
-
-Six months in, an architect from another team proposes making *everything* an event: login, search, card payment, receipts, search indexing, analytics. Mara asks one question per box: *"Who is waiting for the answer?"* Login, search and the card payment come back to request/response. The rest become events.
-
-</Scene>
-
-**Request/response** asks a question and waits for the answer. **Event-driven** announces that something happened and lets whoever cares react. Neither is more advanced; each fits a different need.
+Imagine an architect proposes making *everything* an event: login, search, card payment, receipts, indexing, analytics. One question per box sorts it: "who is waiting for the answer?" Login, search and the card payment come back to request/response. The rest become events.
 
 | | Request/response | Event-driven |
 |---|---|---|
-| Caller needs an answer now | Yes — that's the point | No answer comes back |
-| Coupling | Caller knows the callee and depends on its availability | Producer doesn't know consumers; availability decoupled |
-| Adding a new reaction | Change the caller | Subscribe a new consumer; producer unchanged |
+| Caller needs an answer now | Yes, that's the point | No answer comes back |
+| Coupling | Caller knows the callee and depends on its availability | Producer doesn't know consumers |
+| Adding a new reaction | Change the caller | Subscribe a new consumer |
 | Consistency | Immediate within the call | Eventual across services |
-| Debugging | One trace, one call stack | Many hops across time; needs correlation ids and tracing |
-| Use for | Logins, reads, payment authorization, anything a user is waiting on | Side effects, notifications, indexing, analytics, cross-team integration |
+| Debugging | One trace, one call stack | Many hops across time; needs correlation ids |
+| Use for | Logins, reads, payment authorization | Side effects, notifications, indexing, analytics, cross-team integration |
 
-**Events versus commands.** An **event** states a fact in the past tense — `OrderPlaced`, `PhotoUploaded` — and doesn't know who listens. A **command** tells one recipient what to do — `SendReceiptEmail`. Commands on a queue are fine for one service's own work; across teams, publishing facts is what lets the loyalty team subscribe next month without touching checkout.
+**Events versus commands.** An **event** states a fact in the past tense (`OrderPlaced`) and doesn't know who listens. A **command** tells one recipient what to do (`SendReceiptEmail`). Commands on a queue are fine for one service's own work; across teams, publishing facts lets the loyalty team subscribe next month without touching checkout.
 
-**Choreography versus orchestration.** When a business process spans services (order → payment → stock → shipping):
+**Choreography versus orchestration.** When a process spans services (order → payment → stock → shipping):
 
 - **Choreography:** each service reacts to the previous one's events. No central brain; easy to add steps; hard to see the whole flow or answer "where is order 123 stuck?"
-- **Orchestration:** one coordinator (a workflow or saga orchestrator) sends commands and tracks state. The flow is visible in one place; the orchestrator is one more service to own.
+- **Orchestration:** one coordinator sends commands and tracks state. The flow is visible in one place; the orchestrator is one more service to own.
 
-Either way, a multi-step process across services has no single transaction. If step 3 fails, earlier steps are undone by **compensating actions** (refund the payment, release the stock) — the saga pattern. Name it when the interviewer asks "what if shipping fails after payment?"
+Either way, there is no single transaction across services. If step 3 fails, earlier steps are undone by **compensating actions** (refund the payment, release the stock): the saga pattern. Name it when asked "what if shipping fails after payment?"
 
-**Where this shape shows up.** The recurring picture — write path returns fast, heavy work happens asynchronously — is the backbone of notifications, video transcoding, the web crawler, feed fan-out, the job scheduler and ad-click aggregation. The pattern lessons build those designs; this lesson is their vocabulary: <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>async jobs & pipelines</a> · <a href={`${BASE}sd/lessons/pattern-fanout/`}>fan-out</a> · <a href={`${BASE}sd/lessons/pattern-timeseries/`}>time-series & aggregation</a>.
+<Figure caption="Choreography has no central brain; orchestration does.">
+  <Mermaid code={`flowchart LR
+    subgraph CH["Choreography"]
+      O1["Order"] -->|"OrderPlaced"| P1["Payment"]
+      P1 -->|"PaymentTaken"| S1["Stock"]
+    end
+    subgraph OR["Orchestration"]
+      W["Workflow"] -->|"charge"| P2["Payment"]
+      W -->|"reserve"| S2["Stock"]
+    end`} />
+</Figure>
+
+**Where this shape shows up.** Write path returns fast, heavy work happens asynchronously: notifications, video transcoding, the web crawler, feed fan-out, the job scheduler, ad-click aggregation. See <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>async jobs & pipelines</a>, <a href={`${BASE}sd/lessons/pattern-fanout/`}>fan-out</a> and <a href={`${BASE}sd/lessons/pattern-timeseries/`}>time-series & aggregation</a>.
 
 <Trace title="Event, or request?" steps={eventDriven} takeaway="If someone is waiting for the answer, ask. If many parties might care that it happened, announce a fact. Commands couple; events don’t." />
 
-**Catch the trap:** "Everything is event-driven for scalability." A login over a queue is a slow, hard-to-debug request. Say which flows are events and *why*.
+**A common slip:** "Everything is event-driven for scalability." A login over a queue is a slow, hard-to-debug request. Say which flows are events and *why*.
+
+<Quiz
+  id="qs-event-driven"
+  title="Chapter 13 checkpoint"
+  questions={[
+    {
+      kind: 'failure',
+      q: 'Payment succeeded, stock reservation then fails, and shipping never starts. In a choreographed order flow, what must exist?',
+      options: [
+        'Nothing; events retry until stock exists',
+        'A compensating action (refund or hold release) triggered by the failure event, with the flow visible somewhere you can query',
+        'A distributed transaction across all services',
+      ],
+      answer: 1,
+      why: 'No cross-service transaction exists, so each step needs an undo and the process needs observability.',
+      explain: [
+        'Retrying forever holds the buyer\'s money against stock that may never come.',
+        'Correct: a saga with compensations, plus state tracking so you can answer where order 123 is stuck.',
+        'Distributed transactions couple availability of every service and are usually avoided.',
+      ],
+    },
+  ]}
+/>
+
+<RevisionCards
+  id="queues-streams-event-driven"
+  cards={[
+    { front: 'Test for event vs request?', back: 'Is someone waiting for the answer? If yes, request/response.' },
+    { front: 'Event vs command?', back: 'Event: past-tense fact, producer does not know listeners. Command: instruction to one recipient.' },
+    { front: 'Choreography vs orchestration?', back: 'Choreography: services react to each other with no central view. Orchestration: a coordinator drives the steps and holds the state.' },
+    { front: 'Safe schema change?', back: 'Add optional fields with defaults; rename by expand, migrate, contract.' },
+    { front: 'How is a multi-service failure undone?', back: 'Compensating actions (saga), since there is no global transaction.' },
+  ]}
+/>
+
+<ChapterDone id="event-driven" />
 
 <h2 id="decision-drills">Decision drills · Make the calls</h2>
 
@@ -745,94 +1435,140 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
 
 <Trace title="The async review" steps={drills} takeaway="Five promises, every time: how it gets in, what order it keeps, how many times it arrives, what happens when it fails, how you know it’s behind. Then size it." />
 
-<Quiz questions={[
-  {
-    q: 'Order events must be processed in order per order, at high throughput. Design?',
-    options: [
-      'Single Kafka partition — only way to guarantee order',
-      'Key messages by order_id — per-order ordering within partitions, parallelism across orders',
-      'SQS with FIFO disabled for speed',
-      'Timestamps + consumer-side reordering'
-    ],
-    answer: 1,
-    why: 'Order-per-entity is almost always the actual requirement, and partition-keying delivers it with parallelism across entities. Global ordering (option 1) sacrifices all throughput for a guarantee nobody asked for; timestamp reordering needs buffering and still guesses about late arrivals.'
-  },
-  {
-    q: 'Interviewer: "Can you guarantee each payment event is processed exactly once?" Honest strong answer:',
-    options: [
-      '"Yes, Kafka has an exactly-once mode"',
-      '"Delivery will be at-least-once — the consumer can always crash between processing and acking. I make processing idempotent: dedupe on event ID, so duplicates are no-ops"',
-      '"We use SQS FIFO, which deduplicates"',
-      '"Process synchronously instead to avoid the problem"'
-    ],
-    answer: 1,
-    why: 'Names WHY duplicates are unavoidable (crash between side effect and ack) and gives the standard fix. Kafka’s exactly-once covers Kafka-to-Kafka processing, not an external payment write; SQS FIFO dedupes producer sends in a short window, not a crashed consumer’s side effect. A vendor feature without the reasoning dies to one follow-up.'
-  },
-  {
-    q: 'Email-sending consumers keep crashing on one malformed message, and the queue is backing up. What was missing?',
-    options: [
-      'More consumers',
-      'A dead-letter queue — after N retries the poison message parks aside with an alert, and the queue keeps flowing',
-      'Shorter visibility timeout',
-      'At-most-once delivery so it is only attempted once'
-    ],
-    answer: 1,
-    why: 'The poison-message scenario is the standard DLQ probe. At-most-once (option 4) "fixes" it by silently losing real messages — worse. More consumers just crash on it in turn.'
-  },
-  {
-    q: 'When is a log (Kafka) clearly right over a queue (SQS)?',
-    options: [
-      'Whenever throughput is high',
-      'When email service, analytics, and fraud detection must all independently react to the same order-placed events — and you may replay history later',
-      'When messages must be encrypted',
-      'When ordering does not matter'
-    ],
-    answer: 1,
-    why: 'Multiple independent consumer groups + replay = the log model’s whole reason to exist. Raw throughput alone doesn’t distinguish them (a queue fan-out via SNS → SQS also scales); replay does.'
-  }
-]} />
+<Quiz
+  id="qs-final"
+  title="Mixed checkpoint"
+  questions={[
+    {
+      kind: 'scenario',
+      q: 'Order events must be processed in order per order, at high throughput. Design?',
+      options: [
+        'Single Kafka partition, the only way to guarantee order',
+        'Key messages by order_id: per-order ordering within partitions, parallelism across orders',
+        'SQS with FIFO disabled for speed',
+        'Timestamps plus consumer-side reordering',
+      ],
+      answer: 1,
+      why: 'Order-per-entity is almost always the real requirement, and keying delivers it with parallelism.',
+      explain: [
+        'Global ordering gives up all throughput for a guarantee nobody asked for.',
+        'Correct: ordering per order, parallelism across orders.',
+        'Disabling FIFO removes the ordering you needed.',
+        'Reordering needs buffering and still guesses about late arrivals.',
+      ],
+    },
+    {
+      kind: 'tradeoff',
+      q: 'Asked "can you guarantee each payment event is processed exactly once?", which answer is strongest?',
+      options: [
+        '"Yes, Kafka has an exactly-once mode"',
+        '"Delivery is at-least-once; a consumer can crash between processing and acking. I make processing idempotent by deduping on event id in the same transaction"',
+        '"SQS FIFO deduplicates"',
+        '"Process synchronously instead"',
+      ],
+      answer: 1,
+      why: 'It names why duplicates are unavoidable and gives the standard fix.',
+      explain: [
+        'Kafka exactly-once covers Kafka-to-Kafka, not an external payment write.',
+        'Correct: reason plus mechanism survives the follow-up.',
+        'FIFO dedupes producer sends in a short window, not a crashed consumer\'s side effect.',
+        'Synchronous calls have the same retry-and-timeout duplicate problem.',
+      ],
+    },
+    {
+      kind: 'failure',
+      q: 'Email consumers keep crashing on one malformed message and the queue backs up. What was missing?',
+      options: [
+        'More consumers',
+        'A DLQ: after N retries the message parks aside with an alert and the queue keeps flowing',
+        'A shorter visibility timeout',
+        'At-most-once delivery',
+      ],
+      answer: 1,
+      why: 'The poison-message scenario is the standard DLQ probe.',
+      explain: [
+        'More consumers just crash on it in turn.',
+        'Correct, plus classification of permanent errors and a redrive plan.',
+        'A shorter timeout makes the retry loop faster, not smaller.',
+        'At-most-once "fixes" it by silently losing real messages.',
+      ],
+    },
+    {
+      kind: 'tradeoff',
+      q: 'When is a log (Kafka) clearly right over a queue (SQS)?',
+      options: [
+        'Whenever throughput is high',
+        'When email, analytics and fraud must independently react to the same events, and you may replay history',
+        'When messages must be encrypted',
+        'When ordering does not matter',
+      ],
+      answer: 1,
+      why: 'Independent consumer groups plus replay are the log model\'s reason to exist.',
+      explain: [
+        'A queue fan-out via SNS to SQS also scales; throughput alone does not decide.',
+        'Correct: separate bookmarks per group and retained history.',
+        'Both support encryption.',
+        'If order does not matter, a plain queue is often simpler.',
+      ],
+    },
+  ]}
+/>
 
 <h2 id="interview-script">Say it in the room</h2>
 
-<Scene title="The interview room" mood="night">
+An interviewer draws a checkout service and three downstream boxes (email, analytics, fraud) and says: "Checkout is slow and sometimes fails when email is down. Fix it." Say the five promises.
 
-The Interviewer draws a checkout service and three downstream boxes: email, analytics, fraud. *"Checkout is slow and sometimes fails when email is down. Fix it."* A year ago you'd have drawn a Kafka box and stopped. Today you take a breath and say five things.
+<AnswerModes id="queues-streams-main" q="Checkout is slow and fails when email is down. Fix it.">
 
-</Scene>
+<Fragment slot="short">
 
-**The 90-second answer** (adapt the nouns):
+The buyer only waits for payment and stock, so those stay synchronous. Everything else becomes an event: checkout writes the order and an outbox row in one transaction, a relay publishes it to Kafka keyed by order id, and email, analytics and fraud are separate consumer groups. Delivery is at-least-once, so consumers dedupe on event id.
 
-> "The buyer only waits for payment and stock, so those stay synchronous; everything else becomes an event. **How it gets in**: checkout writes the order and an OrderPlaced row to an outbox table in the same transaction, and a relay — polling or CDC — publishes it to Kafka with `acks=all`, replication factor 3. That's at-least-once and never lost. **Order**: keyed by `order_id`, so each order's events stay in order and orders spread evenly; I'd size about 48 partitions for a 60K/s peak with 2× headroom. **Delivery**: at-least-once, so each consumer dedupes on the event id in the same transaction as its own write; email passes the event id to the provider as an idempotency key where the provider supports one. **Failure**: transient errors retry with exponential backoff and jitter, permanent ones and anything past five attempts go to a DLQ with an alert and a redrive path. **Lag**: each consumer group alerts on lag in seconds, autoscales up to the partition count, and retention is 7 days — about 36 TB replicated at a 20K/s average — so an outage has days of replay. Email, analytics and fraud are separate consumer groups, so each gets every event and a slow one never slows the others."
+</Fragment>
+
+<Fragment slot="medium">
+
+The buyer only waits for payment and stock, so those stay synchronous. **How it gets in**: checkout writes the order and an OrderPlaced row to an outbox table in one transaction; a relay (polling or CDC) publishes to Kafka with `acks=all`, replication factor 3: at-least-once, never lost. **Order**: keyed by `order_id`, so one order's events stay in order and orders spread evenly. **Delivery**: at-least-once, so each consumer records the event id in the same transaction as its own write. **Failure**: transient errors retry with backoff and jitter; permanent ones and anything past five attempts go to a DLQ with an alert and redrive. **Lag**: alert on lag in seconds, autoscale up to the partition count. Email, analytics and fraud are separate groups, so a slow one never slows the others.
+
+</Fragment>
+
+<Fragment slot="deep">
+
+Everything in the 2-minute answer, plus numbers and trade-offs. Assumption: peak 60,000 events/s, average 20,000/s, 1 KB events. Partitions: max(60 MB/s ÷ 10 MB/s, 60,000 ÷ 2,500 per consumer) = 24, doubled for growth because adding partitions later remaps keys: 48. Retention 7 days: 20 MB/s × 86,400 × 7 × 3 replicas ≈ 36 TB before compression, so an outage has days of replay. Lag must stay well under retention; `auto.offset.reset=latest` would skip silently. Email passes the event id to the provider as an idempotency key where supported. The costs I accept: eventual receipts, duplicates (handled), an extra system to run, and debugging across hops (correlation ids). If shipping fails after payment, a saga compensates with a refund.
+
+</Fragment>
+
+</AnswerModes>
 
 **Five follow-ups you will get:**
 
 <Reveal q="1 · Can you guarantee exactly once?">
 
-Not delivery — a consumer can always crash between doing the work and acknowledging it, so the broker must redeliver. I guarantee exactly-once *effect*: the consumer records the event id in the same database transaction as its change, so a redelivery is a no-op. Kafka's transactions give exactly-once for Kafka-to-Kafka processing, but my Postgres write and the email are outside them.
+Not delivery: a consumer can always crash between doing the work and acknowledging it, so the broker must redeliver. I guarantee exactly-once *effect*: the consumer records the event id in the same database transaction as its change, so a redelivery is a no-op. Kafka transactions give exactly-once for Kafka-to-Kafka processing, but my MySQL write and the email are outside them.
 
 </Reveal>
 
 <Reveal q="2 · A consumer crashes halfway through a message. Walk me through it.">
 
-It never committed the offset (or acked), so after the group rebalances — or the visibility timeout expires — another consumer gets the same message. If the crash came before the database commit, nothing happened and the retry does the work; if it came after, the dedup row is there and the retry skips. Either way: one effect.
+It never committed the offset (or acked), so after the group rebalances, or the visibility timeout expires, another consumer gets the same message. If the crash came before the database commit, nothing happened and the retry does the work. If after, the dedup row is there and the retry skips. Either way: one effect.
 
 </Reveal>
 
 <Reveal q="3 · How do you keep ordering and still scale?">
 
-Ordering is per partition, so I key by the smallest entity that needs order — the order id. Each order's events stay in sequence; different orders process in parallel across 48 partitions. I avoid changing the partition count (it remaps keys), keep each partition's processing in order inside the consumer, and watch for hot keys; global order would mean one partition, which nobody actually needs here.
+Ordering is per partition, so I key by the smallest entity that needs order, the order id. Each order's events stay in sequence while different orders process in parallel across 48 partitions. I avoid changing the partition count, keep each partition's processing in order inside the consumer, and watch for hot keys. Global order would mean one partition, which nobody needs here.
 
 </Reveal>
 
 <Reveal q="4 · How did you get 48 partitions and 36 TB?">
 
-Partitions: peak 60K events/s; one consumer handles about 2,500/s and one partition takes about 10 MB/s of writes, so max(60 MB/s ÷ 10, 60,000 ÷ 2,500) = 24, doubled for growth because adding partitions later remaps keys. Storage uses the average, not the peak: 20K/s × 1 KB = 20 MB/s × 86,400 ≈ 1.73 TB/day × 7 days ≈ 12 TB × 3 replicas ≈ 36 TB, before compression.
+Partitions: peak 60K events/s; a consumer handles about 2,500/s and a partition takes about 10 MB/s, so max(6, 24) = 24, doubled for growth. Storage uses the average: 20 MB/s × 86,400 ≈ 1.73 TB/day × 7 ≈ 12 TB × 3 replicas ≈ 36 TB, before compression. These are assumptions to measure, not vendor numbers.
 
 </Reveal>
 
 <Reveal q="5 · Why not publish to Kafka right after the database commit?">
 
-Dual write: a crash between the commit and the publish leaves an order nobody downstream ever hears about, and publishing first can announce an order that then fails to commit. The outbox puts the event inside the database transaction, so it exists if and only if the order does; the relay delivers it at least once, and consumers dedupe.
+Dual write: a crash between the commit and the publish leaves an order nobody downstream hears about, and publishing first can announce an order that then fails to commit. The outbox puts the event inside the database transaction, so it exists if and only if the order does. The relay delivers at least once and consumers dedupe.
 
 </Reveal>
 
@@ -840,65 +1576,52 @@ Dual write: a crash between the commit and the publish leaves an order nobody do
 
 | When you see… | Say… |
 |---|---|
-| "Make it faster / more reliable" with slow side effects | Keep what the user waits for synchronous; queue the rest; name the costs |
-| One kind of worker, independent tasks | Work queue: competing consumers, visibility timeout, ack/nack, DLQ |
+| Slow side effects blocking a request | Keep what the user waits for synchronous; queue the rest; name the costs |
+| One kind of worker, independent tasks | Work queue: competing consumers, ack/nack, visibility timeout, DLQ |
 | Many services react to the same events, or replay | Log: partitions, offsets, one consumer group per service, retention |
-| "Each service must get every event" | Pub/sub: a queue per subscriber, or a consumer group per subscriber |
-| "Exactly once?" | At-least-once delivery + idempotent effect; Kafka EOS is Kafka-to-Kafka only |
+| "Exactly once?" | At-least-once + idempotent effect; Kafka EOS is Kafka-to-Kafka only |
 | Counter or balance updated by events | Dedup table in the same transaction, or record facts not increments |
-| Write to DB and publish an event | Transactional outbox + relay (polling or CDC) + idempotent consumers |
+| Write to DB and publish an event | Outbox + relay (polling or CDC) + idempotent consumers |
 | "In order" | Per partition; key by the smallest entity needing order |
-| One key is most of the traffic | Hot partition: re-key finer, or salt if order isn't needed |
-| One message fails forever | Poison: classify, backoff + jitter, cap attempts, DLQ, alert, redrive |
+| One key is most of the traffic | Re-key finer, or salt if order isn't needed |
+| One message fails forever | Classify, backoff + jitter, cap attempts, DLQ, alert, redrive |
 | Consumers falling behind | Lag in seconds; scale to partition count; then faster consumers or more partitions |
-| Lag approaching retention | Data loss risk; `auto.offset.reset=latest` skips silently |
-| "How many partitions?" | max(T ÷ producer rate, T ÷ consumer rate) at peak, plus headroom |
-| "How much disk?" | average rate × size × 86,400 × days × replication factor |
+| Lag near retention | Data loss risk; `auto.offset.reset=latest` skips silently |
+| "How many partitions / how much disk?" | Peak ÷ slower per-partition rate plus headroom; average × size × 86,400 × days × replicas |
 | "Do it in three days" | Due-time table + scheduler, not a long queue delay |
-| Event shape change | Registry + compatibility mode; expand → migrate → contract |
-| "Should this be an event?" | Is anyone waiting for the answer? Facts, not commands |
+| Event shape change | Registry + compatibility mode; expand, migrate, contract |
 
-## Five mistakes to leave behind
+## Five common mistakes
 
-1. **"We'll put it on Kafka."** Without the key, the delivery semantics, the failure path and the lag alert, it isn't a design.
+1. **"We'll put it on Kafka."** Without the key, delivery semantics, failure path and lag alert, it isn't a design.
 2. **Claiming exactly-once delivery.** Promise at-least-once and an idempotent effect, and say how.
 3. **Writing to the database and the broker as two steps.** Use an outbox.
 4. **"Kafka is ordered."** Per partition, by key. Finish the sentence.
 5. **A DLQ nobody watches, and lag nobody alerts on.** Async failures are silent by default; make them loud.
 
-<Scene title="Mara’s last word" mood="dusk">
-
-The next Midnight Drop sells out in ninety seconds. Checkout's p99 stays under 300 milliseconds. The email backlog peaks at a few hundred thousand and drains in about twelve minutes, exactly as the whiteboard said it would. One malformed order lands in the DLQ; Dev fixes it before breakfast and redrives it.
-
-Mara erases the board except for five short lines in the corner. *"Gets in. Order. How many times. When it fails. How we know,"* she reads. *"Leave those up."*
-
-</Scene>
-
-**Keep it warm:** with the buddy, take your real day-job Kafka setup and narrate it interview-style in 10 minutes — topics, keys and why, consumer groups, what happens when a consumer crashes mid-message, where the DLQ is and who watches it, and what your lag alert says. Turning day-job knowledge into interview sentences is free senior signal. Then run the five promises on three fresh prompts: a notification system, a video-transcode pipeline, and an ad-click counter.
-
-Related: <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs & pipelines</a> (the job template these queues carry) · <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a> (API idempotency keys, locks, ledgers) · <a href={`${BASE}sd/lessons/pattern-fanout/`}>Fan-out</a> · <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series & aggregation</a> (stream processing, windows) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (CDC-driven invalidation) · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> · <a href={`${BASE}sd/war/event-driven-ai-pipeline/`}>War Room: event-driven AI pipeline</a> · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a> · <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and races</a>.
+Related: <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs & pipelines</a> · <a href={`${BASE}sd/lessons/pattern-contention/`}>Contention</a> (API idempotency keys, locks, ledgers) · <a href={`${BASE}sd/lessons/pattern-fanout/`}>Fan-out</a> · <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series & aggregation</a> · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> · <a href={`${BASE}sd/war/event-driven-ai-pipeline/`}>War Room: event-driven AI pipeline</a> · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a> · <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and races</a>.
 
 <h2 id="beyond">Beyond this page</h2>
 
 **Further study**
 
-- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 11, "Stream Processing" (logs versus queues, CDC, exactly-once) and chapter 4, "Encoding and Evolution" (schema compatibility), are the theory behind most of this lesson.
-- Jay Kreps, [The Log: What every software engineer should know about real-time data’s unifying abstraction](https://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying) — why the log is the right primitive.
-- Kreps, Narkhede and Rao, *Kafka: a Distributed Messaging System for Log Processing* (NetDB 2011) — the original Kafka paper.
-- [Apache Kafka documentation](https://kafka.apache.org/documentation/) — delivery semantics, producer and consumer configs, transactions. [KIP-98](https://cwiki.apache.org/confluence/display/KAFKA/KIP-98+-+Exactly+Once+Delivery+and+Transactional+Messaging) is the design behind idempotent producers and transactions.
-- [Amazon SQS Developer Guide](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html) — visibility timeout, dead-letter queues, FIFO message groups and deduplication, delay queues; the place to check current limits.
+- *Designing Data-Intensive Applications* (Martin Kleppmann): chapter 11 "Stream Processing" and chapter 4 "Encoding and Evolution".
+- Jay Kreps, [The Log: What every software engineer should know about real-time data’s unifying abstraction](https://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying).
+- Kreps, Narkhede and Rao, *Kafka: a Distributed Messaging System for Log Processing* (NetDB 2011).
+- [Apache Kafka documentation](https://kafka.apache.org/documentation/) for delivery semantics, configs and transactions. [KIP-98](https://cwiki.apache.org/confluence/display/KAFKA/KIP-98+-+Exactly+Once+Delivery+and+Transactional+Messaging) is the design behind idempotent producers and transactions.
+- [Amazon SQS Developer Guide](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html): visibility timeout, DLQs, FIFO groups, delay queues; check current limits here.
 - [RabbitMQ: consumer acknowledgements and publisher confirms](https://www.rabbitmq.com/docs/confirms) and [dead letter exchanges](https://www.rabbitmq.com/docs/dlx).
 - [Transactional outbox (microservices.io)](https://microservices.io/patterns/data/transactional-outbox.html) and [Debezium](https://debezium.io/documentation/) for the CDC relay.
-- Martin Fowler, [What do you mean by “Event-Driven”?](https://martinfowler.com/articles/201701-event-driven.html) — event notification, event-carried state transfer, event sourcing.
-- [Enterprise Integration Patterns](https://www.enterpriseintegrationpatterns.com/) (Hohpe and Woolf) — competing consumers, dead letter channel, claim check, and the rest of the vocabulary.
+- Martin Fowler, [What do you mean by “Event-Driven”?](https://martinfowler.com/articles/201701-event-driven.html).
+- [Enterprise Integration Patterns](https://www.enterpriseintegrationpatterns.com/): competing consumers, dead letter channel, claim check.
 
 **Look these up yourself**
 
-- **Kafka share groups (KIP-932, "queues for Kafka")** — per-record acknowledgement and more consumers than partitions on a Kafka topic; check its current release status.
-- **Log compaction** — keeping only the latest value per key, and why changelog topics and CDC streams rely on it.
-- **Consumer rebalance protocols** — eager versus cooperative rebalancing, static membership, and Kafka's newer group protocol; why rebalances cause duplicates and pauses.
-- **Stream processing semantics** — event time versus processing time, windows and watermarks (Flink, Kafka Streams); the next step after this lesson for ad-click aggregation.
-- **Tiered storage for Kafka** — moving old segments to object storage so long retention stops costing broker disk.
-- **Sagas and compensating actions** — orchestration versus choreography for multi-service workflows, and how to design an undo.
-- **Event sourcing and CQRS** — the log as the source of truth rather than a delivery mechanism, and what that costs.
-- **Pulsar's architecture** — brokers separated from storage (BookKeeper), and how that changes partition and retention tradeoffs.
+- **Kafka share groups (KIP-932)**: per-record acknowledgement and more consumers than partitions; check release status.
+- **Log compaction**: latest value per key, and why changelog topics and CDC streams rely on it.
+- **Consumer rebalance protocols**: eager versus cooperative, static membership, the newer group protocol.
+- **RabbitMQ quorum queues and streams**: Raft replication, and the log-style stream type.
+- **Stream processing semantics**: event time versus processing time, windows, watermarks.
+- **Tiered storage for Kafka**: long retention without broker disk cost.
+- **Sagas and compensating actions**, and **event sourcing and CQRS**.
+- **Pulsar's architecture**: brokers separated from storage (BookKeeper).

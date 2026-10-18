@@ -382,7 +382,7 @@ export const drills = [
     ['Command for both', 'Possible for the draft, but it means reversing every edit one by one. Snapshots answer “how it was” directly.'],
     ['Memento for both', 'A snapshot of your own objects cannot un-send an SMS or un-create a remote account.'],
   ]),
-  step('Wren asks: “Why is ReportJob.run() final but transform() protected with a body?”', [], 1, [
+  step('Why is ReportJob.run() final but transform() protected with a body?”', [], 1, [
     ['Both are style choices', 'Each keyword defends something specific.'],
     ['final: the sequence is the asset and cannot be skipped. protected with a default: an optional hook most reports ignore', 'Right. abstract = must fill, protected-with-default = may fill, private/final = hands off.'],
     ['final makes it faster', 'The JIT can inline either way. The keyword is about what subclasses may change.'],

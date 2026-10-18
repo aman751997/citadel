@@ -2,21 +2,21 @@
 import { row, step } from '../../lib/trace.ts';
 
 export const stairs = [
-  step('Scrolls 0 to 4 hold 1, 1, 2, 3, 5. What goes on scroll 5?',
+  step('Cells 0 to 4 hold 1, 1, 2, 3, 5. What goes in cell 5?',
     [row('ways', [1, 1, 2, 3, 5, '?'], { 3: 'i − 2', 4: 'i − 1', 5: 'i' }, { tones: { 3: 'hot', 4: 'hot', 5: 'ghost' } })], 1, [
       ['5 × 2 = 10: from step 4 you can take one step or two', 'A double step from step 4 lands on 6, not 5. Group climbs by their LAST move: a single from 4 (5 climbs) or a double from 3 (3 climbs).'],
       ['ways[4] + ways[3] = 5 + 3 = 8', 'Yes. Every climb to 5 ends with a single step from 4 or a double step from 3, never both, so the two groups add.'],
       ['ways[4] + 1 = 6: one more climb than step 4', 'Each of the 5 climbs to step 4 extends by one step, but the 3 climbs to step 3 also extend, by a double step. They are new climbs, not one.'],
     ]),
-  step('Why is scroll 0, the empty climb, set to 1?',
+  step('Why is cell 0, the empty climb, set to 1?',
     [row('ways', [1, 1, 2], { 0: 'ways[0]', 2: 'ways[2]' }, { tones: { 0: 'hot' } })], 0, [
       ['ways[2] = ways[1] + ways[0] must be 2 (1+1, or 2), so ways[0] = 1: the one way to do nothing', 'Yes. The double step straight from the ground extends the empty climb. Counting problems almost always start with empty = 1.'],
-      ['It should be 0: no steps, no climbs', 'Then ways[2] = 1 + 0 = 1, and every scroll above is wrong: the rack would read 0, 1, 1, 2, 3, 5, so ways[5] = 5 instead of 8.'],
-      ['It doesn’t matter: scroll 0 is never read', 'ways[2] reads it. Change it and every later scroll changes.'],
+      ['It should be 0: no steps, no climbs', 'Then ways[2] = 1 + 0 = 1, and every cell above is wrong: the table would read 0, 1, 1, 2, 3, 5, so ways[5] = 5 instead of 8.'],
+      ['It doesn’t matter: cell 0 is never read', 'ways[2] reads it. Change it and every later cell changes.'],
     ]),
-  step('Brother Recur answers climb(5) with no rack: 15 calls, climb(2) alone three times. Sister Memo keeps a rack. How many calls does climb(5) make now?',
-    [row('asked without a rack', [3, 5, 3, 2, 1, 1], { 0: 'climb(0)', 1: 'climb(1)', 2: 'climb(2)', 3: 'climb(3)', 4: 'climb(4)', 5: 'climb(5)' })], 1, [
-      ['15: the rack only saves memory', 'The rack saves calls. The second climb(3) and the second climb(2) become lookups, and their whole subtrees disappear.'],
+  step('Plain recursion answers climb(5) with 15 calls, climb(2) alone three times. Add a memo table. How many calls does climb(5) make now?',
+    [row('asked without a memo', [3, 5, 3, 2, 1, 1], { 0: 'climb(0)', 1: 'climb(1)', 2: 'climb(2)', 3: 'climb(3)', 4: 'climb(4)', 5: 'climb(5)' })], 1, [
+      ['15: a memo only saves memory', 'The memo saves calls. The second climb(3) and the second climb(2) become lookups, and their whole subtrees disappear.'],
       ['9 = 2n − 1: each of steps 2..5 is solved once and makes two calls, plus the first call', 'Yes. Six repeated calls are cut: the subtrees under the second climb(3) and the second climb(2). For n = 30 that is 59 calls instead of 2,692,537.'],
       ['6: one call per step 0..5', 'Each solved step still asks its two smaller questions; the answer to the second one is a lookup, but it is still a call. 2n − 1 = 9.'],
     ]),
@@ -41,13 +41,13 @@ export const robber = [
   step('Purses [2, 7, 9, 3, 1]. dp[0..2] = 0, 2, 7. dp[3] is the best of the first 3 houses: knock at house 2 (purse 9) or skip it?',
     [row('nums', [2, 7, 9, 3, 1], { 2: 'house i − 1' }, { tones: { 2: 'hot' } }), row('dp', [0, 2, 7, '?', '·', '·'], { 1: 'i − 2', 2: 'i − 1', 3: 'i' }, { tones: { 4: 'ghost', 5: 'ghost' } })], 0, [
       ['Knock: 9 + dp[1] = 9 + 2 = 11', 'Yes. 11 beats skipping (dp[2] = 7). House 1 is off-limits, so the rest comes from the first house alone.'],
-      ['Skip: dp[2] = 7', '7 is the best without house 2; 11 is the best with it. The scroll holds the larger.'],
+      ['Skip: dp[2] = 7', '7 is the best without house 2; 11 is the best with it. The cell holds the larger.'],
       ['Knock: 9 + dp[2] = 16', 'dp[2] may use house 1 (here it does: 7), which is next door to house 2. Knocking means reading dp[i − 2].'],
     ]),
   step('dp[0..3] = 0, 2, 7, 11. House 3 holds 3. What is dp[4]?',
     [row('nums', [2, 7, 9, 3, 1], { 3: 'house i − 1' }, { tones: { 3: 'hot' } }), row('dp', [0, 2, 7, 11, '?', '·'], { 2: 'i − 2', 3: 'i − 1', 4: 'i' }, { tones: { 5: 'ghost' } })], 1, [
       ['Knock: 3 + dp[2] = 3 + 7 = 10', 'Knocking at house 3 means giving up house 2’s 9. Skipping keeps 11, which is more.'],
-      ['Skip: dp[3] = 11', 'Yes. dp[4] = max(10, 11) = 11. The scroll records the best for the first 4 houses, whether or not house 3 is used.'],
+      ['Skip: dp[3] = 11', 'Yes. dp[4] = max(10, 11) = 11. The cell records the best for the first 4 houses, whether or not house 3 is used.'],
       ['dp[3] + 3 = 14', 'That knocks at houses 2 and 3, which are neighbours.'],
     ]),
   step('Purses [2, 1, 1, 2]. Knocking at every other door collects 3 either way. What does the table say?',
@@ -101,7 +101,7 @@ export const decode = [
 export const coins = [
   step('Coins [1, 3, 4], amount 6. dp[0..5] = 0, 1, 2, 1, 1, 2. Which coin should go last in the best way to make 6?',
     [row('dp', [0, 1, 2, 1, 1, 2, '?'], { 2: '6 − 4', 3: '6 − 3', 5: '6 − 1', 6: 'a' })], 1, [
-      ['4: 1 + dp[2] = 1 + 2 = 3', 'That is the shop’s greedy answer: 4 + 1 + 1. Another last coin does better.'],
+      ['4: 1 + dp[2] = 1 + 2 = 3', 'That is the greedy answer: 4 + 1 + 1. Another last coin does better.'],
       ['3: 1 + dp[3] = 1 + 1 = 2', 'Yes: 3 + 3. dp[6] = 1 + min(dp[5], dp[3], dp[2]) = 1 + min(2, 1, 2) = 2.'],
       ['1: 1 + dp[5] = 1 + 2 = 3', 'Three coins (e.g. 4 + 1 + 1). The last coin 3 gives two.'],
     ]),
@@ -221,7 +221,7 @@ export const mixedReview = [
     ['Downward, s from target to x', 'Yes. can[s − x] is then still last round’s value: reachable without this number.'],
     ['Either', 'Only for unlimited copies (upward) or one copy (downward). They answer different questions.'],
   ]),
-  step('Pick a value x, earn x, and every x − 1 and x + 1 is destroyed. Which book chapter is this in disguise?', [], 0, [
+  step('Pick a value x, earn x, and every x − 1 and x + 1 is destroyed. Which chapter is this in disguise?', [], 0, [
     ['House Robber over value buckets: earn[v] = v × count(v), no two adjacent values', 'Yes. Taking one x means taking them all, and destroying x ± 1 is “no two neighbours”.'],
     ['Coin change', 'There is no target amount; the constraint is about neighbours.'],
     ['Longest increasing subsequence', 'Order in the input doesn’t matter here; only which values are taken.'],

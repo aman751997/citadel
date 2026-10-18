@@ -1,5 +1,5 @@
-// 1-D DP playground: write the scrolls yourself, one cell at a time.
-// robber — House Robber: knock (nums[i − 1] + dp[i − 2]) or skip (dp[i − 1]); the scroll keeps the larger.
+// 1-D DP playground: fill the table yourself, one cell at a time.
+// robber — House Robber: knock (nums[i − 1] + dp[i − 2]) or skip (dp[i − 1]); the cell keeps the larger.
 // coins  — Coin Change: for each amount choose the best LAST coin, or declare the amount unreachable.
 // decode — Decode Ways: does a one-digit letter, a two-digit letter, both or neither end here?
 import { makeLab, type LabBase, type LabRow } from '../lab.ts';
@@ -9,8 +9,8 @@ export interface DpState extends LabBase {
   coins: number[];             // coins: denominations in the box (subset of 1..5)
   amount: number;
   s: string;                   // decode: digits
-  dp: (number | null)[];       // written scrolls; null = unreachable (coins only)
-  i: number;                   // index of the next scroll to write
+  dp: (number | null)[];       // written cells; null = unreachable (coins only)
+  i: number;                   // index of the next cell to write
   result: number | null;       // set by 'finish'
 }
 
@@ -49,11 +49,11 @@ function robberReject(s: DpState, action: string) {
   const n = robberN(s);
   if (s.i > n) {
     if (action === 'finish') return 'Read the answer.';
-    return `All ${n + 1} scrolls are written. The best for the whole street is dp[${n}] = ${s.dp[n]}; read it.`;
+    return `All ${n + 1} cells are written. The best for the whole street is dp[${n}] = ${s.dp[n]}; read it.`;
   }
   const k = knockValue(s), sk = skipValue(s), h = s.i - 1;
   if (action === 'finish') return `dp[${s.i}] through dp[${n}] are still unwritten, and the answer lives in the last one, dp[${n}].`;
-  if (action === 'knock') return `Knocking at house ${h} gives ${s.a[h]} + dp[${s.i - 2}] = ${s.a[h]} + ${s.dp[s.i - 2]} = ${k}, but skipping it keeps dp[${s.i - 1}] = ${sk}, which is more. The scroll records the best for the first ${s.i} houses, so it must say ${sk}.`;
+  if (action === 'knock') return `Knocking at house ${h} gives ${s.a[h]} + dp[${s.i - 2}] = ${s.a[h]} + ${s.dp[s.i - 2]} = ${k}, but skipping it keeps dp[${s.i - 1}] = ${sk}, which is more. The cell records the best for the first ${s.i} houses, so it must say ${sk}.`;
   return `Skipping house ${h} keeps dp[${s.i - 1}] = ${sk}, but knocking gives ${s.a[h]} + dp[${s.i - 2}] = ${s.a[h]} + ${s.dp[s.i - 2]} = ${k}, which is more. House ${s.i - 2} is off-limits if you knock, and dp[${s.i - 2}] already respects that.`;
 }
 function robberApply(s: DpState, action: string) {
@@ -61,14 +61,14 @@ function robberApply(s: DpState, action: string) {
   if (action === 'finish') {
     s.done = true;
     s.result = s.dp[n] as number;
-    s.message = n ? `dp[${n}] = ${s.result}: the most alms on this street, with no two neighbours knocked.` : 'An empty street holds nothing: dp[0] = 0.';
+    s.message = n ? `dp[${n}] = ${s.result}: the most money on this street, with no two neighbours knocked.` : 'An empty street holds nothing: dp[0] = 0.';
     return;
   }
   const k = knockValue(s), sk = skipValue(s), h = s.i - 1;
   const value = Math.max(k, sk);
   s.dp.push(value);
   s.message = k === sk
-    ? `dp[${s.i}] = ${value}: knocking (${s.a[h]} + ${s.dp[s.i - 2]}) and skipping (${sk}) tie, so either choice writes the same scroll.`
+    ? `dp[${s.i}] = ${value}: knocking (${s.a[h]} + ${s.dp[s.i - 2]}) and skipping (${sk}) tie, so either choice writes the same value.`
     : action === 'knock'
       ? `dp[${s.i}] = ${s.a[h]} + dp[${s.i - 2}] = ${value}: house ${h} is knocked, and the rest comes from the first ${s.i - 2} houses.`
       : `dp[${s.i}] = dp[${s.i - 1}] = ${value}: house ${h} is skipped; knocking would have given only ${k}.`;
@@ -98,7 +98,7 @@ function robberView(s: DpState): LabRow[] {
 function robberDescribe(s: DpState) {
   const n = robberN(s);
   if (s.done) return `Done: dp[${n}] = ${s.result}.`;
-  if (s.i > n) return `Every scroll is written. The answer lives in dp[${n}].`;
+  if (s.i > n) return `Every cell is written. The answer lives in dp[${n}].`;
   const h = s.i - 1;
   return `Writing dp[${s.i}]. Knock at house ${h} (${s.a[h]}) on top of dp[${s.i - 2}] = ${s.dp[s.i - 2]}, or skip it and keep dp[${s.i - 1}] = ${s.dp[s.i - 1]}?`;
 }
@@ -139,7 +139,7 @@ function coinsReject(s: DpState, action: string) {
   if (c > a) return `A ${c}-coin is bigger than ${a}, so it can’t be the last coin of ${a}.`;
   if (s.dp[a - c] === null) return `Amount ${a - c} is unreachable (∞), so a last ${c}-coin leaves something nobody can make. ${b ? `A last ${b.coins[0]}-coin works: ${b.best} coin(s).` : 'No coin works here.'}`;
   if (!b) return `No coin works for ${a}.`;
-  return `A last ${c}-coin gives 1 + dp[${a - c}] = 1 + ${s.dp[a - c]} = ${(s.dp[a - c] as number) + 1}, but a last ${b.coins[0]}-coin gives 1 + dp[${a - b.coins[0]}] = ${b.best}. The scroll keeps the fewest.`;
+  return `A last ${c}-coin gives 1 + dp[${a - c}] = 1 + ${s.dp[a - c]} = ${(s.dp[a - c] as number) + 1}, but a last ${b.coins[0]}-coin gives 1 + dp[${a - b.coins[0]}] = ${b.best}. The cell keeps the fewest.`;
 }
 function coinsApply(s: DpState, action: string) {
   if (action === 'finish') {
@@ -207,7 +207,7 @@ function decodeReject(s: DpState, action: string) {
     if (action === 'finish') return 'Read the answer.';
     return `Every digit is read. The answer is dp[${n}] = ${s.dp[n]}.`;
   }
-  if (action === 'finish') return `Digits ${s.i}..${n} still have no scroll; the answer lives in dp[${n}].`;
+  if (action === 'finish') return `Digits ${s.i}..${n} are still unwritten; the answer lives in dp[${n}].`;
   const d = s.s[s.i - 1], one = oneOk(s), two = twoOk(s);
   const oneText = one ? `${d} alone is a letter (${String.fromCharCode(64 + Number(d))}), adding dp[${s.i - 1}] = ${s.dp[s.i - 1]}` : `the last digit is 0, and 0 is no letter on its own`;
   const twoText = two ? `${whyTwo(s)}, adding dp[${s.i - 2}] = ${s.dp[s.i - 2]}` : whyTwo(s);
@@ -230,7 +230,7 @@ function decodeApply(s: DpState, action: string) {
   s.message = action === 'both' ? `dp[${i}] = dp[${i - 1}] + dp[${i - 2}] = ${prev1} + ${prev2} = ${value}: the last letter is one digit or two, never both, so the groups add.`
     : action === 'one' ? `dp[${i}] = dp[${i - 1}] = ${value}: only the one-digit letter ends here.`
       : action === 'two' ? `dp[${i}] = dp[${i - 2}] = ${value}: only the two-digit letter ${pairOf(s)} ends here.`
-        : `dp[${i}] = 0: no letter can end here. Every scroll after it that depends on it inherits the 0.`;
+        : `dp[${i}] = 0: no letter can end here. Every cell after it that depends on it inherits the 0.`;
   s.i++;
 }
 function decodeView(s: DpState): LabRow[] {
@@ -264,7 +264,7 @@ function decodeDescribe(s: DpState) {
 
 export const lab = makeLab<DpState>({
   robber: {
-    name: 'The almoner’s round (House Robber)',
+    name: 'House Robber',
     cases: robberCases.length,
     actions: [
       { action: 'knock', label: 'Knock: nums[i − 1] + dp[i − 2]' },
@@ -280,7 +280,7 @@ export const lab = makeLab<DpState>({
     describe: robberDescribe,
   },
   coins: {
-    name: 'The offering box (Coin Change)',
+    name: 'Coin Change',
     cases: coinCases.length,
     actions: [
       ...DENOMINATIONS.map(c => ({ action: `c${c}`, label: `Last coin ${c}: 1 + dp[a − ${c}]` })),
@@ -296,7 +296,7 @@ export const lab = makeLab<DpState>({
     describe: coinsDescribe,
   },
   decode: {
-    name: 'The cipher (Decode Ways)',
+    name: 'Decode Ways',
     cases: decodeCases.length,
     actions: [
       { action: 'one', label: 'Only one digit: dp[i − 1]' },
@@ -312,4 +312,4 @@ export const lab = makeLab<DpState>({
     view: decodeView,
     describe: decodeDescribe,
   },
-}, 'Gold = the scroll being read or written · green = settled · faded = not yet written · ∞ = unreachable');
+}, 'Gold = the cell being read or written · green = settled · faded = not yet written · ∞ = unreachable');

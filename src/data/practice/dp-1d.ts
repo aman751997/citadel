@@ -234,10 +234,10 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const s = bases[v % bases.length];
       const answer = centres(s).longest;
       return {
-        topic: 'Longest mirror stretch', section: 'longest-palindrome', strategy: 'centres',
+        topic: 'Longest symmetric stretch', section: 'longest-palindrome', strategy: 'centres',
         prompt: `In "${s}", how long is the longest contiguous stretch that reads the same forwards and backwards? Use O(1) extra space.`,
         question: 'Enter the length.', answer,
-        hints: ['A mirror stretch is a smaller one with a matching pair around it. Where can its middle be?', 'Middles are letters (odd length) or gaps between letters (even length): 2n − 1 of them.', 'From each middle, widen while both ends match; keep the longest window.'],
+        hints: ['A symmetric stretch is a smaller one with a matching pair around it. Where can its middle be?', 'Middles are letters (odd length) or gaps between letters (even length): 2n − 1 of them.', 'From each middle, widen while both ends match; keep the longest window.'],
         rubric: ['2n − 1 centres, including gaps for even lengths.', 'Widen while the ends match; the last matching window counts.', 'O(n²) time, O(1) space; a 2-D table would need O(n²) space.'],
         explanation: `The longest such stretch has length ${answer}.`,
       };
@@ -247,10 +247,10 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const s = bases[v % bases.length];
       const answer = centres(s).count;
       return {
-        topic: 'Count every mirror stretch', section: 'palindromic-substrings', strategy: 'centres',
+        topic: 'Count every symmetric stretch', section: 'palindromic-substrings', strategy: 'centres',
         prompt: `How many contiguous stretches of "${s}" read the same forwards and backwards? Stretches at different positions count separately, even if they spell the same thing.`,
         question: 'Enter the count.', answer,
-        hints: ['Every mirror stretch has exactly one middle.', 'Use all 2n − 1 middles: letters and gaps.', 'Each successful widening from a middle is one more stretch; add them all.'],
+        hints: ['Every symmetric stretch has exactly one middle.', 'Use all 2n − 1 middles: letters and gaps.', 'Each successful widening from a middle is one more stretch; add them all.'],
         rubric: ['Each stretch is found exactly once, from its own centre.', 'Count widenings rather than remembering the longest.', 'O(n²) time, O(1) space.'],
         explanation: `“${s}” has ${answer} such stretches.`,
       };
@@ -311,7 +311,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const answer = tickets(days, costs);
       return {
         topic: 'Cheapest passes for travel days', section: 'tickets', strategy: 'pieces',
-        prompt: `A pilgrim travels on days ${arr(days)} of the year. A 1-day pass costs ${costs[0]}, a 7-day pass costs ${costs[1]} and a 30-day pass costs ${costs[2]}; each covers that many consecutive days starting the day it is first used. What is the cheapest way to cover every travel day?`,
+        prompt: `A traveller visits on days ${arr(days)} of the year. A 1-day pass costs ${costs[0]}, a 7-day pass costs ${costs[1]} and a 30-day pass costs ${costs[2]}; each covers that many consecutive days starting the day it is first used. What is the cheapest way to cover every travel day?`,
         question: 'Enter the cheapest total.', answer,
         hints: ['Index by calendar day. What does a day without travel add?', 'c[d] = cheapest cover for travel on days 1..d. On a travel day, the last pass bought covers day d.', 'c[d] = min(c[d − 1] + 1-day, c[d − 7] + 7-day, c[d − 30] + 30-day), clamping negative days to 0.'],
         rubric: ['The state runs over calendar days; quiet days copy the day before.', 'Try each pass as the one covering day d.', 'O(last day) time and space.'],

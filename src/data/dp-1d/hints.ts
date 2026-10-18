@@ -4,7 +4,7 @@ export const hints: Record<string, [string, string, string]> = {
   climb: [
     'Look at the last move of any climb to step i. What could it have been, and where did it start?',
     'ways[i] = the number of ways to stand on step i. The last move came from i − 1 or i − 2, so ways[i] = ways[i − 1] + ways[i − 2], with ways[0] = ways[1] = 1.',
-    'The loop reads only the last two scrolls: keep prev = ways[i − 2] and curr = ways[i − 1]. Compute next = curr + prev, then slide: prev = curr, curr = next. At loop exit curr = ways[n].',
+    'The loop reads only the last two cells: keep prev = ways[i − 2] and curr = ways[i − 1]. Compute next = curr + prev, then slide: prev = curr, curr = next. At loop exit curr = ways[n].',
   ],
   minCost: [
     'Same stair, same last move as counting the climbs. What replaces the sum when you want the cheapest?',
@@ -14,7 +14,7 @@ export const hints: Record<string, [string, string, string]> = {
   robber: [
     'Stand at the last house of the street and decide only that house. If you take it, what do you already know? If you skip it?',
     'dp[i] = the most from the first i houses. Take house i − 1: nums[i − 1] + dp[i − 2]. Skip it: dp[i − 1]. Keep the larger.',
-    'dp[0] = 0. Only the last two scrolls are read, so carry prev and curr: next = max(curr, prev + x), then slide. Return curr.',
+    'dp[0] = 0. Only the last two cells are read, so carry prev and curr: next = max(curr, prev + x), then slide. Return curr.',
   ],
   circle: [
     'On a ring the first and last houses are neighbours. In any valid plan, can both be used?',
@@ -77,12 +77,12 @@ export const hints: Record<string, [string, string, string]> = {
     'Track the overall best length; sum cnt[i] over every i whose len[i] equals it. Use strict < for “increasing”.',
   ],
   kSteps: [
-    'The last move can now be 1, 2, …, k steps. How many scrolls does each new one read?',
+    'The last move can now be 1, 2, …, k steps. How many cells does each new one read?',
     'ways[i] = ways[i − 1] + … + ways[i − k] (ignoring negative indexes), ways[0] = 1. Summing k cells per step is O(n × k).',
     'Keep a running window sum: add ways[i − 1] as it comes into reach, subtract ways[i − k − 1] as it falls out. ways[i] = window. O(n).',
   ],
   tickets: [
-    'Index the scrolls by calendar day, not by visit. What does a day with no visit cost?',
+    'Index the cells by calendar day, not by visit. What does a day with no visit cost?',
     'dp[d] = cheapest cover for every visit on days 1..d. A quiet day copies dp[d − 1]. On a visit day, the last pass bought covers day d: 1, 7 or 30 days ending on d.',
     'dp[d] = min(dp[d − 1] + costs[0], dp[max(0, d − 7)] + costs[1], dp[max(0, d − 30)] + costs[2]). Fill d = 1..last day; return dp[last].',
   ],

@@ -66,7 +66,7 @@ test('playground modes agree with oracles on random small inputs', () => {
   }
 });
 
-test('wrong reversal orders are caught and name the islands that would be lost', () => {
+test('wrong reversal orders are caught and name the nodes that would be lost', () => {
   let s = lab.create('reverse', 0);
   let r = lab.move(s, 'flip');
   assert.equal(r.accepted, false);
@@ -81,13 +81,13 @@ test('wrong reversal orders are caught and name the islands that would be lost',
   assert.match(r.state.message, /2 → 1 is unreachable/);
 });
 
-test('the courier lab rejects comparing flags instead of islands', () => {
+test('the courier lab rejects comparing flags instead of nodes', () => {
   let s = lab.create('cycle', 1); // 7 → 7 → 7 → 7, no loop
   assert.match(lab.move(s, 'meet').state.message, /start together/);
   s = lab.move(s, 'step').state;
   const r = lab.move(s, 'meet');
   assert.equal(r.accepted, false);
-  assert.match(r.state.message, /Same flag, different islands/);
+  assert.match(r.state.message, /Same value, different nodes/);
 });
 
 test('the gap lab explains where Trail would land with too small a gap', () => {
@@ -95,7 +95,7 @@ test('the gap lab explains where Trail would land with too small a gap', () => {
   s = lab.move(s, 'lead').state; s = lab.move(s, 'lead').state; // gap of n = 2
   const r = lab.move(s, 'both');
   assert.equal(r.accepted, false);
-  assert.match(r.state.message, /island 4 \(position 4\) — the island to remove itself/);
+  assert.match(r.state.message, /node 4 \(position 4\) — the node to remove itself/);
 });
 
 // ---------- traces ----------
@@ -163,7 +163,7 @@ test('find-the-duplicate trace numbers', () => {
   slow = 0; let turns = 0;
   while (slow !== fast) { slow = nums[slow]; fast = nums[fast]; turns++; }
   assert.equal(slow, 2); assert.equal(turns, 3);
-  assert.match(labelOf(traces.duplicate[2]), /island 2, after 3 turns/);
+  assert.match(labelOf(traces.duplicate[2]), /node 2, after 3 turns/);
 });
 function reverseBetween(a: number[], left: number, right: number) { return [...a.slice(0, left - 1), ...a.slice(left - 1, right).reverse(), ...a.slice(right)]; }
 test('reversal and k-group trace numbers', () => {

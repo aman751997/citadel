@@ -3,7 +3,7 @@
 import type { Challenge, PracticeSet } from '../../lib/practice.ts';
 
 export const strategies = {
-  couriers: 'Two walkers at different speeds (one hop vs two)',
+  pointers: 'Two walkers at different speeds (one hop vs two)',
   gap: 'Two walkers kept a fixed number of hops apart',
   switch: 'Two walkers that swap chains to equalise their distance',
   reverse: 'Reverse next pointers in place',
@@ -38,8 +38,8 @@ function shuffle<T>(r: (m: number) => number, a: T[]): T[] {
   for (let i = b.length - 1; i > 0; i--) { const j = r(i + 1); [b[i], b[j]] = [b[j], b[i]]; }
   return b;
 }
-// Island 0 starts the trip; islands are visited in a shuffled order; the last one either loops back or ends (-1).
-function ferryTable(r: (m: number) => number, n: number, loopTo: number | null): number[] {
+// Node 0 starts the walk; nodes are visited in a shuffled order; the last one either loops back or ends (-1).
+function linkTable(r: (m: number) => number, n: number, loopTo: number | null): number[] {
   const order = [0, ...shuffle(r, Array.from({ length: n - 1 }, (_, i) => i + 1))];
   const next = Array(n).fill(-1);
   for (let i = 0; i + 1 < n; i++) next[order[i]] = order[i + 1];
@@ -57,17 +57,17 @@ export function challengeFor(id: ConceptId, variant = 0): Challenge {
     case 'middle': {
       const len = 5 + (variant % 4), a = distinct(r, len, 40), even = len % 2 === 0, which = variant % 8 < 4 ? 'second' : 'first';
       const answer = !even ? a[(len - 1) / 2] : which === 'second' ? a[len / 2] : a[len / 2 - 1];
-      return make({ topic: 'The centre in one walk', section: 'find-the-middle', strategy: 'couriers', prompt: `A one-way chain holds ${chain(a)}. Return the value of its centre node${even ? `; with two centre nodes, return the ${which} one` : ''}. Walk it once: you do not know the length in advance.`, answer,
+      return make({ topic: 'The centre in one walk', section: 'find-the-middle', strategy: 'pointers', prompt: `A one-way chain holds ${chain(a)}. Return the value of its centre node${even ? `; with two centre nodes, return the ${which} one` : ''}. Walk it once: you do not know the length in advance.`, answer,
         hints: ['If one walker moves twice as fast, where is the other when it finishes?', 'Both start on the head; the guard is fast != null && fast.next != null.', even && which === 'first' ? 'For the first of two centres, start the fast walker one node ahead.' : 'The slow walker is the answer when the loop stops.'],
         rubric: ['slow moves one node per turn, fast moves two.', 'When fast cannot take two more steps, slow has covered half the distance.', 'Starting fast at head gives the second middle; starting it at head.next gives the first.'],
         explanation: `The centre is ${answer}. One walk, O(1) extra memory.` });
     }
     case 'cycle': {
-      const n = 5 + (variant % 3), loops = variant % 2 === 0, next = ferryTable(r, n, loops ? r(n) : null), flag = 1 + r(9);
-      return make({ topic: 'Does the trip ever end?', section: 'detect-a-cycle', strategy: 'couriers', prompt: `Island i's only ferry goes to island next[i]; -1 means it leads nowhere. next = ${arr(next)}. Every island flies the same flag, ${flag}. Starting from island 0 and using O(1) extra memory, can a traveller sail forever?`, question: 'Enter yes or no.', answer: loops,
-        hints: ['An end means no loop. What would two travellers at different speeds do on a loop?', 'One takes one ferry per turn, the other two. Compare islands, never flags.', 'A meeting proves a loop; the fast one reaching -1 proves an end.'],
-        rubric: ['Both start on island 0; compare only after moving.', 'Inside a loop the gap shrinks by exactly one per turn, so they must meet.', 'Every flag is identical, so comparing values would claim a loop on every chain.'],
-        explanation: loops ? 'The trip loops: the two travellers meet on the same island.' : 'The trip ends at a -1 ferry, so there is no loop.' });
+      const n = 5 + (variant % 3), loops = variant % 2 === 0, next = linkTable(r, n, loops ? r(n) : null), value = 1 + r(9);
+      return make({ topic: 'Does the walk ever end?', section: 'detect-a-cycle', strategy: 'pointers', prompt: `Node i's only link goes to node next[i]; -1 means it leads nowhere. next = ${arr(next)}. Every node holds the same value, ${value}. Starting from node 0 and using O(1) extra memory, can the walk go on forever?`, question: 'Enter yes or no.', answer: loops,
+        hints: ['An end means no loop. What would two walkers at different speeds do on a loop?', 'One takes one hop per turn, the other two. Compare nodes, never values.', 'A meeting proves a loop; the fast one reaching -1 proves an end.'],
+        rubric: ['Both start on node 0; compare only after moving.', 'Inside a loop the gap shrinks by exactly one per turn, so they must meet.', 'Every value is identical, so comparing values would claim a loop on every chain.'],
+        explanation: loops ? 'The walk loops: the two walkers meet on the same node.' : 'The walk ends at a -1 link, so there is no loop.' });
     }
     case 'nth-end': {
       const len = 4 + (variant % 4), a = values(r, len), n = 1 + ((variant + r(len)) % len);
@@ -81,14 +81,14 @@ export function challengeFor(id: ConceptId, variant = 0): Challenge {
       const n = 4 + (variant % 4), d = 1 + r(n), copies = 2 + (variant % 3 === 2 ? 1 : 0);
       const others = shuffle(r, Array.from({ length: n }, (_, i) => i + 1).filter(x => x !== d)).slice(0, n + 1 - copies);
       const nums = shuffle(r, [...Array(copies).fill(d), ...others]);
-      return make({ topic: 'A hidden chain inside an array', section: 'find-the-duplicate', strategy: 'couriers', prompt: `An array of ${n + 1} values, each between 1 and ${n}: ${arr(nums)}. Exactly one value repeats (it may appear more than twice). Find it without modifying the array, using O(1) extra memory.`, answer: d,
+      return make({ topic: 'A hidden chain inside an array', section: 'find-the-duplicate', strategy: 'pointers', prompt: `An array of ${n + 1} values, each between 1 and ${n}: ${arr(nums)}. Exactly one value repeats (it may appear more than twice). Find it without modifying the array, using O(1) extra memory.`, answer: d,
         hints: ['Read each value as "the next index to visit". What shape appears?', 'From index 0 the walk enters a loop; the loop\'s entrance has two arrows pointing at it.', 'Race two walkers to a meeting, restart one at 0, then step both singly until they meet.'],
         rubric: ['Index 0 is never a target, so the walk from 0 starts on a tail.', 'Two indexes pointing at one index is the duplicate — that index is the loop\'s entrance.', 'Phase 2 works because head-to-entrance equals meeting-point-to-entrance modulo the loop length.'],
         explanation: `${d} is the value written in two places; it is the entrance of the loop reached from index 0.` });
     }
     case 'reverse': {
       const a = values(r, 4 + (variant % 4));
-      return make({ topic: 'Turn every arrow around', section: 'reverse-the-chain', strategy: 'reverse', prompt: `Chain ${chain(a)}. Turn every ferry around in place using O(1) extra memory, and read the chain from its new head.`, question: listQ, answer: [...a].reverse(),
+      return make({ topic: 'Turn every arrow around', section: 'reverse-the-chain', strategy: 'reverse', prompt: `Chain ${chain(a)}. Turn every link around in place using O(1) extra memory, and read the chain from its new head.`, question: listQ, answer: [...a].reverse(),
         hints: ['What do you lose the moment you re-tie one node\'s arrow?', 'prev, cur, and a saved next.', 'Save next, flip, advance prev, advance cur. Return prev.'],
         rubric: ['Save cur.next before flipping, or the rest of the chain is lost.', 'prev is always the head of the reversed part.', 'Stop when cur is null; return prev, not cur or head.'],
         explanation: `The new chain is ${chain([...a].reverse())}.` });
@@ -153,11 +153,11 @@ export function challengeFor(id: ConceptId, variant = 0): Challenge {
         explanation: `The gets return ${answer.join(', ')}.` });
     }
     case 'cycle-entrance': {
-      const n = 5 + (variant % 3), next = ferryTable(r, n, r(n));
-      return make({ topic: 'The first island you see twice', section: 'cycle-entrance', strategy: 'couriers', prompt: `Island i's ferry goes to island next[i]: next = ${arr(next)}. Starting at island 0, the trip eventually repeats. Which island is the first one you reach for a second time? Use O(1) extra memory.`, answer: (() => { const seen = new Set<number>(); let at = 0; while (!seen.has(at)) { seen.add(at); at = next[at]; } return at; })(),
-        hints: ['First prove there is a loop. Then find where it starts.', 'After two walkers at different speeds meet, compare the distance from island 0 to the entrance with the distance from the meeting point.', 'Restart one walker at island 0; step both one ferry at a time; they meet at the entrance.'],
-        rubric: ['Phase 1: slow and fast meet somewhere in the loop.', 'Distance argument: a = (k − 1)L + (L − b), so both walkers reach the entrance together.', 'Phase 2 compares islands, and the meeting island is the answer.'],
-        explanation: 'The entrance is the island two different ferries arrive at: one from the tail (or island 0 itself) and one from the loop.' });
+      const n = 5 + (variant % 3), next = linkTable(r, n, r(n));
+      return make({ topic: 'The first node you see twice', section: 'cycle-entrance', strategy: 'pointers', prompt: `Node i's link goes to node next[i]: next = ${arr(next)}. Starting at node 0, the walk eventually repeats. Which node is the first one you reach for a second time? Use O(1) extra memory.`, answer: (() => { const seen = new Set<number>(); let at = 0; while (!seen.has(at)) { seen.add(at); at = next[at]; } return at; })(),
+        hints: ['First prove there is a loop. Then find where it starts.', 'After two walkers at different speeds meet, compare the distance from node 0 to the entrance with the distance from the meeting point.', 'Restart one walker at node 0; step both one link at a time; they meet at the entrance.'],
+        rubric: ['Phase 1: slow and fast meet somewhere in the loop.', 'Distance argument: a = (k − 1)L + (L − b), so both walkers reach the entrance together.', 'Phase 2 compares nodes, and the meeting node is the answer.'],
+        explanation: 'The entrance is the node two different links arrive at: one from the tail (or node 0 itself) and one from the loop.' });
     }
     case 'palindrome': {
       const len = 4 + (variant % 4), half = values(r, Math.ceil(len / 2), 5);

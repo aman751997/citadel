@@ -4,79 +4,79 @@ import { row, step } from '../../lib/trace.ts';
 const J = { join: '→' };
 
 export const middle = [
-  step('Slow takes one ferry per turn, Fast takes two. The loop runs while fast != null && fast.next != null. Where is Slow when it stops?',
+  step('Slow takes one hop per turn, Fast takes two. The loop runs while fast != null && fast.next != null. Where is Slow when it stops?',
     [row('Chain', [1, 2, 3, 4, 5, 'null'], { 0: 'SLOW · FAST' }, { ...J, tones: { 5: 'ghost' } })], 1, [
-      ['On 2', 'That is after one turn. Fast is then on 3, and 3 still has two ferries ahead (4, then 5), so the loop runs again.'],
-      ['On 3', 'Yes. Two turns: Slow 1 → 2 → 3, Fast 1 → 3 → 5. Fast is on the last island, fast.next is null, and the loop stops. 3 is the exact middle of five.'],
-      ['On 4', 'Slow always covers exactly half of Fast\'s distance. Fast covered 4 ferries, so Slow covered 2: island 3.'],
+      ['On 2', 'That is after one turn. Fast is then on 3, and 3 still has two hops ahead (4, then 5), so the loop runs again.'],
+      ['On 3', 'Yes. Two turns: Slow 1 → 2 → 3, Fast 1 → 3 → 5. Fast is on the last node, fast.next is null, and the loop stops. 3 is the exact middle of five.'],
+      ['On 4', 'Slow always covers exactly half of Fast\'s distance. Fast covered 4 hops, so Slow covered 2: node 3.'],
     ]),
-  step('Now six islands, same loop. Where is Slow when it stops?',
+  step('Now six nodes, same loop. Where is Slow when it stops?',
     [row('Chain', [1, 2, 3, 4, 5, 6, 'null'], { 0: 'SLOW · FAST' }, { ...J, tones: { 6: 'ghost' } })], 1, [
-      ['On 3, the first middle', 'Trace it: Fast goes 1 → 3 → 5 → null (from 5 it can still take two ferries: to 6, then to null). That is three turns, so Slow walks 1 → 2 → 3 → 4.'],
+      ['On 3, the first middle', 'Trace it: Fast goes 1 → 3 → 5 → null (from 5 it can still take two hops: to 6, then to null). That is three turns, so Slow walks 1 → 2 → 3 → 4.'],
       ['On 4, the second middle', 'Right. Fast ends on null after three turns and Slow on 4. With both starting on the head, an even chain gives the SECOND middle, which is exactly what Middle of the Linked List asks for.'],
       ['The loop throws a NullPointerException', 'The guard checks fast != null first, then fast.next != null. Java\'s && stops at the first false, so fast.next.next is only read when it exists.'],
     ]),
   step('Another problem wants the FIRST middle (3 in 1 → … → 6). What is the smallest change?', [], 0, [
-    ['Start Fast one island ahead: fast = head.next', 'Yes. The head start makes Fast run out one turn earlier on even chains: Fast 2 → 4 → 6, then 6.next is null, so Slow stops on 3. On five islands Slow still stops on 3.'],
-    ['Change the guard to while (fast != null)', 'When Fast stands on the last island, fast.next is null and fast.next.next throws a NullPointerException.'],
-    ['Run the same loop, then step Slow back one island', 'Ferries are one-way: a node has no pointer to the island behind it. Stepping back would need a second walk from the head.'],
+    ['Start Fast one node ahead: fast = head.next', 'Yes. The head start makes Fast run out one turn earlier on even chains: Fast 2 → 4 → 6, then 6.next is null, so Slow stops on 3. On five nodes Slow still stops on 3.'],
+    ['Change the guard to while (fast != null)', 'When Fast stands on the last node, fast.next is null and fast.next.next throws a NullPointerException.'],
+    ['Run the same loop, then step Slow back one node', 'Links are one-way: a node has no pointer to the node behind it. Stepping back would need a second walk from the head.'],
   ]),
 ];
 
 export const cycle = [
-  step('Both couriers start on island 3. Before anyone moves, slow == fast. What does that tell you?',
-    [row('Chain (the last ferry ↩ goes back to 2)', [3, 2, 0, -4, '↩ 2'], { 0: 'SLOW · FAST' }, { ...J, tones: { 4: 'ghost' } })], 1, [
-      ['There is a loop: they are on the same island', 'Every chain, even 1 → null, starts with both couriers on the head. Compare only after they move.'],
-      ['Nothing yet. Move first, then compare', 'Yes. Starting together is not evidence. The loop moves both couriers, then checks slow == fast.'],
+  step('Both pointers start on node 3. Before anyone moves, slow == fast. What does that tell you?',
+    [row('Chain (the last link ↩ goes back to 2)', [3, 2, 0, -4, '↩ 2'], { 0: 'SLOW · FAST' }, { ...J, tones: { 4: 'ghost' } })], 1, [
+      ['There is a loop: they are on the same node', 'Every chain, even 1 → null, starts with both pointers on the head. Compare only after they move.'],
+      ['Nothing yet. Move first, then compare', 'Yes. Starting together is not evidence. The loop moves both pointers, then checks slow == fast.'],
     ]),
   step('A different chain, 1 → 2 → 2 → 3 → null. After one turn, Slow stands on a 2 and Fast on a 2. Loop found?',
     [row('Chain', [1, 2, 2, 3, 'null'], { 1: 'SLOW', 2: 'FAST' }, { ...J, tones: { 4: 'ghost' } })], 1, [
-      ['Yes: slow.val == fast.val', 'Two islands can fly the same flag. This chain ends in null; comparing values reports a loop that is not there.'],
-      ['No: they are different islands. Compare slow == fast (the nodes)', 'Right. == on references asks "the same node?". Next turn Fast reaches null (from the second 2 it takes the ferry to 3, then to null), so the answer is: no loop.'],
+      ['Yes: slow.val == fast.val', 'Two nodes can hold the same value. This chain ends in null; comparing values reports a loop that is not there.'],
+      ['No: they are different nodes. Compare slow == fast (the nodes)', 'Right. == on references asks "the same node?". Next turn Fast reaches null (from the second 2 it takes the link to 3, then to null), so the answer is: no loop.'],
     ]),
-  step('Inside a loop, Fast gains exactly one island on Slow per turn. Why can\'t Fast leap over Slow and miss it?', [], 0, [
+  step('Inside a loop, Fast gains exactly one node on Slow per turn. Why can\'t Fast leap over Slow and miss it?', [], 0, [
     ['The gap between them shrinks by exactly 1 per turn, so it must pass through 0', 'That is the whole proof. Measure how far Fast is behind Slow along the loop: d, then d − 1, d − 2, … It cannot skip from 1 to −1, so they meet within L turns of Slow entering the loop.'],
     ['It can leap over. That is why some versions use speed 3', 'Speed 3 is worse: the gap shrinks by 2 per turn and can jump from 1 straight past 0. On a loop of even length with an odd gap, they would never meet.'],
-    ['Because the values on a loop repeat', 'Values have nothing to do with it. This is about positions: one island closer per turn.'],
+    ['Because the values on a loop repeat', 'Values have nothing to do with it. This is about positions: one node closer per turn.'],
   ]),
 ];
 
 export const nth = [
-  step('Remove the 2nd island from the end (that is 4). Both pilots start on the dummy D. How many ferries does Lead take alone before they move together?',
+  step('Remove the 2nd node from the end (that is 4). Both pointers start on the dummy D. How many hops does Lead take alone before they move together?',
     [row('Chain', ['D', 1, 2, 3, 4, 5, 'null'], { 0: 'LEAD · TRAIL' }, { ...J, tones: { 0: 'ghost', 6: 'ghost' } })], 1, [
-      ['2 (n)', 'Then when Lead falls off the end, Trail is on 4 — the island to delete. A rope is cut from the island BEFORE the target; you need Trail on 3.'],
-      ['3 (n + 1)', 'Yes. A gap of n + 1 ferries means that when Lead reaches null, Trail is exactly one island before the target: on 3.'],
+      ['2 (n)', 'Then when Lead falls off the end, Trail is on 4 — the node to delete. A rope is cut from the node BEFORE the target; you need Trail on 3.'],
+      ['3 (n + 1)', 'Yes. A gap of n + 1 hops means that when Lead reaches null, Trail is exactly one node before the target: on 3.'],
       ['5 (the length)', 'You do not know the length without a whole extra walk. And with a gap of 5, Lead is on 5 when the pair starts walking: after one hop together Lead is on null and Trail is on 1, before 2, not before 4.'],
     ]),
   step('Lead is on null; Trail is on 3. Which line removes 4?',
     [row('Chain', ['D', 1, 2, 3, 4, 5, 'null'], { 3: 'TRAIL', 6: 'LEAD' }, { ...J, tones: { 0: 'ghost', 4: 'hot', 6: 'ghost' } })], 0, [
-      ['trail.next = trail.next.next', '3\'s ferry now goes straight to 5. Nothing points at 4, so it is gone: 1 → 2 → 3 → 5.'],
-      ['trail = trail.next.next', 'That moves the pilot, not the rope. The chain is unchanged.'],
+      ['trail.next = trail.next.next', '3\'s link now goes straight to 5. Nothing points at 4, so it is gone: 1 → 2 → 3 → 5.'],
+      ['trail = trail.next.next', 'That moves the pointer, not the rope. The chain is unchanged.'],
       ['trail.next = null', 'That cuts off 4 AND 5: you would return 1 → 2 → 3.'],
     ]),
-  step('Chain 1, n = 1. Lead took 2 ferries and fell off; Trail never left the dummy. After trail.next = trail.next.next, what do you return?',
+  step('Chain 1, n = 1. Lead took 2 hops and fell off; Trail never left the dummy. After trail.next = trail.next.next, what do you return?',
     [row('Chain', ['D', 1, 'null'], { 0: 'TRAIL', 2: 'LEAD' }, { ...J, tones: { 0: 'ghost', 2: 'ghost' } })], 0, [
-      ['dummy.next, which is now null: the empty chain', 'Yes. The dummy gave Trail an island to stand on "before" the head. Returning dummy.next handles a removed head with no special case.'],
-      ['head', 'head still points at island 1 — the node you just removed. You would return a deleted node.'],
+      ['dummy.next, which is now null: the empty chain', 'Yes. The dummy gave Trail a node to stand on "before" the head. Returning dummy.next handles a removed head with no special case.'],
+      ['head', 'head still points at node 1 — the node you just removed. You would return a deleted node.'],
       ['The dummy itself', 'The dummy is scaffolding with a made-up value. It is never part of the answer.'],
     ]),
 ];
 
 export const duplicate = [
-  step('Treat each index i as an island whose ferry goes to island nums[i]. Starting at island 0, which route do you sail?',
+  step('Treat each index i as a node whose link goes to node nums[i]. Starting at node 0, which route do you follow?',
     [row('nums (index below each value)', [1, 3, 4, 2, 2], { 0: 'i = 0', 1: 'i = 1', 2: 'i = 2', 3: 'i = 3', 4: 'i = 4' })], 0, [
       ['0 → 1 → 3 → 2 → 4 → 2 → 4 → …', 'Yes: nums[0] = 1, nums[1] = 3, nums[3] = 2, nums[2] = 4, nums[4] = 2. Then 2 and 4 alternate forever — a loop.'],
-      ['0 → 1 → 2 → 3 → 4, then null', 'That walks the indexes in order instead of following the ferries. And there is no null here: every value 1..4 is a valid island.'],
+      ['0 → 1 → 2 → 3 → 4, then null', 'That walks the indexes in order instead of following the hops. And there is no null here: every value 1..4 is a valid node.'],
       ['1 → 3 → 4 → 2 → 2', 'That is the array read left to right. Follow i → nums[i] instead.'],
     ]),
-  step('Phase 1: both couriers start on island 0; each turn slow = nums[slow], fast = nums[nums[fast]]. They meet on island 4. Is 4 the duplicate?', [], 1, [
+  step('Phase 1: both pointers start on node 0; each turn slow = nums[slow], fast = nums[nums[fast]]. They meet on node 4. Is 4 the duplicate?', [], 1, [
     ['Yes: return 4', '4 appears only once in the array. The meeting point is wherever the race happens to end inside the loop — not necessarily its entrance.'],
-    ['No: send one courier back to island 0; both take one ferry per turn', 'Right. Phase 2 finds the loop\'s entrance — the island with two ferries arriving — and that island\'s number is the duplicated value.'],
+    ['No: send one pointer back to node 0; both take one hop per turn', 'Right. Phase 2 finds the loop\'s entrance — the node with two hops arriving — and that node\'s number is the duplicated value.'],
   ]),
-  step('Phase 2: one courier starts on 0, the other stays on 4; each takes one ferry per turn. Where and when do they meet?', [], 0, [
-    ['On island 2, after 3 turns', 'Courier A: 0 → 1 → 3 → 2. Courier B: 4 → 2 → 4 → 2. Both stand on 2 after 3 turns, because the tail from 0 to the entrance is 3 ferries long. And 2 is the duplicate: nums[3] = nums[4] = 2.'],
-    ['On island 4, after 2 turns', 'After 2 turns the restarted courier is on 3 (0 → 1 → 3). It is still on the tail, not in the loop.'],
-    ['Never: with equal speeds the gap stays fixed', 'The gap is fixed only while both are in the loop. The restarted courier walks the tail first, and the distance argument shows that both reach the entrance on the same turn.'],
+  step('Phase 2: one pointer starts on 0, the other stays on 4; each takes one hop per turn. Where and when do they meet?', [], 0, [
+    ['On node 2, after 3 turns', 'Pointer A: 0 → 1 → 3 → 2. Pointer B: 4 → 2 → 4 → 2. Both stand on 2 after 3 turns, because the tail from 0 to the entrance is 3 hops long. And 2 is the duplicate: nums[3] = nums[4] = 2.'],
+    ['On node 4, after 2 turns', 'After 2 turns the restarted pointer is on 3 (0 → 1 → 3). It is still on the tail, not in the loop.'],
+    ['Never: with equal speeds the gap stays fixed', 'The gap is fixed only while both are in the loop. The restarted pointer walks the tail first, and the distance argument shows that both reach the entrance on the same turn.'],
   ]),
 ];
 
@@ -85,15 +85,15 @@ export const reverse = [
     [row('From prev (reversed)', [1, 'null'], { 0: 'PREV' }, { ...J, tones: { 0: 'done', 1: 'ghost' } }),
      row('From cur (still to flip)', [2, 3, 4, 5, 'null'], { 0: 'CUR' }, { ...J, tones: { 0: 'hot', 4: 'ghost' } })], 0, [
       ['ListNode next = cur.next: hold the rope to 3', 'Yes. Save the rope before cutting it. Now 3 → 4 → 5 is held by next, and you are free to re-tie 2.'],
-      ['cur.next = prev: flip 2\'s arrow', 'You just dropped the rope: 2 was the only island holding the line to 3. After the flip, 3 → 4 → 5 is unreachable — nobody can find it again.'],
-      ['prev = cur', 'Then prev and cur are both 2, and the flip would tie 2 to itself: a one-island loop.'],
+      ['cur.next = prev: flip 2\'s arrow', 'You just dropped the rope: 2 was the only node holding the line to 3. After the flip, 3 → 4 → 5 is unreachable — nobody can find it again.'],
+      ['prev = cur', 'Then prev and cur are both 2, and the flip would tie 2 to itself: a one-node loop.'],
     ]),
   step('The loop has ended: cur is null. What do you return?',
     [row('From prev', [5, 4, 3, 2, 1, 'null'], { 0: 'PREV' }, { ...J, tones: { 0: 'done', 1: 'done', 2: 'done', 3: 'done', 4: 'done', 5: 'ghost' } }),
      row('cur', ['null'], { 0: 'CUR' }, { tones: { 0: 'ghost' } })], 0, [
-      ['prev: island 5, the new head', 'Yes. prev is always the front of the reversed part, and now the reversed part is everything.'],
+      ['prev: node 5, the new head', 'Yes. prev is always the front of the reversed part, and now the reversed part is everything.'],
       ['cur', 'cur walked off the end: it is null. Returning it hands the caller an empty chain.'],
-      ['head', 'head still points at island 1, which is now the LAST island: 1 → null. You would return a one-node chain and lose 2 … 5.'],
+      ['head', 'head still points at node 1, which is now the LAST node: 1 → null. You would return a one-node chain and lose 2 … 5.'],
     ]),
   step('head is null (an empty chain). What does the four-line loop do?', [], 0, [
     ['The loop never runs; it returns prev, which is null', 'Correct, and no special case is needed.'],
@@ -103,23 +103,23 @@ export const reverse = [
 ];
 
 export const reverseII = [
-  step('Reverse positions 2 through 4 (islands 2, 3, 4). Where must `before` stand when the flipping starts?',
+  step('Reverse positions 2 through 4 (nodes 2, 3, 4). Where must `before` stand when the flipping starts?',
     [row('Chain', ['D', 1, 2, 3, 4, 5, 'null'], {}, { ...J, tones: { 0: 'ghost', 2: 'hot', 3: 'hot', 4: 'hot', 6: 'ghost' } })], 0, [
-      ['On 1, the island just before position 2', 'Yes. Its rope is the seam into the section. After the flips you re-tie it to the section\'s new first island, 4.'],
-      ['On 2, the first island to flip', 'Then nobody stands where the section is entered. After the flips, 1 still points at 2, and you hold no reference to 1 to re-tie it.'],
-      ['Always on the dummy', 'Only when left = 1. In general, walk left − 1 ferries from the dummy.'],
+      ['On 1, the node just before position 2', 'Yes. Its rope is the seam into the section. After the flips you re-tie it to the section\'s new first node, 4.'],
+      ['On 2, the first node to flip', 'Then nobody stands where the section is entered. After the flips, 1 still points at 2, and you hold no reference to 1 to re-tie it.'],
+      ['Always on the dummy', 'Only when left = 1. In general, walk left − 1 hops from the dummy.'],
     ]),
   step('After flipping 2, 3, 4: prev = 4, cur = 5, first = 2. Which re-ties finish the surgery?',
     [row('before → (seam 1)', [1, 2, 'null'], { 0: 'BEFORE', 1: 'FIRST' }, J),
      row('reversed section', [4, 3, 2, 'null'], { 0: 'PREV' }, J),
      row('after the section', [5, 'null'], { 0: 'CUR' }, J)], 0, [
-      ['before.next = prev and first.next = cur', 'Both seams: 1 → 4 → 3 → 2 → 5. The section\'s old first island (2) is now its last and must point at 5.'],
-      ['before.next = prev only', 'You get 1 → 4 → 3 → 2 → null. Island 5 is dropped: nobody\'s rope leads to it.'],
+      ['before.next = prev and first.next = cur', 'Both seams: 1 → 4 → 3 → 2 → 5. The section\'s old first node (2) is now its last and must point at 5.'],
+      ['before.next = prev only', 'You get 1 → 4 → 3 → 2 → null. Node 5 is dropped: nobody\'s rope leads to it.'],
       ['before.next = cur and first.next = prev', 'That ties 1 straight to 5 (the section vanishes from the chain) and ties 2 to 4, making a loop 4 → 3 → 2 → 4.'],
     ]),
   step('Now left = 1 and right = 3 on 1 → 2 → 3 → 4 → 5. What do you return?', [], 0, [
-    ['dummy.next, which is island 3', 'before was the dummy, and seam 1 re-tied dummy.next to 3: 3 → 2 → 1 → 4 → 5.'],
-    ['head, which is island 1', 'Island 1 is now third in line. Returning it gives 1 → 4 → 5 and loses 3 and 2.'],
+    ['dummy.next, which is node 3', 'before was the dummy, and seam 1 re-tied dummy.next to 3: 3 → 2 → 1 → 4 → 5.'],
+    ['head, which is node 1', 'Node 1 is now third in line. Returning it gives 1 → 4 → 5 and loses 3 and 2.'],
   ]),
 ];
 
@@ -130,15 +130,15 @@ export const kGroup = [
       ['Reverse 4 → 5 anyway', 'That gives 3 → 2 → 1 → 5 → 4. The problem keeps a short tail in its original order.'],
       ['Report an error: the length is not a multiple of k', 'A short tail is normal input, not an error.'],
     ]),
-  step('Start again with k = 3. After reversing 1 → 2 → 3 into 3 → 2 → 1, which island becomes `before` for the next group?',
+  step('Start again with k = 3. After reversing 1 → 2 → 3 into 3 → 2 → 1, which node becomes `before` for the next group?',
     [row('After the first group', [3, 2, 1, 4, 5, 'null'], { 0: 'PREV', 2: 'FIRST', 3: 'CUR' }, { ...J, tones: { 5: 'ghost' } })], 0, [
-      ['Island 1: the old first, now the group\'s last', 'Yes. Its rope is the seam into the next group.'],
-      ['Island 3', '3 is now the group\'s first island. Standing there, the next seam re-tie would cut 2 and 1 out of the chain.'],
-      ['Island 4', '4 is the next group\'s first island. You need to stand before it to re-tie its seam.'],
+      ['Node 1: the old first, now the group\'s last', 'Yes. Its rope is the seam into the next group.'],
+      ['Node 3', '3 is now the group\'s first node. Standing there, the next seam re-tie would cut 2 and 1 out of the chain.'],
+      ['Node 4', '4 is the next group\'s first node. You need to stand before it to re-tie its seam.'],
     ]),
   step('k = 2 on 1 → 2 → 3 → 4 → 5. What is the final chain?', [], 0, [
     ['2 → 1 → 4 → 3 → 5', 'Groups (1, 2) and (3, 4) flip; 5 is a short tail and stays.'],
-    ['2 → 1 → 4 → 3 → null', 'Seam 2 ties each group\'s old first island to the node after the group. 3 must point at 5, or 5 is dropped.'],
+    ['2 → 1 → 4 → 3 → null', 'Seam 2 ties each group\'s old first node to the node after the group. 3 must point at 5, or 5 is dropped.'],
     ['5 → 4 → 3 → 2 → 1', 'That reverses the whole chain. k-groups flip each block of 2 separately.'],
   ]),
 ];
@@ -157,8 +157,8 @@ export const merge = [
       ['Return dummy.next now', 'The last 4 would be lost: tail (list1\'s 4) still points at null.'],
     ]),
   step('What do you return?', [], 0, [
-    ['dummy.next', 'The dummy\'s rope points at the first real island of the merged chain.'],
-    ['tail', 'tail is the LAST island of the merged chain.'],
+    ['dummy.next', 'The dummy\'s rope points at the first real node of the merged chain.'],
+    ['tail', 'tail is the LAST node of the merged chain.'],
     ['list1', 'list1 has walked to null. Even its original head is not always the smallest overall.'],
   ]),
 ];
@@ -172,7 +172,7 @@ export const reorder = [
     ]),
   step('You cut after 3 (slow.next = null). What must happen to 4 → 5 → 6 before weaving?',
     [row('First half', [1, 2, 3, 'null'], {}, J), row('Second half', [4, 5, 6, 'null'], {}, J)], 0, [
-      ['Reverse it to 6 → 5 → 4', 'Weaving takes from the front of each half, so the second half\'s front must be the original last island.'],
+      ['Reverse it to 6 → 5 → 4', 'Weaving takes from the front of each half, so the second half\'s front must be the original last node.'],
       ['Nothing: weave it as it is', 'You would get 1 → 4 → 2 → 5 → 3 → 6, a riffle shuffle, not first-last-second-second-last.'],
       ['Copy it into an array', 'That works at O(n) extra space. The point of this problem is O(1): middle + reverse + weave.'],
     ]),
@@ -193,7 +193,7 @@ export const copyRandom = [
     ]),
   step('Woven chain: every clone sits right after its original. A.random is C. Where must A\'.random point?',
     [row('Woven chain', ['A', "A'", 'B', "B'", 'C', "C'", 'null'], { 0: 'random → C' }, { ...J, tones: { 1: 'hot', 3: 'hot', 5: 'hot', 6: 'ghost' } })], 0, [
-      ['A.random.next, which is C\'', 'The clone of any island X sits right after X, so the clone of A.random is A.random.next.'],
+      ['A.random.next, which is C\'', 'The clone of any node X sits right after X, so the clone of A.random is A.random.next.'],
       ['A.random, which is C', 'C is an ORIGINAL. The copy would point into the old chain: a shallow copy that shares nodes.'],
       ['A\'.next.random', 'A\'.next is B, the next original. B\'s random has nothing to do with A.'],
     ]),
@@ -259,7 +259,7 @@ export const mixedReview = [
   ]),
   step('Remove the nth node from the end in one pass. Where do the two pointers start, and how far apart?', [], 0, [
     ['Both on a dummy; Lead takes n + 1 hops first, then both walk until Lead is null', 'Then Trail ends just before the target, and the dummy covers removing the head.'],
-    ['Both on head; Lead takes n hops first, then both walk until Lead is null', 'A gap of n puts Trail ON the target when Lead reaches null, and a rope is cut from the island before it. When n equals the length, there is no island before the head at all. The dummy and the extra hop solve both.'],
+    ['Both on head; Lead takes n hops first, then both walk until Lead is null', 'A gap of n puts Trail ON the target when Lead reaches null, and a rope is cut from the node before it. When n equals the length, there is no node before the head at all. The dummy and the extra hop solve both.'],
     ['Count the length first, then walk', 'Correct, but that is two passes. The gap does it in one.'],
   ]),
   step('Sort a chain in O(n log n) time. Which plan fits a linked list best?', [], 2, [

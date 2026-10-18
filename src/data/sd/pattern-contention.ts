@@ -135,12 +135,12 @@ export const payments = [
     ['SUCCEEDED — timeouts usually mean slow success', 'Hoping is not a state. You do not know.'],
     ['UNKNOWN — retry with the same provider idempotency key or query the provider, and let reconciliation settle anything still unknown', 'Right. A timeout means “no answer”, not “no”. Resolve it with idempotent retries and status queries, never with a fresh attempt.'],
   ]),
-  step('A ₹1,000 charge (₹900 to the organiser, ₹100 Kestrel fee) is refunded in full. How does the ledger record the refund?', [], 1, [
+  step('A ₹1,000 charge (₹900 to the organiser, ₹100 platform fee) is refunded in full. How does the ledger record the refund?', [], 1, [
     ['UPDATE the three original entries to zero', 'That erases history. Auditors, disputes and reconciliation all need to see the charge and the refund.'],
     ['Append a new balanced transaction with the opposite entries; the originals stay', 'Right. Append-only: every correction is a new transaction whose entries sum to zero. Balances are derived.'],
     ['Delete the original transaction', 'Deleting money movements is how ledgers stop matching the bank.'],
   ]),
-  step('Every payment adds an entry to the single “Kestrel fees” account, and you keep its running balance in one row. Peak is about 579 payments per second; a balance update holds the row lock about 2 ms. What happens?', [], 0, [
+  step('Every payment adds an entry to the single “platform fees” account, and you keep its running balance in one row. Peak is about 579 payments per second; a balance update holds the row lock about 2 ms. What happens?', [], 0, [
     ['The row caps at about 500 updates per second, below peak — split it into sub-accounts or derive that balance asynchronously', 'Right. One over 2 ms is 500/s. A house account touched by every payment is a hot row; sharding it into N sub-accounts or batching its balance fixes it.'],
     ['Nothing — 579 is a small number', 'Small for the cluster, large for one row: every update of that row is serialised.'],
     ['Deadlocks', 'Not inherently. The problem is queueing on one lock, not a cycle of locks.'],

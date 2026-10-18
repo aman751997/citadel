@@ -558,7 +558,8 @@ consumer.subscribe(["likes"])
 def apply_once(evt):
     with db.cursor() as cur:
         cur.execute(
-            "INSERT IGNORE INTO processed_events (consumer, event_id) VALUES (%s, %s)",
+            "INSERT INTO processed_events (consumer, event_id) VALUES (%s, %s) "
+            "ON DUPLICATE KEY UPDATE consumer = consumer",
             ("like-counter", evt["event_id"]),
         )
         if cur.rowcount == 0:             # seen before: duplicate
@@ -576,7 +577,7 @@ while True:
     consumer.commit(message=msg, asynchronous=False)   # only after the DB commit
 ```
 
-The marker and the effect commit together or not at all. If the process dies before `db.commit()`, neither happened and the redelivery does the work. If it dies after the commit but before `consumer.commit`, the redelivery finds the id and skips.
+Use `ON DUPLICATE KEY UPDATE consumer = consumer` rather than `INSERT IGNORE`: `IGNORE` also downgrades truncation and NOT NULL errors to warnings and stores a changed value. (If your driver sets the `CLIENT_FOUND_ROWS` flag, a no-op upsert reports 1 instead of 0, so check your driver or use a plain INSERT and catch 1062.) The marker and the effect commit together or not at all. If the process dies before `db.commit()`, neither happened and the redelivery does the work. If it dies after the commit but before `consumer.commit`, the redelivery finds the id and skips.
 
 <Figure caption="One event, delivered twice. The second delivery is a no-op because the primary key rejects the marker.">
   <Mermaid code={`sequenceDiagram
@@ -584,12 +585,12 @@ The marker and the effect commit together or not at all. If the process dies bef
     participant C as Consumer
     participant DB as MySQL
     K->>C: record evt-9
-    C->>DB: INSERT IGNORE processed_events evt-9
+    C->>DB: INSERT processed_events evt-9 (ON DUPLICATE KEY no-op)
     C->>DB: UPDATE photos likes + 1
     C->>DB: COMMIT
     Note over C: crash before offset commit
     K->>C: record evt-9 again after restart
-    C->>DB: INSERT IGNORE evt-9 (0 rows)
+    C->>DB: INSERT evt-9 (0 rows)
     C->>DB: ROLLBACK
     C->>K: commit offset (skip)`} />
 </Figure>
@@ -629,18 +630,18 @@ Yes, if it's enforced by a unique key inside the transaction. Both transactions 
     {
       kind: 'predict',
       q: 'Delivery order: evt-9 arrives, commits, then evt-9 arrives again. What do the two statements return on the second delivery?',
-      code: "INSERT IGNORE INTO processed_events (consumer, event_id) VALUES ('c', 'evt-9');\n-- affected rows?\nUPDATE photos SET likes = likes + 1 WHERE id = 5;  -- executed?",
+      code: "INSERT INTO processed_events (consumer, event_id) VALUES ('c', 'evt-9')\n  ON DUPLICATE KEY UPDATE consumer = consumer;\n-- affected rows?\nUPDATE photos SET likes = likes + 1 WHERE id = 5;  -- executed?",
       options: [
         '1 affected row; the UPDATE runs, so likes double-count',
         '0 affected rows; the code rolls back and skips the UPDATE',
         'An error is thrown for the duplicate key',
       ],
       answer: 1,
-      why: 'INSERT IGNORE swallows the duplicate-key error and reports 0 rows. The consumer checks rowcount and stops.',
+      why: 'The no-op upsert swallows the duplicate-key conflict and reports 0 rows. The consumer checks rowcount and stops.',
       explain: [
         'The primary key already holds (c, evt-9), so nothing is inserted.',
         'Correct: rowcount 0 means duplicate. Skip the effect, then ack so it is not redelivered again.',
-        'INSERT IGNORE downgrades the error to a warning. Plain INSERT would raise it, which also works if you catch it.',
+        'The no-op upsert reports 0 rows instead of raising 1062. Plain INSERT would raise it, which also works if you catch it. Avoid INSERT IGNORE here: it also turns data-truncation and NULL errors into silently stored bad values.',
       ],
     },
     {

@@ -801,7 +801,7 @@ def reconcile(tenant: str, reserved: int, actual: int):
     r.hincrbyfloat(f"tb:{{{tenant}}}", "tokens", reserved - actual)
 ```
 
-Production caveats: if the same Redis serves other keys, load-test the script. If a reconcile arrives after the key has expired, it recreates a key with only `tokens` set, so the script must tolerate a missing `ts`, as above. If the gateway crashes between reserve and reconcile, the reservation is never refunded. That leak is small and self-corrects as the bucket refills, but track it.
+Production caveats: if the same Redis serves other keys, load-test the script. If a reconcile arrives after the key has expired, it recreates a key with only `tokens` set and no TTL, so the script must tolerate a missing `ts`, as above. The bucket then restarts from that refunded amount instead of full, and the next reserve call sets the TTL again. If the gateway crashes between reserve and reconcile, the reservation is never refunded. That leak is small and self-corrects as the bucket refills, but track it.
 
 <TokenBucketSim capacity={10} refill={5} rate={3} burst={15} mode="bucket" />
 
@@ -915,7 +915,8 @@ CREATE TABLE usage_event (
 );
 
 -- Duplicate delivery of the same (request_id, attempt) is a no-op:
-INSERT IGNORE INTO usage_event (...) VALUES (...);
+INSERT INTO usage_event (...) VALUES (...)
+  ON DUPLICATE KEY UPDATE request_id = request_id;   -- not INSERT IGNORE: it also hides bad-data errors
 
 -- The first question finance asks:
 SELECT feature, model_version, SUM(cost_micro_usd) / 1e6 AS usd
@@ -955,7 +956,7 @@ MySQL works at small scale. At 20M events a day (about 10 GB a day, see below) a
     why: 'Design for duplicates. A unique key makes the ledger insert a no-op the second time, and counters driven from "newly inserted" events cannot drift.',
     explain: [
       'Duplicates are expected, but double-charging is not acceptable in a ledger teams are billed against.',
-      'Correct: INSERT IGNORE (or an upsert) on the key, and counting only rows that actually inserted.',
+      'Correct: a no-op upsert (ON DUPLICATE KEY UPDATE col = col) on the key, and counting only rows that actually inserted.',
       'End-to-end exactly-once across a consumer crash is hard to get and easy to overclaim. An idempotent write is simpler and more robust.',
     ],
   },

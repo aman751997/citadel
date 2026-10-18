@@ -313,7 +313,7 @@ def claim_one(db, worker_id):
         cur.execute(
             "SELECT id FROM jobs "
             "WHERE status IN ('queued','retrying') AND run_after <= NOW(3) "
-            "ORDER BY priority DESC, created_at LIMIT 1 "
+            "ORDER BY status, run_after LIMIT 1 "
             "FOR UPDATE SKIP LOCKED")          # skip rows other workers have locked
         row = cur.fetchone()
         if row is None:
@@ -328,7 +328,7 @@ def claim_one(db, worker_id):
     return row[0], attempt
 ```
 
-`SKIP LOCKED` is the key: without it, ten workers all block on the same first row. With it, each worker gets a different row. (Check the index and `ORDER BY` against `EXPLAIN` on your data; a mixed-direction sort can defeat the index.)
+`SKIP LOCKED` is the key: without it, ten workers all block on the same first row. With it, each worker gets a different row. The `ORDER BY` must follow the index (`ix_claim` is `status, run_after, priority`). If MySQL has to sort (`Using filesort` in `EXPLAIN`, for example with `ORDER BY priority DESC, created_at`), a locking read locks every matching row before it picks one, so the first worker holds them all and the others get nothing back. Check with `EXPLAIN`; for priorities, claim from one queue or index per priority.
 
 **Why not Kafka for jobs?** A log hands each partition to one consumer and tracks one offset per partition. A ten-minute job at the head of a partition blocks everything behind it, and you can't acknowledge job 5,013 while 5,012 is still running. Logs fit event streams. **Per-message-ack queues fit independent jobs.** (Newer Kafka versions are adding queue-style consumption; check its current status before relying on it.) The difference is the subject of <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a>, Chapter 2.
 
@@ -380,7 +380,7 @@ The **idempotency key** on `POST /exports`. The client generates a key per logic
     code: `-- both workers run:
 SELECT id FROM jobs
 WHERE status = 'queued'
-ORDER BY created_at LIMIT 1
+ORDER BY run_after LIMIT 1
 FOR UPDATE SKIP LOCKED;`,
     options: [
       'Both get the same row and one fails on the UPDATE',
@@ -904,7 +904,8 @@ CREATE TABLE effects (
 ```python
 def send_once(db, job_id, send):
     with db.cursor() as cur:
-        cur.execute("INSERT IGNORE INTO effects (job_id, effect) VALUES (%s, 'email')", (job_id,))
+        cur.execute("INSERT INTO effects (job_id, effect) VALUES (%s, 'email') "
+                    "ON DUPLICATE KEY UPDATE job_id = job_id", (job_id,))
         first_time = cur.rowcount == 1
     db.commit()
     if first_time:
@@ -939,7 +940,8 @@ That version records first, then sends, which can lose an email. The order is a 
   {
     kind: 'predict',
     q: 'The worker runs this twice for job 81 because the job was redelivered. What does the second run do?',
-    code: `INSERT IGNORE INTO effects (job_id, effect) VALUES (81, 'email');
+    code: `INSERT INTO effects (job_id, effect) VALUES (81, 'email')
+  ON DUPLICATE KEY UPDATE job_id = job_id;
 -- rowcount is checked; the email is sent only if rowcount == 1`,
     options: [
       'Inserts a second row and sends a second email',
@@ -950,8 +952,8 @@ That version records first, then sends, which can lose an email. The order is a 
     why: 'The primary key (job_id, effect) makes the second insert a no-op.',
     explain: [
       'The primary key forbids a second row.',
-      'Correct: INSERT IGNORE swallows the duplicate and rowcount is 0, so the guard skips the send.',
-      'INSERT IGNORE turns the duplicate error into a no-op, which is the point.'
+      'Correct: the no-op upsert swallows the duplicate and rowcount is 0, so the guard skips the send.',
+      'The no-op upsert turns the duplicate into rowcount 0, which is the point. (INSERT IGNORE would also hide truncation and NOT NULL errors, so it is the riskier form.)'
     ]
   },
   {
@@ -1664,8 +1666,9 @@ def tick(db):
                     "FOR UPDATE SKIP LOCKED")               # two nodes get different rows
         for sid, tenant, rrule, tz, due in cur.fetchall():
             cur.execute(
-                "INSERT IGNORE INTO jobs (tenant_id, type, idempotency_key, execution_key) "
-                "VALUES (%s, 'weekly_summary', %s, %s)",
+                "INSERT INTO jobs (tenant_id, type, idempotency_key, execution_key) "
+                "VALUES (%s, 'weekly_summary', %s, %s) "
+                "ON DUPLICATE KEY UPDATE id = id",
                 (tenant, f"sched-{sid}-{due:%Y%m%d%H%M}", f"{sid}:{due:%Y-%m-%dT%H:%M}"))
             cur.execute("UPDATE schedules SET next_run_at=%s WHERE id=%s",
                         (next_occurrence(rrule, tz, after=due), sid))

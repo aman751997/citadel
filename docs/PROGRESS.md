@@ -23,18 +23,18 @@ _Last updated: 2026-10-19 01:00 (regenerated from git; see "How to refresh" at t
 | 2. Lesson rewrites (SD, DSA, LLD, Mastery) | ✅ done |
 | 3. Spaced revision (`/review/`) | ✅ done (`docs/REVISION.md`) |
 | 4. Open all lessons (no locking) | ✅ done |
-| 5. Lesson checkboxes + remove lock icon | ⏳ agent finishing; verify after it reports |
-| 6. QA: build, links, layout, tests, Java, diagrams | ✅ passed before step 5; **re-run after step 5** |
+| 5. Lesson checkboxes + remove lock icon | ✅ done (`b787cf0`); ticked/unticked and persisted in a browser on SD, DSA, Mastery |
+| 6. QA: build, links, layout, tests, Java, diagrams | ✅ re-run after step 5: build 114 pages, 0 broken links, layout 0 issues, 688 tests pass (Java/diagram checks last run before step 5) |
 | 7. QA: SQL/Redis claims on live containers | ✅ two passes (`docs/qa/sql-redis-verification.md`) |
 | 8. Trim over-length lessons | ⏳ not started |
 | 9. Browser spot-checks (mobile, a11y, no-JS) | ⏳ partly done by agents; not exhaustive |
 | 10. Final report | ⏳ after 5, 8, 9 |
 
-## Verification results (last full run, before the checkbox change)
+## Verification results
 
 - Build: 114 pages, **0 broken internal links**
 - Layout check: 61 pages × 2 widths, **0 issues**
-- TypeScript tests: **685 pass, 0 fail**
+- TypeScript tests: **688 pass, 0 fail** (re-run after the checkbox change)
 - Java checkers: **34 lessons PASS**
 - Mermaid: **522 diagrams on 68 pages, 0 failures** (3 pre-existing broken ones fixed)
 

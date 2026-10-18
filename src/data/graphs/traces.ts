@@ -8,18 +8,18 @@ export const islands = [
   step('The scan reaches (0,0): land, and no flood has touched it. What now?',
     lc2.map((r, i) => row(`row ${i}`, r, i === 0 ? { 0: 'SCAN' } : {}, { tones: i === 0 ? { 0: 'hot' } : {} })), 0, [
       ['Count one island, then flood and mark every land square reachable from (0,0)', 'Yes. The flood claims (0,0), (0,1), (1,0) and (1,1) before the scan moves on, so none of them can be counted again.'],
-      ['Count one island and move on to (0,1)', '(0,1) is land and still unmarked, so the scan would count it as a second island. Done for every land square, this chart would report 7 islands instead of 3.'],
+      ['Count one island and move on to (0,1)', '(0,1) is land and still unmarked, so the scan would count it as a second island. Done for every land square, this grid would report 7 islands instead of 3.'],
       ['Mark (0,0) only, and count islands at the end by counting marked squares', 'That counts land squares (7), not islands. An island is a whole connected group; the flood is what groups them.'],
     ]),
   step('The first island has been sunk. The scan reaches (1,1), which now reads 0. Why is it safe to skip it?',
     [row('row 0', [0, 0, 0, 0, 0], {}, { tones: { 0: 'done', 1: 'done' } }),
       row('row 1', [0, 0, 0, 0, 0], { 1: 'SCAN' }, { tones: { 0: 'done', 1: 'hot' } }),
       row('row 2', lc2[2]), row('row 3', lc2[3])], 1, [
-      ['It was water from the start', 'It was land — look at the original chart. It reads 0 because the first flood sank it.'],
+      ['It was water from the start', 'It was land — look at the original grid. It reads 0 because the first flood sank it.'],
       ['The flood from (0,0) sank it, so it belongs to an island already counted', 'Yes. A sunk square is a flagged square: its island was counted once, when the scan first touched it at (0,0).'],
       ['All of its neighbours are water', '(1,1) borders (0,1) and (1,0), which were land. Skipping is safe because of the flag, not because of the neighbours.'],
     ]),
-  step('(2,2) and (3,3) are land and touch only at a corner. How many islands does the whole chart have?',
+  step('(2,2) and (3,3) are land and touch only at a corner. How many islands does the whole grid have?',
     lc2.map((r, i) => row(`row ${i}`, r, i === 2 ? { 2: 'A' } : i === 3 ? { 3: 'B' } : {}, { tones: i === 2 ? { 2: 'hot' } : i === 3 ? { 3: 'hot' } : {} })), 1, [
       ['2: (2,2) and (3,3) touch, so they are one island', 'Here only up, down, left and right join squares. A corner touch is not an edge in this graph.'],
       ['3: the first island, (2,2) alone, and (3,3) with (3,4)', 'Yes. Three floods, three islands. With eight directions the answer would be 2.'],
@@ -68,9 +68,9 @@ export const shortestPath = [
 ];
 
 export const rotting = [
-  step('Two rotten oranges sit at opposite corners of a full 3 × 3 crate. After how many minutes is every orange rotten?',
+  step('Two rotten oranges sit at opposite corners of a full 3 × 3 grid. After how many minutes is every orange rotten?',
     [row('row 0', [2, 1, 1], { 0: 'ROTTEN' }, { tones: { 0: 'hot' } }), row('row 1', [1, 1, 1]), row('row 2', [1, 1, 2], { 2: 'ROTTEN' }, { tones: { 2: 'hot' } })], 1, [
-      ['3: from (0,0), the farthest fresh oranges, (2,1) and (1,2), are 3 steps away', 'That runs the blight from one corner only. (2,2) spoils its own neighbours in minute 1 too, so those two rot at minute 1.'],
+      ['3: from (0,0), the farthest fresh oranges, (2,1) and (1,2), are 3 steps away', 'That runs the spread from one corner only. (2,2) spoils its own neighbours in minute 1 too, so those two rot at minute 1.'],
       ['2: both rotten oranges start in ring 0, and the middle and the other two corners rot at minute 2', 'Yes. Ring 0 is every source. Each orange rots at its distance to the NEAREST rotten one, and the largest of those is 2.'],
       ['4: the two rotten corners are 4 steps apart', 'The distance between the sources doesn’t matter. Each orange only cares about its nearest source.'],
     ]),
@@ -85,22 +85,22 @@ export const rotting = [
     [row('row 0', [2, 1, 1], {}, { tones: { 0: 'hot' } }), row('row 1', [0, 1, 1], {}, { tones: { 0: 'ghost' } }), row('row 2', [1, 0, 1], { 0: 'FRESH' }, { tones: { 1: 'ghost' } })], 2, [
       ['4: the last minute in which something rotted', 'The question is when EVERY orange has rotted. (2,0) never will.'],
       ['0: it was never reached, so it takes no time', 'An unreachable orange is the opposite of instant: it never rots.'],
-      ['−1: some orange can never rot', 'Yes. Its neighbours (1,0) and (2,1) are empty, so the blight can’t reach it. fresh > 0 at loop exit means −1.'],
+      ['−1: some orange can never rot', 'Yes. Its neighbours (1,0) and (2,1) are empty, so the rot can’t reach it. fresh > 0 at loop exit means −1.'],
     ]),
 ];
 
 const board = [['X', 'X', 'X', 'X'], ['X', 'O', 'O', 'X'], ['X', 'X', 'O', 'X'], ['X', 'O', 'X', 'X']];
 
 export const surrounded = [
-  step('The tide is coming. Which squares should the search start from?',
+  step('Which squares should the search start from?',
     board.map((r, i) => row(`row ${i}`, r)), 0, [
       ['Every O on the border — all four sides. Whatever they reach is safe; every other O is captured', 'Yes. “Connected to the border” is symmetric, so one flood from the border answers the question for every square at once.'],
-      ['Each interior O, flipping squares to X as you explore', 'You only learn whether a region escapes after exploring all of it. Flipping as you go captures half a region before finding that its far end touches the shore.'],
+      ['Each interior O, flipping squares to X as you explore', 'You only learn whether a region escapes after exploring all of it. Flipping as you go captures half a region before finding that its far end touches the border.'],
       ['Only the four corners', 'Corners are a tiny part of the border. Here (3,1) is a border O that no corner touches.'],
     ]),
   step('(3,1) is a border O, so it is safe. Its only neighbour (2,1) is X. Are (1,1), (1,2) and (2,2) safe?',
     board.map((r, i) => row(`row ${i}`, r, i === 3 ? { 1: 'SAFE' } : {}, { tones: i === 3 ? { 1: 'done' } : {} })), 1, [
-      ['Yes: (2,2) is next to the right-hand column', 'Being next to the border column isn’t being on it. (2,3) is X, so nothing connects (2,2) to the shore.'],
+      ['Yes: (2,2) is next to the right-hand column', 'Being next to the border column isn’t being on it. (2,3) is X, so nothing connects (2,2) to the border.'],
       ['No: no path of Os joins them to a border O, so all three are captured', 'Yes. The flood from (3,1) stops at X. The final pass turns these three into X and (3,1) back into O.'],
     ]),
   step('After the flood, the board holds X, O and S (safe). What does the final pass do?', [], 2, [
@@ -119,7 +119,7 @@ export const pacific = [
       ['Neighbours lower than 3, like (0,1) at height 2: water flows downhill', 'That is the forward direction. Water from (0,1) cannot climb to (0,2), so stepping there from the ocean proves nothing.'],
       ['Only neighbours strictly higher than 3', 'Water also runs across level ground. Strict > drops plateaus: on a 3 × 3 plateau it finds 2 squares instead of 9.'],
     ]),
-  step('(0,1), height 2, is on the Pacific shore. Does its rain also reach the Atlantic?',
+  step('(0,1), height 2, is on the Pacific edge. Does its rain also reach the Atlantic?',
     heights.map((r, i) => row(`row ${i}`, r, i === 0 ? { 1: '?' } : {}, { tones: i === 0 ? { 1: 'hot' } : {} })), 1, [
       ['Yes, through (0,2) at height 3 and down the right edge', 'Water doesn’t flow uphill: 2 → 3 is not allowed.'],
       ['No: its only lower-or-level neighbour is (0,0), height 1, which drains only into the Pacific', 'Yes. The Atlantic flood never reaches (0,1) or (0,0).'],
@@ -132,20 +132,20 @@ export const pacific = [
 ];
 
 export const ladder = [
-  step('The register holds N = 5,000 words of length 5. You poll a word. How do you find its neighbours?', [], 1, [
-    ['Compare it with every word in the register', 'Correct but slow: 5,000 comparisons per polled word — about 125 million letter checks over the whole search.'],
-    ['Change one position at a time to each of the 25 other letters, and keep candidates that are in the register', 'Yes. 5 × 25 = 125 candidates per word, each checked with one hash lookup, however big the register is.'],
+  step('The dictionary holds N = 5,000 words of length 5. You poll a word. How do you find its neighbours?', [], 1, [
+    ['Compare it with every word in the dictionary', 'Correct but slow: 5,000 comparisons per polled word — about 125 million letter checks over the whole search.'],
+    ['Change one position at a time to each of the 25 other letters, and keep candidates that are in the dictionary', 'Yes. 5 × 25 = 125 candidates per word, each checked with one hash lookup, however big the register is.'],
     ['Run a DFS from beginWord, trying every ladder', 'DFS finds a ladder, not the shortest, and trying every ladder is exponential.'],
   ]),
-  step('You poll dog (ring 4) and generate cog, which is in the register. What do you return?',
+  step('You poll dog (ring 4) and generate cog, which is in the dictionary. What do you return?',
     [row('ring 1', ['hit']), row('ring 2', ['hot']), row('ring 3', ['dot', 'lot']), row('ring 4', ['dog', 'log'], { 0: 'POLLED' }, { tones: { 0: 'hot' } })], 1, [
       ['4: the ladder makes four changes', 'Four crossings — but the problem counts words, including hit and cog.'],
       ['5: cog is in ring 5, and rings count words', 'Yes. hit → hot → dot → dog → cog: 5 words.'],
       ['Keep going in case log gives a shorter ladder', 'log is in the same ring as dog; anything it generates is also ring 5. The first discovery is already the shortest.'],
     ]),
-  step('Same start and end, but cog is NOT in the register. Your code returns 5. What did it forget?', [], 0, [
-    ['endWord must be in the register: check membership before accepting a candidate', 'Yes. Generating cog by changing a letter doesn’t make it a real island. The answer is 0.'],
-    ['To flag words on dequeue instead of on enqueue', 'Flagging late adds duplicates; it doesn’t invent words. The bug is accepting a word that isn’t in the register.'],
+  step('Same start and end, but cog is NOT in the dictionary. Your code returns 5. What did it forget?', [], 0, [
+    ['endWord must be in the dictionary: check membership before accepting a candidate', 'Yes. Generating cog by changing a letter doesn’t make it a real word. The answer is 0.'],
+    ['To flag words on dequeue instead of on enqueue', 'Flagging late adds duplicates; it doesn’t invent words. The bug is accepting a word that isn’t in the dictionary.'],
     ['To count transformations instead of words', 'That would turn 5 into 4, not 0. The correct answer is 0 because cog isn’t reachable at all.'],
   ]),
 ];
@@ -153,7 +153,7 @@ export const ladder = [
 export const clone = [
   step('Copying the square 1–2–3–4–1, you have just created 1′. Next you will recurse into its neighbour 2. When does 1′ go into the map?',
     [row('original', [1, 2, 3, 4], { 0: 'COPYING' }, { tones: { 0: 'hot' }, join: '—' }), row('copies', ['1′'], {}, { tones: { 0: 'done' } })], 0, [
-      ['Now, before recursing: 2 will look for 1 and must find 1′', 'Yes. Register first. When the walk comes back to 1, the map returns 1′ and the cycle closes.'],
+      ['Now, before recursing: 2 will look for 1 and must find 1′', 'Yes. Register the copy first. When the walk comes back to 1, the map returns 1′ and the cycle closes.'],
       ['After all of 1’s neighbours are copied', 'Then 2 finds 1 missing and copies it again, which copies 2 again… on any cycle — even a single edge 1 — 2 — that is a StackOverflowError.'],
       ['Never: the copy is returned, so the map isn’t needed', 'Without the map, every time the walk meets 1 it makes a new copy — and on a cycle the walk never ends.'],
     ]),

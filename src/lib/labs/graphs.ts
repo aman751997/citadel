@@ -1,5 +1,5 @@
 // Graphs playground: count islands by scanning and sinking whole islands; run a BFS by hand, ring by
-// ring, where flagging late is caught; and spread a blight from every rotten orange at once, minute by minute.
+// ring, where flagging late is caught; and spread rot from every rotten orange at once, minute by minute.
 import { makeLab, type LabBase, type LabRow } from '../lab.ts';
 
 type Cell = [number, number];
@@ -122,7 +122,7 @@ function islandsApply(s: GraphState, action: string) {
 }
 function islandsView(s: GraphState): LabRow[] {
   const cur = scanDone(s) ? null : scanCell(s);
-  if (!rowsOf(s)) return [{ name: 'Chart', cells: [], empty: 'No squares' }];
+  if (!rowsOf(s)) return [{ name: 'Grid', cells: [], empty: 'No squares' }];
   return s.grid.map((row, r) => ({
     name: `row ${r}`,
     cells: row.map((v, c) => {
@@ -144,7 +144,7 @@ function islandsDescribe(s: GraphState) {
 const goalOf = (s: GraphState): Cell => [rowsOf(s) - 1, colsOf(s) - 1];
 const isGoal = (s: GraphState, cell: Cell | null) => !!cell && cell[0] === rowsOf(s) - 1 && cell[1] === colsOf(s) - 1;
 const neighbour = (s: GraphState): Cell | null => (s.cur && s.dir < 4 ? [s.cur[0] + DIRS[s.dir][0], s.cur[1] + DIRS[s.dir][1]] : null);
-// Skip neighbours that are off the chart; when none remain, the current square is finished.
+// Skip neighbours that are off the grid; when none remain, the current square is finished.
 function advance(s: GraphState) {
   while (s.cur && s.dir < 4) {
     const [a, b] = neighbour(s)!;
@@ -174,11 +174,11 @@ function bfsReject(s: GraphState, action: string) {
   if (action === 'finish') return `The goal hasn’t been polled yet, and ${s.queue.length} square(s) wait in the queue besides ${at(s.cur)}.`;
   if (action === 'skip') return `${at(n)} is open and unflagged. Skip it, and it can only be found later from a farther ring — its distance comes out too big, or never, if this is its only way in.`;
   // enqueue or late
-  if (s.grid[a][b] === 1) return `${at(n)} is rock. Boats don’t land on rock.`;
+  if (s.grid[a][b] === 1) return `${at(n)} is rock. Rock squares are never entered.`;
   if (!valid) return `${at(n)} already has a flag (ring ${s.dist[a][b]}). Enqueueing it again would put it in the queue twice.`;
   // action === 'late' on a valid neighbour
   const rival = s.queue.find(([qr, qc]) => Math.abs(qr - a) + Math.abs(qc - b) === 1);
-  if (rival) return `If ${at(n)} isn’t flagged now, ${at(rival)} — already in the queue and also next to it — will enqueue it a second time when it is polled. Flag when the boat is sent.`;
+  if (rival) return `If ${at(n)} isn’t flagged now, ${at(rival)} — already in the queue and also next to it — will enqueue it a second time when it is polled. Flag when you enqueue.`;
   return `Nothing else in the queue borders ${at(n)} yet, so you would get away with it this time — but on a 10 × 10 open grid, flagging on poll queues 181 squares instead of 100. Flag it now.`;
 }
 function bfsApply(s: GraphState, action: string) {
@@ -195,7 +195,7 @@ function bfsApply(s: GraphState, action: string) {
     if (isGoal(s, cell)) { s.message = `Polled ${at(cell)}: the goal, in ring ${s.dist[cell[0]][cell[1]]}. Its distance is final.`; return; }
     s.message = `Polled ${at(cell)}, ring ${s.dist[cell[0]][cell[1]]}. Decide its neighbours one by one.`;
     advance(s);
-    if (!s.cur) s.message += ' It has no neighbours on the chart.';
+    if (!s.cur) s.message += ' It has no neighbours on the grid.';
     return;
   }
   const n = neighbour(s)!, [a, b] = n, from = s.cur!;
@@ -243,7 +243,7 @@ const freshNeighbours = (s: GraphState, ring: Cell[]) => {
   }
   return out;
 };
-// Minute each fresh orange rots when the blight starts from `starts` only (−1 = never).
+// Minute each fresh orange rots when the rot starts from `starts` only (−1 = never).
 function rotTimes(s: GraphState, starts: Cell[]) {
   const t = s.grid.map(row => row.map(() => -1));
   const q: Cell[] = [...starts];
@@ -274,7 +274,7 @@ function rotReject(s: GraphState, action: string) {
         if (one[r][c] === -1) { never ??= [r, c]; continue; }
         if (one[r][c] - all[r][c] > gap) { gap = one[r][c] - all[r][c]; worst = [r, c]; }
       }
-      if (never) return `Starting only from ${at(src[0])} ignores ${others}. Then ${at(never)} would never rot, though the blight really reaches it at minute ${all[never[0]][never[1]]}.`;
+      if (never) return `Starting only from ${at(src[0])} ignores ${others}. Then ${at(never)} would never rot, though the rot really reaches it at minute ${all[never[0]][never[1]]}.`;
       if (worst) return `Starting only from ${at(src[0])} ignores ${others}. Then ${at(worst)} would rot at minute ${one[worst[0]][worst[1]]} instead of minute ${all[worst[0]][worst[1]]}.`;
       return `The rotten orange(s) at ${others} spoil their neighbours in minute 1 too. Queue every source in ring 0.`;
     }
@@ -294,7 +294,7 @@ function rotApply(s: GraphState, action: string) {
     s.seeded = true;
     s.frontier = sources(s);
     for (const [r, c] of s.frontier) s.rotAt[r][c] = 0;
-    s.message = s.frontier.length ? `Ring 0: ${list(s.frontier)}. ${s.fresh} fresh orange(s) to go.` : `No rotten orange anywhere: nothing can start the blight. ${s.fresh} fresh orange(s).`;
+    s.message = s.frontier.length ? `Ring 0: ${list(s.frontier)}. ${s.fresh} fresh orange(s) to go.` : `No rotten orange anywhere: nothing can start the rot. ${s.fresh} fresh orange(s).`;
     return;
   }
   if (action === 'spread') {
@@ -362,7 +362,7 @@ export const lab = makeLab<GraphState>({
     describe: bfsDescribe,
   },
   rot: {
-    name: 'The blight: every source at once',
+    name: 'Rotting oranges: every source at once',
     cases: rotCases.length,
     actions: [
       { action: 'seed', label: 'Queue EVERY rotten orange at minute 0' },

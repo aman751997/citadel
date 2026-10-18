@@ -104,7 +104,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> & { strateg
       const answer = regions(g, x => x === 1).length;
       return {
         topic: 'Count connected groups', section: 'number-of-islands', strategy: 'flood',
-        prompt: `A chart has rows ${showGrid(g)}. 1 is land and 0 is water; land squares that share a side belong to the same group (corners don’t count). How many separate groups of land are there?`,
+        prompt: `A grid has rows ${showGrid(g)}. 1 is land and 0 is water; land squares that share a side belong to the same group (corners don’t count). How many separate groups of land are there?`,
         question: 'Enter the number of groups.', answer,
         hints: ['Scanning finds a group the first time it touches one of its squares. What must happen to the rest of that group then?', 'Claim the whole group at once, marking every square of it, so the scan skips them later.', 'Count one each time the scan meets land that hasn’t been claimed.'],
         rubric: ['The answer is the number of times the scan meets unclaimed land.', 'Each square is marked when it is first reached, so no group is counted twice.', 'O(R·C) time; the recursion or explicit stack can reach O(R·C).'],
@@ -116,7 +116,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> & { strateg
       const answer = Math.max(0, ...regions(g, x => x === 1));
       return {
         topic: 'Measure the largest group', section: 'max-area', strategy: 'flood',
-        prompt: `A chart has rows ${showGrid(g)}. 1 is land and 0 is water; land squares sharing a side belong together. How many squares does the largest group of land contain? (0 if there is no land.)`,
+        prompt: `A grid has rows ${showGrid(g)}. 1 is land and 0 is water; land squares sharing a side belong together. How many squares does the largest group of land contain? (0 if there is no land.)`,
         question: 'Enter the size.', answer,
         hints: ['Claiming a group touches every one of its squares. Could it count them as it goes?', 'Mark a square when you first add it to your to-do pile, and count it when you take it off.', 'Keep the best count over all groups.'],
         rubric: ['Each group is claimed once and its squares counted once.', 'Marking when a square is added (not when it is taken off) prevents double counting.', 'An explicit stack avoids running out of call stack on huge grids.'],
@@ -146,7 +146,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> & { strateg
       for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) if (g[r][c] === 1) answer = d[r][c] === -1 || answer === -1 ? -1 : Math.max(answer, d[r][c]);
       return {
         topic: 'Spread from many places at once', section: 'rotting-oranges', strategy: 'sources',
-        prompt: `A crate has rows ${showGrid(g)}. 0 is empty, 1 is a fresh orange, 2 is a rotten one. Every minute, each rotten orange spoils every fresh orange directly above, below, left or right of it. After how many minutes is no fresh orange left? Answer −1 if some orange can never spoil.`,
+        prompt: `A grid has rows ${showGrid(g)}. 0 is empty, 1 is a fresh orange, 2 is a rotten one. Every minute, each rotten orange spoils every fresh orange directly above, below, left or right of it. After how many minutes is no fresh orange left? Answer −1 if some orange can never spoil.`,
         question: 'Enter the minutes (or −1).', answer,
         hints: ['Every rotten orange spreads in the same minute. What should minute 0 contain?', 'Start with all rotten oranges together, then advance one minute at a time.', 'Stop as soon as nothing fresh is left; if spreading stops first, the answer is −1.'],
         rubric: ['All sources start together, so each orange spoils at its distance to the nearest source.', 'No extra minute is counted after the last orange spoils.', 'Fresh oranges left at the end mean −1; O(R·C).'],

@@ -3,7 +3,7 @@ import java.util.*;
 // Runs every Java solution shown in graphs.mdx against independent oracles on hand-picked edge cases plus
 // thousands of random small inputs. Oracles are deliberately different algorithms from the lesson's:
 // union-find for components and areas, repeated relaxation (Bellman-Ford style, no queue) for distances,
-// minute-by-minute simulation for the blight, forward downhill search per cell for Pacific Atlantic,
+// minute-by-minute simulation for the rot, forward downhill search per cell for Pacific Atlantic,
 // pairwise Manhattan distance for 01 Matrix and Shortest Bridge, and exhaustive 2-colouring for bipartite.
 // It also proves each "catch the bug" version named in the lesson fails on the input the lesson names,
 // and re-counts the queue numbers the lesson quotes (100 / 181 / 184,755).
@@ -96,7 +96,7 @@ public class Check {
         return d[n - 1][n - 1] >= INF ? -1 : d[n - 1][n - 1];
     }
 
-    // ---------- simulation oracle for the blight ----------
+    // ---------- simulation oracle for the rot ----------
     static int simulateRot(int[][] g0) {
         int[][] g = copy(g0);
         int minutes = 0;

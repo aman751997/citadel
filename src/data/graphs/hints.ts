@@ -16,7 +16,7 @@ export const hints: Record<string, [string, string, string]> = {
     'Poll each square of the ring; if it is the goal, return length. Otherwise flag and enqueue every open, unflagged square among its 8 neighbours. After the ring, length++. An empty queue means −1.',
   ],
   rotting: [
-    'The blight spreads from every rotten orange at once. What if all of them were in the first ring?',
+    'The rot spreads from every rotten orange at the same time. What if all of them were in the first ring?',
     'Scan once: enqueue every rotten orange and count the fresh ones. Then run rings, one per minute, rotting (= flagging) each fresh neighbour and decrementing the count.',
     'Loop while fresh > 0 AND the queue is not empty; count a minute after each ring. Return the minutes if fresh reached 0, otherwise −1.',
   ],
@@ -27,11 +27,11 @@ export const hints: Record<string, [string, string, string]> = {
   ],
   pacific: [
     'Searching from every square towards the oceans repeats work. Which way could you walk instead?',
-    'Start one flood from all Pacific shore squares (top row, left column) and one from all Atlantic shore squares (bottom row, right column), each with its own boolean grid.',
+    'Start one flood from all Pacific edge squares (top row, left column) and one from all Atlantic edge squares (bottom row, right column), each with its own boolean grid.',
     'From a square, step to a neighbour whose height is ≥ the current height — you walk the water’s path backwards. Answer: every square marked in both grids. Use an explicit stack so big plateaus can’t overflow the call stack.',
   ],
   ladder: [
-    'The words are islands and one-letter changes are ferries. The question asks for the fewest words, all moves costing the same.',
+    'Each word is a node and each one-letter change is an edge. The question asks for the fewest words, all moves costing the same.',
     'BFS from beginWord with a set of unvisited dictionary words; return 0 at once if endWord is not in the dictionary. Removing a word from the set is the flag.',
     'For each polled word, try every position with each other letter. If the candidate can be removed from the set: return words + 1 if it is endWord, else enqueue it. After each ring, words++.',
   ],

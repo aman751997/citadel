@@ -150,7 +150,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const answer = routes(r, c);
       return {
         topic: 'Count routes on a grid', section: 'unique-paths', strategy: 'grid',
-        prompt: `A courier starts in the top-left square of a grid of ${r} rows and ${c} columns and may only step right or down, one square at a time. How many different routes end in the bottom-right square?`,
+        prompt: `A robot starts in the top-left square of a grid of ${r} rows and ${c} columns and may only step right or down, one square at a time. How many different routes end in the bottom-right square?`,
         question: 'Enter the number of routes.', answer,
         hints: ['Stand on the goal. Where could the very last step have come from?', 'Every route into a square arrives from above or from the left, never both. The top row and the left column each have one route.', 'Fill row by row: each square = the square above + the square to the left.'],
         rubric: ['Each square means “routes from the start to here”.', 'The two ways in are disjoint, so their counts add.', 'O(rows × cols) time; one row of memory if you sweep left to right.'],
@@ -164,11 +164,11 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const answer = lcs(a, b);
       return {
         topic: 'Agreement between two sequences', section: 'lcs', strategy: 'align',
-        prompt: `Two surveyors list the landmarks they passed along the same coast, in order: "${a}" and "${b}". What is the length of the longest run of landmarks that appears in both lists in the same order, not necessarily side by side?`,
+        prompt: `Two strings: "${a}" and "${b}". What is the length of the longest run of letters that appears in both strings in the same order, not necessarily side by side?`,
         question: 'Enter the length.', answer,
-        hints: ['Look only at the last landmark of each list.', 'If they are the same, both can end the shared run. If not, one of them is not in it.', 'A square per pair of prefixes: match → diagonal + 1; otherwise the better of dropping either last landmark.'],
-        rubric: ['dp[i][j] is defined in words over the first i and first j landmarks, with an empty-prefix row and column of 0.', 'A match takes the diagonal + 1, never max(up, left) + 1.', 'O(n × m) time; the answer is the bottom-right square.'],
-        explanation: `The longest shared run has ${answer} landmark(s).`,
+        hints: ['Look only at the last letter of each string.', 'If they are the same, both can end the shared run. If not, one of them is not in it.', 'A square per pair of prefixes: match → diagonal + 1; otherwise the better of dropping either last landmark.'],
+        rubric: ['dp[i][j] is defined in words over the first i and first j letters, with an empty-prefix row and column of 0.', 'A match takes the diagonal + 1, never max(up, left) + 1.', 'O(n × m) time; the answer is the bottom-right square.'],
+        explanation: `The longest shared run has ${answer} letter(s).`,
       };
     }
     case 'edit': {
@@ -178,7 +178,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const answer = edit(a, b);
       return {
         topic: 'Fewest edits between two words', section: 'edit-distance', strategy: 'align',
-        prompt: `An engraver may insert one letter, delete one letter, or replace one letter with another, one at a time. What is the fewest number of such moves that turns "${a}" into "${b}"?`,
+        prompt: `You may insert one letter, delete one letter, or replace one letter with another, one at a time. What is the fewest number of such moves that turns "${a}" into "${b}"?`,
         question: 'Enter the number of moves.', answer,
         hints: ['Look at the last letters. If they agree, they cost nothing.', 'If not, the last move was a replace, a delete or an insert. Each leaves you at a smaller pair of prefixes.', 'Base row and column: turning i letters into nothing costs i; nothing into j letters costs j. Then 1 + min(diagonal, up, left) on a mismatch.'],
         rubric: ['The empty-prefix row and column are 0, 1, 2, …, not zeros.', 'Replace = diagonal, delete = up, insert = left, each + 1; a match copies the diagonal free.', 'O(n × m) time; two rows of memory are enough.'],
@@ -193,11 +193,11 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const answer = total % 2 === 0 && subsetCount(a, total / 2) > 0;
       return {
         topic: 'Split into two equal groups', section: 'partition', strategy: 'knapsack',
-        prompt: `Crates weigh ${arr(a)}. Can they be split into two groups of exactly equal total weight, with every crate in exactly one group?`,
+        prompt: `Numbers weigh ${arr(a)}. Can they be split into two groups of exactly equal total weight, with every number in exactly one group?`,
         question: 'Enter yes or no.', answer,
-        hints: ['What must each group weigh?', 'If the total is odd, stop. Otherwise ask: can some crates weigh exactly half?', 'One row of yes/no per total, starting with 0 = yes; each crate sweeps from half DOWN to its weight.'],
-        rubric: ['Odd total → no, with no table.', 'Each crate is used at most once: the one-row sweep runs downwards.', 'O(n × total) time, O(total) space — pseudo-polynomial: it depends on the weights, not just n.'],
-        explanation: answer ? `Total ${total}: some crates weigh exactly ${total / 2}.` : total % 2 ? `Total ${total} is odd.` : `Total ${total}, but no group weighs exactly ${total / 2}.`,
+        hints: ['What must each group weigh?', 'If the total is odd, stop. Otherwise ask: can some numbers weigh exactly half?', 'One row of yes/no per total, starting with 0 = yes; each number sweeps from half DOWN to its weight.'],
+        rubric: ['Odd total → no, with no table.', 'Each number is used at most once: the one-row sweep runs downwards.', 'O(n × total) time, O(total) space — pseudo-polynomial: it depends on the weights, not just n.'],
+        explanation: answer ? `Total ${total}: some numbers weigh exactly ${total / 2}.` : total % 2 ? `Total ${total} is odd.` : `Total ${total}, but no group weighs exactly ${total / 2}.`,
       };
     }
     case 'coin-ways': {
@@ -235,7 +235,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const answer = longestClimb(g);
       return {
         topic: 'Longest climb on a height map', section: 'increasing-path', strategy: 'memo',
-        prompt: `Heights on a map, row by row: ${grid(g)}. A walker moves up, down, left or right, one square at a time, and every step must land on a strictly higher square. How many squares does the longest such walk visit?`,
+        prompt: `Heights on a grid, row by row: ${grid(g)}. A walker moves up, down, left or right, one square at a time, and every step must land on a strictly higher square. How many squares does the longest such walk visit?`,
         question: 'Enter the number of squares.', answer,
         hints: ['The longest walk starting here is 1 + the longest walk starting at the best higher neighbour.', 'Can a walk ever come back to a square? What does that mean for the search?', 'Recursion from every square with a remembered answer per square; no visited set needed.'],
         rubric: ['Strictly increasing means no cycles, so every square’s answer is well defined.', 'The memo makes each square’s search happen once: O(rows × cols).', 'Equal neighbours are not steps (allowing them would loop forever).'],

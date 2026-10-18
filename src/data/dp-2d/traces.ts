@@ -19,7 +19,7 @@ const Y = '✓', N = '·';
 export const NEG = '−∞';
 
 export const figures: Record<string, GridFigure> = {
-  // Prologue: a generic map. Settled squares, the square being inked, the squares it reads, the future.
+  // Prologue: a generic table. Settled squares, the square being filled, the squares it reads, the future.
   map: {
     rowHead: 'i', colHead: 'j',
     rows: ['0', '1', '2', '3'], cols: ['0', '1', '2', '3', '4'],
@@ -40,9 +40,9 @@ export const figures: Record<string, GridFigure> = {
     tones: { '0,0': 'green', '2,3': 'gold', '1,3': 'blue', '2,2': 'blue' },
     arrows: [{ from: [1, 3], to: [2, 3], tone: 'blue' }, { from: [2, 2], to: [2, 3], tone: 'blue' }],
   },
-  // Chapter 2: LCS of LBRCT (map A, rows) and BLCRT (map B, columns).
+  // Chapter 2: LCS of LBRCT (string A, rows) and BLCRT (string B, columns).
   lcs: {
-    rowHead: 'map A', colHead: 'map B',
+    rowHead: 'string A', colHead: 'string B',
     rows: ['∅', 'L', 'B', 'R', 'C', 'T'], cols: ['∅', 'B', 'L', 'C', 'R', 'T'],
     cells: [
       [0, 0, 0, 0, 0, 0],
@@ -57,7 +57,7 @@ export const figures: Record<string, GridFigure> = {
   },
   // Chapter 2: walking back from the answer square (ties go up) spells L, R, T.
   lcsRoute: {
-    rowHead: 'map A', colHead: 'map B',
+    rowHead: 'string A', colHead: 'string B',
     rows: ['∅', 'L', 'B', 'R', 'C', 'T'], cols: ['∅', 'B', 'L', 'C', 'R', 'T'],
     cells: [
       [0, 0, 0, 0, 0, 0],
@@ -99,7 +99,7 @@ export const figures: Record<string, GridFigure> = {
   },
   // Chapter 6: hold / sold / rest for prices [1, 2, 3, 0, 2].
   cooldown: {
-    rowHead: 'lantern', colHead: 'day · price',
+    rowHead: 'state', colHead: 'day · price',
     rows: ['hold', 'sold', 'rest'], cols: ['0 · 1', '1 · 2', '2 · 3', '3 · 0', '4 · 2'],
     cells: [[-1, -1, -1, 1, 1], [NEG, 1, 2, -1, 3], [0, 0, 1, 2, 2]],
     tones: { '0,3': 'gold', '2,2': 'blue', '1,4': 'green', '2,4': 'dim' },
@@ -113,7 +113,7 @@ export const figures: Record<string, GridFigure> = {
     tones: { '2,1': 'gold', '2,0': 'gold', '1,0': 'gold', '0,0': 'gold' },
     arrows: [{ from: [2, 1], to: [2, 0], tone: 'gold' }, { from: [2, 0], to: [1, 0], tone: 'gold' }, { from: [1, 0], to: [0, 0], tone: 'gold' }],
   },
-  // Chapter 7: what the archivist writes, the longest climb starting at each square.
+  // Chapter 7: what the memo holds, the longest climb starting at each square.
   climbs: {
     rowHead: 'row', colHead: 'column',
     rows: ['0', '1', '2'], cols: ['0', '1', '2'],
@@ -173,7 +173,7 @@ export const paths = [
     [row('row 0', [1, 1, 1, 1]), row('row 1', [1, 2, 3, '?'], { 3: 'HERE' }, { tones: { 2: 'hot' } })], 1, [
       ['3: copy the square to the left', 'That counts only routes whose last step came from the left. Routes that arrived from above, through (0, 3), are lost.'],
       ['4: up (1) + left (3)', 'Yes. Every route into (1, 3) took its last step from (0, 3) or from (1, 2), never both, so the two counts add without overlap.'],
-      ['6: everything in the row so far, 1 + 2 + 3', 'The courier can only step right or down. Square (1, 1) is not a neighbour of (1, 3); its routes are already inside the 3 at (1, 2).'],
+      ['6: everything in the row so far, 1 + 2 + 3', 'You can only step right or down. Square (1, 1) is not a neighbour of (1, 3); its routes are already inside the 3 at (1, 2).'],
     ]),
   step('You keep only one row of paper: row = [1, 2, 3, 4] (row 1). For row 2 you will do row[c] += row[c − 1]. Which way do you sweep c?',
     [row('row (holds row 1)', [1, 2, 3, 4])], 0, [
@@ -185,13 +185,13 @@ export const paths = [
 
 // ---------- Chapter 2 ----------
 export const lcs = [
-  step('Map A reads A A; map B reads A. Square (2, 1): both last letters are A. Up holds 1, left holds 0, the diagonal holds 0. What do you write?',
-    [row('map A', ['A', 'A']), row('map B', ['A']), row('row 1 · A', [0, 1], { 0: 'diag', 1: 'up' }), row('row 2 · A', [0, '?'], { 0: 'left', 1: 'HERE' }, { tones: { 1: 'hot' } })], 0, [
-      ['1: diagonal + 1', 'Yes. The diagonal is the best for A versus nothing, and then the two A’s pair up. Map B has only one A, so the answer cannot be 2.'],
-      ['2: up + 1', 'Up already used map B’s only A (paired with map A’s first A). Adding 1 pairs that same A a second time. This is the classic LCS bug.'],
+  step('String A reads A A; string B reads A. Square (2, 1): both last letters are A. Up holds 1, left holds 0, the diagonal holds 0. What do you write?',
+    [row('string A', ['A', 'A']), row('string B', ['A']), row('row 1 · A', [0, 1], { 0: 'diag', 1: 'up' }), row('row 2 · A', [0, '?'], { 0: 'left', 1: 'HERE' }, { tones: { 1: 'hot' } })], 0, [
+      ['1: diagonal + 1', 'Yes. The diagonal is the best for A versus nothing, and then the two A’s pair up. String B has only one A, so the answer cannot be 2.'],
+      ['2: up + 1', 'Up already used string B’s only A (paired with string A’s first A). Adding 1 pairs that same A a second time. This is the classic LCS bug.'],
       ['0: the letters are used up', 'They match, so they can join the route. Ignoring a match can only lose length.'],
     ]),
-  step('In the LBRCT / BLCRT table, square (4, 4) compares C (map A) with R (map B). Up = 2, left = 2, diagonal = 1. What goes in?',
+  step('In the LBRCT / BLCRT table, square (4, 4) compares C (string A) with R (string B). Up = 2, left = 2, diagonal = 1. What goes in?',
     [row('row 3 · R', [0, 1, 1, 1, 2, 2], { 4: 'up' }), row('row 4 · C', [0, 1, 1, 2, '?', '·'], { 3: 'left', 4: 'HERE' }, { tones: { 4: 'hot' } })], 1, [
       ['diagonal + 1 = 2', 'The letters differ, so they can’t pair. A diagonal step is only for a match.'],
       ['max(up, left) = 2', 'Yes. C and R can’t both end the route, so drop one: drop C (up, 2) or drop R (left, 2). Keep the better, 2.'],
@@ -201,7 +201,7 @@ export const lcs = [
   step('Walking back from the answer square, you reach (4, 4): C ≠ R, and up and left both hold 2. Which way do you step?',
     [row('row 3 · R', [0, 1, 1, 1, 2, 2], { 4: 'up = 2' }), row('row 4 · C', [0, 1, 1, 2, 2, 2], { 3: 'left = 2', 4: 'HERE' }, { tones: { 4: 'hot' } })], 2, [
       ['Up only: left would break the route', 'Left holds 2 as well, so a route of length 2 lives there too. Going left finishes as L, C, T.'],
-      ['Diagonally, keeping the C', 'C and R differ, so this square didn’t come from the diagonal. Taking a letter here would spell something one map doesn’t contain.'],
+      ['Diagonally, keeping the C', 'C and R differ, so this square didn’t come from the diagonal. Taking a letter here would spell something one string doesn’t contain.'],
       ['Either: both hold 2, so both lead to a longest route', 'Yes. Up gives L, R, T; left gives L, C, T. Ties are why a longest common route need not be unique.'],
     ]),
 ];
@@ -211,7 +211,7 @@ export const edit = [
   step('horse → ros. Square (1, 1): h versus r. Diagonal = 0, up = 1, left = 1. What goes in?',
     [row('row 0 · ∅', [0, 1, 2, 3], { 0: 'diag', 1: 'up' }), row('row 1 · h', [1, '?', '·', '·'], { 0: 'left', 1: 'HERE' }, { tones: { 1: 'hot' } })], 1, [
       ['0: copy the diagonal for free', 'Free is only for matching letters. h ≠ r.'],
-      ['1: replace h with r, 1 + diagonal', 'Yes. 1 + min(diagonal 0, up 1, left 1) = 1. Hammer the h into an r and “h” has become “r”.'],
+      ['1: replace h with r, 1 + diagonal', 'Yes. 1 + min(diagonal 0, up 1, left 1) = 1. Replace the h with an r and “h” has become “r”.'],
       ['2: delete h, then insert r', 'That is a real script, but it costs 2. Replace does the same job in one move.'],
     ]),
   step('Square (4, 3): s versus s (horse’s 4th letter, ros’s 3rd). Diagonal = 2, up = 2, left = 3. What goes in?',
@@ -230,21 +230,21 @@ export const edit = [
 
 // ---------- Chapter 4 ----------
 export const partition = [
-  step('Crates [1, 2, 4]. Before you rule a single square, what do you check?',
-    [row('crates', [1, 2, 4])], 2, [
-      ['Sort the crates', 'Sorting changes nothing about which groups exist. There is a faster way to decide this one.'],
+  step('Numbers [1, 2, 4]. Before you rule a single square, what do you check?',
+    [row('numbers', [1, 2, 4])], 2, [
+      ['Sort the numbers', 'Sorting changes nothing about which groups exist. There is a faster way to decide this one.'],
       ['Fill the table up to total 7', 'Two equal groups each hold half the total. You never need squares past the half.'],
       ['The total is 7, odd: no even split exists, answer false', 'Yes. Two equal whole-number groups add to an even number. Odd total, done: no table at all.'],
     ]),
-  step('Crates [1, 2, 5]: total 8, half 4. One row of paper, dp = [✓, ·, ·, ·, ·]. Crate 1 arrives. Which way do you sweep s?',
-    [row('dp before crate 1', ['✓', '·', '·', '·', '·'])], 1, [
-      ['Upwards, s = 1 to 4', 'dp[1] turns ✓, then dp[2] reads that brand-new dp[1] and turns ✓ — crate 1 used twice — and so on up to dp[4]. The final answer claims [1, 2, 5] splits evenly. It doesn’t.'],
-      ['Downwards, s = 4 to 1', 'Yes. Going down, dp[s − 1] is still the value from before crate 1 arrived, so the crate is counted at most once. After crate 1: [✓, ✓, ·, ·, ·].'],
-      ['Either way, it is the same crate', 'The direction decides whether dp[s − w] already includes this crate. Upwards, one crate of weight 1 fills every total.'],
+  step('Numbers [1, 2, 5]: total 8, half 4. One row of paper, dp = [✓, ·, ·, ·, ·]. Number 1 arrives. Which way do you sweep s?',
+    [row('dp before number 1', ['✓', '·', '·', '·', '·'])], 1, [
+      ['Upwards, s = 1 to 4', 'dp[1] turns ✓, then dp[2] reads that brand-new dp[1] and turns ✓ — number 1 used twice — and so on up to dp[4]. The final answer claims [1, 2, 5] splits evenly. It doesn’t.'],
+      ['Downwards, s = 4 to 1', 'Yes. Going down, dp[s − 1] is still the value from before number 1 arrived, so the number is counted at most once. After number 1: [✓, ✓, ·, ·, ·].'],
+      ['Either way, it is the same number', 'The direction decides whether dp[s − w] already includes this number. Upwards, one number of weight 1 fills every total.'],
     ]),
-  step('Crates [2, 3, 5], target 5. Square (row +3, total 5): up is · and up-left by 3, square (row +2, total 2), is ✓. What goes in?',
+  step('Numbers [2, 3, 5], target 5. Square (row +3, total 5): up is · and up-left by 3, square (row +2, total 2), is ✓. What goes in?',
     [row('row +2', ['✓', '·', '✓', '·', '·', '·'], { 2: 'take 3 from here', 5: 'up' }), row('row +3', ['✓', '·', '✓', '✓', '·', '?'], { 5: 'HERE' }, { tones: { 5: 'hot' } })], 0, [
-      ['✓: take the 3 on top of the group {2}', 'Yes. Skip crate 3 and total 5 is still impossible; take it and you need 2 from the earlier crates, which {2} provides. One of the two is enough.'],
+      ['✓: take the 3 on top of the group {2}', 'Yes. Skip number 3 and total 5 is still impossible; take it and you need 2 from the earlier numbers, which {2} provides. One of the two is enough.'],
       ['·: up says total 5 is impossible', 'Up only covers groups that skip the 3. The take arrow is the other half of the choice.'],
       ['✓ because the same row already has total 2', 'Reading the same row is the unbounded rule: it would let the 3 join twice. 0/1 reads the row above.'],
     ]),
@@ -264,7 +264,7 @@ export const coins = [
       ['A double-counted 1 + 1 + 1', '1 + 1 + 1 can only be written one way. The extra comes from somewhere else.'],
       ['Orders: 1 + 1 + 1, 1 + 2 and 2 + 1', 'Yes. With amounts outside, every coin may be the LAST coin at every amount, so 1 + 2 and 2 + 1 are built separately. Coins outside builds each combination in coin order, once.'],
     ]),
-  step('In the one-row version, why does change() sweep amounts upwards, when the 0/1 crates swept downwards?',
+  step('In the one-row version, why does change() sweep amounts upwards, when the 0/1 numbers swept downwards?',
     [row('coins', [1, 2]), row('dp after coin 1, upwards', [1, 1, 1, 1])], 0, [
       ['Upwards lets dp[a − coin] already include this coin: reuse is the point', 'Yes. Unbounded wants dp[a − coin] from the SAME row (this coin allowed again). Sweep downwards and coin 1 is used at most once: [1, 2] would make 3 in only 1 way.'],
       ['Upwards is faster', 'Both directions touch the same squares. The direction changes what the squares mean.'],
@@ -284,7 +284,7 @@ export const cooldown = [
     [row('day 4', [1, 3, 2], { 0: 'hold', 1: 'sold', 2: 'rest' })], 1, [
       ['hold = 1', 'Hold means a share is still in your hands, and its 1 already paid for it. Ending while holding throws the share away.'],
       ['max(sold, rest) = 3', 'Yes. You must end empty-handed: either you sold today or you are resting. The plan: buy at 1, sell at 2 (day 1), cool down on day 2, buy at 0 (day 3), sell at 2 (day 4): 1 + 2 = 3.'],
-      ['sold = 3, always', 'On falling prices sold can be negative while rest is 0. Take the larger of the two empty-handed lanterns.'],
+      ['sold = 3, always', 'On falling prices sold can be negative while rest is 0. Take the larger of the two empty-handed states.'],
     ]),
 ];
 
@@ -306,7 +306,7 @@ export const climb = [
     [row('memo row 1', [2, 2, 1], { 1: 'up: 2' }), row('memo row 2', [3, '?', '·'], { 0: 'left: 3', 1: 'HERE' }, { tones: { 1: 'hot' } })], 2, [
       ['3: the memo already knows the 2', 'You still add the step onto the 2. climb(1) = 1 + climb(2).'],
       ['5: 1 + 3 + 2 (both neighbours)', 'A climb goes one way. Take the better neighbour, not both.'],
-      ['4: 1 + max(3, 2)', 'Yes, with no new searching: the archive answers in O(1). The whole grid’s answer is 4: 1 → 2 → 6 → 9.'],
+      ['4: 1 + max(3, 2)', 'Yes, with no new searching: the memo answers in O(1). The whole grid’s answer is 4: 1 → 2 → 6 → 9.'],
     ]),
 ];
 
@@ -329,7 +329,7 @@ export const balloons = [
     [], 0, [
       ['By gap length: all gaps of 2, then 3, and so on', 'Yes. dp[i][k] and dp[k][j] are both shorter gaps, so they are finished. (i from right to left with j left to right also works.)'],
       ['i from left to right, j left to right', 'dp[k][j] has k > i: a row you haven’t filled yet. It reads zeros, and [3, 1, 5, 8] returns 63 instead of 167.'],
-      ['Any order: every square is filled eventually', 'A square must be filled before anyone reads it. Order is the whole point of the map.'],
+      ['Any order: every square is filled eventually', 'A square must be filled before anyone reads it. Order is the whole point of the table.'],
     ]),
 ];
 

@@ -1,12 +1,12 @@
 // Three-step hint ladders for every <HintLadder> in dp-2d.mdx.
 export const hints: Record<string, [string, string, string]> = {
   uniquePaths: [
-    'Stand on the goal square. The courier only moves right or down, so where could the last step have come from?',
+    'Stand on the goal square. You can only move right or down, so where could the last step have come from?',
     'dp[r][c] = number of routes from the start to (r, c). The top row and left column each have exactly one route: a straight line.',
     'Fill row by row, left to right: dp[r][c] = dp[r − 1][c] + dp[r][c − 1]. The answer sits at dp[m − 1][n − 1]. One row of paper is enough if you sweep left to right.',
   ],
   lcs: [
-    'Look only at the last letter of each map. Either they match and both join the route, or at least one of them is not on it.',
+    'Look only at the last letter of each string. Either they match and both join the route, or at least one of them is not on it.',
     'dp[i][j] = longest common subsequence of the first i letters of text1 and the first j letters of text2. Row 0 and column 0 are 0: an empty prefix shares nothing.',
     'If text1[i − 1] == text2[j − 1], dp[i][j] = dp[i − 1][j − 1] + 1; otherwise max(dp[i − 1][j], dp[i][j − 1]). Fill row by row; the answer is dp[n][m].',
   ],
@@ -16,9 +16,9 @@ export const hints: Record<string, [string, string, string]> = {
     'Match: dp[i][j] = dp[i − 1][j − 1]. Otherwise 1 + min(dp[i − 1][j − 1] replace, dp[i − 1][j] delete, dp[i][j − 1] insert). Answer: dp[n][m].',
   ],
   partition: [
-    'Two equal groups each weigh exactly half the total. So the question is: can some of the crates total exactly half?',
-    'An odd total fails at once. Otherwise dp[s] = “some crates seen so far total exactly s”, starting from dp[0] = true.',
-    'For each crate w, sweep s from target DOWN to w: dp[s] = dp[s] || dp[s − w]. Downwards keeps dp[s − w] from before this crate, so it joins at most once.',
+    'Two equal groups each weigh exactly half the total. So the question is: can some of the numbers total exactly half?',
+    'An odd total fails at once. Otherwise dp[s] = “some numbers seen so far total exactly s”, starting from dp[0] = true.',
+    'For each number w, sweep s from target DOWN to w: dp[s] = dp[s] || dp[s − w]. Downwards keeps dp[s − w] from before this number, so it joins at most once.',
   ],
   coins: [
     'Make each combination in one fixed order: first decide how many 1s, then how many 2s, and so on. Which loop has to be on the outside?',
@@ -41,13 +41,13 @@ export const hints: Record<string, [string, string, string]> = {
     'For gap = 2 up to n + 1, for each i with j = i + gap: dp[i][j] = max over k in (i, j) of dp[i][k] + v[i]·v[k]·v[j] + dp[k][j]. Answer: dp[0][n + 1].',
   ],
   rocks: [
-    'Same map as before. What is the number of routes that end on a rock?',
+    'Same grid as before. What is the number of routes that end on a rock?',
     'A rock square holds 0. The start holds 1 unless it is itself a rock. Off-grid neighbours count as 0.',
     'dp[r][c] = 0 on a rock; otherwise (r > 0 ? dp[r − 1][c] : 0) + (c > 0 ? dp[r][c − 1] : 0), with dp[0][0] = 1. Don’t pre-fill the edges with 1s: a rock cuts off everything after it.',
   ],
   tolls: [
     'Counting became minimising. Which of the two ways in is cheaper to arrive from?',
-    'dp[r][c] = cheapest toll from the start to (r, c), paying both ends. The top row can only be reached from the left, the left column only from above.',
+    'dp[r][c] = cheapest cost from the start to (r, c), paying both ends. The top row can only be reached from the left, the left column only from above.',
     'dp[r][c] = grid[r][c] + min(dp[r − 1][c], dp[r][c − 1]), with the edges as running sums. Answer: dp[m − 1][n − 1].',
   ],
   palindrome: [

@@ -1,10 +1,10 @@
 import { row, step } from '../../lib/trace.ts';
 
 export const whyRag = [
-  step('Kestrel’s refund policy changes every quarter. Support wants the assistant to quote the current policy and link to it. What do you reach for?', [], 1, [
+  step('The marketplace’s refund policy changes every quarter. Support wants the assistant to quote the current policy and link to it. What do you reach for?', [], 1, [
     ['Fine-tune the model on the policy pages each quarter', 'Fine-tuning shifts style and habits; it does not reliably store facts, it cannot cite where an answer came from, and every policy edit means another training run.'],
     ['Retrieval-augmented generation over the policy pages', 'Right. Edit the page, re-index it in minutes, and the next answer quotes the new text with a link. Freshness and citations are what retrieval gives you.'],
-    ['A bigger model that already knows refund policies', 'No public model has read Kestrel’s private policy, and a bigger model invents more fluently. Size does not create knowledge it never saw.'],
+    ['A bigger model that already knows refund policies', 'No public model has read the marketplace’s private policy, and a bigger model invents more fluently. Size does not create knowledge it never saw.'],
   ]),
   step('Business customers upload their own HR and finance documents. An employee must never get an answer drawn from a document they cannot open. Which property rules out fine-tuning one shared model?', [], 2, [
     ['Fine-tuning is too slow to run', 'It is slow, but speed is not the blocker here. Even an instant fine-tune would have the same problem.'],
@@ -206,7 +206,7 @@ export const drills = [
     ['Stream the answer, and cache repeat questions safely', 'Right. Generation is most of the latency: streaming cuts time to first token, and a cache hit skips generation entirely.'],
     ['Shard the vector database further', 'Search was not the bottleneck.'],
   ]),
-  step('Which sentence passes Mara’s review for the retrieval stage of a RAG design?', [], 3, [
+  step('Which sentence would pass a design review for the retrieval stage of a RAG design?', [], 3, [
     ['"We store embeddings in a vector database and do similarity search."', 'No model, no index, no filter, no fusion, no reranker. This is the 2023 answer.'],
     ['"We use the best embedding model and a top-k of 20."', 'Names two parameters with no reason for either, and no word about permissions.'],
     ['"We fine-tune the model on the documents so retrieval isn’t needed."', 'Loses citations, freshness, deletion and permissions in one sentence.'],

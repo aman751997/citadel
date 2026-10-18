@@ -19,7 +19,7 @@ _Last updated: 2026-10-19 01:00 (regenerated from git; see "How to refresh" at t
 
 | Phase | Status |
 |---|---|
-| 1. Shared components (quiz, progress, revision cards, answer modes, mock interview, DryRun, 10 simulations) | ✅ done |
+| 1. Shared components (quiz, progress, revision cards, answer modes, mock interview, DryRun, 14 simulations and calculators) | ✅ done |
 | 2. Lesson rewrites (SD, DSA, LLD, Mastery) | ✅ done |
 | 3. Spaced revision (`/review/`) | ✅ done (`docs/REVISION.md`) |
 | 4. Open all lessons (no locking) | ✅ done |

@@ -1,5 +1,7 @@
 # The Citadel lesson guide
 
+> **Note (2026-10-19):** the story, cast and "novel" voice rules in this guide are retired. Use `docs/STYLE.md` for voice and per-lesson format. This guide is still correct for the correctness machinery (Java checkers, trace data, build and test commands).
+
 Every lesson in the Citadel follows this guide. The reference implementation is
 `src/dsa-lessons/two-pointers.mdx` and its support files. When this guide and the reference
 disagree, the reference wins — read it in full before writing anything.

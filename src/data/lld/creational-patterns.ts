@@ -72,7 +72,7 @@ export const factory = [
   ], 2, [
     ['It does not compile until EMI is handled', 'An if/else ladder has no exhaustiveness check. Only a switch expression over the enum without a default would refuse to compile.'],
     ['It throws IllegalArgumentException', 'Nothing in the ladder throws. The catch-all else accepts every mode it has never heard of.'],
-    ['"wallet-500000" — the EMI payment silently goes to the wallet', 'Right. The catch-all else turns “I forgot a case” into a wrong answer. That is the bug from the scene.'],
+    ['"wallet-500000" — the EMI payment silently goes to the wallet', 'Right. The catch-all else turns “I forgot a case” into a wrong answer. That is the bug in the chapter.'],
     ['"emi-500000"', 'There is no EMI processor anywhere in the code. Something must choose one; here the else chooses the wallet.'],
   ]),
   step('The same choice of processor is now made in three classes. What is the first, smallest fix?', [], 1, [
@@ -97,7 +97,7 @@ export const factoryMethod = [
     row('Visits', ['Dr Rao: 14', 'Dr Iyer: 9']),
   ], 0, [
     ['doctor,visits / Dr Iyer,9 / Dr Rao,14', 'Right. render() copies the map into a TreeMap, so doctors come out sorted by name, in both reports.'],
-    ['doctor,visits / Dr Rao,14 / Dr Iyer,9', 'That is the order the story mentioned them in, not the order render() uses. It sorts by name.'],
+    ['doctor,visits / Dr Rao,14 / Dr Iyer,9', 'That is the order the data was listed in, not the order render() uses. It sorts by name.'],
     ['It depends on the HashMap’s iteration order', 'That was the copy-pasted printer report’s bug. The shared render() sorts once, for every subclass.'],
   ]),
   step('A third subclass would only override createExporter() with one line. Lighter alternative?', [], 2, [
@@ -176,7 +176,7 @@ export const singleton = [
   ]),
   step('Double-checked locking, but without the second check inside synchronized. What goes wrong?', [], 1, [
     ['Nothing — the lock is enough', 'The lock only serialises the threads that already passed check 1. Each of them, in turn, builds a pool.'],
-    ['Every thread that passed check 1 builds its own pool, one after another', 'Right — your third note. The checker shows more than one pool opened.'],
+    ['Every thread that passed check 1 builds its own pool, one after another', 'Right: this is the missing re-check. The checker shows more than one pool opened.'],
     ['The JVM throws IllegalMonitorStateException', 'The monitor is used correctly. The bug is logical, not a lock misuse.'],
   ]),
   step('Which form would you actually ship for a hand-rolled singleton?', [], 0, [
@@ -223,7 +223,7 @@ export const injection = [
     ['A Money value for the booking fee', 'Values are created where needed. Injecting them is ceremony.'],
   ]),
   step('A class needs a fresh LabOrder for every patient. What do you inject?', [], 2, [
-    ['One LabOrder instance', 'Then every patient shares one form — the bug from Chapter 1’s Your turn.'],
+    ['One LabOrder instance', 'Then every patient shares one form — the shared-checklist bug from Chapter 1’s Your turn.'],
     ['Nothing; it calls new MriOrder() itself', 'That welds the concrete classes back into the business code.'],
     ['A factory: a Supplier<LabOrder> or the LabOrders registry', 'Right. When a class needs fresh objects repeatedly, inject the thing that makes them.'],
   ]),
@@ -246,7 +246,7 @@ export const choose = [
     ['Create one in the composition root and inject it', 'Right. Exactly one, without a global access point; tests pass their own.'],
   ]),
   step('“Every invoice starts from the clinic’s standard template.” The template has a mutable list and map.', [], 1, [
-    ['Implement Cloneable and call super.clone()', 'Shallow: the copy shares the list and map. That was Monday’s X-ray bug.'],
+    ['Implement Cloneable and call super.clone()', 'Shallow: the copy shares the list and map. That is the shared-X-ray bug from the chapter.'],
     ['A copy constructor with fresh collections', 'Right. Prototype the Java way: share immutable, copy mutable.'],
     ['A Singleton template everyone edits', 'Every patient would edit the same invoice.'],
   ]),

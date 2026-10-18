@@ -68,6 +68,7 @@ public class Check {
         pool();
         healthyPool();
         clinic();
+        container();
         System.out.println("OK creational-patterns: " + checks + " checks passed");
     }
 
@@ -645,5 +646,17 @@ public class Check {
         throwsOn(NullPointerException.class, () -> b.new AppointmentService(db, null, Clock.systemUTC()), "null notifier rejected");
         throwsOn(NullPointerException.class, () -> b.new AppointmentService(db, (p, t) -> { }, null), "null clock rejected");
         throwsOn(NullPointerException.class, () -> b.new DischargeService(null), "null db rejected in discharge");
+    }
+
+    // Chapter 6: a container singleton scope builds once under 64 threads; per-use scope gives fresh objects sharing it.
+    static void container() throws Exception {
+        B_container b = new B_container();
+        B_container.MiniContainer c = b.wiring();
+        List<B_container.ReportJob> jobs = together(64, () -> c.get(B_container.ReportJob.class));
+        eq(1, B_container.poolsOpened.get(), "singleton scope: pool built once under 64 threads");
+        eq(64, distinct(jobs), "per-use scope: a new ReportJob each time");
+        for (B_container.ReportJob job : jobs) yes(job.pool() == jobs.get(0).pool(), "every job shares the one pool");
+        yes(c.get(B_container.Pool.class) == jobs.get(0).pool(), "direct lookup returns the same pool");
+        throwsOn(IllegalArgumentException.class, () -> c.get(String.class), "unbound type fails loudly");
     }
 }

@@ -3,12 +3,12 @@ import { row, step } from '../../lib/trace.ts';
 // Numbers in these steps were checked with a throwaway script (geohash encoder, haversine, cell sizes).
 
 export const naiveIndex = [
-  step('Kestrel Nearby runs `WHERE lat BETWEEN a AND b AND lng BETWEEN c AND d` with a B-tree index on lat. The box is 4 km on each side. Which rows does the index hand to the lng filter?', [], 2, [
+  step('A nearby-search service runs `WHERE lat BETWEEN a AND b AND lng BETWEEN c AND d` with a B-tree index on lat. The box is 4 km on each side. Which rows does the index hand to the lng filter?', [], 2, [
     ['Only the rows inside the 4 km box', 'The lat index knows nothing about longitude. It cannot stop at the box’s east and west edges.'],
     ['Rows within 4 km of the user in any direction', 'An index on one column answers a one-dimensional range. "Within 4 km" is two-dimensional.'],
     ['Every row in a 4 km-tall strip that wraps the whole planet', 'Right. At latitude 13° that strip is about 39,000 km long, roughly 9,800 times longer than the box is wide. The lng filter then throws almost all of it away.'],
   ]),
-  step('Theo suggests a composite B-tree index on (lat, lng). Does that fix it?', [], 1, [
+  step('A teammate suggests a composite B-tree index on (lat, lng). Does that fix it?', [], 1, [
     ['Yes — both columns are in the index now', 'Having both columns is not enough. The order of the columns decides what the index can seek on.'],
     ['No — after a range on lat, the index cannot seek on lng; it still walks the whole lat strip', 'Right. The phone-book rule: a range on the first column makes the second column unusable for seeking. You scan the strip, checking lng on each entry. Cheaper than reading rows, still the whole strip.'],
     ['Yes, if you also add an index on (lng, lat)', 'Now the planner picks one of the two strips. Each is still planet-wide.'],
@@ -67,7 +67,7 @@ export const edges = [
     ['Compute the exact distance for each, drop those beyond 2 km, then sort', 'Right. Cells are a coarse filter; distance is the truth. Roughly 1 candidate in 17 survives at these sizes.'],
     ['Drop the 8 neighbour cells to save work', 'Then the café 22 m away across the edge is missed again.'],
   ]),
-  step('Two points are 11 metres apart, one just north of the equator and one just south. Their 6-character geohashes are s0p058 and kpzpgx. What does this show?', [], 0, [
+  step('Two points are 22 metres apart, one just north of the equator and one just south (latitude 0.0001 and -0.0001, longitude 0). Their 6-character geohashes are s00000 and kpbpbp. What does this show?', [], 0, [
     ['Nearby points can share no prefix at all; only a shared prefix proves closeness, not the reverse', 'Right. The equator and the prime meridian are the first cuts, so points straddling them differ from the very first character. Neighbour lookup handles it; prefix matching alone never will.'],
     ['Geohash is broken at the equator', 'It works exactly as designed everywhere. Every cell edge behaves this way; the first cuts just make it dramatic.'],
     ['The points are far apart in the index, so the query is slow', 'Speed is not the issue. Correctness is: a prefix query would never see the other point.'],
@@ -80,7 +80,7 @@ export const quadtree = [
     ['Shallow downtown, deep in the desert', 'Backwards: crowded areas overflow and split; empty areas never do.'],
     ['Deep downtown with small cells, one big leaf over the desert', 'Right. Every leaf holds at most 100 places, so a query reads a similar amount of work anywhere on the map.'],
   ]),
-  step('Kestrel’s 100 million places rarely move. The quadtree lives in memory on index servers. How do you keep it current?', [], 1, [
+  step('A catalogue of 100 million places rarely move. The quadtree lives in memory on index servers. How do you keep it current?', [], 1, [
     ['Rebuild it on every place edit', 'A rebuild walks 100 million points. Doing that ten times a second is absurd.'],
     ['Apply the rare edits in place, rebuild periodically from the database, and run several replicas', 'Right. About 10 edits a second is easy to apply incrementally; a nightly rebuild from the source of truth repairs drift; replicas give throughput and a warm spare while one rebuilds.'],
     ['Store it in the database instead', 'The quadtree is in memory precisely because it serves thousands of reads a second at low latency. The database stays the source of truth it is built from.'],
@@ -191,7 +191,7 @@ export const drills = [
     ['Elasticsearch with a geo_point mapping', 'Search engines are built for read-heavy indexes with periodic refresh, not 250,000 overwrites a second.'],
     ['Kafka, queried by consumers', 'Kafka is a pipe, not a queryable index. Use it for the history stream.'],
   ]),
-  step('Kestrel’s 3-million-place catalogue is in Postgres; nearby searches run at 200 per second. What do you say first?', [], 2, [
+  step('A 3-million-place catalogue is in Postgres; nearby searches run at 200 per second. What do you say first?', [], 2, [
     ['Build a quadtree service', 'Nothing here needs it yet. Custom infrastructure is a cost you justify with numbers.'],
     ['Move to Elasticsearch', 'A fine choice if you also need full-text relevance; not required for radius search at 200/s.'],
     ['PostGIS with a GiST index answers this; custom infrastructure starts when we outgrow it', 'Right. Knowing when not to build is senior signal.'],

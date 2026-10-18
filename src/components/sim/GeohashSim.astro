@@ -1,0 +1,116 @@
+---
+// <GeohashSim /> : click the map to move the user, change precision and radius, and see the cell, its 8 neighbours,
+// which of 400 sample places get a distance check, and which a radius query would wrongly miss.
+// Props (optional): precision (5|6|7), radius (metres, 200-3000), mode ('nine'|'own'). Logic: src/lib/sim/geohash.ts.
+import SimShell from '../SimShell.astro';
+interface Props { precision?: number; radius?: number; mode?: 'nine' | 'own'; title?: string; fallback?: string }
+const { precision = 6, radius = 1000, mode = 'nine', title = 'Which places does a radius query actually check?',
+  fallback = 'Take 400 places scattered over an 8 km square. A user searches for places within 1 km. At geohash precision 6 a cell is about 1.2 km wide and 0.6 km tall. Reading only the user’s own cell checks a few places and misses others that are inside the radius but across a cell edge. Reading the cell plus its 8 neighbours checks more places and still misses some in the north and south, because the 3 by 3 block reaches only 0.6 km beyond the user in that direction. At precision 5 (cells about 4.8 km) the same block covers every place inside a 1 km or 2 km circle; the price is that most of the places it reads are then thrown away by the exact distance check.' } = Astro.props;
+---
+<SimShell title={title} fallback={fallback}>
+  <div class="ghs" data-ghsim data-precision={precision} data-radius={radius} data-mode={mode}>
+    <div class="sim-row">
+      <label>Precision <select data-in="precision" aria-label="Geohash precision">
+        <option value="5">5 (cell about 4.8 km)</option><option value="6">6 (about 1.2 × 0.6 km)</option><option value="7">7 (about 150 m)</option></select></label>
+      <label>Radius <output data-o="radius"></output><input type="range" min="200" max="3000" step="100" data-in="radius" aria-label="Search radius in metres" /></label>
+      <div role="group" aria-label="Which cells to read">
+        <button type="button" data-m="own" aria-pressed="false">Own cell only</button>
+        <button type="button" data-m="nine" aria-pressed="false">Cell + 8 neighbours</button>
+      </div>
+    </div>
+    <svg data-map viewBox="0 0 400 400" role="img" aria-label="Map of 400 sample places. Click to move the user." tabindex="0"></svg>
+    <p class="ghs-legend"><i class="g"></i> in radius, found <i class="a"></i> checked, outside radius <i class="r"></i> in radius but missed <i class="d"></i> not read</p>
+    <div class="sim-row" role="status" aria-live="polite" aria-atomic="true">
+      <div class="sim-stat"><b data-s="cell"></b><small>user's cell</small></div>
+      <div class="sim-stat"><b data-s="checked"></b><small>distance checks run</small></div>
+      <div class="sim-stat"><b data-s="found"></b><small>found (inside radius)</small></div>
+      <div class="sim-stat"><b data-s="missed"></b><small>wrongly missed</small></div>
+    </div>
+    <p class="sim-live" data-note></p>
+    <p class="ghs-assume">Click or tap the map (or use the arrow keys when it has focus) to move the user. Places are deterministic sample data around 12.97 N, 77.59 E; the view is 8.8 km across.</p>
+  </div>
+</SimShell>
+
+<style is:global>
+  .ghs svg { width: 100%; max-width: 440px; display: block; margin: .8rem auto 0; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; cursor: crosshair; touch-action: manipulation; }
+  .ghs-legend { font-size: .78rem; color: var(--text-dim); margin: .5rem 0 0; }
+  .ghs-legend i { display: inline-block; width: .65rem; height: .65rem; border-radius: 50%; margin: 0 .25rem 0 .6rem; vertical-align: -1px; }
+  .ghs-legend i.g { background: #3fb950; } .ghs-legend i.a { background: #e3b341; } .ghs-legend i.r { background: #f85149; } .ghs-legend i.d { background: #6e7681; }
+  .ghs-assume { font-size: .78rem; color: var(--text-dim); }
+</style>
+
+<script>
+  import { CENTER, samplePoints, query, decodeBox, blockCovers } from '../../lib/sim/geohash.ts';
+  import { clamp } from '../../lib/sim.ts';
+
+  const HALF = 4400; // metres from centre to the map edge
+  const M_LAT = 110574, M_LNG = 111320 * Math.cos(CENTER.lat * Math.PI / 180);
+  const px = (m: number) => 200 + (m / HALF) * 200;
+  const toX = (lng: number) => px((lng - CENTER.lng) * M_LNG);
+  const toY = (lat: number) => px(-(lat - CENTER.lat) * M_LAT);
+  const points = samplePoints();
+
+  document.querySelectorAll<HTMLElement>('[data-ghsim]').forEach((el) => {
+    const q = <T extends Element>(s: string) => el.querySelector<T>(s)!;
+    const d = el.dataset;
+    let precision = clamp(Number(d.precision) || 6, 5, 7);
+    let radius = clamp(Number(d.radius) || 1000, 200, 3000);
+    let mode: 'own' | 'nine' = d.mode === 'own' ? 'own' : 'nine';
+    let user = { ...CENTER };
+    const svg = q<SVGSVGElement>('[data-map]');
+
+    const render = () => {
+      el.querySelectorAll<HTMLButtonElement>('[data-m]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.m === mode)));
+      q<HTMLSelectElement>('[data-in="precision"]').value = String(precision);
+      q<HTMLInputElement>('[data-in="radius"]').value = String(radius);
+      q('[data-o="radius"]').textContent = radius >= 1000 ? `${(radius / 1000).toFixed(1)} km` : `${radius} m`;
+      const r = query(points, user, precision, radius, mode);
+      const checked = new Set(r.checked), inside = new Set(r.inside), missed = new Set(r.missed);
+      const rects = r.cells.map((h) => {
+        const b = decodeBox(h);
+        const x = toX(b.lngMin), y = toY(b.latMax);
+        const own = h === r.cell;
+        return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(toX(b.lngMax) - x).toFixed(1)}" height="${(toY(b.latMin) - y).toFixed(1)}" fill="${own ? '#e3b34122' : '#58a6ff12'}" stroke="${own ? '#e3b341' : '#58a6ff'}" stroke-width="1"/>`;
+      }).join('');
+      const dots = points.map((p) => {
+        const c = inside.has(p.id) ? '#3fb950' : missed.has(p.id) ? '#f85149' : checked.has(p.id) ? '#e3b341' : '#6e7681';
+        const big = inside.has(p.id) || missed.has(p.id);
+        return `<circle cx="${toX(p.lng).toFixed(1)}" cy="${toY(p.lat).toFixed(1)}" r="${big ? 3.2 : 2}" fill="${c}"/>`;
+      }).join('');
+      const ux = toX(user.lng), uy = toY(user.lat);
+      svg.innerHTML = `<defs><clipPath id="ghs-clip"><rect width="400" height="400"/></clipPath></defs><g clip-path="url(#ghs-clip)">${rects}<circle cx="${ux.toFixed(1)}" cy="${uy.toFixed(1)}" r="${(radius / HALF * 200).toFixed(1)}" fill="none" stroke="#58a6ff" stroke-dasharray="5 4"/>${dots}<circle cx="${ux.toFixed(1)}" cy="${uy.toFixed(1)}" r="5" fill="#fff" stroke="#58a6ff" stroke-width="2"/></g>`;
+      q('[data-s="cell"]').textContent = r.cell;
+      q('[data-s="checked"]').textContent = String(r.checked.length);
+      q('[data-s="found"]').textContent = String(r.inside.length);
+      q('[data-s="missed"]').textContent = String(r.missed.length);
+      const covers = blockCovers(r.cell, radius);
+      const wasted = r.checked.length - r.inside.length;
+      q('[data-note]').textContent = mode === 'own'
+        ? `Own cell only: ${r.missed.length} place${r.missed.length === 1 ? '' : 's'} inside the circle sit in neighbouring cells and are never seen.`
+        : covers
+          ? `The 3 × 3 block reaches at least one full cell beyond the user, so nothing inside the circle is missed. The cost: ${wasted} of ${r.checked.length} distance checks were thrown away.`
+          : `This cell's shorter side is under ${radius} m, so the block can fall short of the circle${r.missed.length ? `: ${r.missed.length} place${r.missed.length === 1 ? ' is' : 's are'} missed` : ' (nothing missed from this spot, but move around)'}. Use a coarser precision or a covering of finer cells.`;
+    };
+
+    const place = (clientX: number, clientY: number) => {
+      const b = svg.getBoundingClientRect();
+      const mx = ((clientX - b.left) / b.width * 400 - 200) / 200 * HALF;
+      const my = ((clientY - b.top) / b.height * 400 - 200) / 200 * HALF;
+      user = { lat: CENTER.lat - my / M_LAT, lng: CENTER.lng + mx / M_LNG };
+      render();
+    };
+    svg.addEventListener('click', (e) => place(e.clientX, e.clientY));
+    svg.addEventListener('keydown', (e) => {
+      const step = 150, k = e.key;
+      const dx = k === 'ArrowRight' ? 1 : k === 'ArrowLeft' ? -1 : 0, dy = k === 'ArrowUp' ? 1 : k === 'ArrowDown' ? -1 : 0;
+      if (!dx && !dy) return;
+      e.preventDefault();
+      user = { lat: user.lat + dy * step / M_LAT, lng: user.lng + dx * step / M_LNG };
+      render();
+    });
+    q('[data-in="precision"]').addEventListener('change', (e) => { precision = Number((e.target as HTMLSelectElement).value); render(); });
+    q('[data-in="radius"]').addEventListener('input', (e) => { radius = Number((e.target as HTMLInputElement).value); render(); });
+    el.querySelectorAll<HTMLButtonElement>('[data-m]').forEach((b) => b.addEventListener('click', () => { mode = b.dataset.m as 'own' | 'nine'; render(); }));
+    render();
+  });
+</script>

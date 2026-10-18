@@ -1,7 +1,7 @@
 import { row, step } from '../../lib/trace.ts';
 
 // Numbers used below (all checked by a throwaway script while writing the lesson):
-// Kestrel Discover: 50M DAU × 12 requests/day = 600M requests/day ≈ 6,000/s (÷ 10^5), 18,000/s at 3× peak.
+// Example short-video app (Discover tab): 50M DAU × 12 requests/day = 600M requests/day ≈ 6,000/s (÷ 10^5), 18,000/s at 3× peak.
 // Funnel: ~2,000 candidates → light ranker → 400 → heavy ranker. Peak heavy scores = 18,000 × 400 = 7.2M/s.
 
 export const funnel = [
@@ -232,7 +232,7 @@ export const evaluation = [
 ];
 
 export const serving = [
-  step('Kestrel has 80M monthly Discover users and 50M daily ones. Precomputing 500 candidate ids (8 bytes each) per monthly user, every night, stores how much — and how many of those lists go unread on a typical day?', [], 1, [
+  step('The app has 80M monthly Discover users and 50M daily ones. Precomputing 500 candidate ids (8 bytes each) per monthly user, every night, stores how much — and how many of those lists go unread on a typical day?', [], 1, [
     ['200 GB; none wasted', '200 GB is the daily-active figure. Precomputing for everyone monthly-active is bigger, and 30M of them don’t open the app that day.'],
     ['320 GB; about 30M lists unread', 'Right. 80M × 500 × 8 B = 320 GB, and 80M − 50M = 30M users won’t read theirs. Precompute only what is expensive and slow-changing, for users likely to return.'],
     ['3.2 TB; about 50M unread', 'Off by 10×: 80M × 4,000 B = 320 GB.'],

@@ -1,12 +1,11 @@
 ---
 title: 'Search: Inverted Indexes, Elasticsearch, Typeahead'
-description: 'The evening Kestrel Market’s search box read fifty gigabytes per query, and everything that replaced it. Inverted indexes, BM25, search clusters, keeping an index honest, deep paging, fuzzy matching — and the trie-and-top-K machinery behind sub-100 ms typeahead.'
+description: 'Why LIKE cannot be a search engine, and what replaces it. Inverted indexes, analysis, BM25, search clusters, keeping an index in sync with the database, deep paging, fuzzy matching, filters and facets, and how typeahead differs from search.'
 module: 2
 order: 6
-minutes: 85
+minutes: 110
 ---
 import PatternHub from '../components/PatternHub.astro';
-import Scene from '../components/Scene.astro';
 import Part from '../components/Part.astro';
 import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
@@ -14,63 +13,57 @@ import ArrayStrip from '../components/ArrayStrip.astro';
 import Trace from '../components/Trace.astro';
 import Reveal from '../components/Reveal.astro';
 import Quiz from '../components/Quiz.astro';
+import ChapterDone from '../components/ChapterDone.astro';
+import LessonProgress from '../components/LessonProgress.astro';
+import RevisionCards from '../components/RevisionCards.astro';
+import AnswerModes from '../components/AnswerModes.astro';
+import ShardingSim from '../components/sim/ShardingSim.astro';
 import { likeScan, analysis, relevance, cluster, sync, pagination, typeahead, trie, prefixStores, fuzzy, facets, hybrid, drills } from '../data/sd/search';
 import { BASE } from '../paths';
 
 <PatternHub
   pattern="sd-search"
   start="prologue"
-  logline="Search is a second copy of your data, rebuilt into a shape the database can’t offer: every word pointing at the documents that contain it. Say how text becomes words, how matches are ranked, how the copy stays in sync and how stale it may be, and what one query costs across the cluster. Then say, separately, how the box finishes the user’s sentence in under 100 milliseconds."
-  cast={[
-    { name: 'You', role: 'Six weeks into your job at Kestrel. You have typed into a thousand search boxes. You have never had to build one.' },
-    { name: 'Mara Quell', role: 'Principal engineer. Draws boxes, asks questions, never answers first.' },
-    { name: 'Dev Okafor', role: 'SRE. Gets paged at 3 a.m. Narrates incidents in a very calm voice.' },
-    { name: 'Iris Tan', role: 'Product lead. Her “oh, and also…” is how search grows filters, facets, typo tolerance and a map.' },
-    { name: 'Theo Brandt', role: 'Database whisperer. Has opinions about LIKE that he shares at length.' },
-    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
-  ]}
+  logline="Search is a second copy of your data, rebuilt into a shape the database cannot offer: every word points at the documents that contain it. Say how text becomes words, how matches are ranked, how the copy stays in sync and how stale it may be, and what one query costs across the cluster. Then say, separately, how the box finishes the user's sentence in under 100 milliseconds."
+  cast={[]}
   parts={[
-    { name: 'Part One · Why the database can’t', description: 'The scan, the inverted index, and ranking.', links: [['like-scan', 'The query that read everything'], ['inverted-index', 'The back of the book'], ['relevance', 'Which lamp first?']] },
-    { name: 'Part Two · The search cluster', description: 'Shards, segments, keeping the copy honest, and deep pages.', links: [['cluster', 'Many machines, one answer'], ['sync', 'The listing that wasn’t there'], ['pagination', 'Page five hundred']] },
-    { name: 'Part Three · Typeahead', description: 'The 100 ms budget, tries with top-K, and the other ways to answer a prefix.', links: [['typeahead', 'Every keystroke is a query'], ['trie', 'A tree that already knows'], ['prefix-stores', 'Three ways to answer a prefix']] },
-    { name: 'Part Four · Beyond exact words', description: 'Typos, filters and facets, geo and meaning.', links: [['fuzzy', 'pizzza'], ['filters-facets', 'Under fifty, in brass'], ['geo-vector', 'Near me, and things like this']] },
+    { name: 'Part One · Why the database can’t', description: 'The scan, the inverted index, and ranking.', links: [['like-scan', 'Why LIKE fails, and the search-vs-database call'], ['inverted-index', 'The inverted index and analysis'], ['relevance', 'Ranking: BM25, signals, freshness']] },
+    { name: 'Part Two · The search cluster', description: 'Shards, segments, keeping the copy in sync, and deep pages.', links: [['cluster', 'Shards, replicas, near-real-time'], ['sync', 'Indexing pipeline and reindexing'], ['pagination', 'Deep pagination']] },
+    { name: 'Part Three · Typeahead', description: 'The 100 ms budget, tries with top-K, and the other ways to answer a prefix.', links: [['typeahead', 'Typeahead is not search'], ['trie', 'Trie with top-K'], ['prefix-stores', 'Three ways to answer a prefix']] },
+    { name: 'Part Four · Beyond exact words', description: 'Typos, filters and facets, geo and meaning.', links: [['fuzzy', 'Typos and fuzzy matching'], ['filters-facets', 'Filters and facets'], ['geo-vector', 'Geo, vectors and hybrid search']] },
   ]}
   extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
   routes={[
-    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#prologue', title: '📖 Read the lesson', text: 'Problem → idea → numbers → code → trade-offs' },
     { href: '#decision-drills', title: '🧭 Decision drills', text: 'Make the calls interviewers probe, with feedback' },
-    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer, the typeahead answer, five follow-ups' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 30-second to detailed answer, the typeahead answer, five follow-ups' },
   ]}
-  note="Read one part per sitting. Part Three is the bank’s Typeahead question in full; read it again the night before any mock that might ask it."
+  note="Read one part per sitting. Part Three is the Typeahead question in short form; the full walkthrough is its own lesson, linked there. Version assumptions: Elasticsearch 8.x or 9.x and the Python client elasticsearch-py 8.x; OpenSearch is close but not identical, so check its docs."
 />
 
-<h2 id="prologue">Prologue · Fifty gigabytes per question</h2>
+<LessonProgress />
 
-<Scene chapter="Prologue" title="19:40" mood="night">
+<h2 id="prologue">Prologue · One query, fifty gigabytes</h2>
 
-Kestrel Market ships search on a Tuesday. Iris announces it at six. At 19:40 Dev posts in the incident channel: *"Primary database at 100% CPU. Top query by total time: `SELECT … FROM listings WHERE title ILIKE '%lamp%'`. Every one is a sequential scan."*
+Imagine a marketplace with 50 million listings. Search ships on a Tuesday, implemented as `WHERE title ILIKE '%lamp%'` against Postgres. By evening the primary database sits at 100% CPU, and the slowest queries are all that one statement, each a sequential scan.
 
-By eight the support queue has its own opinion. *"I searched for lamp and got a clamp."* *"I searched for lamps and my own Brass Lamp isn't there."* *"Why is the first result a box of lamp oil?"*
+Support tickets arrive too: "I searched lamp and got a clamp." "I searched lamps and my own Brass Lamp is missing." "Why is the first result a bottle of lamp oil?" The query is both slow and wrong, for related reasons.
 
-The next morning Mara doesn't draw a database. She takes a thick paperback off the shelf, turns to the last pages, and holds it up: the index. *lamp, 14, 92, 217.*
+The fix is the same idea as the index at the back of a book. Nobody reads the whole book to find "lamp". You look "lamp" up and read the page numbers. A search engine does that for every word in every document.
 
-*"Nobody reads the whole book to find 'lamp',"* she says. *"So why did our database?"*
+Search appears in interviews in two ways. As a **box inside a bigger design** ("users can search posts / products / messages"), and as **the whole question** (Typeahead, Twitter search). Both reward one habit: knowing that search is a separate, derived system, and saying what that costs.
 
-</Scene>
+**Common slips.** Skipping the lag: the index trails the database by a second or two, and you should say so before the interviewer finds it. And conflating **search** with **typeahead**: they sound like one feature and are two different systems. This lesson keeps them apart.
 
-Search shows up in interviews in two ways. As a **box inside a bigger design** — "users can search posts / products / messages" appears in about half of all product questions — and as **the whole question**: Typeahead is a Tier-1 hot question in your bank, and Twitter search a Tier-2 classic. Both reward the same habit: knowing that search is a separate, derived system, and saying what that costs.
+**A search box in your design is five sentences:**
 
-Your gap register lists **silent skips**. Search has a famous one: the index lags the database. A new post is searchable a second or two after it's written. That's almost always fine — but say it before the interviewer discovers it. It also lists **layer conflation**: "search" and "typeahead" sound like one feature and are two different systems. This lesson keeps them apart on purpose.
+1. **Where the index lives.** A search engine fed from the database. Never `LIKE`, and never the source of truth.
+2. **How text becomes terms, and how matches are ranked.** The analyzer, then BM25 plus whatever business signals the product wants.
+3. **How the index stays in sync, and how stale it may be.** Change data capture, ordering, the refresh interval, a rebuild story.
+4. **What one query costs.** Shards, replicas, the fan-out, and the slow tail it creates.
+5. **Typeahead is its own system.** Precomputed suggestions per prefix, in memory, near the user.
 
-**The rule. A search box in your design is five sentences, or it isn't designed:**
-
-1. **Where the index lives** — a search engine fed from the database, never the database's `LIKE`, and never the source of truth.
-2. **How text becomes terms, and how matches are ranked** — the analyzer, and BM25 plus whatever business signals the product wants.
-3. **How the index stays in sync, and how stale it may be** — change data capture, ordering, the refresh interval, and a rebuild story.
-4. **What one query costs** — shards, replicas, the fan-out, and the tail it creates.
-5. **Typeahead is its own system** — precomputed suggestions per prefix, in memory, near the user.
-
-<Figure caption="The whole shape. Every chapter below zooms into one box. Typeahead (bottom) shares nothing with the search path but the query logs.">
+<Figure caption="The whole shape. Every chapter zooms into one box. Typeahead (bottom) shares nothing with the search path except the query logs.">
   <Mermaid code={`flowchart LR
     W["listing writes"] --> DB[("Postgres\nsource of truth")]
     DB -->|"CDC from the WAL"| K[["Kafka\nby listing_id"]]
@@ -81,58 +74,123 @@ Your gap register lists **silent skips**. Search has a famous one: the index lag
     T["each keystroke"] --> EDGE["edge cache\nhot prefixes"] --> TA`} />
 </Figure>
 
+<Quiz id="search-prologue" title="Prologue checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'Your product spec says "users can search listings". Which first sentence of the design is strongest?',
+    options: [
+      'Add a search endpoint that runs LIKE on the listings table',
+      'Keep Postgres as the source of truth, and feed a separate search index from it through a change stream, accepting a second or two of lag',
+      'Store listings in Elasticsearch only, since it is built for search',
+    ],
+    answer: 1,
+    why: 'Search is a derived, rebuildable copy. Naming the sync mechanism and the lag is what separates a design from a box on a whiteboard.',
+    explain: [
+      'It works at 10,000 rows. At 50 million it scans every row per query and ranks nothing, so it fails on both speed and quality.',
+      'Correct. Database stays the truth, the index is rebuildable, and the lag is stated up front.',
+      'Search engines are not built to be the system of record: they are near-real-time, have weaker durability and transaction semantics than a database, and you could not rebuild the index from anything if it were lost.',
+    ],
+  },
+]} />
+
+<ChapterDone id="prologue" />
+
 <Part n="Part One" title="Why the database can’t">
 
-Before you add a search engine, know exactly what the database can't do — and what it can.
+Before you add a search engine, know exactly what the database cannot do, and what it can.
 
 </Part>
 
-<h2 id="like-scan">Chapter 1 · The query that read everything</h2>
+<h2 id="like-scan">Chapter 1 · Why LIKE fails, and the search-vs-database call</h2>
 
-<Scene chapter="Chapter 1" title="The query that read everything" mood="dawn">
+**What is it?** A **B-tree index** keeps keys sorted by the whole string, starting from the first character. That makes two kinds of question cheap: an exact match, and a **prefix**. "Everything that starts with `lamp`" is one contiguous run of the sorted order, from `lamp` up to just before `lamq`. The database seeks to the start and reads until the run ends.
 
-Theo pulls up the query plan and points at two words: *Seq Scan.* *"There's an index on title,"* Iris says. *"I saw it in the migration."*
-
-*"There is,"* Theo agrees. *"It's a phone book. You asked it for everyone whose name has 'lamp' somewhere in the middle."* He hands you the marker. *"Show her why the phone book can't help."*
-
-</Scene>
-
-A **B-tree index** keeps keys sorted by the whole string, starting from the first character. That makes two kinds of question cheap: an exact match, and a **prefix** — "everything that starts with `lamp`" is one contiguous run of the sorted order, from `lamp` up to just before `lamq`. The database seeks to the start of the run and reads until it ends.
-
-A **leading wildcard** destroys that. `'%lamp%'` can match at any position, so matches are scattered all over the sorted order and there is no place to start. The database reads every row.
+**Why does LIKE fail?** A **leading wildcard** destroys that. `'%lamp%'` can match at any position, so matches are scattered all over the sorted order and there is no place to start. The database reads every row.
 
 <Figure caption="The same seven titles in B-tree order. Highlighted cells match '%lamp%': scattered, so the only plan is to read everything. 'lamp%' is one contiguous run the index can seek to.">
   <ArrayStrip name="sorted titles" indices={false} values={['brass lamp', 'clamp', 'desk', 'lamp', 'lamp oil', 'lampshade', 'oak table']} tones={{ 0: 'hot', 1: 'hot', 3: 'hot', 4: 'hot', 5: 'hot' }} regions={[{ from: 3, to: 5, label: 'lamp% — one seek', tone: 'green' }]} />
 </Figure>
 
-**Worked numbers for Kestrel Market.** 50 million listings × about 1 KB of title and description = **50 GB** of text. A `LIKE '%lamp%'` reads all of it: even at an optimistic 2 GB/s that is **25 seconds** for one query. At a peak of 2,000 searches per second, the scan approach needs 50 GB × 2,000 = **100 TB per second**. No machine does that, and adding read replicas only divides an impossible number by a small one.
+**The numbers.** Assumptions for this example: 50 million listings, about 1 KB of title and description each, 2,000 searches per second at peak.
 
-And the scan isn't even good at its job. Everything Kestrel's support queue complained about is a **quality** failure, not a speed failure:
+- One scan reads 50M × 1 KB = **50 GB**. At an optimistic 2 GB/s that is **25 seconds** for one query.
+- At peak the scan approach needs 50 GB × 2,000 = **100 TB per second**. No machine does that, and read replicas only divide an impossible number by a small one.
+
+**The scan is also bad at its job.** The support complaints are quality failures, not speed failures:
 
 | Failure | Why `LIKE` does it | What a search engine does instead |
 |---|---|---|
 | "lamp" finds "clamp" and "lampshade" | Substring match ignores word boundaries | Matches whole terms |
-| "lamps" misses "Brass Lamp" | No stemming (and plain `LIKE` is case-sensitive too) | Lowercases and stems both to the term `lamp` |
+| "lamps" misses "Brass Lamp" | No stemming (and plain `LIKE` can be case-sensitive) | Lowercases and stems both to the term `lamp` |
 | Lamp oil ranks first | `LIKE` is yes/no; there is no ranking | Scores each match (Chapter 3) |
 | "brass desk lamp" needs three `LIKE`s | No notion of words or phrases | Multi-term and phrase queries over one index |
 
-**The honest middle ground.** You don't always need a separate search cluster. Postgres has real full-text search (`tsvector` columns with a GIN index, `ts_rank` for ranking) and the `pg_trgm` extension, whose trigram indexes **can** serve `LIKE '%lamp%'` and fuzzy matches. MySQL has `FULLTEXT` indexes. For a modest catalogue with simple ranking, that is a legitimate first answer — one system, transactionally consistent. You move to a dedicated engine (Elasticsearch, OpenSearch, Solr — all built on Apache Lucene) when you need relevance tuning, facets, typo tolerance and synonyms at scale, or simply want search traffic off the primary.
+**The search-vs-database decision.** You do not always need a separate cluster. Both databases you already use have built-in text search:
 
-<Trace title="Read the query plan" steps={likeScan} takeaway="A B-tree can seek a prefix but not a substring. Leading-wildcard LIKE reads every row — and still gives bad results. Plain LIKE is never the answer; Postgres full-text or trigram indexes sometimes are." />
+```sql
+-- MySQL 8 (InnoDB FULLTEXT): a real inverted index inside the table
+ALTER TABLE listings ADD FULLTEXT INDEX ft_title (title, description);
 
-**Catch the trap:** "I'd add an index on the text column." Name which index. A B-tree can't serve a leading wildcard; a GIN full-text or trigram index can; a dedicated search engine is the answer at scale. Saying "index" without saying which kind is the hand-wave.
+SELECT id, title,
+       MATCH(title, description) AGAINST ('brass lamp' IN NATURAL LANGUAGE MODE) AS score
+FROM listings
+WHERE MATCH(title, description) AGAINST ('brass lamp' IN NATURAL LANGUAGE MODE)
+ORDER BY score DESC
+LIMIT 20;
+```
 
-<h2 id="inverted-index">Chapter 2 · The back of the book</h2>
+```sql
+-- Postgres: tsvector + GIN, ranked with ts_rank
+SELECT id, title, ts_rank(tsv, q) AS rank
+FROM listings, websearch_to_tsquery('english', 'brass lamp') q
+WHERE tsv @@ q
+ORDER BY rank DESC LIMIT 20;
+```
 
-<Scene chapter="Chapter 2" title="The back of the book">
+Both are legitimate first answers: one system, transactionally consistent, no sync pipeline. Know their limits, since this is the question an interviewer asks next. For MySQL `FULLTEXT`: no leading wildcard (`*lamp` is not supported, `lamp*` is), no stemming, a minimum token length (`innodb_ft_min_token_size`, 3 by default), limited ranking control. For Postgres `pg_trgm`, trigram indexes can serve `LIKE '%lamp%'` and similarity, and `tsvector` gives stemming, but tuning relevance is clumsy.
 
-Mara writes three listings on the whiteboard and draws a line down the middle. On the left: each listing and its words. *"That's what the database has,"* she says. *"Listing to words."*
+| Question | Database text search is enough | Move to a search engine |
+|---|---|---|
+| Catalogue size and query rate | Up to a few million rows, modest QPS | Tens of millions of documents, or search load that should stay off the primary |
+| Ranking | "Roughly relevant" is fine | You must tune it: field boosts, recency, popularity, learning to rank |
+| Typo tolerance, synonyms, facets, highlighting | Not needed | Needed, over big result sets |
+| Consistency | Search must see a commit instantly | A second or two of lag is acceptable |
+| Operations | One system to run | You can run a cluster and a sync pipeline |
 
-Then she starts on the right side, one word per line, and asks you to finish it. *"Word to listings. And before you write a single word — which words?"*
+**A common slip.** "I'd add an index on the text column." Name which index. A B-tree cannot serve a leading wildcard. A MySQL FULLTEXT or Postgres GIN/trigram index can. A dedicated engine (Elasticsearch, OpenSearch, Solr, all built on Apache Lucene) is the answer at scale.
 
-</Scene>
+<Trace title="Read the query plan" steps={likeScan} takeaway="A B-tree can seek a prefix but not a substring. Leading-wildcard LIKE reads every row, and still gives bad results. Plain LIKE is never the answer; database full-text or trigram indexes sometimes are." />
 
-A **forward index** maps document → words; that is what the table already is. An **inverted index** maps word → documents, exactly like the index at the back of a book:
+**Interview takeaway.** "A leading-wildcard LIKE cannot use a B-tree, so it scans every row: 50 GB per query here. For a small catalogue I would use Postgres full-text or MySQL FULLTEXT. At this scale, with relevance tuning and facets, I move to a search engine fed from the database."
+
+<Quiz id="search-like" title="LIKE versus search checkpoint" questions={[
+  {
+    kind: 'predict',
+    q: 'Table listings has a B-tree index on title. Which of these can use it for a seek?',
+    code: "-- A\nWHERE title LIKE 'lamp%'\n-- B\nWHERE title LIKE '%lamp'\n-- C\nWHERE lower(title) LIKE 'lamp%'",
+    options: ['Only A', 'A and C', 'All three'],
+    answer: 0,
+    why: 'Only a prefix pattern on the indexed expression is a contiguous range. A trailing-only match (B) needs a reversed index. C needs an expression index on lower(title).',
+    explain: [
+      'Correct (with the usual caveat that Postgres needs a suitable operator class or collation for LIKE prefix seeks).',
+      'C applies a function to the column, so the plain index on title cannot serve it. An expression index on lower(title) would be needed.',
+      'B starts with a wildcard, so matches are scattered, and C wraps the column in a function.',
+    ],
+  },
+]} />
+
+<RevisionCards id="search-like-scan" cards={[
+  { front: 'Why can a B-tree serve LIKE lamp% but not LIKE %lamp%?', back: 'A prefix is one contiguous run in sorted order. A leading wildcard scatters matches, so the only plan is reading every row.' },
+  { front: 'What does LIKE get wrong besides speed?', back: 'No word boundaries (clamp), no stemming, no ranking, no phrases. These are quality failures a search engine fixes.' },
+  { front: 'When is database full-text search enough?', back: 'Modest data and traffic, simple ranking, no facets or typo tuning, and a need to see commits instantly. One system, no sync.' },
+  { front: 'When do you move to a search engine?', back: 'Tens of millions of docs or heavy search load, tuned relevance, facets, typo tolerance, synonyms, and a second of lag is acceptable.' },
+]} />
+
+<ChapterDone id="like-scan" />
+
+<h2 id="inverted-index">Chapter 2 · The inverted index and analysis</h2>
+
+**What is it?** A **forward index** maps document → words. That is what a table already is. An **inverted index** maps word → documents, like the index at the back of a book:
 
 ```text
 term     → postings list (doc id : position)
@@ -140,9 +198,9 @@ brass    → d1:1, d2:1
 lamp     → d1:2, d2:2, d3:2
 ```
 
-To answer "brass lamp" you don't read documents at all. You look up two short lists and combine them.
+To answer "brass lamp" you read no documents at all. You look up two short lists and combine them.
 
-**Step one: analysis — deciding what a "word" is.** Before anything is indexed, each text field goes through an **analyzer**:
+**Step one: analysis, deciding what a "word" is.** Before indexing, each text field goes through an **analyzer**:
 
 1. **Character filters** clean the raw text (strip HTML, map `&` to `and`).
 2. A **tokenizer** splits it into tokens and records each token's **position**.
@@ -156,9 +214,44 @@ To answer "brass lamp" you don't read documents at all. You look up two short li
     S --> ST["stem\ntwo@0 brass@1 lamp@2 desk@5"]`} />
 </Figure>
 
-**The rule that makes it work: the same analyzer runs at index time and at query time.** The shopper's "Lamps" is lowercased and stemmed to `lamp` just like the listing was, so they meet. That is also why stems don't need to be real words: an aggressive stemmer such as Porter turns "vintage" into `vintag`, and nobody cares, because the query gets turned into `vintag` too. (Our example uses a light stemmer that only strips plurals.)
+You can watch this happen. In Elasticsearch 8.x/9.x with the Python client (`elasticsearch-py` 8.x):
 
-Stop words are a choice, not a law. Many modern setups keep them: BM25 (next chapter) already gives a word that appears everywhere almost no weight, and a phrase like "to be or not to be" is nothing *but* stop words.
+```python
+from elasticsearch import Elasticsearch
+es = Elasticsearch("http://localhost:9200")
+
+res = es.indices.analyze(analyzer="english", text="Two brass lamps for the desk")
+print([(t["token"], t["position"]) for t in res["tokens"]])
+# [('two', 0), ('brass', 1), ('lamp', 2), ('desk', 5)]
+```
+
+**The rule that makes it work: the same analyzer runs at index time and at query time.** The shopper's "Lamps" is lowercased and stemmed to `lamp` exactly like the listing, so they meet. Stems need not be real words: an aggressive stemmer such as Porter turns "vintage" into `vintag`, and nobody cares, because the query becomes `vintag` too. (The tables below use a light stemmer that only strips plurals.)
+
+Stop words are a choice, not a law. Many modern setups keep them: BM25 (next chapter) already gives a word that appears everywhere almost no weight, and "to be or not to be" is nothing *but* stop words.
+
+**Two field types you will meet at once.** The difference matters constantly:
+
+| | `text` field | `keyword` field |
+|---|---|---|
+| Analysed? | Yes: tokenised, lowercased, stemmed | No: stored as one exact term |
+| Query means | "Which documents are about this?" (scored) | "Is it exactly this value?" |
+| Use for | title, description, free text | SKU, status, seller_id, category slug, anything you filter, sort or aggregate on |
+
+A mapping that combines them (common: one `text` field plus an exact `keyword` sub-field):
+
+```python
+es.indices.create(index="listings_v1", mappings={"properties": {
+    "title":      {"type": "text", "analyzer": "english",
+                   "fields": {"raw": {"type": "keyword"}}},
+    "description":{"type": "text", "analyzer": "english"},
+    "listing_id": {"type": "keyword"},
+    "sku":        {"type": "keyword"},
+    "seller_id":  {"type": "keyword"},
+    "price":      {"type": "scaled_float", "scaling_factor": 100},
+    "in_stock":   {"type": "boolean"},
+    "created_at": {"type": "date"},
+}})
+```
 
 **Step two: the worked example.** Three listings, analysed as above:
 
@@ -168,7 +261,7 @@ Stop words are a choice, not a law. Many modern setups keep them: BM25 (next cha
 | d2 | Two brass lamps for the desk | two@0, brass@1, lamp@2, desk@5 |
 | d3 | Oak desk lamp, vintage | oak@0, desk@1, lamp@2, vintage@3 |
 
-Inverting it gives the index — terms sorted, each postings list sorted by document id:
+Inverting gives the index: terms sorted, each postings list sorted by document id.
 
 | Term | Postings (doc:position) |
 |---|---|
@@ -179,49 +272,78 @@ Inverting it gives the index — terms sorted, each postings list sorted by docu
 | two | d2:0 |
 | vintage | d1:0, d3:3 |
 
-- **"brass lamp" (AND)**: intersect `{d1, d2}` with `{d1, d2, d3}` → **d1, d2**. Because both lists are sorted by doc id, intersection is a single merge walk — the <a href={`${BASE}dsa/lessons/two-pointers/`}>two-pointer</a> pattern — and real engines add skip pointers to jump over long runs.
-- **"desk lamp" (AND)** → **d2, d3**. **"desk lamp" as a phrase** → only **d3**, because it needs `lamp` at desk's position + 1. d2 has both words in the wrong order. Positions are what make phrase queries possible without opening a single document.
+- **"brass lamp" (AND)**: intersect `{d1, d2}` with `{d1, d2, d3}` → **d1, d2**. Both lists are sorted by doc id, so intersection is one merge walk, the <a href={`${BASE}dsa/lessons/two-pointers/`}>two-pointer</a> pattern. Real engines add skip pointers to jump over long runs.
+- **"desk lamp" (AND)** → **d2, d3**. **"desk lamp" as a phrase** → only **d3**, because it needs `lamp` at desk's position + 1. d2 has both words in the wrong order. Positions make phrase queries possible without opening a single document.
+
+```python
+# phrase query: terms adjacent and in order
+es.search(index="listings", query={"match_phrase": {"title": "desk lamp"}})
+```
 
 <Trace title="Build and query the index" steps={analysis} takeaway="Analysis decides what a term is; the same analyzer runs on the query. AND is an intersection of sorted lists; a phrase also checks positions." />
 
-**What else lives in the index.** In Lucene-based engines, a **term dictionary** (with a compact in-memory term index — Lucene uses a finite-state transducer) finds a term's postings fast; postings are **delta-encoded and compressed**, because sorted doc ids have small gaps; and a **column store** (Lucene calls it *doc values*) holds per-document values for sorting, filtering and facets (Chapter 11). The original JSON is usually stored too, compressed, so results can be shown without a trip to the database.
+**What else lives in the index.** In Lucene-based engines a **term dictionary** (with a compact in-memory term index, a finite-state transducer in Lucene) finds a term's postings fast. Postings are **delta-encoded and compressed**, because sorted doc ids have small gaps. A **column store** (*doc values*) holds per-document values for sorting, filtering and facets (Chapter 11). The original JSON is usually stored too, so results can be shown without a trip to the database.
 
-**The price is paid on writes.** Indexing a document means analysing it and adding it to a postings list for every distinct term — far more work than inserting a row. Search buys read speed with index-write cost: the same trade as a database index, only bigger.
+**The price is paid on writes.** Indexing a document means analysing it and adding it to a postings list for every distinct term. That is far more work than inserting a row. Search buys read speed with index-write cost: the same trade as any database index, only bigger.
 
-**Worked numbers: how big is the index?** Assumptions, stated: 50 million listings; about 150 indexed terms each after analysis; about 2 bytes per term occurrence in compressed postings (doc-id gaps and positions); listings stored as JSON compressing to about 1 KB each; about 80 bytes of doc values per listing for filters and sorts.
+**How big is the index?** Assumptions: 50 million listings; about 150 indexed terms each after analysis; about 2 bytes per term occurrence in compressed postings; stored JSON compressing to about 1 KB each; about 80 bytes of doc values per listing.
 
 | Piece | Arithmetic | Size |
 |---|---|---|
-| Postings | 50M × 150 occurrences × 2 B | 15 GB |
+| Postings | 50M × 150 × 2 B | 15 GB |
 | Stored source | 50M × 1 KB | 50 GB |
 | Doc values | 50M × 80 B | 4 GB |
 | **One copy of the index** | | **≈ 70 GB** |
 
-That number drives everything in Part Two. In real life, **measure it**: index a sample of a million documents, look at the size on disk, and multiply. Mappings matter enormously — positions, extra sub-fields and especially n-grams (Chapter 9) can each add a lot.
+That number drives Part Two. In real life, **measure it**: index a sample of a million documents, look at the size on disk, and multiply. Positions, extra sub-fields and especially n-grams (Chapter 9) can each add a lot.
 
 <Reveal q="Why keep positions at all, if they make the index bigger?">
 
-Without positions you can answer "contains both words" but not "contains this phrase", and you can't rank documents higher when the query words appear close together. Positions also feed highlighting. If a field never needs phrase queries or proximity — a tags field, a category, a SKU — index it without positions (or as a single untokenised keyword) and save the space.
+Without positions you can answer "contains both words" but not "contains this phrase", and you cannot rank documents higher when the query words appear close together. Positions also feed highlighting. If a field never needs phrase queries or proximity (tags, category, SKU), index it without positions or as a single `keyword` and save the space.
 
 </Reveal>
 
-<h2 id="relevance">Chapter 3 · Which lamp first?</h2>
+**Interview takeaway.** "The index maps each term to a sorted postings list with positions. The same analyzer runs at query time. AND intersects the lists; a phrase also checks positions."
 
-<Scene chapter="Chapter 3" title="Which lamp first?" mood="dusk">
+<Quiz id="search-inverted" title="Inverted index checkpoint" questions={[
+  {
+    kind: 'failure',
+    q: 'After deploying, searching "running shoes" finds nothing, though listings titled "Running Shoes" exist. The mapping uses the english analyzer at index time, but the search code sends the query against a `keyword` sub-field. Why does it fail?',
+    options: [
+      'The keyword field stores the exact string "Running Shoes", so the query "running shoes" does not match it',
+      'Stop words were dropped from the query',
+      'The index has not refreshed yet',
+    ],
+    answer: 0,
+    why: 'Query and index must use the same analysis. A keyword field is one untokenised, case-sensitive term; it never meets the stemmed, lowercased terms of a text field.',
+    explain: [
+      'Correct. Keyword is exact-match and case-sensitive. Query the analysed text field for free text, the keyword field for exact values.',
+      'The query is not analysed at all against a keyword field, so there is nothing to drop. The cause is the missing shared analysis.',
+      'Refresh lag lasts about a second, and would not make an old listing vanish.',
+    ],
+  },
+]} />
 
-The new index works. Search for "brass lamp" and four thousand listings come back in eleven milliseconds. The first one is a brass doorknob listing whose description says "lamp" forty-one times.
+<RevisionCards id="search-inverted-index" cards={[
+  { front: 'Forward vs inverted index?', back: 'Forward: document → its words (a normal table). Inverted: word → sorted list of documents (and positions) containing it.' },
+  { front: 'What three stages make up an analyzer?', back: 'Character filters (clean text), a tokenizer (split, record positions), token filters (lowercase, stop words, stems, synonyms).' },
+  { front: 'Why must the same analyzer run at query time?', back: 'So the query becomes the same terms the index holds. Stems need not be real words, they only need to match.' },
+  { front: 'How does the engine answer AND, and a phrase?', back: 'AND: merge-intersect sorted postings lists. Phrase: also check that positions are adjacent and in order.' },
+]} />
 
-Iris forwards it to the channel without comment. Mara replies with a single question: *"What makes one match better than another?"*
+<ChapterDone id="inverted-index" />
 
-</Scene>
+<h2 id="relevance">Chapter 3 · Ranking: BM25, signals, freshness</h2>
 
-Finding matches is half of search. **Ranking** them is the half users notice. Three intuitions build the standard answer:
+**What is it?** Finding matches is half of search. **Ranking** them is the half users notice. Say the index works, "brass lamp" returns four thousand listings in 11 ms, and the first is a doorknob whose description says "lamp" forty-one times. Something must decide what makes one match better than another.
 
-1. **Term frequency (TF).** A listing that mentions "lamp" several times is probably more about lamps than one that mentions it once — but with sharply diminishing returns.
-2. **Inverse document frequency (IDF).** Rare words are more informative. Matching "brass" says more than matching "lamp", and matching "the" says nearly nothing. The classic form is idf = ln(N / df), where N is the number of documents and df the number containing the term.
-3. **Length normalisation.** One mention in a five-word title is stronger evidence than one mention in a two-thousand-word description.
+**Three intuitions build the standard answer:**
 
-**Worked IDF numbers.** One million listings:
+1. **Term frequency (TF).** A listing that mentions "lamp" several times is probably more about lamps than one that mentions it once, but with sharply diminishing returns.
+2. **Inverse document frequency (IDF).** Rare words are more informative. Matching "brass" says more than matching "lamp", and matching "the" says almost nothing. Classic form: idf = ln(N / df), where N is the number of documents and df the number containing the term.
+3. **Length normalisation.** One mention in a five-word title is stronger evidence than one in a two-thousand-word description.
+
+**IDF with real numbers.** One million listings:
 
 | Term | Listings containing it (df) | idf ≈ ln(N / df) |
 |---|---|---|
@@ -229,68 +351,170 @@ Finding matches is half of search. **Ranking** them is the half users notice. Th
 | lamp | 20,000 | ln(50) ≈ 3.91 |
 | the | 900,000 | ln(1.11) ≈ 0.11 |
 
-**TF-IDF** multiplies the first two. **BM25** ("Best Matching 25", from the Okapi system) is the refined version and the **default similarity in Lucene-based engines** (Elasticsearch, OpenSearch, Solr — check your version's docs). For each query term it multiplies a smoothed idf (for these numbers, practically the same as ln(N / df)) by a term-frequency part:
+**TF-IDF vs BM25.** **TF-IDF** multiplies the first two ideas, so a term repeated 100 times scores about 100 times higher: keyword stuffing wins. **BM25** (from the Okapi system) is the refinement and the **default similarity in Lucene-based engines** (check your version's docs). It makes TF **saturate** and adds length normalisation. For each query term it multiplies a smoothed idf by:
 
 ```text
 tf part = tf × (k1 + 1) / (tf + k1 × (1 − b + b × docLength / avgDocLength))
 defaults: k1 = 1.2 (how fast TF saturates), b = 0.75 (how much length matters)
 ```
 
-You don't need to recite the formula in an interview. You need its two behaviours, which the numbers make obvious:
+You need the two behaviours, not the formula:
 
 | Situation (k1 = 1.2, b = 0.75) | TF part |
 |---|---|
 | tf = 1, average length | 1.00 |
 | tf = 2, average length | 1.38 |
 | tf = 10, average length | 1.96 |
-| tf = 100, average length | 2.17 — the ceiling is k1 + 1 = 2.2 |
+| tf = 100, average length | 2.17 (ceiling is k1 + 1 = 2.2) |
 | tf = 1, half the average length | 1.26 |
 | tf = 1, twice the average length | 0.71 |
 
-**Saturation** means the doorknob listing's forty-one "lamp"s buy it almost nothing over two or three. **Length normalisation** means its long, stuffed description counts against it.
+Saturation means the doorknob's forty-one "lamp"s buy almost nothing over two or three. Length normalisation means its long, stuffed description counts against it. (Some implementations drop the constant `k1 + 1` numerator. Rankings are unchanged.)
 
-**Field boosts.** A match in the title usually matters more than one in the description. Query both and weight them: `title^3, description^1` in Elasticsearch syntax. Keep exact identifiers (SKUs, model codes) in a separate untokenised field and boost exact hits there heavily.
+**A tiny worked example.** Use the three listings from Chapter 2 and the query "brass lamp". Lengths after analysis: d1 = 3 terms, d2 = 4, d3 = 4, so the average is 3.67. N = 3, df(brass) = 2, df(lamp) = 3. With Lucene's smoothed idf, ln(1 + (N − df + 0.5) / (df + 0.5)):
 
-**Business signals.** Text relevance answers "is this about lamps?" It doesn't know that a listing is new, popular, well-reviewed, or nearby. Products blend those in, typically by **multiplying** the text score by gentle, bounded factors:
+- idf(brass) = ln(1 + 1.5/2.5) ≈ **0.47**. idf(lamp) = ln(1 + 0.5/3.5) ≈ **0.13**. "lamp" is in every document, so it barely separates anything.
+- Both docs have tf = 1 for both terms. d1 is shorter: tf part ≈ **1.08**. d2 is longer: tf part ≈ **0.96**.
+- d1 ≈ (0.47 + 0.13) × 1.08 ≈ **0.65**. d2 ≈ 0.60 × 0.96 ≈ **0.58**. d3 has no "brass", so it only gets the small "lamp" part and ranks last.
+
+The numbers are illustrative; real engines compute these per shard and store lengths in a lossy one-byte form. The shape is the lesson.
+
+**Field boosts.** A title match usually matters more than a description match. Query both and weight them:
+
+```python
+es.search(index="listings", size=20, query={"bool": {
+    "must": {"multi_match": {"query": "brass lamp", "fields": ["title^3", "description"]}},
+    "filter": [{"term": {"in_stock": True}}],
+}})
+```
+
+Keep exact identifiers (SKUs, model codes) in a separate `keyword` field and boost exact hits there heavily.
+
+**Business signals.** Text relevance answers "is this about lamps?". It does not know a listing is new, popular, or well reviewed. Products blend those in, typically by **multiplying** the text score by gentle, bounded factors:
 
 ```text
 final score = BM25 × recency decay × (1 + log(1 + sales)) × seller-quality factor
 ```
 
-- **Recency** as a decay with a half-life (a listing loses half its recency boost every 30 days, say), not a sort.
-- **Popularity** damped with a log and capped, so one viral listing can't drown everything.
-- At larger scale: **two-stage ranking** — cheap BM25 retrieves the top few hundred candidates per shard, and a learned model (learning to rank) reorders the top 100 with many features. The same two-stage shape as <a href={`${BASE}sd/lessons/recsys/`}>recommendations</a>.
+```python
+# function_score: BM25 x recency decay x damped popularity (Elasticsearch 8.x)
+query = {"function_score": {
+    "query": base_query,
+    "functions": [
+        {"gauss": {"created_at": {"origin": "now", "scale": "30d", "decay": 0.5}}},
+        {"field_value_factor": {"field": "sales", "modifier": "log2p", "missing": 0}},
+    ],
+    "score_mode": "multiply", "boost_mode": "multiply",
+}}
+```
 
-<Trace title="Rank the matches" steps={relevance} takeaway="Rare terms weigh more; repeated terms saturate; long documents are normalised. Business signals multiply the text score gently — they never replace it." />
+`gauss` with `scale: 30d, decay: 0.5` means a listing 30 days old gets half the recency factor. `log2p` is log10(2 + sales); it keeps the factor above zero for a listing with no sales (`log1p` of 0 would multiply the whole score by 0). Check current docs for modifiers.
 
-**How do you know ranking got better?** Offline, with judged queries and metrics such as NDCG; online, with click-through, add-to-cart and A/B tests. Saying "we'd measure it" with one metric named is enough in most rounds.
+**Two-stage ranking.** At larger scale, cheap BM25 retrieves the top few hundred candidates per shard, and a learned model (learning to rank) reorders the top 100 using many features. It is the same two-stage shape as <a href={`${BASE}sd/lessons/recsys/`}>recommendations</a>.
 
-**Catch the trap:** "Sort by newest" or "sort by popularity" as the ranking. Sorting by one signal throws away whether the result matches at all. Relevance is the base; signals adjust it.
+**Relevance vs freshness: two different meanings.** "Fresh" is used for two separate questions, and mixing them is a classic muddle:
+
+| | Ranking freshness | Index freshness (staleness) |
+|---|---|---|
+| Question | Should newer content score higher? | How soon after a write can search see it? |
+| Lives in | The scoring function (recency decay) | The pipeline and refresh interval (Chapters 4 and 5) |
+| Knob | `scale`, `decay`, boost weight | Refresh interval, CDC lag, `wait_for` |
+| Failure | New junk beats a great older match, or good old items sink | A price change or deleted item is still shown |
+| Typical choice | A decay with a half-life, not a sort by date | "Searchable in one to two seconds"; read-your-own-writes from the database |
+
+News and tweets weight ranking freshness heavily; a furniture catalogue barely does. Either way, a price or stock change is an index-freshness problem, and no scoring trick fixes a stale price.
+
+<Figure caption="Scoring in layers. Filters decide who is allowed, text relevance decides how well they match, signals gently adjust, and an optional reranker reorders the top few.">
+  <Mermaid code={`flowchart LR
+    Q["query"] --> F["filters\nallowed or not"]
+    F --> B["BM25\ntitle^3 + description"]
+    B --> S["signals\nrecency x popularity"]
+    S --> T["top 100\nper query"]
+    T --> R["learned reranker\noptional"]
+    R --> O["top 20 shown"]`} />
+</Figure>
+
+<Trace title="Rank the matches" steps={relevance} takeaway="Rare terms weigh more; repeated terms saturate; long documents are normalised. Business signals multiply the text score gently. They never replace it." />
+
+**How do you know ranking got better?** Offline, with judged queries and metrics such as NDCG. Online, with click-through, add-to-cart and A/B tests. Naming one metric is enough in most rounds.
+
+**A common slip.** "Sort by newest" or "sort by popularity" as the ranking. Sorting by one signal throws away whether the result matches at all. Relevance is the base; signals adjust it.
+
+**Interview takeaway.** "BM25: rare terms count more, repeated terms saturate, long fields are normalised. I boost title over description, multiply in a decay for recency and a damped popularity factor, and keep hard rules in filters. Measuring uses NDCG offline and click-through online."
+
+<Quiz id="search-relevance" title="Ranking checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'Users complain that the newest listings always rank first, even when they barely match the query. The team sorted by created_at desc with the text score as a tiebreaker. What do you change?',
+    options: [
+      'Sort by popularity instead',
+      'Score by BM25 and multiply by a recency decay with a half-life, so newness nudges but does not override a match',
+      'Remove recency completely',
+    ],
+    answer: 1,
+    why: 'A sort is all-or-nothing; a decay multiplies the text score by a factor between 0 and 1, so a much better match can still win.',
+    explain: [
+      'Same problem: any single sort key ignores whether the result matches.',
+      'Correct. Relevance stays the base. Recency becomes a bounded factor you can tune with scale and decay.',
+      'Some products need recency (news, listings). Removing it trades one problem for another; the fix is blending, not deleting.',
+    ],
+  },
+  {
+    kind: 'predict',
+    q: 'BM25 with k1 = 1.2, b = 0.75. Listing A (average length) mentions "lamp" 2 times. Listing B (average length) mentions it 100 times. Roughly how do their TF parts compare?',
+    code: "tf part = tf * (k1 + 1) / (tf + k1 * (1 - b + b * len/avg))\nA: tf = 2, len = avg  -> ?\nB: tf = 100, len = avg -> ?",
+    options: ['B is about 50 times A', 'B is about 1.6 times A (2.17 vs 1.38)', 'They are equal'],
+    answer: 1,
+    why: 'TF saturates at k1 + 1 = 2.2, so 100 mentions score only about 57% more than 2.',
+    explain: [
+      'That is raw TF-IDF behaviour without saturation: the keyword-stuffing hole BM25 closes.',
+      'Correct. A = 2 × 2.2 / (2 + 1.2) = 1.38 and B = 100 × 2.2 / (100 + 1.2) = 2.17.',
+      'They are not equal; more mentions still help, just very little.',
+    ],
+  },
+]} />
+
+<RevisionCards id="search-relevance" cards={[
+  { front: 'What do TF, IDF and length normalisation each capture?', back: 'TF: more mentions, more about it (diminishing). IDF: rare terms are more informative. Length: a mention in a short field is stronger evidence.' },
+  { front: 'How does BM25 differ from raw TF-IDF?', back: 'TF saturates at about k1 + 1 (so stuffing does not work) and length normalisation is explicit and tunable (k1 = 1.2, b = 0.75 by default).' },
+  { front: 'How should recency and popularity enter the score?', back: 'As bounded multipliers (decay with a half-life, log of popularity) on top of BM25, never as a replacement sort.' },
+  { front: 'Ranking freshness vs index freshness?', back: 'Ranking freshness: should new items score higher (scoring function). Index freshness: how soon search sees a change (pipeline and refresh).' },
+]} />
+
+<ChapterDone id="relevance" />
 
 <Part n="Part Two" title="The search cluster">
 
-One machine can hold a small index. Kestrel's doesn't fit the traffic, so the index is split, copied, and kept in sync from far away.
+One machine can hold a small index. This one does not fit the traffic, so the index is split, copied, and kept in sync from far away.
 
 </Part>
 
-<h2 id="cluster">Chapter 4 · Many machines, one answer</h2>
+<h2 id="cluster">Chapter 4 · Shards, replicas, near-real-time</h2>
 
-<Scene chapter="Chapter 4" title="Many machines, one answer">
+**What is it?** Say the first search cluster is three nodes and one big shard. It is fast at lunch and slow at nine in the evening, and adding six more nodes changes nothing: they sit idle while the one node holding the shard is at 100% CPU. A shard lives on one node. To use more machines you must split the index and copy the pieces.
 
-Kestrel's first search cluster is three nodes and one big shard. It is fast at lunch and slow at nine in the evening, and Dev can't make the slow go away by adding nodes. *"I gave it six more machines,"* he says. *"They're idle. The one with the shard is on fire."*
-
-Mara draws the index as a stack of paper, tears it into three, and stacks two photocopies beside each piece. Nine pieces of paper; nine machines. *"Why three pieces,"* she asks, *"and why the copies? And when someone searches for lamps — who answers?"*
-
-</Scene>
-
-The vocabulary (Elasticsearch and OpenSearch use these words; Solr says "collection" and "replica" for similar ideas):
+**The vocabulary** (Elasticsearch and OpenSearch use these words; Solr says "collection" and "replica" for similar ideas):
 
 - An **index** is a logical collection of documents (`listings`).
-- It is split into **primary shards**. Each document lives on exactly one, chosen roughly by `hash(routing key) mod number_of_primaries` — the routing key is the document id unless you choose another. That formula is why **the primary count is fixed when the index is created**; changing it means reindexing (or the split/shrink APIs).
-- Each primary has **replicas**: full copies on other nodes. A write goes to the primary, which forwards it to its replicas. A search can be served by **any** copy.
-- Each shard is a complete Lucene index, made of immutable **segments**.
+- It is split into **primary shards**. Each document lives on exactly one, chosen roughly by `hash(routing key) mod number_of_primaries`. The routing key is the document id unless you choose another. That formula is why **the primary count is fixed when the index is created**: change it and nearly every document maps somewhere else. You reindex, or use the split/shrink APIs.
+- Each primary has **replicas**: full copies on other nodes. A write goes to the primary, which forwards it to the replicas. A search can be served by **any** copy.
+- Each shard is a complete Lucene index made of immutable **segments**.
 
-**Primaries split the data. Replicas multiply read throughput and survive node loss.** You choose primaries for data size and indexing parallelism; you add replicas (and nodes to put them on) for query rate and availability.
+```python
+es.indices.create(index="listings_v1",
+    settings={"number_of_shards": 3, "number_of_replicas": 2})
+```
+
+| | Primary shards | Replicas |
+|---|---|---|
+| What they do | Split the data | Copy the data |
+| Chosen for | Data size, indexing parallelism | Query rate, surviving node loss |
+| Can change later? | No (reindex or split) | Yes, any time |
+| Adding more | More fan-out per query | More read throughput |
+
+<Figure caption="hash(routing key) mod primaries decides the shard. The same arithmetic is why you cannot change the primary count in place. Switch to 'ring' or 'slots' to see why some systems avoid mod-N.">
+  <ShardingSim shards={3} keys={1000} mode="mod" />
+</Figure>
 
 **Why "near-real-time": the life of a write.**
 
@@ -303,12 +527,19 @@ The vocabulary (Elasticsearch and OpenSearch use these words; Solr says "collect
     SEG -->|"flush: fsync segments,\ntrim translog"| DISK[("committed\nto disk")]`} />
 </Figure>
 
-- New documents land in an in-memory buffer and are appended to the **translog** (a write-ahead log); by default the translog is fsynced before the write is acknowledged, so an acknowledged write survives a crash.
-- A **refresh** turns the buffer into a new, small segment that searches can see. Elasticsearch refreshes **every second by default** — on indices that have received a search in the last 30 seconds (check current docs). That one second is where "searchable within about a second" comes from. A get-by-id can see the document sooner; a *search* can't.
-- Segments are never modified. A **delete** marks the document as deleted; an **update** is a delete plus a new document. Background **merges** combine small segments and finally drop deleted documents.
-- A **flush** fsyncs segments to disk (a Lucene commit) and trims the translog.
+1. The document lands in an in-memory buffer and is appended to the **translog** (a write-ahead log). By default the translog is fsynced before the write is acknowledged, so an acknowledged write survives a crash.
+2. A **refresh** turns the buffer into a new, small segment that searches can see. Elasticsearch refreshes **every second by default**, on indices that received a search in the last 30 seconds (check current docs). That is where "searchable within about a second" comes from. A get-by-id can see the document sooner; a *search* cannot.
+3. Segments never change. A **delete** marks the document as deleted; an **update** is a delete plus a new document. Background **merges** combine small segments and finally drop deleted documents.
+4. A **flush** fsyncs segments to disk (a Lucene commit) and trims the translog.
 
-Bulk loads go faster with refresh turned off (`refresh_interval: -1`) and replicas set to zero until the load finishes — a standard tuning step for an initial load or a rebuild.
+| | Refresh | Flush | Merge |
+|---|---|---|---|
+| Makes docs searchable? | Yes | No (already searchable) | No |
+| Makes docs durable? | No (the translog does) | Yes (segments on disk) | No |
+| How often | Every 1 s by default | Automatic, by translog size | Continuous, background |
+| Cost if too frequent | Many tiny segments, slow searches | Disk writes | CPU and I/O |
+
+Bulk loads go faster with refresh off (`refresh_interval: -1`) and replicas at zero until the load ends. That is the standard tuning for an initial load or a rebuild; set both back afterwards.
 
 **The life of a query: scatter-gather.** Elasticsearch's default is *query then fetch*:
 
@@ -324,13 +555,13 @@ Bulk loads go faster with refresh turned off (`refresh_interval: -1`) and replic
     S0-->>C: 20 (id, score)
     S1-->>C: 20 (id, score)
     S2-->>C: 20 (id, score)
-    Note over C: merge 60 → global top 20
+    Note over C: merge 60 into global top 20
     C->>S1: fetch 9 documents
     C->>S0: fetch 7 documents
     C->>S2: fetch 4 documents`} />
 </Figure>
 
-One subtlety worth a sentence: each shard computes IDF from **its own** documents, so the same listing could score slightly differently on different shards. With large, randomly routed shards the difference is negligible; for small indexes, `dfs_query_then_fetch` gathers global statistics first, at the cost of an extra round trip.
+One subtlety: each shard computes IDF from **its own** documents, so one listing can score slightly differently on different shards. With large, randomly routed shards the difference is negligible. For small indexes, `dfs_query_then_fetch` gathers global statistics first at the cost of an extra round trip.
 
 **The tail.** A scatter-gather is as slow as its slowest shard. If each shard is slow 1% of the time, independently:
 
@@ -341,52 +572,82 @@ One subtlety worth a sentence: each shard computes IDF from **its own** document
 | 20 | 1 − 0.99²⁰ ≈ 18% |
 | 100 | 1 − 0.99¹⁰⁰ ≈ 63% |
 
-So: **keep shard counts modest** (each shard also costs memory and coordination), let the engine pick the fastest copy (Elasticsearch's adaptive replica selection does this; check your version), set **timeouts with partial results** where a slightly incomplete ranking is acceptable, and use **custom routing** when a query only concerns one slice — "search my own listings" routed by `seller_id` hits one shard instead of all of them. The slow-shard story in full is in <a href={`${BASE}sd/lessons/core-concepts/#tail-latency`}>Core concepts · The slowest of a hundred</a>.
+So: **keep shard counts modest** (each shard also costs memory and coordination). Let the engine pick the fastest copy (adaptive replica selection; check your version). Set **timeouts with partial results** where a slightly incomplete ranking is acceptable. Use **custom routing** when a query concerns one slice: "search my own listings" routed by `seller_id` hits one shard instead of all of them. The general slow-shard story is in <a href={`${BASE}sd/lessons/core-concepts/#tail-latency`}>Core concepts · The slowest of a hundred</a>.
 
-**Worked numbers: sizing Kestrel's cluster.** Assumptions: one copy ≈ 70 GB (Chapter 2); 2,000 searches/s at peak; about 10 ms of CPU per search per shard; nodes with 16 cores; Elastic's current guidance of shards between roughly 10 GB and 50 GB (check current docs).
+```python
+# index with routing, search with the same routing: one shard, not all three
+es.index(index="listings", id="L123", routing="seller_42", document=doc)
+es.search(index="listings", routing="seller_42", size=20,
+          query={"bool": {"must": {"match": {"title": "lamp"}},
+                          "filter": {"term": {"seller_id": "seller_42"}}}})
+```
 
-1. **Primaries:** 70 GB ÷ 3 ≈ **23 GB per shard** — inside the guideline, and only 3 shards to fan out to.
-2. **CPU:** 2,000 searches/s × 3 shards = 6,000 shard-searches/s × 10 ms = **60 cores** busy. Run at about 60% → **100 cores**.
+A very large seller can make one shard hot. Routing buys speed for small tenants and costs balance for big ones.
+
+**Sizing a cluster, with numbers.** Assumptions: one copy ≈ 70 GB (Chapter 2); 2,000 searches/s at peak; about 10 ms of CPU per search per shard; nodes with 16 cores; Elastic's guidance of shards between roughly 10 GB and 50 GB (check current docs).
+
+1. **Primaries:** 70 GB ÷ 3 ≈ **23 GB per shard**: inside the guideline, and only 3 shards to fan out to.
+2. **CPU:** 2,000 searches/s × 3 shards = 6,000 shard-searches/s × 10 ms = **60 cores** busy. At about 60% utilisation → **100 cores**.
 3. **Nodes and copies:** 100 ÷ 16 ≈ 6.25, so at least 7 nodes. Choose **2 replicas** → 3 × 3 = **9 shard copies on 9 nodes** (144 cores). Lose one node and 8 × 16 = 128 cores still cover 100.
-4. **Memory:** 9 copies × 23 GB = 207 GB across 9 nodes ≈ **23 GB per node** — on, say, 64 GB nodes, small enough to sit in the operating system's page cache, which is where search is fastest.
+4. **Memory:** 9 copies × 23 GB = 207 GB across 9 nodes ≈ **23 GB per node**. On 64 GB nodes that is small enough to sit in the operating system's page cache, where search is fastest.
 
-The chain is the same one the caching lesson taught: **data size picks the primaries; query rate and failure tolerance pick the replicas.**
+The chain matches the caching lesson: **data size picks the primaries; query rate and failure tolerance pick the replicas.**
 
 <Trace title="Size and shape the cluster" steps={cluster} takeaway="Primaries split data; replicas carry reads and survive failures. Fan-out multiplies tail latency, so keep shards few and route single-tenant queries to one shard." />
 
-<Scene title="The interview room" mood="night">
+**Document or term partitioning?** A follow-up interviewers like, framed as Twitter search: billions of tweets, mostly searched within a day of posting.
 
-The Interviewer has just heard you shard a product index by document. She leans back. *"Fine. Now it's Twitter. Billions of tweets, mostly searched within a day of being posted. Would you partition by term instead — so a query for 'eclipse' only goes to the shard that owns 'eclipse'?"*
+<Reveal q="Term or document partitioning for tweet search: what do you say?">
 
-</Scene>
-
-<Reveal q="Term or document partitioning for tweet search — what do you say?">
-
-**Document partitioning, and partition by time as well.** With **term partitioning** (a "global" index), a query touches only the shards owning its terms — attractive for reads. But every tweet with 20 distinct terms becomes writes to up to 20 shards; a two-word query has to ship one term's postings list to the other shard to intersect them; and a trending term turns its owner into a hot shard exactly when everyone is searching it. **Document partitioning** (a "local" index per shard) keeps every write on one shard and spreads load evenly, at the price of scatter-gather on reads — which is the trade almost every production engine makes. For tweets, add **time**: most queries want recent tweets, so the newest index is small, write-hot and in memory, while older time slices are searched only when needed. Twitter described this shape in its Earlybird paper (ICDE 2012).
+**Document partitioning, and partition by time as well.** With **term partitioning** (a "global" index), a query touches only the shards owning its terms, which is attractive for reads. But a tweet with 20 distinct terms becomes writes to up to 20 shards. A two-word query has to ship one term's postings list to the other shard to intersect them. A trending term turns its owner into a hot shard exactly when everyone is searching it. **Document partitioning** (a "local" index per shard) keeps every write on one shard and spreads load evenly, at the price of scatter-gather on reads. Almost every production engine makes that trade. For tweets, add **time**: most queries want recent tweets, so the newest index is small, write-hot and in memory, while older slices are searched only when needed. Twitter described this shape in its Earlybird paper (ICDE 2012).
 
 </Reveal>
 
-**Catch the trap:** "Add more shards to handle more queries." More primaries means more fan-out per query and a worse tail. Throughput comes from replicas.
+**A common slip.** "Add more shards to handle more queries." More primaries means more fan-out per query and a worse tail. Throughput comes from replicas.
 
-<h2 id="sync">Chapter 5 · The listing that wasn’t there</h2>
+**Interview takeaway.** "Data size picks primaries, about 10 to 50 GB each. Query rate and fault tolerance pick replicas. Every query fans out to one copy of each shard, so p99 depends on shard count. Writes are searchable after the next refresh, about a second."
 
-<Scene chapter="Chapter 5" title="The listing that wasn’t there" mood="storm">
+<Quiz id="search-cluster" title="Cluster checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'Search traffic doubles and p99 climbs. The cluster has 3 primaries and 1 replica each, and CPU is high on every node. What is the cheapest sensible change?',
+    options: [
+      'Reindex into 6 primaries',
+      'Add replicas (and nodes to hold them)',
+      'Increase the refresh interval to 30 seconds',
+    ],
+    answer: 1,
+    why: 'Each query needs one copy of each shard, so extra copies spread queries across more nodes. More primaries would add fan-out to every query.',
+    explain: [
+      'It needs a reindex, and every query would then fan out to 6 shards instead of 3, which worsens the tail.',
+      'Correct. Replicas can be added live and raise read throughput. They also add failure tolerance. Cost: disk, memory and a little write overhead.',
+      'A longer refresh reduces indexing overhead, and makes new documents visible later. It does little for query CPU.',
+    ],
+  },
+]} />
 
-A seller writes in, polite and furious. She lowered the price of her armchair on Monday. On Thursday search still shows the old price, and buyers are messaging her about it.
+<RevisionCards id="search-cluster" cards={[
+  { front: 'Why is the primary shard count fixed?', back: 'Documents are placed by hash(routing key) mod primaries. Changing the count remaps almost every document, so you reindex or use split/shrink.' },
+  { front: 'Refresh vs flush?', back: 'Refresh makes new docs searchable (new segment, every 1 s by default). Flush makes them durable on disk and trims the translog. The translog protects acknowledged writes in between.' },
+  { front: 'What does a query cost across shards?', back: 'One request to one copy of every shard, a merge of each shard\'s top results, then a fetch of the winners. It is as slow as the slowest shard.' },
+  { front: 'How do you cut tail latency?', back: 'Fewer shards, adaptive replica selection, timeouts with partial results, custom routing for single-tenant queries.' },
+]} />
 
-Dev finds it in an hour. The listing service wrote Postgres, then called Elasticsearch. Two edits a few milliseconds apart: the database applied them in order; the two index calls arrived in reverse. *"In the cache,"* Theo says, *"a TTL would have fixed this by lunchtime. Search has no TTL. It stays wrong until she edits it again."*
+<ChapterDone id="cluster" />
 
-</Scene>
+<h2 id="sync">Chapter 5 · Indexing pipeline and reindexing</h2>
 
-**The search index is never the source of truth.** It is a **derived, rebuildable** copy of the database. Every design decision in this chapter follows from that sentence.
+**What is it?** The path that gets a change from your database into the search index, and keeps it correct. The one fact to hold: **the search index is never the source of truth.** It is a **derived, rebuildable** copy. Every design decision below follows from that.
 
-**Dual writes** — the application writes the database and then the search engine — fail in three ways:
+**Why do we need a pipeline?** Say a seller lowers her armchair's price on Monday. On Thursday search still shows the old price and buyers are messaging her about it. The listing service wrote Postgres, then called Elasticsearch. Two edits a few milliseconds apart committed in order in the database, but the two index calls arrived in reverse, so the older version overwrote the newer one. A cache would heal at its TTL. A search index stays wrong until the document is edited again.
+
+**Dual writes** (the app writes the database and then the engine) fail in three ways:
 
 1. **Lost writes.** The database commits, the process dies (or the index call fails) before the second write. The listing never appears in search.
-2. **Reordering.** Concurrent writers' index calls arrive in a different order from their database commits, and the older version wins — permanently, as in the scene.
+2. **Reordering.** Concurrent writers' index calls arrive in a different order from their commits, and the older version wins, permanently.
 3. **Divergence over time.** Every bug, timeout and partial failure leaves a small permanent difference. Nobody notices until a seller does.
 
-**The standard answer: change data capture → queue → indexer.**
+**The standard answer: change data capture (CDC) → queue → indexer.**
 
 <Figure caption="One ordered change stream. Partitioning by listing_id keeps each listing's changes in order; external versions make duplicates and replays harmless.">
   <Mermaid code={`flowchart LR
@@ -398,17 +659,55 @@ Dev finds it in an hour. The listing service wrote Postgres, then called Elastic
     AL --> V1[("listings_v1")]`} />
 </Figure>
 
-- **Capture from the log, not the application.** Every committed change — from any service, migration or admin script — flows through the database's write-ahead log. Nothing can forget to notify search. (If you can't tap the log, the <a href={`${BASE}sd/lessons/queues-streams/#outbox`}>outbox pattern</a> gets you the same guarantee.)
+| | Dual write | CDC → queue → indexer |
+|---|---|---|
+| Who tells search about a change | The application, after the commit | The database log: every committed change, from any writer |
+| Crash between the two writes | Update is lost | The log still has it; the indexer catches up |
+| Order | Whatever order the calls arrive | Per-listing order (key = listing_id) |
+| Duplicates and replays | Overwrite blindly | No-ops, by external version |
+| Cost | Simple | A connector, a topic, an indexer to run |
+
+- **Capture from the log, not the application.** Every committed change, from any service, migration or admin script, flows through the write-ahead log. Nothing can forget to notify search. If you cannot tap the log, the <a href={`${BASE}sd/lessons/queues-streams/#outbox`}>outbox pattern</a> gives the same guarantee.
 - **Order per document.** Key the topic by `listing_id` so all changes to one listing land in one partition and are consumed in order.
-- **Versions, not hope.** Index with **external versioning** (Elasticsearch's `version_type=external`): the indexer passes the row's version — a version column, or the log position of the change — and the engine rejects anything not newer than what it already has. Duplicates and replays become no-ops. Some teams instead make the indexer re-read the current row and index that, so a late event can only ever write the latest truth.
-- **Denormalise on purpose.** A search document is flattened: the listing plus the seller's name, the category path, the review average. That makes queries fast and updates wide — renaming a category touches every listing in it. Name which fields are copied and how they get refreshed.
-- **Deletes are events too.** Soft deletes and hard deletes must both produce a change the indexer turns into a delete.
+- **Versions, not hope.** Index with **external versioning**: the indexer passes the row's version (a version column, or the log position of the change) and the engine rejects anything not strictly newer than what it holds. Duplicates and replays become no-ops. Some teams instead make the indexer re-read the current row and index that, so a late event can only write the latest truth.
+- **Denormalise on purpose.** A search document is flattened: the listing plus the seller's name, the category path, the review average. That makes queries fast and updates wide, because renaming a category touches every listing in it. Name which fields are copied and how they are refreshed.
+- **Deletes are events too.** Soft and hard deletes must both produce a delete in the index.
 
-**Worked numbers: how stale is search?** Assume CDC capture about 100 ms, Kafka about 50 ms, the indexer batching for up to 500 ms, then up to 1 s until the next refresh. Worst case ≈ 0.1 + 0.05 + 0.5 + 1.0 = **1.65 s**. Say it as **"searchable within about one to two seconds"** — and say it before you're asked.
+```python
+from elasticsearch import helpers
 
-**Read-your-own-writes for the author.** The seller who just saved a listing must see it. Show "my listings" from the database, or, for that one write, ask the engine to wait for the next refresh before responding (`refresh=wait_for`) — never force a refresh on every write, which creates tiny segments and hurts the whole cluster.
+def to_action(event):
+    row = event["after"]
+    action = {
+        "_op_type": "delete" if event["op"] == "d" else "index",
+        "_index": "listings",                  # an alias, not a physical index
+        "_id": row["id"],
+        "_version": event["lsn"],              # external version: log position
+        "_version_type": "external",
+    }
+    if event["op"] != "d":
+        action["_source"] = to_doc(row)
+    return action
 
-**Reindexing with zero downtime.** You will change analyzers, mappings and shard counts, and none of those can be applied to postings already built. Clients never talk to a physical index; they talk to an **alias**:
+ok, errors = helpers.bulk(es, (to_action(e) for e in batch),
+                          raise_on_error=False, stats_only=False)
+# version_conflict errors mean "a newer version is already here": safe to ignore
+```
+
+**What goes wrong in the pipeline, and what you do:**
+
+| Failure | Effect | Response |
+|---|---|---|
+| Indexer or Kafka down | Lag grows; search serves older data; the database is unaffected | Alert on consumer lag; the log is the buffer; catch up when it is back |
+| Elasticsearch rejects bulk (HTTP 429, overloaded) | Indexer is throttled | Back off with jitter, shrink batches |
+| A poison document (mapping error) | One event fails forever | Send it to a dead-letter queue after N tries; do not block the partition |
+| Source and index drift (a bug) | Silent wrong results | A periodic reconciliation job comparing counts and sampled checksums; reindex on mismatch |
+
+**How stale is search?** Assume CDC capture about 100 ms, Kafka about 50 ms, the indexer batching for up to 500 ms, then up to 1 s until the next refresh. Worst case ≈ 0.1 + 0.05 + 0.5 + 1.0 = **1.65 s**. Say it as **"searchable within about one to two seconds"**, and say it before you are asked.
+
+**Read-your-own-writes for the author.** The seller who just saved a listing must see it. Show "my listings" from the database, or, for that one write, ask the engine to wait for the next refresh before responding (`refresh="wait_for"`). Never force a refresh on every write: it creates tiny segments and hurts the whole cluster.
+
+**Reindexing with zero downtime.** You will change analyzers, mappings and shard counts, and none of those can be applied to postings already built. Clients talk to an **alias**, never to a physical index:
 
 1. Create `listings_v2` with the new mapping.
 2. **Record the stream position**, then backfill v2 from a consistent snapshot of the database (or the engine's reindex API), indexing each row with the same external version the live stream uses.
@@ -416,7 +715,15 @@ Dev finds it in an hour. The listing service wrote Postgres, then called Elastic
 4. Verify: document counts, sample queries, relevance checks.
 5. **Atomically move the alias** `listings` from v1 to v2. Keep v1 for a while as the rollback.
 
-<Mermaid code={`sequenceDiagram
+```python
+es.indices.update_aliases(actions=[
+    {"remove": {"index": "listings_v1", "alias": "listings"}},
+    {"add":    {"index": "listings_v2", "alias": "listings"}},
+])   # both actions apply as one atomic step
+```
+
+<Figure caption="Zero-downtime reindex. The offset recorded before the backfill is what guarantees no change falls in the gap.">
+  <Mermaid code={`sequenceDiagram
     participant Ops
     participant V2 as listings_v2
     participant K as Kafka
@@ -425,74 +732,182 @@ Dev finds it in an hour. The listing service wrote Postgres, then called Elastic
     Ops->>V2: backfill from DB snapshot
     K->>V2: replay from X (versions dedupe)
     Ops->>V2: verify counts and queries
-    Ops->>A: swap v1 → v2 (atomic)`} />
+    Ops->>A: swap v1 to v2 (atomic)`} />
+</Figure>
 
-**If the cluster is destroyed**, the design pays off: reindex from the database. Assume 20,000 documents per second of bulk indexing (benchmark yours): 50 million ÷ 20,000 = 2,500 s ≈ **42 minutes**. Snapshots of the search cluster make recovery faster; they don't change the story. Meanwhile search is **degraded, not lost** — show a "search is catching up" banner, fall back to category browsing — and no data is gone, because none of it lived only in search.
+**If the cluster is destroyed**, the design pays off: reindex from the database. Assume 20,000 documents per second of bulk indexing (benchmark yours): 50 million ÷ 20,000 = 2,500 s ≈ **42 minutes**. Snapshots of the cluster make recovery faster; they do not change the story. Meanwhile search is **degraded, not lost**: show a "search is catching up" banner, fall back to category browsing. No data is gone, because none of it lived only in search.
 
 <Trace title="Keep the copy honest" steps={sync} takeaway="One ordered change stream (CDC → Kafka keyed by id → indexer with external versions). Aliases make reindexing invisible. The database is the truth; the index is rebuildable." />
 
 <Reveal q="Why not have the listing service publish its own 'listing changed' events instead of tapping the WAL?">
 
-You can — if the service publishes them through a transactional outbox, so the event is committed in the same transaction as the row. Publishing to Kafka directly after the commit is just a dual write with a different second system: a crash between the two loses the event. Log-based CDC has a further advantage: it sees writes that bypass the service — migrations, backfills, other teams' jobs.
+You can, if the service publishes them through a transactional outbox, so the event is committed in the same transaction as the row. Publishing to Kafka directly after the commit is just a dual write with a different second system: a crash between the two loses the event. Log-based CDC has a further advantage: it sees writes that bypass the service, such as migrations, backfills and other teams' jobs.
 
 </Reveal>
 
-**Catch the trap:** "We'll write to Elasticsearch when we write to the database." That is a dual write, and a search index has no TTL to heal the races. Say "CDC into a queue keyed by id, with versioned upserts", and say the one-to-two-second lag.
+**A common slip.** "We'll write to Elasticsearch when we write to the database." That is a dual write, and a search index has no TTL to heal the races. Say "CDC into a queue keyed by id, with versioned upserts", and say the one-to-two-second lag.
 
-<h2 id="pagination">Chapter 6 · Page five hundred</h2>
+**Interview takeaway.** "The database is the truth. CDC reads its log into Kafka keyed by id, and an indexer upserts with external versions, so order and replays are safe. Search lags by one to two seconds. Mapping changes go to a new index behind an alias, and if the cluster dies I reindex in under an hour."
 
-<Scene chapter="Chapter 6" title="Page five hundred" mood="dusk">
+<Quiz id="search-sync" title="Pipeline checkpoint" questions={[
+  {
+    kind: 'failure',
+    q: 'The indexer crashes for 20 minutes during peak. Postgres is healthy and Kafka has 7 days of retention. What do users see, and what do you do?',
+    options: [
+      'Searches fail until the indexer is back',
+      'Search keeps working with stale results; new and changed listings appear after the indexer resumes from its committed offset and catches up',
+      'Data is lost for those 20 minutes and must be re-entered',
+    ],
+    answer: 1,
+    why: 'The queue decouples capture from indexing. The lag grows, nothing is lost, and versioned upserts make the catch-up safe.',
+    explain: [
+      'Queries hit the search cluster, not the indexer. The index just stops getting new updates.',
+      'Correct. Alert on consumer lag, scale the indexer if catch-up is slow, and have a banner or database fallback for the author.',
+      'The log and Kafka hold every change; the indexer resumes from its offset.',
+    ],
+  },
+  {
+    kind: 'scenario',
+    q: 'You must switch the title field to a new analyzer with search live. Which plan is right?',
+    options: [
+      'PUT the new mapping on the live index; old documents will use it',
+      'Create listings_v2, record the stream offset, backfill, replay from the offset, verify, then atomically swap the alias',
+      'Delete the index overnight and rebuild',
+    ],
+    answer: 1,
+    why: 'Postings are built at index time by the analyzer. A different analyzer means different postings, so every document must be re-analysed into a new index.',
+    explain: [
+      'You cannot change an existing field\'s analyzer in place, and even if you could, old postings would still reflect the old analysis.',
+      'Correct. The recorded offset closes the gap between backfill and live traffic; external versions deduplicate the overlap.',
+      'About 42 minutes of empty or partial search, for something that can be done with zero downtime.',
+    ],
+  },
+]} />
 
-Dev's slowest-query dashboard has a strange top entry: the same IP address, requesting page 1, page 2, page 3 of "furniture"… all the way to page 500, where every request suddenly fails. A partner is scraping the catalogue one page at a time.
+<RevisionCards id="search-sync" cards={[
+  { front: 'Why is a dual write to the DB and the engine unsafe?', back: 'Lost writes on a crash between the two, reordering of concurrent updates (the older wins), and silent drift. No TTL heals a search index.' },
+  { front: 'What does CDC → Kafka → indexer give you?', back: 'Capture from the log (nothing forgets to notify), order per key (partition by id), and versioned upserts so duplicates and replays are harmless.' },
+  { front: 'How stale is search, and how do you explain it?', back: 'About 1 to 2 s: CDC + Kafka + batching + the 1 s refresh. Say it first. Authors read their own writes from the DB or refresh=wait_for.' },
+  { front: 'Zero-downtime reindex in five steps?', back: 'New index; record the offset, backfill; replay from the offset; verify; atomically swap the alias. Keep the old index for rollback.' },
+]} />
 
-*"Page 500 takes longer than page 1,"* Iris says. *"Why? It's still only twenty results."*
+<ChapterDone id="sync" />
 
-</Scene>
+<h2 id="pagination">Chapter 6 · Deep pagination</h2>
 
-With **from/size** paging, the coordinator can't know which listings are the 9,981st to 10,000th overall unless every shard sends its own top `from + size`. Every shard sorts that many; the coordinator merges all of them and throws nearly everything away.
+**What is it?** Page 1 of results is cheap. Page 500 is not. Say a partner scrapes the catalogue one page at a time and every request from page 400 on is slower than the one before, until page 500 suddenly fails. Each page still returns only 20 results. Why does depth cost so much?
+
+**Why does from/size get expensive?** The coordinator cannot know which listings are the 9,981st to 10,000th overall unless every shard sends its own top `from + size`. Every shard sorts that many; the coordinator merges them all and throws nearly everything away.
 
 | Page (size 20, 3 shards) | from + size per shard | Entries the coordinator merges | Returned |
 |---|---|---|---|
 | 1 | 20 | 60 | 20 |
 | 500 | 10,000 | 30,000 | 20 |
-| 501 | 10,020 | refused | — |
+| 501 | 10,020 | refused | none |
 
-Page 501 fails because Elasticsearch, by default, refuses `from + size` beyond **10,000** (`index.max_result_window`, check current docs) — a safety limit, not a bug. Raising it only lets one bored scraper hurt everyone.
+Page 501 fails because Elasticsearch, by default, refuses `from + size` beyond **10,000** (`index.max_result_window`; check current docs). It is a safety limit, not a bug. Raising it only lets one bored scraper hurt everyone.
 
-**search_after: a cursor instead of an offset.** Sort by something with a **unique tiebreaker** — `(score, listing_id)` or `(created_at, listing_id)` — and ask for "the next 20 after this sort key". Each shard returns only 20, whatever the depth. Wrap the session in a **point-in-time** so refreshes don't shift results between pages. Elastic now recommends `search_after` with a point-in-time over the older scroll API for deep pagination.
+```python
+# page 500 the expensive way: every shard sorts and returns 10,000
+es.search(index="listings", query=q, from_=9980, size=20)
+```
 
-| | from/size | search_after (+ point-in-time) |
+**How does a cursor fix it?** **search_after** replaces an offset with "the next 20 after this sort key". Sort by something with a **unique tiebreaker**, such as `(score, listing_id)` or `(created_at, listing_id)`. Each shard returns only 20, whatever the depth. Wrap the session in a **point-in-time (PIT)** so refreshes do not shift results between pages.
+
+```python
+pit = es.open_point_in_time(index="listings", keep_alive="2m")["id"]
+
+body = dict(query=q, size=20, pit={"id": pit, "keep_alive": "2m"},
+            sort=[{"_score": "desc"}, {"listing_id": "asc"}])
+page = es.search(**body)
+
+hits = page["hits"]["hits"]                      # page 1
+last = hits[-1]["sort"]                          # e.g. [4.81, "L8841"]
+page2 = es.search(**body, search_after=last)     # next 20, constant cost
+
+es.close_point_in_time(id=pit)
+```
+
+Elastic now recommends `search_after` with a PIT over the older scroll API for deep paging (check current docs for your version). A PIT also adds an implicit tiebreaker if you omit one.
+
+| | from/size | search_after (+ PIT) |
 |---|---|---|
-| Cost of page n | grows with n (shards × (from + size)) | constant |
-| Jump to page 37 | yes | no — next/previous only |
-| Stable across refreshes | no — results can shift | yes, with a point-in-time |
-| Use for | the first few pages of a results UI | infinite scroll, exports, deep crawls |
+| Cost of page n | Grows with n: shards × (from + size) | Constant |
+| Jump to page 37 | Yes | No: next/previous only |
+| Stable across refreshes | No: results can shift | Yes, with a PIT |
+| Use for | The first few pages of a results UI | Infinite scroll, exports, deep crawls |
 
-The product answer matters as much as the API: **nobody reads page 500.** Cap browsable depth (say, 50 pages), use cursors for infinite scroll, and give bulk consumers an export path — a cursor walk, or better, a data feed from the source of truth.
+<Figure caption="Offset paging makes every shard sort from + size entries; cursor paging asks each shard for one page after a key.">
+  <Mermaid code={`flowchart LR
+    subgraph O["from + size (page 500)"]
+      A1["shard 0\ntop 10,000"] --> M1["coordinator\nmerge 30,000"]
+      A2["shard 1\ntop 10,000"] --> M1
+      A3["shard 2\ntop 10,000"] --> M1
+      M1 --> R1["return 20"]
+    end
+    subgraph C["search_after"]
+      B1["shard 0\n20 after key"] --> M2["coordinator\nmerge 60"]
+      B2["shard 1\n20 after key"] --> M2
+      B3["shard 2\n20 after key"] --> M2
+      M2 --> R2["return 20"]
+    end`} />
+</Figure>
 
-<Trace title="Page through results" steps={pagination} takeaway="from/size costs shards × (from + size) per page. Cursors (search_after + point-in-time) cost one page per page but can't jump. Cap depth; exports get their own path." />
+The product answer matters as much as the API: **nobody reads page 500.** Cap browsable depth (say, 50 pages), use cursors for infinite scroll, and give bulk consumers an export path: a cursor walk, or better, a data feed from the source of truth.
 
-**Catch the trap:** "Use OFFSET/LIMIT like in SQL." In a sharded index, the offset is multiplied by the number of shards, and the database version has the same problem anyway — it still reads and discards every skipped row.
+<Trace title="Page through results" steps={pagination} takeaway="from/size costs shards × (from + size) per page. Cursors (search_after + point-in-time) cost one page per page but cannot jump. Cap depth; exports get their own path." />
+
+**A common slip.** "Use OFFSET/LIMIT like in SQL." In a sharded index the offset is multiplied by the number of shards. The SQL version has the same problem anyway: it still reads and discards every skipped row.
+
+**Interview takeaway.** "From/size makes every shard sort from-plus-size entries, so deep pages are expensive and capped at 10,000 by default. For infinite scroll and exports I use search_after with a unique tiebreaker inside a point-in-time, and I cap browsable depth."
+
+<Quiz id="search-pagination" title="Pagination checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'Users page by clicking 1, 2, 3 ... up to 20, and a "next" button on a mobile infinite scroll. Which pagination for each?',
+    options: [
+      'search_after for both',
+      'from/size for the numbered pages (capped at a small depth) and search_after for infinite scroll',
+      'from/size for both, with max_result_window raised to 1,000,000',
+    ],
+    answer: 1,
+    why: 'Numbered pages need random access, which only offsets give, and shallow depth keeps the cost small. Infinite scroll only needs "next", which a cursor does cheaply and stably.',
+    explain: [
+      'A cursor cannot jump to page 17, so numbered pagination would lose a feature.',
+      'Correct. Match the mechanism to the UX, and cap the depth for offset paging.',
+      'A huge window makes every deep page expensive for every shard, and one scraper could degrade the whole cluster.',
+    ],
+  },
+]} />
+
+<RevisionCards id="search-pagination" cards={[
+  { front: 'Why is page 500 slower than page 1 with from/size?', back: 'Each shard must produce its top from + size entries, and the coordinator merges shards × (from + size) to return 20.' },
+  { front: 'What is the default depth limit and why?', back: 'index.max_result_window = 10,000 hits (check docs). A guard against expensive deep sorts.' },
+  { front: 'What does search_after need?', back: 'A sort with a unique tiebreaker (score or date plus id), and ideally a point-in-time for a stable view.' },
+  { front: 'What can search_after not do?', back: 'Jump to an arbitrary page. It supports next (and previous with reversed sorts) only.' },
+]} />
+
+<ChapterDone id="pagination" />
 
 <Part n="Part Three" title="Typeahead">
 
-The bank's Typeahead question, in full. It is not search: it is prefix lookup under a budget that leaves no room for a search cluster.
+The Typeahead question in short form. It is not search: it is prefix lookup under a budget that leaves no room for a search cluster. The full design walkthrough is the <a href={`${BASE}sd/lessons/typeahead/`}>Typeahead lesson</a>; this part is the handoff, so you know where search ends and typeahead begins.
 
 </Part>
 
-<h2 id="typeahead">Chapter 7 · Every keystroke is a query</h2>
+<h2 id="typeahead">Chapter 7 · Typeahead is not search</h2>
 
-<Scene chapter="Chapter 7" title="Every keystroke is a query" mood="dawn">
+**What is it?** Suggestions under the search box: type "l" and see "lamp", "ladder", "laptop stand". **How is it different from search?** The input is a **prefix**, the output a few **likely completions**, it fires on **every keystroke**, and it must feel instant: suggestions that arrive after the user has typed further are worse than none.
 
-Iris wants suggestions under the search box. *"Like everyone has. You type 'l' and it says lamp, ladder, laptop stand."*
-
-The first prototype sends each keystroke to the search cluster. In the demo it feels like typing through syrup: the suggestions for "la" arrive after you've typed "lamp", and then, briefly, the box shows suggestions for "la" again.
-
-Mara writes **100 ms** on the board and draws a line under it. *"That's the whole budget. Where does it go?"*
-
-</Scene>
-
-**Typeahead is a different problem from search.** The input is a **prefix**, not words; the output is a handful of **likely completions**, not ranked documents; it fires on **every keystroke**; and it must feel instant — suggestions that arrive after the user has typed further are worse than none. Treat it as its own system.
+| | Search | Typeahead |
+|---|---|---|
+| Input | Complete words or a phrase | A prefix, often one or two letters |
+| Output | Ranked documents | 5 to 10 completion strings |
+| Triggered | Once per submit | Every keystroke (after debounce) |
+| Latency target | Hundreds of milliseconds | About 100 ms, end to end |
+| Data | The inverted index of documents | Precomputed suggestions from query logs |
+| Freshness | Seconds | Hours, plus a small trending layer |
+| Shared with search | | Only the query logs |
 
 **The latency budget.** From keystroke to suggestions painted, about 100 ms. Each line is an assumption you would state out loud:
 
@@ -505,50 +920,74 @@ Mara writes **100 ms** on the board and draws a line under it. *"That's the whol
 | Headroom for jitter (p99, not average) | 20 ms |
 | **Total** | **100 ms** |
 
-Read the table backwards and the architecture falls out:
+Read it backwards and the architecture falls out:
 
-- A round trip across an ocean is often 100–200 ms by itself → suggestions are served **in every region**, hot prefixes **at the edge**.
-- A database query (several to tens of milliseconds, with a tail) or a search-cluster scatter-gather would eat most of the server budget → the answer must be **precomputed and in memory**: one lookup, no fan-out.
+- A round trip across an ocean is often 100 to 200 ms by itself, so suggestions are served **in every region**, hot prefixes **at the edge**.
+- A database query (milliseconds to tens of milliseconds, with a tail) or a search-cluster scatter-gather would eat most of the server budget, so the answer must be **precomputed and in memory**: one lookup, no fan-out.
 - The client is part of the system: debounce, cancel stale requests, cache what it already has.
 
-**Worked numbers: requests per second.** Assume 20 million daily users, 5 searches each, about 8 keystrokes per search, peak = 3 × average.
+<Figure caption="One keystroke, end to end. Most requests should end at the edge or the in-region service; none should reach the search cluster.">
+  <Mermaid code={`flowchart LR
+    K["keystroke"] --> D["debounce\n30 ms"]
+    D --> C["client cache\nprefix to list"]
+    C -->|"miss"| E["edge cache\nhot prefixes"]
+    E -->|"miss"| S["suggestion service\nin region, in memory"]
+    S --> R["top-K list\nless than 10 ms"]`} />
+</Figure>
+
+**Requests per second.** Assumptions: 20 million daily users, 5 searches each, about 8 keystrokes per search, peak = 3 × average.
 
 - Keystrokes: 20M × 5 × 8 = **800 million per day** ≈ 9,259/s average ≈ **27,800/s at peak**.
 - Assume debouncing and client-side reuse cut that to about 4 requests per search: 400 million per day ≈ 4,630/s average ≈ **13,900/s at peak**.
-- If an edge cache answers about a third of those (the hot short prefixes, below), the origin sees about **9,300/s** at peak. An in-memory lookup costs microseconds, so a handful of nodes per region covers it; you run several per region for availability, not capacity.
+- If an edge cache answers about a third of those (the hot short prefixes), the origin sees about **9,300/s** at peak. An in-memory lookup costs microseconds, so a handful of nodes per region cover it. You run several per region for availability, not capacity.
 
-**The client half** (interviewers love that you remember it exists):
+**The client half** (interviewers like that you remember it exists):
 
-- **Debounce**: send only after a short pause in typing, so fast bursts collapse into one request. Longer debounce = fewer requests, but a laggier feel; it spends latency budget.
-- **Ignore out-of-order responses**: tag each request with its prefix or a sequence number and paint only the response for what's in the box *now*; abort superseded requests.
-- **Client cache**: keep recent prefix → suggestions. Backspacing from "lamp" to "lam" costs nothing. If the server said "la" has only 3 completions (fewer than K), every "lam…" completion is among them — filter locally.
+- **Debounce**: send only after a short pause in typing, so bursts collapse into one request. A longer debounce means fewer requests but a laggier feel; it spends latency budget.
+- **Ignore out-of-order responses**: tag each request with its prefix or a sequence number, paint only the response for what is in the box *now*, and abort superseded requests.
+- **Client cache**: keep recent prefix → suggestions. Backspacing from "lamp" to "lam" costs nothing. If the server said "la" has only 3 completions (fewer than K), every "lam…" completion is among them, so filter locally.
 
-**Cache the hot prefixes — with all four promises.** There are only 26 one-letter, 676 two-letter and 17,576 three-letter lowercase ASCII prefixes: 18,278 keys in all, and they carry a large share of requests. Cache their responses at the edge, and say it the way the <a href={`${BASE}sd/lessons/caching/`}>caching lesson</a> taught you:
+**Cache the hot prefixes, with all four promises.** There are only 26 one-letter, 676 two-letter and 17,576 three-letter lowercase ASCII prefixes: 18,278 keys, carrying a large share of requests. Cache their responses at the edge, and say it the way the <a href={`${BASE}sd/lessons/caching/`}>caching lesson</a> taught:
 
-- **Key**: `sugg:v{build}:{locale}:{normalised prefix}` — lowercased, trimmed, Unicode-normalised.
-- **TTL and why**: until the next offline build (say an hour, jittered); suggestions are popularity data, not facts.
-- **Invalidation**: the build number is in the key, so a new build simply uses new keys; old ones age out.
+- **Key**: `sugg:v{build}:{locale}:{normalised prefix}`, lowercased, trimmed, Unicode-normalised.
+- **TTL and why**: until the next offline build (say an hour, jittered). Suggestions are popularity data, not facts.
+- **Invalidation**: the build number is in the key, so a new build uses new keys and old ones age out.
 - **Failure**: an edge miss falls through to the in-region service, which holds the whole dataset in memory. Nothing behind it can stampede. Personalised suggestions are **not** cached at the edge; the client merges the user's own history locally.
 
 <Trace title="Spend the 100 ms" steps={typeahead} takeaway="Precomputed, in memory, in region, hot prefixes at the edge. The client debounces, caches, and paints only the response for the current prefix." />
 
-**Catch the trap:** "Typeahead queries Elasticsearch on each keystroke." It can work for a small internal tool, but at scale it spends the whole budget on a scatter-gather built for a different problem. Say why you separated the systems.
+**When would search-on-keystroke be acceptable?** For a small internal tool with a few users, querying Elasticsearch per keystroke works and saves building a second system. At consumer scale it spends the whole budget on a scatter-gather built for a different problem. Say why you separated the systems.
 
-<h2 id="trie">Chapter 8 · A tree that already knows</h2>
+**Interview takeaway.** "Typeahead is a separate system: prefix in, a few completions out, under 100 ms per keystroke. So the suggestions are precomputed and held in memory in each region, hot prefixes sit at the edge, and the client debounces and drops stale responses."
 
-<Scene chapter="Chapter 8" title="A tree that already knows">
+<Quiz id="search-typeahead" title="Typeahead budget checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'Your typeahead calls the central search cluster (one region) on every keystroke. Users in Asia see suggestions that lag two or three characters behind. What do you change first?',
+    options: [
+      'Add more shards to the search cluster',
+      'Serve precomputed suggestions from an in-memory service in each region, with hot prefixes cached at the edge',
+      'Remove the client debounce to send requests sooner',
+    ],
+    answer: 1,
+    why: 'The budget is dominated by distance and by a scatter-gather. The fix removes both: nearby data, one lookup.',
+    explain: [
+      'More shards means more fan-out and a worse tail. It also does not shorten the distance to the user.',
+      'Correct. A cross-ocean round trip alone can exceed 100 ms. Moving the data near the user fixes it.',
+      'Without debounce you send more requests, so there is more load and more out-of-order responses. It does nothing for latency per request.',
+    ],
+  },
+]} />
 
-Theo draws a tree of letters: c, then ca, then car and cat, then care and card under car. *"Walk the letters the user typed,"* he says, *"and everything below you is a completion."*
+<ChapterDone id="typeahead" />
 
-Mara nods, then asks the question that matters. *"How many nodes are below 'c'?"* Theo doesn't need to count. *"Hundreds of thousands. Millions, on a big enough site."*
+<h2 id="trie">Chapter 8 · Trie with top-K</h2>
 
-</Scene>
+**What is it?** A **trie** (prefix tree) stores strings so every path from the root spells a prefix. To complete "ca", walk c → a; every query in the subtree below starts with "ca". The data-structure side of tries (insert, search, wildcard) is in the <a href={`${BASE}dsa/lessons/tries/`}>Tries lesson</a>.
 
-A **trie** (prefix tree) stores strings so that every path from the root spells a prefix. To complete "ca", walk c → a; every query in the subtree below starts with "ca". The DSA side of tries — insert, search, wildcard — is in the <a href={`${BASE}dsa/lessons/tries/`}>Tries lesson</a>.
+**What is the problem?** For a short prefix the subtree is enormous. Finding its 10 most popular completions at query time means visiting every node below: hundreds of thousands or more for "c", on every keystroke.
 
-**The problem**: for a short prefix the subtree is enormous. Finding its 10 most popular completions at query time means visiting every node below — hundreds of thousands or more for "c" — on every keystroke.
-
-**The trick: store the top-K at every node, precomputed.** Each node carries its K best completions (K = 5 or 10). A query walks to the node — one hop per character typed — and returns the list it finds there. **Lookup cost: O(length of the prefix)**, microseconds, no matter how big the subtree.
+**The trick: store the top-K at every node, precomputed.** Each node carries its K best completions (K = 5 or 10). A query walks to the node, one hop per character typed, and returns the list it finds. **Lookup cost: O(length of the prefix)**, microseconds, however big the subtree.
 
 <Figure caption="Each node carries the top completions of its whole subtree, computed bottom-up. 'ca' merges its children's lists; the query never visits the subtree.">
   <Mermaid code={`flowchart TD
@@ -561,9 +1000,45 @@ A **trie** (prefix tree) stores strings so that every path from the root spells 
     CAT --> CATA["…catalog ✓ 500"]`} />
 </Figure>
 
-**Building it bottom-up.** A node's top-K is the best K of its own query (if it is one) plus its children's top-K lists. That merge is enough: any query in a node's top K must also be in the top K of whichever child's subtree contains it. So one pass from the leaves up builds every list.
+**Building it bottom-up.** A node's top-K is the best K of its own query (if it is one) plus its children's top-K lists. That merge is enough: any query in a node's top K must also be in the top K of whichever child's subtree contains it. One pass from the leaves up builds every list.
 
-**The cost moved to writes — and then offline.** A search for "cardigan" should raise its rank in the lists of c, ca, car, card… Doing that on every search, on every serving replica, with locks on the hottest nodes, is the wrong trade. Instead:
+```python
+import heapq
+
+class Node:
+    __slots__ = ("kids", "own", "top")
+    def __init__(self):
+        self.kids, self.own, self.top = {}, None, []
+
+def build(counts, k=2):                      # counts: {"car": 900, "cat": 700, ...}
+    root = Node()
+    for query, n in counts.items():
+        node = root
+        for ch in query:
+            node = node.kids.setdefault(ch, Node())
+        node.own = (n, query)
+    def fill(node):
+        cands = [node.own] if node.own else []
+        for child in node.kids.values():
+            fill(child)
+            cands += child.top
+        node.top = heapq.nlargest(k, cands)  # best k by count
+    fill(root)
+    return root
+
+def suggest(root, prefix):
+    node = root
+    for ch in prefix:
+        node = node.kids.get(ch)
+        if node is None:
+            return []
+    return [q for _, q in node.top]
+
+trie = build({"car": 900, "card": 400, "care": 150, "cat": 700, "catalog": 500})
+print(suggest(trie, "ca"))   # ['car', 'cat']
+```
+
+**The cost moved to writes, and then offline.** A search for "cardigan" should raise its rank in the lists of c, ca, car, card, and so on. Doing that on every search, on every serving replica, with locks on the hottest nodes, is the wrong trade. Instead:
 
 <Figure caption="The offline loop. Serving nodes only ever read an immutable snapshot and swap to the next one.">
   <Mermaid code={`flowchart LR
@@ -576,58 +1051,141 @@ A **trie** (prefix tree) stores strings so that every path from the root spells 
     TR["trending stream\nlast hour counts"] -.->|"merge at query time"| N1`} />
 </Figure>
 
-1. **Aggregate** query logs on a schedule (hourly or daily, a batch or streaming job), with **time decay** so this week beats last year: count each day's searches with a weight that halves every few days.
+1. **Aggregate** query logs on a schedule (hourly or daily, batch or streaming), with **time decay** so this week beats last year: count each day's searches with a weight that halves every few days.
 2. **Filter.** Remove offensive and unsafe suggestions with a blocklist, and only suggest queries searched by at least N **distinct** users, so one person's private search (a name, an address) can never appear in someone else's box.
 3. **Build** the trie with top-K lists, serialise it into a compact, read-only format, and ship the snapshot.
 4. **Swap.** Each serving node loads the new snapshot beside the old one and flips a pointer. Immutable data means no locks on the read path.
 
-**Freshness is hours, not milliseconds — say that proudly; it is the right trade.** For sudden trends, add a small real-time layer: a stream job counts recent queries over a short window (a count-min sketch plus a heap of current leaders — see <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series · top-K</a>) and the service merges those few fresh phrases into the trie's list at query time.
+**Freshness is hours, not milliseconds, and that is the right trade.** For sudden trends, add a small real-time layer: a stream job counts recent queries over a short window (a count-min sketch plus a heap of current leaders; see <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series · top-K</a>), and the service merges those few fresh phrases into the trie's list at query time.
 
-**This is a pattern, not a trie fact.** Pay at (offline) write time so reads are a lookup — the same trade as <a href={`${BASE}sd/lessons/pattern-fanout/`}>fan-out-on-write</a> and materialized views. Recognising the shape is the transferable skill.
+**This is a pattern, not a trie fact.** Pay at (offline) write time so reads are a lookup: the same trade as <a href={`${BASE}sd/lessons/pattern-fanout/`}>fan-out-on-write</a> and materialized views. Recognising the shape is the transferable skill.
 
-**Worked numbers: does it fit in memory?** Assume the 1 million most popular queries, about 20 characters each.
+**Does it fit in memory?** Assume the 1 million most popular queries, about 20 characters each.
 
 - Raw suggestions: 1M × ~100 B (string, count, metadata) ≈ **100 MB**.
 - Trie nodes: at most one per character of every query, so **≤ 20 million** (shared prefixes make it fewer).
-- Top-10 lists as 4-byte query ids: 40 B per node, plus ~20 B of node structure ≈ 60 B → 20M × 60 B = **1.2 GB** at most.
+- Top-10 lists as 4-byte query ids: 40 B per node plus ~20 B of node structure ≈ 60 B → 20M × 60 B = **1.2 GB** at most.
 
-About a gigabyte, worst case: it fits in memory on every serving node in every region. (A naive object-per-node trie in Java can be many times larger — another reason to build a compact format offline.) At much larger scale — many languages, hundreds of millions of queries — **shard by prefix**: by first characters with ranges balanced by traffic (far more queries start with "s" than with "x"), or by hash of the prefix if you store prefixes as keys (next chapter).
+About a gigabyte, worst case: it fits in memory on every serving node in every region. A naive object-per-node trie in Java or Python can be many times larger, another reason to build a compact format offline. At much larger scale (many languages, hundreds of millions of queries), **shard by prefix**: by first characters with ranges balanced by traffic (far more queries start with "s" than with "x"), or by hash of the prefix if you store prefixes as keys (next chapter).
 
 <Trace title="Build the top-K trie" steps={trie} takeaway="Top-K at each node, built bottom-up offline from logs, swapped in as a snapshot. A small trending layer handles freshness. Reads are O(prefix length)." />
 
 <Reveal q="Why not rank suggestions by how often the completion appears in listings, instead of by what people search?">
 
-Because typeahead predicts what *this user is about to type*, and the best evidence for that is what other users typed and then searched (better still, searched and clicked). Catalogue frequency suggests words sellers use, not words buyers want — "vintage" is everywhere in titles but rarely typed first. Many systems blend both: query logs for popular suggestions, catalogue terms to cover new or rare items, and the user's own history on the client.
+Because typeahead predicts what *this user is about to type*, and the best evidence is what other users typed and then searched (better still, searched and clicked). Catalogue frequency suggests words sellers use, not words buyers want: "vintage" is everywhere in titles but rarely typed first. Many systems blend both: query logs for popular suggestions, catalogue terms to cover new or rare items, and the user's own history on the client.
 
 </Reveal>
 
-**Catch the trap:** "Walk the subtree and sort by count." Correct output, wrong cost: for one-letter prefixes it touches hundreds of thousands of nodes or more per keystroke. The answer is the precomputed top-K.
+**A common slip.** "Walk the subtree and sort by count." Correct output, wrong cost: for one-letter prefixes it touches hundreds of thousands of nodes per keystroke. The answer is the precomputed top-K.
+
+**Interview takeaway.** "Each trie node stores its subtree's top 10, built bottom-up offline from decayed, filtered query logs and swapped in as an immutable snapshot. A lookup is O(prefix length). A streaming top-K merged at query time handles trends."
+
+<Quiz id="search-trie" title="Trie checkpoint" questions={[
+  {
+    kind: 'tradeoff',
+    q: 'A teammate proposes updating each trie node\'s top-K live on every search, so suggestions are always fresh. What is the main problem?',
+    options: [
+      'Tries cannot be updated at all',
+      'Every search would write to every ancestor node (one per character) on every serving replica, with locks on hot nodes; and lowering a count cannot be handled correctly without rescanning the subtree',
+      'It would make lookups O(n) instead of O(prefix)',
+    ],
+    answer: 1,
+    why: 'Live increments are cheap to reason about, but they put write contention on the read path, and decreases or decay break the "top-K per node is enough" invariant. Offline rebuild plus a small trending layer avoids both.',
+    explain: [
+      'Tries can be updated. The issue is the cost and correctness of doing it live at this volume.',
+      'Correct. Hot top nodes ("c", "ca") take every write. And if a cached query\'s count falls, the right replacement might not be in the list.',
+      'Lookups stay O(prefix). It is the write path that gets expensive.',
+    ],
+  },
+]} />
+
+<RevisionCards id="search-trie" cards={[
+  { front: 'Why store top-K at every trie node?', back: 'So a lookup is a walk of the prefix, O(length), instead of visiting hundreds of thousands of nodes in the subtree on each keystroke.' },
+  { front: 'How is a node\'s top-K built?', back: 'Bottom-up: the best K of its own query plus its children\'s top-K lists. Any subtree winner is already in a child\'s list.' },
+  { front: 'Why is the build offline, and how fresh is it?', back: 'Live updates mean writes on every ancestor node on every replica. Offline hourly build and snapshot swap: freshness of hours, plus a small trending layer.' },
+  { front: 'What filters go into the build?', back: 'Time decay, a blocklist, and a minimum count of distinct users per query so private searches never surface.' },
+]} />
+
+<ChapterDone id="trie" />
 
 <h2 id="prefix-stores">Chapter 9 · Three ways to answer a prefix</h2>
 
-<Scene chapter="Chapter 9" title="Three ways to answer a prefix" mood="dusk">
-
-Two weeks later, Iris is back. *"Oh, and also — sellers want suggestions when they search their own listings. From their own titles. Filtered by category."*
-
-The global trie can't do it: its suggestions are everyone's popular queries, not one seller's titles. Mara draws three boxes and labels none of them. *"Same question,"* she says, *"three different machines. Which one, and why?"*
-
-</Scene>
+**What is it?** Two weeks later a new requirement arrives: sellers want suggestions when they search their own listings, from their own titles, filtered by category. The global trie cannot do it, since its suggestions are everyone's popular queries, not one seller's titles. The same question ("what completes this prefix?") has three different machines.
 
 | Approach | How it works | Best for | Costs |
 |---|---|---|---|
 | **In-memory trie + top-K** | The tree from Chapter 8, built offline, held in every serving node | Global popular-query suggestions; the classic interview answer | A build pipeline; freshness in hours plus a trending layer |
-| **Prefix table in a KV store** | For every query, write one row per prefix: key = `prefix`, value = its top-K list. Typeahead becomes one `GET` | The same data as the trie when you'd rather run a key-value store (Redis, a Dynamo-style store) than custom servers | More storage (prefixes repeat the lists); sharding is trivial — hash the prefix |
+| **Prefix table in a KV store** | One row per prefix: key = `prefix`, value = its top-K list. Typeahead becomes one `GET` | The same data as the trie when you would rather run Redis or a Dynamo-style store than custom servers | More storage (prefixes repeat the lists); sharding is trivial: hash the prefix |
 | **Edge n-grams in the search index** | Index "lamp" as `l, la, lam, lamp`; a prefix is now an ordinary term | Completing over **documents** with filters: a seller's own titles, by category, by permission | Index grows several times for that field; it is a search query, with search latency |
 
-**Worked numbers: the prefix table.** With 1 million queries of about 20 characters, there are at most 20 million distinct prefixes. If each row stores its top 10 suggestions as strings (10 × ~20 B) plus a ~20 B key, that is about 220 B per row → **up to 4.4 GB**. Capping prefixes at 10 characters (longer prefixes fall back to search) halves it: at most 10 million rows ≈ **2.2 GB**. Comfortable for an in-memory KV cluster.
+<Figure caption="Pick by what you are completing: popular queries (precompute) or documents with filters (search index).">
+  <Mermaid code={`flowchart TD
+    Q["complete this prefix"] --> A{"what is being completed?"}
+    A -->|"popular queries, same for everyone"| B{"run custom servers?"}
+    B -->|"yes"| T["in-memory trie\nwith top-K"]
+    B -->|"no"| K["prefix table\nin Redis or KV"]
+    A -->|"documents, with filters or permissions"| N["edge n-grams\nin the search index"]`} />
+</Figure>
 
-**Edge n-grams, done right.** Use the edge n-gram analyzer **only at index time**; search with a plain analyzer. If the query is n-grammed too, "lam" becomes `l, la, lam`, and every title with a word starting with "l" matches. The index cost is real: a 6-word title of 6-letter words becomes about 36 indexed grams instead of 6. For 50 million titles that is about 1.8 billion postings for that one field instead of 0.3 billion — usually fine, but say it. (Engines also ship purpose-built suggesters — Elasticsearch's completion suggester keeps an in-memory FST, for example. Check current docs for what yours offers.)
+**The prefix table, in Redis.** With 1 million queries of about 20 characters there are at most 20 million distinct prefixes. At serving time it is one lookup:
 
-**So for Iris:** global suggestions from the trie (or prefix table); "search my listings" from an edge n-gram field in the search index, filtered by `seller_id` and routed to the seller's shard (Chapter 4). Two systems, each in the shape its data needs.
+```redis
+SET  sugg:v42:en:lam  "lamp|lamp oil|lampshade|lamps for desk"
+GET  sugg:v42:en:lam
+```
+
+If each row stores its top 10 as strings (10 × ~20 B) plus a ~20 B key, that is about 220 B per row → **up to 4.4 GB**. Capping prefixes at 10 characters (longer ones fall back to search) halves it: at most 10 million rows ≈ **2.2 GB**. Comfortable for an in-memory KV cluster.
+
+**Edge n-grams, done right.** Use the edge n-gram analyzer **only at index time**, and search with a plain analyzer. If the query is n-grammed too, "lam" becomes `l, la, lam`, and every title with a word starting with "l" matches.
+
+```python
+es.indices.create(index="listings_v1",
+  settings={"analysis": {
+      "tokenizer": {"edge": {"type": "edge_ngram", "min_gram": 1, "max_gram": 10,
+                             "token_chars": ["letter", "digit"]}},
+      "analyzer": {"title_prefix": {"tokenizer": "edge", "filter": ["lowercase"]}}}},
+  mappings={"properties": {"title_prefix": {
+      "type": "text", "analyzer": "title_prefix", "search_analyzer": "standard"}}})
+
+es.search(index="listings", size=8, query={"bool": {
+    "must":   {"match": {"title_prefix": "lam"}},
+    "filter": [{"term": {"seller_id": "seller_42"}}, {"term": {"category": "lighting"}}]}})
+```
+
+The index cost is real: a 6-word title of 6-letter words becomes about 36 indexed grams instead of 6. For 50 million titles that is about 1.8 billion postings for that one field instead of 0.3 billion. Usually fine, but say it. (Engines also ship purpose-built suggesters, such as Elasticsearch's completion suggester with an in-memory FST. Check current docs for what yours offers.)
+
+**So for the seller:** global suggestions from the trie (or prefix table); "search my listings" from an edge n-gram field, filtered by `seller_id` and routed to the seller's shard (Chapter 4). Two systems, each in the shape its data needs.
 
 <Trace title="Pick the prefix machine" steps={prefixStores} takeaway="Popular queries: precomputed top-K (trie or KV prefix table). Documents with filters: edge n-grams in the search index, analysed at index time only." />
 
-**Catch the trap:** one tool for every prefix question. The bank's Typeahead is the trie answer; "autocomplete over my documents with filters" is the n-gram answer. Ask which one is being asked.
+**A common slip.** One tool for every prefix question. The classic Typeahead question is the trie answer; "autocomplete over my documents with filters" is the n-gram answer. Ask which one is being asked.
+
+**Interview takeaway.** "For popular queries I precompute: a trie with top-K, or the same data as prefix keys in Redis. For completing over documents with filters I use edge n-grams in the search index, analysed at index time only."
+
+<Quiz id="search-prefix" title="Prefix machines checkpoint" questions={[
+  {
+    kind: 'predict',
+    q: 'A title field uses an edge_ngram analyzer (min 1, max 10) for both index and search. A user types "lam". Which titles match?',
+    code: "analyzer (index + search) = edge_ngram(1..10)\nquery 'lam' -> terms: l, la, lam\n\ntitles: 'lamp', 'lantern', 'ladder', 'table'",
+    options: ['Only "lamp"', '"lamp", "lantern" and "ladder"', 'None'],
+    answer: 1,
+    why: 'The query itself was n-grammed, so the term "l" matches any title with a word starting with l. Use a plain search analyzer.',
+    explain: [
+      'That is the behaviour you want, but it needs search_analyzer set to a plain analyzer.',
+      'Correct. "l" is one of the query terms and it matches the grams of lamp, lantern and ladder. Fix: search_analyzer: standard.',
+      '"l" is a query term and it is in the index, so at least "lantern" and "ladder" match too.',
+    ],
+  },
+]} />
+
+<RevisionCards id="search-prefix-stores" cards={[
+  { front: 'Three ways to answer a prefix?', back: 'In-memory trie with top-K; a prefix table (key = prefix, value = top-K) in a KV store; edge n-grams in the search index.' },
+  { front: 'When are edge n-grams the right choice?', back: 'When completing over documents with filters or permissions, such as a seller\'s own titles by category.' },
+  { front: 'Where must the n-gram analyzer apply?', back: 'At index time only. Search with a plain analyzer, or the query is n-grammed too and matches far too much.' },
+  { front: 'Cost of edge n-grams?', back: 'The field index grows several times (a 6-word title gives about 36 grams, not 6). It is a search query with search latency.' },
+]} />
+
+<ChapterDone id="prefix-stores" />
 
 <Part n="Part Four" title="Beyond exact words">
 
@@ -635,17 +1193,11 @@ People misspell, filter, live somewhere, and describe what they want instead of 
 
 </Part>
 
-<h2 id="fuzzy">Chapter 10 · pizzza</h2>
+<h2 id="fuzzy">Chapter 10 · Typos and fuzzy matching</h2>
 
-<Scene chapter="Chapter 10" title="pizzza" mood="night">
+**What is it?** The report of queries that returned nothing last week shows "pizzza oven", "lmap", "armchiar", "vintge". Each has a perfect match in the catalogue, one slip of a finger away. The index is exact; people are not.
 
-The zero-results report lands on Monday: the queries that found nothing last week. Near the top: "pizzza oven", "lmap", "armchiar", "vintge". Every one of them has a perfect match in the catalogue, one slip of a finger away.
-
-*"The index is exact,"* Mara says. *"The people aren't. How far is 'lmap' from 'lamp'?"*
-
-</Scene>
-
-**Edit distance** measures how many single-character edits turn one string into another. **Levenshtein** distance counts insertions, deletions and substitutions; **Damerau–Levenshtein** also counts swapping two adjacent characters as one edit — one of the most common typos.
+**Edit distance** counts the single-character edits that turn one string into another. **Levenshtein** distance counts insertions, deletions and substitutions. **Damerau–Levenshtein** also counts swapping two adjacent characters as one edit, one of the most common typos.
 
 | Typed → meant | Levenshtein | With transpositions |
 |---|---|---|
@@ -654,9 +1206,16 @@ The zero-results report lands on Monday: the queries that found nothing last wee
 | lamp → clamp | 1 (insert c) | 1 |
 | lamp → damp | 1 (substitute) | 1 |
 
-The last two rows are the warning: **fuzzy matching finds what the user meant and things they didn't.** Rank exact matches above fuzzy ones, and keep the allowed distance small.
+The last two rows are the warning: **fuzzy matching finds what the user meant and things they did not.** Rank exact matches above fuzzy ones and keep the allowed distance small.
 
-**How engines do it without comparing against every word.** Lucene compiles the misspelt term into a **Levenshtein automaton** — a machine that accepts exactly the strings within distance n — and walks the sorted term dictionary with it, skipping whole regions that can't match. Elasticsearch's fuzzy queries default to `fuzziness: AUTO` — exact match for terms of 1–2 characters, one edit for 3–5, two edits for longer — count transpositions by default, and let you require an exact `prefix_length` (check current docs). Requiring the first character or two to match cuts the work dramatically and costs little, because people mistype the first letter less often than the rest.
+```python
+es.search(index="listings", size=20, query={"bool": {"should": [
+    {"match": {"title": {"query": "lmap", "boost": 3}}},                       # exact first
+    {"match": {"title": {"query": "lmap", "fuzziness": "AUTO", "prefix_length": 1}}},
+]}})
+```
+
+**How engines avoid comparing against every word.** Lucene compiles the misspelt term into a **Levenshtein automaton**, a machine that accepts exactly the strings within distance n, and walks the sorted term dictionary with it, skipping whole regions that cannot match. Elasticsearch's `fuzziness: AUTO` allows exact match for terms of 1 to 2 characters, one edit for 3 to 5, two edits for longer; it counts transpositions by default (check current docs). Requiring an exact `prefix_length` cuts the work sharply and costs little, since people mistype the first letter less than the rest.
 
 **N-grams: the other road.** Break words into overlapping character n-grams and compare the sets. With trigrams:
 
@@ -665,27 +1224,53 @@ The last two rows are the warning: **fuzzy matching finds what the user meant an
   <ArrayStrip name="pizzza" indices={false} values={['piz', 'izz', 'zzz', 'zza']} tones={{ 0: 'done', 1: 'done', 2: 'out', 3: 'done' }} />
 </Figure>
 
-A trigram index finds candidates that share many grams, then ranks them by overlap — this is how Postgres's `pg_trgm` does similarity search, and how many "did you mean?" systems pick candidates. Query logs add the strongest signal of all: when many users search "armchiar" and immediately search "armchair", that rewrite can be learned and suggested.
+A trigram index finds candidates that share many grams, then ranks them by overlap. This is how Postgres's `pg_trgm` does similarity search:
 
-**Typos in typeahead** are harder: the user hasn't finished the word, so you'd need fuzzy *prefix* matching on every keystroke. Common answers: allow one edit only after the first few characters, or precompute popular misspellings from logs into the suggestion data.
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX listings_title_trgm ON listings USING gin (title gin_trgm_ops);
+SELECT title, similarity(title, 'pizzza') AS sim
+FROM listings WHERE title % 'pizzza' ORDER BY sim DESC LIMIT 5;
+```
+
+Query logs add the strongest signal of all: when many users search "armchiar" and immediately search "armchair", that rewrite can be learned and suggested.
+
+**Typos in typeahead** are harder: the user has not finished the word, so you would need fuzzy *prefix* matching on every keystroke. Common answers: allow one edit only after the first few characters, or precompute popular misspellings from logs into the suggestion data.
 
 <Trace title="Measure the typo" steps={fuzzy} takeaway="Edit distance with transpositions catches swaps as one edit; n-gram overlap finds candidates cheaply. Keep distance small, require a short exact prefix, rank exact matches first." />
 
-**One more one-liner you should have ready:** a **Bloom filter** answers "definitely not present" or "maybe present" in very little memory, with no false negatives. It shows up for crawler URL dedup and for cache-penetration defence (the caching lesson's Chapter 9) — know the sentence even though search doesn't need it.
+**One related one-liner:** a **Bloom filter** answers "definitely not present" or "maybe present" in very little memory, with no false negatives. It shows up for crawler URL dedup and for cache-penetration defence (the caching lesson), so know the sentence even though search does not need it.
 
-**Catch the trap:** "Make every query fuzzy with two edits." Short words then match many unrelated words ("lamp" → "damp", "camp", "lame", "limp"…), and precision collapses. Fuzzy is a fallback and a ranking signal, not the default.
+**A common slip.** "Make every query fuzzy with two edits." Short words then match many unrelated words ("lamp" → "damp", "camp", "lame", "limp"), and precision collapses. Fuzzy is a fallback and a ranking signal, not the default.
 
-<h2 id="filters-facets">Chapter 11 · Under fifty, in brass</h2>
+**Interview takeaway.** "I keep exact matches first and add a fuzzy clause with AUTO fuzziness, an exact first character, and transpositions counted. Trigrams give candidates for 'did you mean', and query logs teach corrections."
 
-<Scene chapter="Chapter 11" title="Under fifty, in brass">
+<Quiz id="search-fuzzy" title="Fuzzy matching checkpoint" questions={[
+  {
+    kind: 'tradeoff',
+    q: 'Zero-result queries are 8% of traffic, mostly typos. The team enables fuzziness 2 on every query. Support now reports odd results for short queries like "cat". Why, and what do you do?',
+    options: [
+      'Short words within two edits match many unrelated words; use AUTO fuzziness, require a prefix, and rank exact matches first',
+      'Fuzzy search is broken for short words; disable it',
+      'The index needs more shards',
+    ],
+    answer: 0,
+    why: 'Within two edits, a 3-letter word reaches a large share of the dictionary. Distance should scale with length, and exact matches must rank above fuzzy ones.',
+    explain: [
+      'Correct. AUTO gives 0 edits to 1 to 2 characters, 1 edit to 3 to 5, 2 edits beyond. Requiring the first letter also helps.',
+      'Disabling loses the typo recovery you wanted. Tune it rather than remove it.',
+      'Shard count affects speed, not which words are within an edit distance.',
+    ],
+  },
+]} />
 
-Iris's new mock-up has a left sidebar: price ranges, brands with counts beside them, "in stock", "ships to you". A tester files the first bug within an hour: she ticked "in stock" and a sold-out lamp appeared on page two.
+<ChapterDone id="fuzzy" />
 
-Dev finds the line. "In stock" had been implemented as a score boost.
+<h2 id="filters-facets">Chapter 11 · Filters and facets</h2>
 
-</Scene>
+**What is it?** A results page with a sidebar: price ranges, brands with counts beside them, "in stock", "ships to you". A tester files the first bug within an hour: she ticked "in stock" and a sold-out lamp appeared on page two. The cause: "in stock" had been implemented as a score boost.
 
-Two different jobs share the search box, and mixing them causes most of the bugs:
+**Filtering and ranking are different jobs,** and mixing them causes most of the bugs:
 
 | | Filtering | Ranking (scoring) |
 |---|---|---|
@@ -695,13 +1280,22 @@ Two different jobs share the search box, and mixing them causes most of the bugs
 | Cost | Cheap; results cacheable as bitsets and reused across queries | Per-document arithmetic |
 | Elasticsearch | `filter` clauses (no score) | `must` / `should` clauses, function scores |
 
-**Hard constraints are filters. Preferences are scores.** A boost lets a strong enough text match outrank the boost and leak through — the bug in the scene. Permissions and visibility (hidden listings, blocked sellers, private items) are always filters, applied inside the engine, before ranking and paging; filtering 20 results in the application after fetching them breaks page sizes and every page after.
+**Hard constraints are filters. Preferences are scores.** A boost lets a strong enough text match outrank the boost and leak through, which is the bug above. Permissions and visibility (hidden listings, blocked sellers, private items) are always filters, applied inside the engine, before ranking and paging. Filtering 20 results in the application after fetching them breaks page sizes and every page after.
 
 **Facets** are the counts in the sidebar: how many matching listings per brand, per price range, per category. Engines compute them as **aggregations** over the matched set, reading the column-oriented doc values from Chapter 2.
 
-- **They cost real work** when the match set is large: counting brands over two million "furniture" matches touches two million values. High-cardinality fields (thousands of brands) cost more.
-- **Distributed counts can be approximate.** A terms aggregation asks each shard for its top N buckets and merges them. A brand that is 11th on one shard and 1st on another can be undercounted. Ask shards for more buckets than you show (Elasticsearch's `shard_size`) and treat counts as estimates; the engine reports an error bound.
-- **The selected facet shouldn't hide its siblings.** When the shopper ticks "brass", the brand list should still show the other brands' counts. Elasticsearch's `post_filter` applies the selection to the hits after aggregations are computed, for exactly this.
+```python
+es.search(index="listings", size=20,
+  query={"bool": {"must": {"match": {"title": "lamp"}},
+                  "filter": [{"term": {"in_stock": True}}, {"range": {"price": {"lte": 50}}}]}},
+  post_filter={"term": {"material": "brass"}},        # the ticked facet: hits only
+  aggs={"materials": {"terms": {"field": "material", "size": 10, "shard_size": 50}},
+        "price": {"histogram": {"field": "price", "interval": 25}}})
+```
+
+- **They cost real work** when the match set is large: counting brands over two million "furniture" matches touches two million values. High-cardinality fields cost more.
+- **Distributed counts can be approximate.** A terms aggregation asks each shard for its top N buckets and merges them. A brand that is 11th on one shard and 1st on another can be undercounted. Ask shards for more buckets than you show (`shard_size`) and treat counts as estimates; the engine reports an error bound.
+- **The selected facet should not hide its siblings.** When the shopper ticks "brass", the material list should still show the other materials' counts. `post_filter` applies the selection to the hits *after* aggregations are computed, for exactly this.
 
 <Figure caption="Filters shrink the set cheaply; facets count it; scoring ranks only what survives.">
   <Mermaid code={`flowchart LR
@@ -712,23 +1306,60 @@ Two different jobs share the search box, and mixing them causes most of the bugs
     S --> TOP["top 20"]`} />
 </Figure>
 
-<Trace title="Filter or rank?" steps={facets} takeaway="Yes/no rules are filters (cheap, cached, never leak); preferences are scores. Facet counts are aggregations over the matched set — and across shards they can be approximate." />
+<Trace title="Filter or rank?" steps={facets} takeaway="Yes/no rules are filters (cheap, cached, never leak); preferences are scores. Facet counts are aggregations over the matched set, and across shards they can be approximate." />
 
-**Catch the trap:** "Filter in the application after the search returns." Pages come back short, counts are wrong, and deep pages are wrong in ways nobody notices until a user does.
+**A common slip.** "Filter in the application after the search returns." Pages come back short, counts are wrong, and deep pages are wrong in ways nobody notices until a user does.
 
-<h2 id="geo-vector">Chapter 12 · Near me, and things like this</h2>
+**Interview takeaway.** "Yes/no rules, including permissions, are filters inside the engine: cheap, cached, never leaking. Preferences are scores. Facet counts are aggregations, approximate across shards, and the ticked facet uses post_filter so its siblings keep their counts."
 
-<Scene chapter="Chapter 12" title="Near me, and things like this" mood="dawn">
+<Quiz id="search-filters" title="Filters and facets checkpoint" questions={[
+  {
+    kind: 'failure',
+    q: 'A multi-tenant search app hides other tenants\' documents by filtering in application code after fetching the top 20. What goes wrong?',
+    options: [
+      'Nothing, if the filter is correct',
+      'Pages come back short or empty, totals are wrong, and a bug in the app filter leaks other tenants\' data; the filter belongs in the query',
+      'Scores become negative',
+    ],
+    answer: 1,
+    why: 'Permissions must be applied inside the engine so ranking, paging and counts only ever see allowed documents.',
+    explain: [
+      'Even if correct, 15 filtered of 20 means a 5-result page, and the next cursor is off.',
+      'Correct. It is both a correctness and a security issue. Use a filter clause (and consider per-tenant routing).',
+      'Scores are unaffected; the problem is what is in the set.',
+    ],
+  },
+  {
+    kind: 'predict',
+    q: 'The shopper ticks "material = brass". The query applies it as a post_filter, with a terms aggregation on material. What do the facet counts show?',
+    code: "query: lamp in stock\npost_filter: material = brass\naggs: terms(material)",
+    options: ['Only brass, with its count', 'All materials among "lamp in stock" with their counts, while hits show only brass', 'An error'],
+    answer: 1,
+    why: 'post_filter runs after aggregations, so the aggregation still sees every matching lamp, and the user can switch material.',
+    explain: [
+      'That is what happens if the selection is in the main query\'s filter: siblings disappear.',
+      'Correct. Hits are narrowed to brass; the sidebar keeps showing all material counts.',
+      'The request is valid and common for faceted navigation.',
+    ],
+  },
+]} />
 
-Two requests arrive on the same afternoon. Iris wants "near me" — local pickup only, closest first. And a shopper writes: *"I searched 'something warm to read by in bed' and got nothing."*
+<RevisionCards id="search-filters-facets" cards={[
+  { front: 'Filter vs score?', back: 'Filter: allowed or not, cheap, cacheable, no effect on score. Score: how good. Hard rules are filters; preferences are scores.' },
+  { front: 'Why must permissions be filters in the engine?', back: 'Ranking, paging and counts then only see allowed documents. App-side filtering gives short pages, wrong counts, and leak risk.' },
+  { front: 'How are facets computed, and what is their catch?', back: 'Aggregations over doc values of the matched set. Costly on big sets, and approximate across shards (use shard_size).' },
+  { front: 'What does post_filter do?', back: 'Narrows hits after aggregations run, so a ticked facet does not hide its siblings\' counts.' },
+]} />
 
-Mara reads the second one twice. *"She didn't use a single word that's in the listing,"* she says. *"And the listing is exactly what she wants."*
+<ChapterDone id="filters-facets" />
 
-</Scene>
+<h2 id="geo-vector">Chapter 12 · Geo, vectors and hybrid search</h2>
 
-**Geo search.** Search engines index locations as points (Lucene uses tree structures built for multi-dimensional points) and support distance filters ("within 10 km"), bounding boxes and sorting by distance. In ranking, use a **distance decay** that multiplies the text score — closer is better, smoothly — rather than a hard sort that puts a barely relevant listing first because it is 200 metres away. The cell-based structures underneath (geohash, quadtrees, H3) and the "nearby drivers" variants are in <a href={`${BASE}sd/lessons/pattern-geospatial/`}>Geospatial indexing</a>.
+**What is it?** Two requests arrive on the same afternoon. Product wants "near me": local pickup only, closest first. And a shopper writes: "I searched 'something warm to read by in bed' and got nothing." She used no word that is in the listing, and the listing is exactly what she wants.
 
-**Semantic (vector) search.** An embedding model turns text into a vector so that texts with similar *meaning* land near each other: "something warm to read by in bed" lands near "bedside lamp, warm white". Finding the nearest vectors among millions needs an **approximate nearest-neighbour (ANN)** index such as HNSW; Elasticsearch and OpenSearch both offer one (check current docs), as do dedicated vector databases. The pipeline — chunking, embeddings, ANN, reranking — is in <a href={`${BASE}sd/lessons/rag/`}>RAG & vector search</a>.
+**Geo search.** Search engines index locations as points (Lucene uses tree structures built for multi-dimensional points) and support distance filters ("within 10 km"), bounding boxes and sorting by distance. In ranking, use a **distance decay** that multiplies the text score (closer is better, smoothly) rather than a hard sort that puts a barely relevant listing first because it is 200 metres away. The cell structures underneath (geohash, quadtrees, H3) and the "nearby drivers" variants are in <a href={`${BASE}sd/lessons/pattern-geospatial/`}>Geospatial indexing</a>.
+
+**Semantic (vector) search.** An embedding model turns text into a vector so that texts with similar *meaning* land near each other: "something warm to read by in bed" lands near "bedside lamp, warm white". Finding the nearest vectors among millions needs an **approximate nearest-neighbour (ANN)** index such as HNSW. Elasticsearch and OpenSearch both offer one (check current docs), as do dedicated vector databases. The pipeline (chunking, embeddings, ANN, reranking) is in <a href={`${BASE}sd/lessons/rag/`}>RAG & vector search</a>.
 
 **Lexical and semantic fail in opposite places:**
 
@@ -738,13 +1369,73 @@ Mara reads the second one twice. *"She didn't use a single word that's in the li
 | "something warm to read by in bed" | Poor: no shared words | Good: shared meaning |
 | "brass desk lamp" | Good | Good |
 
-So production systems run **hybrid search**: retrieve with both, then fuse. **Reciprocal rank fusion (RRF)** is the simple, robust default: each document scores Σ 1 / (k + rank) over the lists it appears in, with k = 60 in the original paper. It needs only ranks, so you never have to put BM25 scores and cosine similarities on one scale. A reranker can then reorder the fused top results.
+So production systems run **hybrid search**: retrieve with both, then fuse. **Reciprocal rank fusion (RRF)** is the simple, robust default: each document scores Σ 1 / (k + rank) over the lists it appears in, with k = 60 in the original paper. It needs only ranks, so you never put BM25 scores and cosine similarities on one scale. A reranker can then reorder the fused top results.
 
-**Filters meet vectors.** "Semantic search, but only in-stock items under 50" is harder than it sounds: an ANN index returns the nearest k overall, and filtering afterwards can leave you with three results instead of twenty. Engines offer filtered ANN search for this; know that the problem exists and name it.
+<Figure caption="Hybrid retrieval: two retrievers, one fusion step by rank, an optional reranker.">
+  <Mermaid code={`flowchart LR
+    Q["query"] --> L["BM25 over text\ntop 50"]
+    Q --> E["embed, then ANN\ntop 50"]
+    L --> R["RRF\nsum 1/(60 + rank)"]
+    E --> R
+    R --> X["rerank\noptional"]
+    X --> O["top 20"]`} />
+</Figure>
 
-<Trace title="Words or meaning?" steps={hybrid} takeaway="Lexical wins exact tokens; vectors win paraphrase. Hybrid retrieval with RRF fuses ranks, not scores. Filtered ANN is a real problem — name it." />
+```python
+from collections import defaultdict
 
-**Catch the trap:** "Replace keyword search with embeddings." Exact names, codes and rare terms get worse. Say hybrid, and say why.
+def rrf(*ranked_lists, k=60):
+    scores = defaultdict(float)
+    for ids in ranked_lists:                       # each list: doc ids, best first
+        for rank, doc_id in enumerate(ids, start=1):
+            scores[doc_id] += 1 / (k + rank)
+    return sorted(scores, key=scores.get, reverse=True)
+
+bm25 = [h["_id"] for h in es.search(index="listings", size=50,
+        query={"match": {"title": q}})["hits"]["hits"]]
+vec  = [h["_id"] for h in es.search(index="listings", size=50,
+        knn={"field": "embedding", "query_vector": embed(q), "k": 50, "num_candidates": 200,
+             "filter": [{"term": {"in_stock": True}}]})["hits"]["hits"]]
+final = rrf(bm25, vec)[:20]
+```
+
+The `embedding` field is a `dense_vector` mapping with a vector index (Elasticsearch 8.x). Some engines also offer RRF built in, sometimes on paid tiers, so check current docs; fusing in application code as above is always possible and easy to reason about.
+
+**Filters meet vectors.** "Semantic search, but only in-stock items under 50" is harder than it sounds: an ANN index returns the nearest k overall, and filtering afterwards can leave three results instead of twenty. Engines offer filtered ANN search (the `filter` inside `knn` above applies during the search); know the problem exists and name it.
+
+<Trace title="Words or meaning?" steps={hybrid} takeaway="Lexical wins exact tokens; vectors win paraphrase. Hybrid retrieval with RRF fuses ranks, not scores. Filtered ANN is a real problem: name it." />
+
+**A common slip.** "Replace keyword search with embeddings." Exact names, codes and rare terms get worse. Say hybrid, and say why.
+
+**Interview takeaway.** "BM25 for exact and rare terms, vectors for paraphrase. I retrieve with both and fuse by rank (RRF), with filters applied inside both retrievers. Geo is a filter plus a distance decay on the score."
+
+<Quiz id="search-geo-vector" title="Hybrid search checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'Your vector-only search is great on descriptive queries, but customers pasting SKUs like "BL-4471" get similar-looking wrong items. What do you do?',
+    options: [
+      'Raise the embedding dimension',
+      'Add lexical retrieval (BM25 on an exact SKU field) and fuse with the vector results, for example by RRF',
+      'Use fuzzy search on every query',
+    ],
+    answer: 1,
+    why: 'Embeddings blur identifiers. A lexical retriever matches rare exact tokens strongly, and fusion keeps the semantic wins.',
+    explain: [
+      'A bigger vector does not make "BL-4471" and "BL-4417" distinct in any dependable way.',
+      'Correct. Hybrid keeps both strengths. Boost exact hits in the SKU field heavily.',
+      'Two edits on a short code matches dozens of other codes; exact identifiers want exact matching first.',
+    ],
+  },
+]} />
+
+<RevisionCards id="search-geo-vector" cards={[
+  { front: 'How should distance affect ranking?', back: 'As a decay multiplying the text score, not a hard sort that favours a barely relevant item 200 m away.' },
+  { front: 'Where does BM25 beat vectors, and where do vectors win?', back: 'BM25: rare exact tokens (SKUs, names). Vectors: paraphrase and meaning with no shared words.' },
+  { front: 'What is RRF and why use it?', back: 'Score = sum of 1/(k + rank) across lists, k = 60. It fuses ranks, so BM25 and cosine scores never need one scale.' },
+  { front: 'What is the filtered-ANN problem?', back: 'ANN returns the nearest k overall; filtering afterwards can leave too few results. Apply the filter during the ANN search.' },
+]} />
+
+<ChapterDone id="geo-vector" />
 
 <h2 id="decision-drills">Decision drills · Make the calls</h2>
 
@@ -752,63 +1443,118 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
 
 <Trace title="The search review" steps={drills} takeaway="Five sentences, every time: where the index lives, how text becomes terms and ranks, how it syncs and how stale it is, what a query costs, and typeahead as its own precomputed system." />
 
-<Quiz questions={[
+<Quiz id="search-final" title="Whole-lesson checkpoint" questions={[
   {
-    q: 'Search is added to your feed design. Interviewer: "will you query Postgres with LIKE?" Strong answer:',
+    kind: 'scenario',
+    q: 'Search is added to your feed design. The interviewer asks: "will you query Postgres with LIKE?" Strong answer:',
     options: [
       'Yes, with an index on the text column',
-      'No — leading-wildcard LIKE cannot use a B-tree index and scans the table. I would add an inverted index (Elasticsearch), fed asynchronously from the DB via CDC, searchable within ~2s',
-      'Yes for small scale, ES later',
-      'No — cache popular search results in Redis instead'
+      'No: leading-wildcard LIKE cannot use a B-tree and scans the table. I would add an inverted index (Elasticsearch), fed from the DB via CDC, searchable within about 2 s',
+      'Yes for small scale, Elasticsearch later',
+      'No: cache popular search results in Redis instead',
     ],
     answer: 1,
-    why: 'Names the exact failure (leading wildcard defeats B-trees), the fix, the sync mechanism, and the staleness bound. Option 3 is defensible ONLY with Postgres full-text search (or a trigram index) named explicitly — plain LIKE is never the answer.'
+    why: 'Names the exact failure, the fix, the sync mechanism and the staleness bound.',
+    explain: [
+      'Which index? A B-tree cannot serve a leading wildcard, so this is the hand-wave.',
+      'Correct: failure, fix, sync, lag in four clauses.',
+      'Defensible only if you name Postgres full-text search or a trigram index. Plain LIKE is never the answer.',
+      'A cache helps repeat queries, but search queries are long-tailed with a poor hit ratio, and the first of each still scans.',
+    ],
   },
   {
+    kind: 'tradeoff',
     q: 'Why does typeahead store precomputed top-K completions at every trie node instead of walking the subtree per query?',
     options: [
       'Subtree walks give wrong results',
-      'The latency budget is per-keystroke, under 100 ms; walking the subtree of "a" touches millions of nodes. Precomputed top-K makes reads O(prefix) — the classic move: pay at (offline) write time, not read time',
+      'The budget is under 100 ms per keystroke and the subtree of "a" has millions of nodes. Precomputed top-K makes reads O(prefix): pay at offline write time, not at read time',
       'Tries cannot be traversed downward efficiently',
-      'To save memory'
+      'To save memory',
     ],
     answer: 1,
-    why: 'Read-time work moved to precompute — the same trade as fan-out-on-write and materialized views. Recognizing it as a recurring PATTERN (not a trie fact) is the transferable skill.'
+    why: 'Read-time work moved to precompute: the same trade as fan-out-on-write and materialized views. Seeing it as a pattern is the transferable skill.',
+    explain: [
+      'The output is right; the cost is the issue.',
+      'Correct. The top-K lists cost extra memory in exchange for latency.',
+      'Downward traversal is exactly what tries do well.',
+      'Top-K lists use more memory, not less. The goal is latency.',
+    ],
   },
   {
-    q: 'Your ES cluster is destroyed. What is the recovery story if the design was done right?',
+    kind: 'failure',
+    q: 'Your Elasticsearch cluster is destroyed. What is the recovery story if the design was done right?',
     options: [
-      'Restore from ES snapshots and accept some data loss',
-      'The search data is gone — rebuild what you can from logs',
-      'Reindex everything from the primary DB — ES was a derived replica, never the source of truth; search is degraded (not down) meanwhile',
-      'Failover to a standby ES cluster, which is mandatory'
+      'Restore from snapshots and accept some data loss',
+      'The search data is gone; rebuild what you can from logs',
+      'Reindex everything from the primary DB: search was a derived copy, never the source of truth, and is degraded (not down) meanwhile',
+      'Fail over to a standby cluster, which is mandatory',
     ],
     answer: 2,
-    why: '"Derived and rebuildable" is the design property that makes losing ES an inconvenience instead of an incident. Snapshots/standbys are optimizations on top, not the story.'
-  }
+    why: '"Derived and rebuildable" is what makes losing the cluster an inconvenience, not an incident. Snapshots and standbys only speed things up.',
+    explain: [
+      'Snapshots help recovery time, but the story does not depend on them, and nothing in the DB is lost.',
+      'Nothing is only in search, so there is nothing to scrape from logs.',
+      'Correct. About 42 minutes at 20,000 docs/s for 50M listings, with a banner and category browsing meanwhile.',
+      'A standby shortens the outage but is optional, and costs a whole second cluster.',
+    ],
+  },
 ]} />
 
 <h2 id="interview-script">Say it in the room</h2>
 
-<Scene title="The interview room" mood="night">
+The interviewer has a marketplace on the whiteboard and adds one line: "Users can search listings." Then she waits. Drawing a box labelled Elasticsearch is not an answer. Five sentences are.
 
-The Interviewer has a marketplace on the whiteboard and adds one line under the requirements: *"Users can search listings."* Then she waits. A year ago you would have drawn a box labelled Elasticsearch and moved on. Today you say five sentences.
+<AnswerModes id="search-design" q="Users can search listings. How do you design search?">
 
-</Scene>
+<Fragment slot="short">
 
-**The 90-second answer** (adapt the nouns):
+Search gets its own index, fed from Postgres by CDC through Kafka, because `LIKE '%term%'` cannot use a B-tree and scans every row. Text goes through an analyzer into an inverted index, ranked by BM25 with title boosted and gentle recency and popularity factors; hard rules like in-stock are filters. It is searchable about one to two seconds after a write. Replicas carry read traffic, and if the cluster dies I reindex from Postgres.
 
-> "Search gets its own index; Postgres stays the source of truth. A `LIKE '%term%'` can't use a B-tree and scans every row — at 50 million listings that's 50 GB per query. So: **sync** — CDC reads the Postgres WAL into Kafka, keyed by listing id, and an indexer bulk-writes Elasticsearch with external versions, so duplicates and replays are harmless. New listings are searchable in about **one to two seconds** — CDC lag plus the one-second refresh — and sellers see their own new listings from the database immediately. **Text**: lowercase, tokenise, stem, same analyzer at query time. **Ranking**: BM25 with the title boosted over the description, multiplied by a recency decay and a damped popularity factor; hard constraints like in-stock and ships-to-you are **filters**, not scores. **Sizing**: about 70 GB per copy, so three primaries of about 23 GB, two replicas, nine nodes — replicas for the 2,000 QPS peak and for losing a node; I'd watch p99 because every query fans out to all three shards. **Paging**: search_after cursors, browsing capped at 50 pages. Analyzer changes ship as a new index behind an **alias**. And if the cluster dies, we **reindex from Postgres** in under an hour; search is degraded meanwhile, nothing is lost."
+</Fragment>
 
-**If the question is Typeahead** (the bank's Tier-1 version, about 60 seconds):
+<Fragment slot="medium">
 
-> "Typeahead is prefix completion under a 100 ms budget per keystroke, so it's a separate system from search. I precompute it: an hourly job aggregates query logs with time decay, drops blocklisted terms and anything fewer than N distinct users searched, builds a trie with the **top 10 completions stored at every node**, and ships it as an immutable snapshot. A lookup is a walk of the prefix — microseconds. The top million queries is about 100 MB raw, about a gigabyte with the per-node lists, so every serving node in every region holds all of it in memory. Short prefixes — there are only about 18,000 of up to three letters — are cached at the edge with the build number in the key. The client debounces about 30 ms, cancels stale requests and paints only the response for the current prefix. At 20 million daily users that's about 28,000 keystrokes a second at peak, roughly half of which become requests. Fresh trends come from a small streaming top-K merged at query time. Freshness of hours is the right trade."
+Search gets its own index; Postgres stays the source of truth. A `LIKE '%term%'` cannot use a B-tree and scans every row: at 50 million listings that is 50 GB per query. So **sync**: CDC reads the Postgres WAL into Kafka keyed by listing id, and an indexer bulk-writes Elasticsearch with external versions, so duplicates and replays are harmless. New listings are searchable in about **one to two seconds** (CDC lag plus the one-second refresh), and sellers see their own new listings from the database immediately.
+
+**Text**: lowercase, tokenise, stem, the same analyzer at query time. **Ranking**: BM25 with title boosted over description, multiplied by a recency decay and a damped popularity factor. In-stock and ships-to-you are **filters**, not scores. **Sizing**: about 70 GB per copy, so three primaries of about 23 GB and two replicas on nine nodes: replicas for the 2,000 QPS peak and for losing a node. I would watch p99 because every query fans out to three shards.
+
+**Paging**: search_after cursors with browsing capped at 50 pages. Analyzer changes ship as a new index behind an **alias**. If the cluster dies, I **reindex from Postgres** in under an hour; search is degraded meanwhile and nothing is lost.
+
+</Fragment>
+
+<Fragment slot="deep">
+
+The 2-minute answer, plus the reasoning behind each choice. **Why not the database?** Postgres full-text or MySQL FULLTEXT is a fine first answer for a small catalogue; I move to an engine for tuned relevance, facets, typo tolerance and scale. **Sync.** Dual writes lose and reorder updates with no TTL to heal them; CDC plus a topic keyed by id plus versioned upserts gives per-document order and idempotent replay, and a crashed indexer means stale search, not an outage (alert on consumer lag, reconcile for drift). **Query cost.** A query waits for its slowest shard, so I keep shard counts modest and route per-seller queries. **Relevance.** BM25 plus bounded signals; ranking freshness is separate from index freshness. I measure with NDCG offline and click-through online. **Typeahead** is a separate system (next answer).
+
+</Fragment>
+
+</AnswerModes>
+
+<AnswerModes id="search-typeahead" q="Design typeahead for the search box.">
+
+<Fragment slot="short">
+
+Typeahead is prefix completion under about 100 ms per keystroke, so it is separate from search: precomputed top-10 completions per prefix, in memory in every region, hot short prefixes cached at the edge, refreshed hourly from query logs. The client debounces and ignores stale responses.
+
+</Fragment>
+
+<Fragment slot="medium">
+
+Typeahead is a separate system from search. I precompute it: an hourly job aggregates query logs with time decay, drops blocklisted terms and anything fewer than N distinct users searched, builds a trie with the **top 10 completions stored at every node**, and ships it as an immutable snapshot. A lookup is a walk of the prefix, in microseconds.
+
+The top million queries is about 100 MB raw and about a gigabyte with the per-node lists, so every serving node in every region holds all of it in memory. Short prefixes (about 18,000 of up to three letters) are cached at the edge with the build number in the key. The client debounces about 30 ms, cancels stale requests and paints only the response for the current prefix.
+
+At 20 million daily users that is about 28,000 keystrokes a second at peak, roughly half of which become requests. Fresh trends come from a small streaming top-K merged at query time. Freshness of hours is the right trade.
+
+</Fragment>
+
+</AnswerModes>
 
 **Five follow-ups you will get:**
 
 <Reveal q="1 · Why not just use Postgres full-text search?">
 
-For a modest catalogue with simple ranking, I might — a `tsvector` column with a GIN index (or `pg_trgm` for fuzzy matching) is one system and transactionally consistent. I'd move to a dedicated engine when we need relevance tuning, facets over large result sets, typo tolerance and synonyms, horizontal scale for search traffic, or simply to keep search load off the primary. What I'd never do is plain `LIKE '%term%'`.
+For a modest catalogue with simple ranking, I might: a `tsvector` column with a GIN index (or `pg_trgm` for fuzzy matching) is one system and transactionally consistent. I would move to a dedicated engine when we need relevance tuning, facets over large result sets, typo tolerance and synonyms, horizontal scale for search traffic, or simply to keep search load off the primary. What I would never do is plain `LIKE '%term%'`.
 
 </Reveal>
 
@@ -820,7 +1566,7 @@ Nothing is lost: the index is derived from Postgres. We rebuild: assuming about 
 
 <Reveal q="3 · Search p99 is three times p50. Where do you look?">
 
-The fan-out. A query waits for its slowest shard, so tail latency compounds with shard count: with 1% slow shards, 3 shards make about 3% of searches slow, 100 shards about 63%. I'd check for one slow node or hot shard, keep the shard count modest, let the engine pick the fastest replica, add timeouts with partial results where an approximate ranking is fine, and route single-tenant queries ("my listings") to one shard. Deep pagination and expensive aggregations are the other usual suspects.
+The fan-out. A query waits for its slowest shard, so tail latency compounds with shard count. I would check for one slow node or hot shard, keep the shard count modest, let the engine pick the fastest replica, add timeouts with partial results where an approximate ranking is fine, and route single-tenant queries ("my listings") to one shard. Deep pagination and expensive aggregations are the other usual suspects.
 
 </Reveal>
 
@@ -832,78 +1578,65 @@ Postings are built by the analyzer, so existing documents must be reindexed. Cli
 
 <Reveal q="5 · Your typeahead is stale for a breaking trend. And how would you shard it at ten times the size?">
 
-The offline trie is refreshed hourly, so add a small streaming layer: count queries over the last few minutes (count-min sketch plus a heap of leaders) and merge those few fresh completions into the trie's list at query time. At ten times the size, shard by prefix — ranges of first characters balanced by traffic, not by alphabet — or store prefix → top-K in a key-value store and shard by hash of the prefix, which spreads load evenly because every lookup is an exact key.
+The offline trie is refreshed hourly, so add a small streaming layer: count queries over the last few minutes (count-min sketch plus a heap of leaders) and merge those few fresh completions into the trie's list at query time. At ten times the size, shard by prefix, with ranges of first characters balanced by traffic, not by alphabet. Or store prefix → top-K in a key-value store and shard by hash of the prefix, which spreads load evenly because every lookup is an exact key.
 
 </Reveal>
 
 <h2 id="cheat-sheet">Cheat sheet</h2>
 
-| When you see… | Say… |
+| When you see... | Say... |
 |---|---|
 | "Users can search X" | Separate search index fed by CDC; the DB stays the source of truth |
 | `LIKE '%term%'` | Leading wildcard defeats a B-tree; full scan. Full-text/trigram index or a search engine |
 | "How does search work?" | Analyzer → inverted index (term → sorted postings with positions); AND = intersection, phrase = positions |
 | "Which result first?" | BM25 (rare terms weigh more, TF saturates, length normalised) × gentle business signals |
-| Title matters more than body | Field boosts (`title^3`); exact codes in a keyword field |
 | More query traffic | More replicas, not more primaries |
-| Big index | Primaries sized to roughly 10–50 GB each (check current docs) |
 | p99 much worse than p50 | Fan-out tail: fewer shards, replica selection, timeouts with partial results, routing |
 | "Shard by term or document?" | Document (plus time for tweets); term partitioning makes writes wide and hot terms hot shards |
-| "How fresh is search?" | CDC lag + 1 s refresh ≈ 1–2 s; say it; author reads own writes from the DB |
+| "How fresh is search?" | CDC lag + 1 s refresh ≈ 1 to 2 s; say it; author reads own writes from the DB |
 | Writes to DB and ES from the app | Dual-write races with no TTL to heal them → CDC + queue keyed by id + external versions |
-| Mapping or analyzer change | New index, backfill + replay, verify, atomic alias swap |
 | Search cluster lost | Reindex from the source of truth; degraded, not lost |
 | Page 500, exports | search_after + point-in-time; cap browsable depth |
 | Typeahead | Separate system: top-K per trie node, built offline, in memory per region, hot prefixes at the edge |
-| 100 ms per keystroke | Debounce, in-region, in-memory lookup, drop out-of-order responses |
-| Fresh trends in typeahead | Streaming top-K (count-min sketch + heap) merged at query time |
 | Autocomplete over own documents with filters | Edge n-grams at index time only, plain analyzer at query time |
 | Typos | Edit distance with transpositions (AUTO fuzziness), short exact prefix, or trigram candidates |
 | In stock, permissions, price range | Filters (no score, cached), never boosts |
-| Sidebar counts | Aggregations on doc values; approximate across shards |
+| Sidebar counts | Aggregations on doc values; approximate across shards; post_filter for the ticked facet |
 | "Near me" | Geo filter + distance decay in the score |
 | "Things like this", paraphrases | Vector ANN + BM25 hybrid, fused with RRF |
 
-## Five mistakes to leave behind
+**Common mistakes**
 
 1. **"We'll use LIKE" or "add an index on the text column."** Name the kind of index, or use a search engine.
 2. **Treating the search index as the source of truth.** It is derived and rebuildable; the database is the truth.
-3. **Dual writes to the database and the index.** Use one ordered change stream with versions — and say the one-to-two-second lag out loud.
+3. **Dual writes to the database and the index.** Use one ordered change stream with versions, and say the one-to-two-second lag out loud.
 4. **More primary shards for more traffic.** Replicas carry reads; primaries only add fan-out.
 5. **Typeahead as "search on every keystroke".** It is precomputed top-K per prefix, in memory, near the user.
 
-<Scene title="Mara’s last word" mood="dusk">
+**Practice.** With a friend, run the 10-minute mini-design: **typeahead for an e-commerce search box**: trie + top-K, the offline aggregation loop, a memory estimate for 1 million products, and where the 100 ms budget goes (edge cache? a replica per region?). Then do it once more as Twitter search, out loud: term or document partitioning, and why.
 
-A month after launch, the zero-results report is down to a single page. Iris reads the top entry aloud: "lamp shaped like a cat". Three listings match it now, all found through the synonym list a support agent suggested.
-
-Mara puts the paperback back on the shelf, index side out. *"Every search system you will ever design,"* she says, *"is that page, kept up to date by somebody who isn't you."*
-
-</Scene>
-
-**Keep it warm:** with the buddy, run the 10-minute mini-design — **typeahead for an e-commerce search box**: trie + top-K, the offline aggregation loop, a memory estimate for 1 million products, and where the 100 ms budget goes (edge cache? a replica per region?). This is bank question "Typeahead" — a real Tier-1 interview question, done small. Then do it once more as Twitter search, out loud: term or document partitioning, and why.
-
-Related: <a href={`${BASE}sd/lessons/databases/`}>Databases</a> (the source of truth, and its own indexes) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (the four promises for the prefix cache) · <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> (CDC, the outbox, ordering by key) · <a href={`${BASE}sd/lessons/core-concepts/#tail-latency`}>Core concepts · tail latency</a> · <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series · top-K</a> · <a href={`${BASE}sd/lessons/pattern-geospatial/`}>Geospatial</a> · <a href={`${BASE}sd/lessons/rag/`}>RAG & vector search</a> · <a href={`${BASE}sd/lessons/recsys/`}>Recommendations</a> · <a href={`${BASE}dsa/lessons/tries/`}>DSA: Tries</a> · <a href={`${BASE}sd/war/rag-retrieval-design/`}>War Room: hybrid RAG retrieval</a>.
+Related: <a href={`${BASE}sd/lessons/typeahead/`}>Typeahead walkthrough</a> (the full design) · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> (the source of truth, and its own indexes) · <a href={`${BASE}sd/lessons/caching/`}>Caching</a> (the four promises for the prefix cache) · <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> (CDC, the outbox, ordering by key) · <a href={`${BASE}sd/lessons/core-concepts/#tail-latency`}>Core concepts · tail latency</a> · <a href={`${BASE}sd/lessons/pattern-timeseries/`}>Time-series · top-K</a> · <a href={`${BASE}sd/lessons/pattern-geospatial/`}>Geospatial</a> · <a href={`${BASE}sd/lessons/rag/`}>RAG & vector search</a> · <a href={`${BASE}sd/lessons/recsys/`}>Recommendations</a> · <a href={`${BASE}dsa/lessons/tries/`}>DSA: Tries</a> · <a href={`${BASE}sd/war/rag-retrieval-design/`}>War Room: hybrid RAG retrieval</a>.
 
 <h2 id="beyond">Beyond this page</h2>
 
 **Further study**
 
-- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 3 (full-text search and fuzzy indexes: Lucene's term dictionary and Levenshtein automata), chapter 6 (partitioning secondary indexes by document versus by term — the Twitter-search question), and chapter 11 ("keeping systems in sync": the dual-write race with a search index, and change data capture).
-- [Introduction to Information Retrieval](https://nlp.stanford.edu/IR-book/) (Manning, Raghavan, Schütze; free online) — the inverted index, index compression, tf-idf weighting, and the probabilistic model behind BM25.
-- [Okapi BM25 (Wikipedia)](https://en.wikipedia.org/wiki/Okapi_BM25) — the formula, its parameters, and its variants.
-- Elastic documentation: [near-real-time search](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search), [paginating search results](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/paginate-search-results), [sizing shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) and [aliases](https://www.elastic.co/docs/manage-data/data-store/aliases) — the vendor details behind Chapters 4–6. [OpenSearch documentation](https://docs.opensearch.org/latest/) covers the same ground for the open-source fork.
-- PostgreSQL: [full-text search](https://www.postgresql.org/docs/current/textsearch.html) and [pg_trgm](https://www.postgresql.org/docs/current/pgtrgm.html) — the honest middle ground from Chapter 1.
-- [Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods](https://cormack.uwaterloo.ca/cormacksigir09-rrf.pdf) (Cormack, Clarke, Büttcher, SIGIR 2009) — the two-page paper behind hybrid fusion.
-- Busch et al., *Earlybird: Real-Time Search at Twitter* (ICDE 2012) — time-partitioned, document-partitioned real-time search at scale.
-- [Apache Lucene](https://lucene.apache.org/) — the library underneath Elasticsearch, OpenSearch and Solr.
+- *Designing Data-Intensive Applications* (Martin Kleppmann): chapter 3 (full-text search and fuzzy indexes: Lucene's term dictionary and Levenshtein automata), chapter 6 (partitioning secondary indexes by document versus by term, the Twitter-search question), and chapter 11 ("keeping systems in sync": the dual-write race with a search index, and change data capture).
+- [Introduction to Information Retrieval](https://nlp.stanford.edu/IR-book/) (Manning, Raghavan, Schütze; free online): the inverted index, index compression, tf-idf weighting, and the probabilistic model behind BM25.
+- [Okapi BM25 (Wikipedia)](https://en.wikipedia.org/wiki/Okapi_BM25): the formula, its parameters, and its variants.
+- Elastic documentation: [near-real-time search](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search), [paginating search results](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/paginate-search-results), [sizing shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) and [aliases](https://www.elastic.co/docs/manage-data/data-store/aliases): the vendor details behind Chapters 4 to 6. [OpenSearch documentation](https://docs.opensearch.org/latest/) covers the same ground for the open-source fork.
+- PostgreSQL: [full-text search](https://www.postgresql.org/docs/current/textsearch.html) and [pg_trgm](https://www.postgresql.org/docs/current/pgtrgm.html): the middle ground from Chapter 1.
+- [Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods](https://cormack.uwaterloo.ca/cormacksigir09-rrf.pdf) (Cormack, Clarke, Büttcher, SIGIR 2009): the short paper behind hybrid fusion.
+- Busch et al., *Earlybird: Real-Time Search at Twitter* (ICDE 2012): time-partitioned, document-partitioned real-time search at scale.
+- [Apache Lucene](https://lucene.apache.org/): the library underneath Elasticsearch, OpenSearch and Solr.
 
 **Look these up yourself**
 
-- **Learning to rank and its metrics** (NDCG, MRR, click models) — how teams actually decide that ranking got better.
-- **WAND and block-max WAND** — finding the top 10 without scoring every matching document.
-- **Postings compression** (variable-byte, frame-of-reference / PForDelta) — why sorted doc-id gaps compress so well, and what it buys in memory.
-- **Lucene's tiered merge policy and force-merge** — why merging matters for write-heavy indices and why force-merge is for read-only ones.
-- **Query understanding** — synonyms, spelling correction from query logs, and classifying a query ("lamp" as a category versus a brand) before searching.
-- **Tokenising languages without spaces** (Chinese, Japanese, Thai) — why the standard tokenizer fails and what ICU and dictionary tokenizers do.
-- **Hot-warm-cold tiers and rollover** — time-based indices for logs and tweets, and moving old data to cheaper nodes.
-- **Hierarchical Navigable Small World (HNSW) graphs** — how the ANN index from Chapter 12 trades memory and recall for speed.
+- **Learning to rank and its metrics** (NDCG, MRR, click models): how teams decide that ranking got better.
+- **WAND and block-max WAND**: finding the top 10 without scoring every matching document.
+- **Postings compression** (variable-byte, frame-of-reference / PForDelta): why sorted doc-id gaps compress so well.
+- **Lucene's tiered merge policy and force-merge**: why merging matters for write-heavy indices and why force-merge is for read-only ones.
+- **Query understanding**: synonyms, spelling correction from query logs, and classifying a query ("lamp" as a category versus a brand) before searching.
+- **Tokenising languages without spaces** (Chinese, Japanese, Thai): why the standard tokenizer fails and what ICU and dictionary tokenizers do.
+- **Hot-warm-cold tiers and rollover**: time-based indices for logs and tweets, and moving old data to cheaper nodes.
+- **Hierarchical Navigable Small World (HNSW) graphs**: how the ANN index from Chapter 12 trades memory and recall for speed.

@@ -7,7 +7,7 @@ export const likeScan = [
     ['WHERE title LIKE \'lamp%\'', 'Right. A prefix pattern is a range in sorted order (everything from “lamp” up to just before “lamq”), so a B-tree can seek to it. In Postgres this needs the C collation or a text_pattern_ops index — but it is a seek, not a scan.'],
     ['WHERE lower(title) LIKE \'%lamp%\'', 'Lowercasing fixes case, not the leading wildcard. Worse, an index on title can’t serve lower(title) at all without an expression index. Still a full scan.'],
   ]),
-  step('Kestrel Market has 50 million listings with about 1 KB of text each, and peaks at 2,000 searches per second. Roughly how much text would LIKE \'%lamp%\' read per second at peak?', [], 2, [
+  step('A marketplace has 50 million listings with about 1 KB of text each, and peaks at 2,000 searches per second. Roughly how much text would LIKE \'%lamp%\' read per second at peak?', [], 2, [
     ['About 50 GB per second', '50 GB is what ONE query reads (50,000,000 × 1 KB). Multiply by the query rate.'],
     ['About 2 TB per second', 'Close in spirit, but check the multiplication: 50 GB × 2,000 is 100,000 GB.'],
     ['About 100 TB per second', 'Right. 50 GB per query × 2,000 queries per second = 100,000 GB/s. No database does that. Even one query at an optimistic 2 GB/s takes 25 seconds.'],
@@ -63,7 +63,7 @@ export const relevance = [
     ['It rises about 10× (square-root damping)', 'Some old TF-IDF variants damp with a square root or log. BM25 saturates instead.'],
     ['It approaches a ceiling of k1 + 1 = 2.2 (about 2.17 at tf 100)', 'Right. tf × 2.2 / (tf + 1.2) can never exceed 2.2. And the stuffed listing is also much longer than average, so length normalisation pulls it down further.'],
   ]),
-  step('Iris wants newer and more popular listings to rank higher, but never above a clearly better text match. Best approach?', [], 1, [
+  step('The product team wants newer and more popular listings to rank higher, but never above a clearly better text match. Best approach?', [], 1, [
     ['Sort by created_at descending', 'That throws away relevance entirely: a brand-new listing for “lamp oil” beats a perfect “brass desk lamp” from yesterday.'],
     ['Multiply the text score by gentle boosts: a recency decay and a capped popularity factor', 'Right. Text relevance stays the base; recency and popularity nudge it. Cap and dampen them (log of sales, a decay with a half-life) so one viral listing can’t swamp the match.'],
     ['Put popular listings in a filter so only they are returned', 'A filter removes listings; it doesn’t order them. Less popular but highly relevant listings would vanish.'],
@@ -106,7 +106,7 @@ export const sync = [
   step('You need a new analyzer for the title field. Existing postings were built with the old one. How do you ship it with zero downtime?', [], 1, [
     ['Update the mapping in place; old documents pick it up', 'Postings already on disk were built by the old analyzer. Changing how a field is analysed requires reindexing those documents.'],
     ['Build listings_v2 from the source, keep it fed from the change stream, verify, then atomically move the alias “listings” to v2', 'Right. Clients only know the alias. Record the stream position before the backfill, replay from it into v2, compare counts and sample queries, flip the alias, and keep v1 for rollback.'],
-    ['Delete the index at 3 a.m. and rebuild quickly', 'Search is down or empty for the whole rebuild — about 40 minutes at 20,000 documents per second for 50 million listings.'],
+    ['Delete the index during the night and rebuild it', 'Search is down or empty for the whole rebuild — about 40 minutes at 20,000 documents per second for 50 million listings.'],
   ]),
 ];
 
@@ -237,7 +237,7 @@ export const drills = [
     ['By document (and by time for tweets) — writes touch one shard, queries scatter-gather and merge', 'Right. Document partitioning keeps writes local and load even. Partitioning by time adds a win: most queries want recent tweets, so the newest index is small, hot and in memory.'],
     ['By user — all of a user’s tweets on one shard', 'Great for “search my tweets”, terrible for global search: every query still visits every shard, and celebrities create hot shards.'],
   ]),
-  step('The product page shows “Page 1 of 4,200”. Iris wants a jump-to-last-page button. What do you say?', [], 0, [
+  step('The product page shows “Page 1 of 4,200”. Product wants a jump-to-last-page button. What do you say?', [], 0, [
     ['Cap the browsable depth (say, 50 pages) and use search_after cursors for next/previous; nobody reads page 4,200', 'Right. Deep from/size costs shards × (from + size) per page and hits the default 10,000-hit window. Cursors make “next” cheap but can’t jump; that is a product trade worth saying out loud.'],
     ['Raise max_result_window to 100,000', 'Each deep page would make every shard sort and send 84,000 entries. One bored user clicking “last” could hurt every other search.'],
     ['Cache every page of every query', 'Unbounded keys, almost no reuse, and stale the moment a listing changes.'],

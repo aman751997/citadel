@@ -101,7 +101,7 @@ function spiralReject(s: MatrixState, action: string) {
       : `This walk would read nothing, but only because of luck in the indexes. Stop the moment the boundaries cross.`);
   }
   const edge = { right: 'top row', down: 'right column', left: 'bottom row', up: 'left column' }[DIRS[s.dir]];
-  return `The binders keep a fixed order: right, down, left, up. The ${edge} is next (${list(walkCells(s, DIRS[s.dir]).map(([r, c]) => s.grid[r][c]))}); walking ${d} first would skip it and break clockwise order.`;
+  return `The walk keeps a fixed order: right, down, left, up. The ${edge} is next (${list(walkCells(s, DIRS[s.dir]).map(([r, c]) => s.grid[r][c]))}); walking ${d} first would skip it and break clockwise order.`;
 }
 function spiralApply(s: MatrixState, action: string) {
   if (action === 'finish') {
@@ -147,7 +147,7 @@ function rotateExpected(s: MatrixState) {
 }
 function rotateReject(s: MatrixState, action: string) {
   const n = s.grid.length, corner = s.start[0][0];
-  if (n === 1) return action === 'finish' ? 'Reverse the single row first (it is one knot, so nothing moves) to complete the recipe.' : `A 1 × 1 grid has no pairs above the diagonal and only one row: the recipe is just “reverse row 0”, which moves nothing.`;
+  if (n === 1) return action === 'finish' ? 'Reverse the single row first (it is one cell, so nothing moves) to complete the recipe.' : `A 1 × 1 grid has no pairs above the diagonal and only one row: the recipe is just “reverse row 0”, which moves nothing.`;
   if (action === 'swap') {
     return `Every pair above the diagonal is already swapped. Swapping (0, 1) with (1, 0) again would undo it: a transpose done twice is no transpose at all.`;
   }
@@ -180,7 +180,7 @@ function rotateApply(s: MatrixState, action: string) {
     s.message = `Row ${r} reversed: [${list(s.grid[r])}]. Column ${r} of the original is now row ${r}, read bottom to top.`;
   } else {
     s.done = true;
-    s.message = `Rotated clockwise: ${show(s.grid)}. Every knot (r, c) landed at (c, ${n} − 1 − r), using only swaps.`;
+    s.message = `Rotated clockwise: ${show(s.grid)}. Every cell (r, c) landed at (c, ${n} − 1 − r), using only swaps.`;
   }
 }
 function rotateView(s: MatrixState): LabRow[] {
@@ -254,7 +254,7 @@ function markersApply(s: MatrixState, action: string) {
   const changed = s.grid.flatMap((row, r) => row.map((v, c) => (v !== before[r][c] ? `(${r}, ${c})` : ''))).filter(Boolean);
   s.message = {
     flags: `Flags read before any note is written: row 0 ${s.firstRow ? 'has' : 'has no'} zero, column 0 ${s.firstCol ? 'has' : 'has no'} zero.`,
-    mark: changed.length ? `Notes chalked on the edges at ${changed.join(', ')}.` : 'No inner zeros, so no notes. The edges keep their own values.',
+    mark: changed.length ? `Notes written on the edges at ${changed.join(', ')}.` : 'No inner zeros, so no notes. The edges keep their own values.',
     inner: changed.length ? `Inner cells zeroed from the notes: ${changed.join(', ')}.` : 'No inner cell sits under a note.',
     edges: changed.length ? `Edges settled last, from the flags: ${changed.join(', ')}.` : 'Neither flag is set, so the edges stay.',
   }[action as Phase];
@@ -371,7 +371,7 @@ export const lab = makeLab<MatrixState>({
     cases: markerCases.length,
     actions: [
       { action: 'flags', label: 'Read the flags: does row 0 / column 0 hold a zero?' },
-      { action: 'mark', label: 'Chalk notes: each inner zero marks matrix[r][0] and matrix[0][c]' },
+      { action: 'mark', label: 'Write notes: each inner zero marks matrix[r][0] and matrix[0][c]' },
       { action: 'inner', label: 'Zero inner cells whose row note or column note is 0' },
       { action: 'edges', label: 'Zero row 0 and column 0 as the flags say' },
       { action: 'finish', label: 'Done' },

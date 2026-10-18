@@ -10,7 +10,7 @@ const g16 = [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12], [13, 14, 15, 16]];
 const g9 = [[1, 2, 3], [4, 5, 6], [7, 8, 9]];
 
 export const rotate = [
-  step('A 4 × 4 tapestry turns a quarter turn clockwise. The knot 2 sits at row 0, column 1. Where does it land?',
+  step('A 4 × 4 grid turns a quarter turn clockwise. The cell 2 sits at row 0, column 1. Where does it land?',
     grid(g16, 'row', { '0,1': '(0, 1)' }, [[0, 1]]), 0, [
       ['Row 1, column 3', 'Yes. Clockwise sends (r, c) to (c, n − 1 − r) = (1, 4 − 1 − 0) = (1, 3). The top row becomes the right-hand column, read top to bottom.'],
       ['Row 1, column 0', 'That is (c, r): a transpose, a flip across the main diagonal. It puts the top row down the LEFT column. Half a rotation, not the whole one.'],
@@ -21,7 +21,7 @@ export const rotate = [
     grid([[1, 4, 7], [2, 5, 8], [3, 6, 9]], 'row'), 0, [
       ['Reverse each row: [[7, 4, 1], [8, 5, 2], [9, 6, 3]]', 'Yes. The transpose sends (r, c) to (c, r); reversing each row sends (c, r) to (c, n − 1 − r). Together: (r, c) → (c, n − 1 − r), the clockwise map.'],
       ['Reverse the order of the rows: [[3, 6, 9], [2, 5, 8], [1, 4, 7]]', 'That finishes a COUNTER-clockwise turn: (c, r) → (n − 1 − c, r). The 1 from the top-left corner ends bottom-left instead of top-right.'],
-      ['Transpose again', 'A transpose is its own inverse: (r, c) → (c, r) → (r, c). You would be holding the original tapestry.'],
+      ['Transpose again', 'A transpose is its own inverse: (r, c) → (c, r) → (r, c). You would be holding the original grid.'],
     ]),
   step('Your transpose loop swaps matrix[r][c] with matrix[c][r] for EVERY r and EVERY c, from 0 to n − 1. What does [[1, 2], [3, 4]] look like afterwards?',
     grid([[1, 2], [3, 4]], 'row'), 1, [
@@ -32,7 +32,7 @@ export const rotate = [
 ];
 
 export const spiral = [
-  step('3 × 4 tapestry. The first lap read 1, 2, 3, 4, 8, 12, 11, 10, 9, 5. The second lap walked right along row 1 (6, 7), so now top = 2, bottom = 1, left = 1, right = 2. The walk down reads nothing and right becomes 1. Do you walk left along the bottom row?',
+  step('3 × 4 grid. The first lap read 1, 2, 3, 4, 8, 12, 11, 10, 9, 5. The second lap walked right along row 1 (6, 7), so now top = 2, bottom = 1, left = 1, right = 2. The walk down reads nothing and right becomes 1. Do you walk left along the bottom row?',
     grid([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]], 'row', { '1,1': 'left = right' }, [[1, 1], [1, 2]]), 1, [
       ['Yes: row bottom = 1, from column 1 back to column 1', 'Row 1 is the row you just read left to right. Walking it again re-reads the 6: the output becomes 1, 2, 3, 4, 8, 12, 11, 10, 9, 5, 6, 7, 6, with 13 values from 12 cells.'],
       ['No: top (2) has passed bottom (1), so no unread row remains', 'Yes. The guard if (top <= bottom) skips the bottom walk. The output stops at 12 values: 1, 2, 3, 4, 8, 12, 11, 10, 9, 5, 6, 7.'],
@@ -56,7 +56,7 @@ export const zeroes = [
   step('[[1, 2, 3], [4, 0, 6], [7, 8, 9]]. Scanning row by row, you find the 0 at (1, 1). With O(1) extra space, what do you do right now?',
     grid([[1, 2, 3], [4, 0, 6], [7, 8, 9]], 'row', { '1,1': 'zero' }, [[1, 1]]), 1, [
       ['Zero row 1 and column 1 immediately', 'The new zeros look exactly like original ones. Scanning on, (1, 2) and (2, 1) now hold 0 and spread too: you end with [[1, 0, 0], [0, 0, 0], [0, 0, 0]] instead of [[1, 0, 3], [0, 0, 0], [7, 0, 9]].'],
-      ['Chalk a note on the edges: matrix[1][0] = 0 and matrix[0][1] = 0', 'Yes. Row 1’s fate is written at its left end and column 1’s at its top. The inside is not touched until every note is written.'],
+      ['Write a note on the edges: matrix[1][0] = 0 and matrix[0][1] = 0', 'Yes. Row 1’s fate is written at its left end and column 1’s at its top. The inside is not touched until every note is written.'],
       ['Record 1 in a boolean[] for rows and 1 in a boolean[] for columns', 'Correct, and the clearest first answer, but that is O(rows + cols) extra space. The follow-up asks for O(1): the edges of the grid can hold those same booleans.'],
     ]),
   step('LeetCode’s second example: [[0, 1, 2, 0], [3, 4, 5, 2], [1, 3, 1, 5]]. Row 0 holds a zero, so its flag is set. You zero row 0 BEFORE the inside pass. What happens?',
@@ -65,7 +65,7 @@ export const zeroes = [
       ['Only column 0 is affected', 'Row 0 is the marker row for EVERY column, not just column 0.'],
       ['Every column marker now reads 0, so the inside pass wipes the whole grid', 'Yes. The answer should be [[0, 0, 0, 0], [0, 4, 5, 0], [0, 3, 1, 0]]; instead every cell becomes 0. Read the notes into the inside first, then settle the edges.'],
     ]),
-  step('[[1, 2, 3], [4, 0, 6], [7, 8, 9]] again. You chalk the notes first, then check whether row 0 and column 0 “contain a zero”. What goes wrong?',
+  step('[[1, 2, 3], [4, 0, 6], [7, 8, 9]] again. You write the notes first, then check whether row 0 and column 0 “contain a zero”. What goes wrong?',
     grid([[1, 0, 3], [0, 0, 6], [7, 8, 9]], 'after notes · row', { '0,1': 'note', '1,0': 'note' }, [[0, 1], [1, 0]]), 0, [
       ['Your own notes look like original zeros, so row 0 and column 0 are wiped: [[0, 0, 0], [0, 0, 0], [0, 0, 9]]', 'Yes. The correct answer is [[1, 0, 3], [0, 0, 0], [7, 0, 9]]. Read the two flags BEFORE writing any note on the edges.'],
       ['Nothing: the notes are zeros anyway', 'A note says “this row or column must be zeroed”. It does not say the edge row itself held a zero, and here it didn’t: the 1, 3 and 7 should survive.'],

@@ -1,7 +1,7 @@
 // Three-step hint ladders for every <HintLadder> in matrix.mdx.
 export const hints: Record<string, [string, string, string]> = {
   rotate: [
-    'Write down where one knot goes. A clockwise quarter turn sends (r, c) to which (row, column)? Can that map be built from two simpler moves that each swap pairs in place?',
+    'Write down where one cell goes. A clockwise quarter turn sends (r, c) to which (row, column)? Can that map be built from two simpler moves that each swap pairs in place?',
     'Clockwise is (r, c) → (c, n − 1 − r). A transpose gives (c, r); reversing each row then turns column r into column n − 1 − r.',
     'Transpose: for r in 0..n − 1 and c in r + 1..n − 1, swap matrix[r][c] with matrix[c][r] (above the diagonal only). Then reverse every row with two pointers.',
   ],
@@ -13,7 +13,7 @@ export const hints: Record<string, [string, string, string]> = {
   zeroes: [
     'You need one bit per row (“must this row be zeroed?”) and one per column. Is there somewhere in the grid that could hold those bits?',
     'Row 0 can hold the column notes and column 0 the row notes. But then row 0 and column 0 lose their own information, so save that first in two booleans.',
-    'Order: read the two flags; chalk notes from every inner zero (r, c ≥ 1); zero inner cells whose row note or column note is 0; finally zero row 0 and column 0 if their flags say so.',
+    'Order: read the two flags; write notes from every inner zero (r, c ≥ 1); zero inner cells whose row note or column note is 0; finally zero row 0 and column 0 if their flags say so.',
   ],
   pow: [
     'x^13 = x^8 × x^4 × x^1. Which powers of x can you produce cheaply, one after another?',
@@ -27,7 +27,7 @@ export const hints: Record<string, [string, string, string]> = {
   ],
   transpose: [
     'The result has a different shape. What are its dimensions?',
-    'An rows × cols grid becomes cols × rows. The knot at (r, c) moves to (c, r).',
+    'An rows × cols grid becomes cols × rows. The cell at (r, c) moves to (c, r).',
     'Allocate int[cols][rows]; for every r and c, out[c][r] = matrix[r][c]. In place is impossible because the shape changes. A clockwise turn of a non-square grid is out[c][rows − 1 − r] = matrix[r][c].',
   ],
   life: [

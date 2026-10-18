@@ -54,7 +54,7 @@ export const figures = {
     ],
     marks: [{ at: 10, label: 'tie at 10: checkout first', tone: 'purple' }],
   },
-  // Chapter 4: the Bell Captain's heap on [0,5], [1,2], [6,7]. Lanes are rooms.
+  // Chapter 4: the room-reuse heap on [0,5], [1,2], [6,7]. Lanes are rooms.
   roomsHeap: {
     from: 0, to: 8, unit: 50,
     lanes: [lane('room A', bar(0, 5, 'blue')), lane('room B', bar(1, 2, 'purple'), bar(6, 7, 'purple'))],
@@ -87,7 +87,7 @@ export const figures = {
   freeTime: {
     from: 0, to: 11, unit: 40,
     lanes: [
-      lane('porter 1', bar(1, 2), bar(5, 6)), lane('porter 2', bar(1, 3)), lane('porter 3', bar(4, 10)),
+      lane('employee 1', bar(1, 2), bar(5, 6)), lane('employee 2', bar(1, 3)), lane('employee 3', bar(4, 10)),
       lane('all free', bar(3, 4, 'green')),
     ],
   },
@@ -175,10 +175,10 @@ export const roomsSweep: TraceStep[] = [
   step('The counts after each event are below. What does the sweep return?',
     [row('In use after each event', [1, 2, 1, 2, 1, 0], { 0: '0', 1: '5', 2: '10', 3: '10', 4: '20', 5: '30' })], 1, [
       ['0: the final count', 'Every meeting is over at the end. You want the busiest moment.'],
-      ['2: the largest count seen', 'Yes. Two meetings are running at the busiest moment, so two rooms are needed — and, as the Bell Captain will show, enough.'],
+      ['2: the largest count seen', 'Yes. Two meetings are running at the busiest moment, so two rooms are needed — and, as the heap method below shows, enough.'],
       ['3: the number of meetings', 'Only two of them ever run at once. Meeting 2 and meeting 3 never meet.'],
     ]),
-  step('The Bell Captain’s heap finishes holding 5 and 7. At time 6, how many meetings are running — and what does the heap’s size count?',
+  step('The room heap finishes holding 5 and 7. At time 6, how many meetings are running — and what does the heap’s size count?',
     [row('Sorted by start', ['0–5', '1–2', '6–7']), row('Heap at the end', [5, 7], { 0: 'PEEK' })], 1, [
       ['2 running; the heap holds rooms in use', 'Only 6–7 is running at time 6. The room whose last meeting ended at 5 is free, but nothing removed it from the heap.'],
       ['1 running; the size counts rooms ever opened', 'Right. Each meeting either reuses a room (poll + offer: size unchanged) or opens one (offer: size + 1). The size never shrinks, so it ends at the number of rooms opened: 2.'],

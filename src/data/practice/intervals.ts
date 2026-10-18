@@ -53,7 +53,7 @@ export function challengeFor(id: ConceptId, variant = 0): Challenge {
     case 'merge': {
       let ps: Pair[]; do { ps = randPairs(r, 5, 14, 4); } while (merged(ps).length === ps.length || merged(ps).length === 1);
       return { ...base, topic: 'Combine overlapping ranges', section: 'merge-intervals', strategy: 'merge',
-        prompt: `A ballroom’s bookings, in the order they were written down: ${fmt(ps)}. Each includes both its start and end hour, so two bookings that touch at one hour run together. Combine every group that shares time and list the result in time order.`,
+        prompt: `One room’s bookings, in the order they were written down: ${fmt(ps)}. Each includes both its start and end hour, so two bookings that touch at one hour run together. Combine every group that shares time and list the result in time order.`,
         question: 'Enter the combined ranges as a flat list: start end start end …', answer: flat(merged(ps)),
         hints: ['Put the bookings in start order first.', 'Hold one range open. A booking that starts at or before its end joins it.', 'Join with the larger end. Close the range at a real gap — and remember the last one.'],
         rubric: ['Sorted by start before sweeping.', 'Extended with max(end), so a swallowed booking cannot shrink the range.', 'Emitted the final open range after the loop.'],
@@ -130,7 +130,7 @@ export function challengeFor(id: ConceptId, variant = 0): Challenge {
         for (let k = 1; k < all.length; k++) gaps.push([all[k - 1][1], all[k][0]]);
       } while (!gaps.length);
       return { ...base, topic: 'When is nobody working?', section: 'free-time', strategy: 'merge',
-        prompt: `Three porters’ shifts (each list sorted): ${fmt(people)}. List every stretch of positive length, between the first shift’s start and the last shift’s end, when nobody is working.`,
+        prompt: `Three employees’ shifts (each list sorted): ${fmt(people)}. List every stretch of positive length, between the first shift’s start and the last shift’s end, when nobody is working.`,
         question: 'Enter the free stretches as a flat list: start end start end …', answer: flat(gaps),
         hints: ['Free for everyone = outside the union of everybody’s busy time.', 'Pool every shift and sort by start.', 'Track how far the busy time reaches. A shift that starts later than that leaves a gap.'],
         rubric: ['Pooled and sorted every shift.', 'Recorded [busyUntil, start] only when start > busyUntil (positive length).', 'Moved busyUntil with max, so a long shift is not cut short.'],
@@ -151,7 +151,7 @@ export function challengeFor(id: ConceptId, variant = 0): Challenge {
       const cap = 3 + r(5); let maxLoad = 0;
       for (let x = 0; x <= 13; x++) maxLoad = Math.max(maxLoad, trips.reduce((t, [n, f, to]) => t + (f <= x && x < to ? n : 0), 0));
       return { ...base, topic: 'Does the shuttle ever overflow?', section: 'car-pooling', strategy: 'sweep',
-        prompt: `The hotel shuttle has ${cap} seats and drives one way. Trips as (riders, pickup, dropoff): ${fmt(trips)}. Riders leave at their dropoff before anyone boards there. Can the shuttle serve every trip?`,
+        prompt: `A shuttle has ${cap} seats and drives one way. Trips as (riders, pickup, dropoff): ${fmt(trips)}. Riders leave at their dropoff before anyone boards there. Can the shuttle serve every trip?`,
         question: 'Enter yes or no.', answer: maxLoad <= cap,
         hints: ['Only the busiest stretch of road matters.', 'Riders join at pickup and leave at dropoff.', 'Sort the changes by place, dropoffs first on ties, and watch the running load.'],
         rubric: ['Modelled each trip as +riders at pickup and −riders at dropoff.', 'Dropoffs before pickups at the same place.', 'Compared the peak load with the seats.'],

@@ -125,7 +125,7 @@ export const lab = makeLab<S>({
   },
 
   rooms: {
-    name: 'Count the ballrooms',
+    name: 'Count the rooms',
     cases: roomsCases.length,
     actions: [
       { action: 'checkout', label: 'Process the next checkout (−1)' },

@@ -27,7 +27,7 @@ export const driving = [
     ['Wait for them to tell you what is next', 'Waiting hands them the marker. In a senior round the silence is often a test of whether you will drive.'],
     ['Say what comes next and start it: “I’ll list the core entities, then the API — stop me if you’d rather go elsewhere.”', 'Right. Announce, invite redirection, proceed. You drive; they can still steer.'],
     ['Ask “What would you like me to do next?”', 'Polite, but it asks them to run your interview. Propose the next step instead and let them veto it.'],
-    ['Start drawing the full architecture in silence', 'Silence is your logged failure mode. Nothing you do silently gets written down.'],
+    ['Start drawing the full architecture in silence', 'Silence is a common failure mode. Nothing you do silently gets written down.'],
   ]),
   step('You are halfway through the API when the interviewer says: “Let’s talk about what happens when one link goes viral.” What now?', [], 2, [
     ['“Sure — I’ll get there in the deep dives, let me finish the API first.”', 'You just overruled the person writing your feedback. An interviewer’s steer is the strongest hint you will get.'],
@@ -57,7 +57,7 @@ export const requirements = [
     ['“We’ll use Cassandra so it’s always available.”', 'That is a solution, not a requirement — and it arrives before you know what the data looks like.'],
     ['“It must support millions of users.”', 'A start, but one vague number. How many daily users, what read/write mix, what latency?'],
   ]),
-  step('Iris says the new service needs “three nines”. Roughly how much downtime is that in a 30-day month?', [], 1, [
+  step('A product manager says the new service needs “three nines”. Roughly how much downtime is that in a 30-day month?', [], 1, [
     ['About 4 minutes', 'That is four nines: 0.01% of 43,200 minutes ≈ 4.3 minutes.'],
     ['About 43 minutes', 'Right. 30 × 24 × 60 = 43,200 minutes; 0.1% of that is 43.2 minutes. Over a year, 99.9% allows about 8.8 hours.'],
     ['About 8.8 hours', 'That is the yearly budget for 99.9% (0.1% of 8,760 hours). Per month it is about 43 minutes.'],
@@ -68,7 +68,7 @@ export const requirements = [
 // Chapter 4 · Core entities
 export const entities = [
   step('Users have roles. A role grants many permissions, and the same permission (say “export reports”) is granted by many roles. How do you model Role ↔ Permission?', [], 1, [
-    ['A role_id column on permissions (one-to-many)', 'This is the bug from your own mock history. It forces each permission to belong to one role, so “export reports” would need a copy per role.'],
+    ['A role_id column on permissions (one-to-many)', 'This is a common slip. It forces each permission to belong to one role, so “export reports” would need a copy per role.'],
     ['A join table role_permissions(role_id, permission_id) — many-to-many, said out loud', 'Right. Ask “can each side have many of the other?” Yes twice means a join table, and you name it.'],
     ['A permissions array stored inside each role row', 'Reading one role is easy, but “which roles grant export?” becomes a scan, and renaming a permission touches every role that holds it.'],
     ['One table with a row per user per permission', 'That flattens roles away. Changing what a role grants would mean rewriting rows for every user who has it.'],
@@ -159,7 +159,7 @@ export const pressure = [
     ['“I don’t remember the default and I’d check the docs. It shouldn’t decide this design: I’d keep events small and put large payloads in object storage, passing a reference.”', 'Right. Admit it in one sentence, then show that your design does not depend on the fact you lack.'],
     ['Switch the design to a different message broker', 'Swapping components to avoid a question looks like dodging, and the new one has limits too.'],
   ]),
-  step('Theo asks: “What happens to your ID-counter service when its one node dies?” You realise it is a single point of failure. What do you say?', [], 1, [
+  step('A reviewer asks: “What happens to your ID-counter service when its one node dies?” You realise it is a single point of failure. What do you say?', [], 1, [
     ['“It rarely fails, and we can restart it quickly.”', 'Every create stops while it is down. Defending a flaw the interviewer has just found is the worst version of this moment.'],
     ['“Good catch — that’s a single point of failure. I’ll switch to range allocation: each app server leases a block of 1,000 ids from a replicated store, so losing a server wastes at most an unused block.” Then update the diagram.', 'Right. Name it, own it in one sentence, fix forward with the smallest change, and redraw. That recovery often scores better than never having made the mistake.'],
     ['“Let me start the design over.”', 'One flawed box does not justify a restart, and the clock will not give the minutes back.'],
@@ -176,7 +176,7 @@ export const pressure = [
 export const drills = [
   step('Your interviewer asks: “How would you handle resource-level authorization?” What happens FIRST?', [], 1, [
     ['Draw the auth service on the diagram', 'Drawing before you know which layer they mean risks designing the wrong thing in detail.'],
-    ['Confirm which layer they mean — identity, tenant, role, or resource — before answering', 'Right. Answering a different layer than asked is your logged failure mode (tenant isolation answered when resource authorization was asked). One clarifying sentence costs five seconds; answering the wrong question costs the whole dive.'],
+    ['Confirm which layer they mean — identity, tenant, role, or resource — before answering', 'Right. Answering a different layer than asked is a common failure mode (tenant isolation answered when resource authorization was asked). One clarifying sentence costs five seconds; answering the wrong question costs the whole dive.'],
     ['Explain JWT validation end to end', 'JWT validation is identity (authentication). The question was about which user may act on which resource.'],
     ['Add a Redis permission cache', 'A cache is an optimisation for an answer you have not given yet — and without key, TTL and invalidation it is a hand-wave.'],
   ]),
@@ -194,7 +194,7 @@ export const drills = [
   ]),
   step('You finish your numbers: about 3,000 redirects per second at peak and 1 TB over five years. What is the next sentence?', [], 3, [
     ['“Let me double-check those with exact arithmetic.”', 'Precision your inputs never had. The numbers are rough on purpose.'],
-    ['Silence while you start drawing', 'The numbers end without a conclusion — your logged red flag of skipping the bridge.'],
+    ['Silence while you start drawing', 'The numbers end without a conclusion — a common red flag: skipping the bridge.'],
     ['“So we’ll need Cassandra and Kafka.”', 'Your own numbers say a single relational database fits. Reaching for scale tools contradicts them.'],
     ['“So one relational database with a replica holds the data for years, and a cache keeps redirects fast and absorbs viral spikes — here’s the shape I’d start with.”', 'Right. Every number ends in a decision, and the bridge sentence moves you into the design.'],
   ]),

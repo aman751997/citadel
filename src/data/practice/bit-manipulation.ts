@@ -4,7 +4,7 @@ import type { Challenge, PracticeSet } from '../../lib/practice.ts';
 export const strategies = {
   pattern: 'Reason about the exact 32-bit pattern Java stores',
   fold: 'Fold values together so that matching pairs cancel',
-  count: 'Count lit bits: position by position, or by clearing the lowest one repeatedly',
+  count: 'Count set bits: position by position, or by clearing the lowest one repeatedly',
   build: 'Build each answer from a smaller answer already computed',
   shift: 'Move bits one at a time with masks and shifts',
   enumerate: 'Let the binary digits of a counter choose the items',
@@ -49,8 +49,8 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
         topic: 'How Java stores a negative number', section: 'twos-complement', strategy: 'pattern',
         prompt: `A Java int holds the value ${value}. Written out as all 32 of its binary digits, how many of those digits are 1?`,
         question: 'Enter the number of 1s.', answer,
-        hints: ['Java stores −x as “flip every digit of x, then add one”.', `Write ${x === 2147483648 ? 'the magnitude' : x} in binary, flip all 32 digits, then add 1 and watch the carry.`, 'Adding 1 to a flipped row turns the trailing 1s back into 0s and lights the first 0 it meets.'],
-        rubric: ['−x == ~x + 1 in a 32-bit int.', 'The leading digits of a small negative number are all 1s.', 'MIN_VALUE is its own negation: one lit digit, the sign.'],
+        hints: ['Java stores −x as “flip every digit of x, then add one”.', `Write ${x === 2147483648 ? 'the magnitude' : x} in binary, flip all 32 digits, then add 1 and watch the carry.`, 'Adding 1 to a flipped row turns the trailing 1s back into 0s and sets the first 0 it meets.'],
+        rubric: ['−x == ~x + 1 in a 32-bit int.', 'The leading digits of a small negative number are all 1s.', 'MIN_VALUE is its own negation: one set digit, the sign.'],
         explanation: `${value} has ${answer} one(s) among its 32 binary digits.`,
       };
     }
@@ -96,11 +96,11 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const x = pick([11, 128, -1, 255, -8, 1023, -2147483648, 43261596, 7, -100], v);
       const answer = ones32(x);
       return {
-        topic: 'Count the lit digits', section: 'number-of-1-bits', strategy: 'count',
+        topic: 'Count the set digits', section: 'number-of-1-bits', strategy: 'count',
         prompt: `How many 1s are in the 32-bit binary form of the Java int ${x}?`,
         question: 'Enter the count.', answer,
         hints: ['For a negative number, remember what the leading digits look like.', 'n & (n − 1) removes exactly one 1: the lowest.', 'Count rounds until n is 0, or count 1s in the low part and add the leading 1s.'],
-        rubric: ['Each round of n &= n − 1 removes exactly the lowest lit digit.', 'A shifting loop must use >>> or it never ends on negative input.', 'O(number of 1s) rounds, at most 32.'],
+        rubric: ['Each round of n &= n − 1 removes exactly the lowest set digit.', 'A shifting loop must use >>> or it never ends on negative input.', 'O(number of 1s) rounds, at most 32.'],
         explanation: `${x} has ${answer} one(s) in its 32-bit pattern.`,
       };
     }
@@ -218,7 +218,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
         topic: 'Adding without a plus sign', section: 'sum-without-plus', strategy: 'shift',
         prompt: `An adder works in rounds. Each round it writes down the binary sum of its two inputs with every carry ignored, and separately the carries alone, moved one place left. Those two numbers are the next round’s inputs. It stops after the first round that produces no carries. Adding ${a} and ${b}, how many rounds run?`,
         question: 'Enter the number of rounds.', answer: rounds,
-        hints: ['The sum without carries lights a position when exactly one input has a 1 there.', 'The carries are the positions where both inputs have a 1, moved one place left.', `Write ${a} and ${b} in binary and play the rounds until the carry row is all 0s.`],
+        hints: ['The sum without carries sets a position when exactly one input has a 1 there.', 'The carries are the positions where both inputs have a 1, moved one place left.', `Write ${a} and ${b} in binary and play the rounds until the carry row is all 0s.`],
         rubric: ['sum = a ^ b, carry = (a & b) << 1.', 'Each round pushes the lowest carry at least one place left, so a 32-bit int needs at most 32 rounds.', `The final sum is ${a + b}.`],
         explanation: `${rounds} round(s); the sum is ${a + b}.`,
       };
@@ -229,7 +229,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       let answer = x > 0 && (x & (x - 1)) === 0;
       if (four) answer = answer && (x & 0x55555555) !== 0;
       return {
-        topic: 'Exactly one lit digit', section: 'power-of-two', strategy: 'count',
+        topic: 'Exactly one set digit', section: 'power-of-two', strategy: 'count',
         prompt: `Is the Java int ${x} a power of ${four ? 'four' : 'two'}?`,
         question: 'Enter yes or no.', answer,
         hints: ['What does a power of two look like in binary?', 'Exactly one 1 digit, and not the sign digit: n > 0 and n & (n − 1) == 0.', four ? 'A power of four also has its 1 at an even position: n & 0x55555555 is nonzero.' : 'Watch 0 and the most negative int; both pass the n & (n − 1) test alone.'],
@@ -245,7 +245,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
         prompt: `Compare the 32-bit Java ints ${x} and ${y}. In how many of the 32 binary positions do they differ?`,
         question: 'Enter the number of positions.', answer,
         hints: ['Is there one operation that marks exactly the positions where two rows differ?', 'x ^ y has a 1 exactly where x and y disagree.', 'Count the 1s of x ^ y.'],
-        rubric: ['x ^ y lights the differing positions.', 'Counting with n &= n − 1 takes one round per difference.', 'Negative values just have many leading 1s; nothing special.'],
+        rubric: ['x ^ y sets the differing positions.', 'Counting with n &= n − 1 takes one round per difference.', 'Negative values just have many leading 1s; nothing special.'],
         explanation: `${x} and ${y} differ in ${answer} position(s).`,
       };
     }

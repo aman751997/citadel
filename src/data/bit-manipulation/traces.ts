@@ -2,78 +2,78 @@
 // tests/bit-manipulation.test.ts, using string-based binary helpers that share no code with this file.
 import { row, step, type CellTone } from '../../lib/trace.ts';
 
-// Rows of lanterns. bits8 shows the low 8 lanterns (position 7 on the left, position 0 on the right);
-// bytes32 shows all 32 lanterns of a Java int as four groups of eight.
+// Rows of bits. bits8 shows the low 8 bits (position 7 on the left, position 0 on the right);
+// bytes32 shows all 32 bits of a Java int as four groups of eight.
 export const bits8 = (x: number) => (x & 0xff).toString(2).padStart(8, '0').split('');
 export const bytes32 = (x: number) => (x >>> 0).toString(2).padStart(32, '0').match(/.{8}/g)!;
 const litTones = (cells: string[]) => Object.fromEntries(cells.flatMap((c, i) => (c === '1' ? [[i, 'hot' as CellTone]] : []))) as Record<number, CellTone>;
-const lanterns = (name: string, x: number, labels: Record<number, string> = {}) => row(name, bits8(x), labels, { tones: litTones(bits8(x)) });
+const bits = (name: string, x: number, labels: Record<number, string> = {}) => row(name, bits8(x), labels, { tones: litTones(bits8(x)) });
 const wide = (name: string, x: number) => row(name, bytes32(x), { 0: '31–24', 1: '23–16', 2: '15–8', 3: '7–0' });
-const positions = row('Lantern', [7, 6, 5, 4, 3, 2, 1, 0], {}, { tones: { 0: 'ghost', 1: 'ghost', 2: 'ghost', 3: 'ghost', 4: 'ghost', 5: 'ghost', 6: 'ghost', 7: 'ghost' } });
+const positions = row('Bit', [7, 6, 5, 4, 3, 2, 1, 0], {}, { tones: { 0: 'ghost', 1: 'ghost', 2: 'ghost', 3: 'ghost', 4: 'ghost', 5: 'ghost', 6: 'ghost', 7: 'ghost' } });
 
 export const twos = [
-  step('A Java int is a row of 32 lanterns. The row for 5 is shown. Which row does −5 show?',
+  step('A Java int is a row of 32 bits. The row for 5 is shown. Which row does −5 show?',
     [wide('5', 5)], 1, [
-      ['10000000 00000000 00000000 00000101', 'That is sign-and-magnitude: a sign lantern stuck onto 5. Java doesn’t store negatives that way. Add this row to 5 in plain binary and you don’t get 0.'],
-      ['11111111 11111111 11111111 11111011', 'Yes. Flip every lantern of 5 (…11111010), then add one (…11111011). Add that row to 5 and every column carries until the carry falls off the top: 0.'],
-      ['11111111 11111111 11111111 11111010', 'That is ~5, every lantern flipped, and it means −6. Two’s complement adds one after flipping: −x == ~x + 1.'],
+      ['10000000 00000000 00000000 00000101', 'That is sign-and-magnitude: a sign bit stuck onto 5. Java doesn’t store negatives that way. Add this row to 5 in plain binary and you don’t get 0.'],
+      ['11111111 11111111 11111111 11111011', 'Yes. Flip every bit of 5 (…11111010), then add one (…11111011). Add that row to 5 and every column carries until the carry falls off the top: 0.'],
+      ['11111111 11111111 11111111 11111010', 'That is ~5, every bit flipped, and it means −6. Two’s complement adds one after flipping: −x == ~x + 1.'],
     ]),
   step('Integer.MAX_VALUE is shown. What does Integer.MAX_VALUE + 1 evaluate to in Java?',
     [wide('MAX_VALUE', 0x7fffffff)], 2, [
-      ['2147483648', 'That needs a 32nd magnitude lantern, and lantern 31 is the sign. An int has no room for it, and Java doesn’t widen to long by itself.'],
+      ['2147483648', 'That needs a 32nd magnitude bit, and bit 31 is the sign. An int has no room for it, and Java doesn’t widen to long by itself.'],
       ['It throws an ArithmeticException', 'Plain + never throws in Java. Only Math.addExact and its siblings check for overflow.'],
-      ['−2147483648, which is Integer.MIN_VALUE', 'Yes. The carry runs into lantern 31, the sign lantern, giving 10000000 00000000 00000000 00000000. Integer arithmetic silently wraps around.'],
+      ['−2147483648, which is Integer.MIN_VALUE', 'Yes. The carry runs into bit 31, the sign bit, giving 10000000 00000000 00000000 00000000. Integer arithmetic silently wraps around.'],
     ]),
   step('What does Math.abs(Integer.MIN_VALUE) return?',
     [wide('MIN_VALUE', 0x80000000 | 0)], 1, [
       ['2147483648', 'There is no int 2147483648. The largest int is 2147483647.'],
       ['−2147483648: MIN_VALUE again', 'Yes. Negating means ~x + 1: 01111111 … 1 plus one is 10000000 … 0, which is MIN_VALUE again. There is one more negative int than positive ints, so the most negative one has no positive partner.'],
-      ['0', 'Nothing here makes the row dark. Flipping MIN_VALUE gives 01111111 … 1, and adding one carries all the way back up to lantern 31.'],
+      ['0', 'Nothing here makes the row clear. Flipping MIN_VALUE gives 01111111 … 1, and adding one carries all the way back up to bit 31.'],
     ]),
 ];
 
 export const operators = [
-  step('n = −8. This loop is meant to count lit lanterns: while (n != 0) { count += n & 1; n >>= 1; }. What happens?',
+  step('n = −8. This loop is meant to count set bits: while (n != 0) { count += n & 1; n >>= 1; }. What happens?',
     [wide('n = −8', -8)], 1, [
-      ['It returns 29', '29 is the true number of lit lanterns in −8, but this loop never gets there. Look at what >> lets in at the top.'],
-      ['It never stops: n goes −8, −4, −2, −1, −1, −1, …', 'Yes. >> is the signed crank: it copies the sign lantern into the empty top position, so a negative row stays negative. −1 >> 1 is still −1, and n never reaches 0.'],
-      ['It returns 3 after 3 rounds', 'Three rounds is what it takes to slide out the three dark lanterns at the bottom. The lit lanterns above them are never cleared.'],
+      ['It returns 29', '29 is the true number of set bits in −8, but this loop never gets there. Look at what >> lets in at the top.'],
+      ['It never stops: n goes −8, −4, −2, −1, −1, −1, …', 'Yes. >> is the signed shift: it copies the sign bit into the empty top position, so a negative row stays negative. −1 >> 1 is still −1, and n never reaches 0.'],
+      ['It returns 3 after 3 rounds', 'Three rounds is what it takes to slide out the three clear bits at the bottom. The set bits above them are never cleared.'],
     ]),
-  step('Same loop, but the crank is n >>>= 1 (the plain crank). How many rounds before n is 0?',
+  step('Same loop, but the shift is n >>>= 1 (the unsigned shift). How many rounds before n is 0?',
     [wide('n = −8', -8)], 2, [
-      ['3', 'After 3 rounds the low lanterns are gone, but 29 lit lanterns remain above them.'],
-      ['29', '29 is the count the loop returns, not the number of rounds. The dark lanterns at the bottom take rounds too.'],
-      ['32', 'Yes. The highest lit lantern is lantern 31. Each logical shift moves it down one and lets a dark lantern in at the top, so it takes 32 rounds to leave. The loop returns 29.'],
+      ['3', 'After 3 rounds the low bits are gone, but 29 set bits remain above them.'],
+      ['29', '29 is the count the loop returns, not the number of rounds. The clear bits at the bottom take rounds too.'],
+      ['32', 'Yes. The highest set bit is bit 31. Each logical shift moves it down one and lets a clear bit in at the top, so it takes 32 rounds to leave. The loop returns 29.'],
     ]),
   step('x = 88. Which row is x & (x − 1)?',
-    [positions, lanterns('x = 88', 88, { 3: 'LOW' }), lanterns('x − 1 = 87', 87)], 1, [
-      ['01010111 (87)', 'That is x − 1 alone. Subtracting put out the lowest lit lantern, but it lit the three dark lanterns below it.'],
-      ['01010000 (80)', 'Yes. Subtracting 1 puts out the lowest lit lantern and lights everything below it; AND with x puts those back out. Exactly one lantern changed.'],
-      ['00001000 (8)', 'That is x & −x. It keeps ONLY the lowest lit lantern instead of putting it out.'],
+    [positions, bits('x = 88', 88, { 3: 'LOW' }), bits('x − 1 = 87', 87)], 1, [
+      ['01010111 (87)', 'That is x − 1 alone. Subtracting cleared the lowest set bit, but it set the three clear bits below it.'],
+      ['01010000 (80)', 'Yes. Subtracting 1 clears the lowest set bit and sets everything below it; AND with x puts those back out. Exactly one bit changed.'],
+      ['00001000 (8)', 'That is x & −x. It keeps ONLY the lowest set bit instead of putting it out.'],
     ]),
-  step('Which Java expression asks “is lantern 3 of x lit?”', [], 0, [
-    ['(x & (1 << 3)) != 0', 'Yes. 1 << 3 is a stencil with one hole at lantern 3. The AND is 8 if that lantern is lit and 0 if not.'],
-    ['(x & (1 << 3)) == 1', 'When lantern 3 is lit, x & 8 is 8, not 1. This is always false. Compare with != 0, or shift first: ((x >> 3) & 1) == 1.'],
+  step('Which Java expression asks “is bit 3 of x set?”', [], 0, [
+    ['(x & (1 << 3)) != 0', 'Yes. 1 << 3 is a mask with one hole at bit 3. The AND is 8 if that bit is set and 0 if not.'],
+    ['(x & (1 << 3)) == 1', 'When bit 3 is set, x & 8 is 8, not 1. This is always false. Compare with != 0, or shift first: ((x >> 3) & 1) == 1.'],
     ['x & 1 << 3 != 0', 'This doesn’t compile in Java. != binds tighter than &, so it reads x & ((1 << 3) != 0): an int AND a boolean. Put brackets around every bit test.'],
   ]),
 ];
 
 export const single = [
   step('[4, 1, 2, 1, 2]. Xor has folded 4, 1 and 2, so acc = 7. The next value is 1. What does acc become?',
-    [row('Values', [4, 1, 2, 1, 2], { 3: 'NEXT' }, { tones: { 0: 'done', 1: 'done', 2: 'done' } }), positions, lanterns('acc = 7', 7), lanterns('next = 1', 1)], 0, [
+    [row('Values', [4, 1, 2, 1, 2], { 3: 'NEXT' }, { tones: { 0: 'done', 1: 'done', 2: 'done' } }), positions, bits('acc = 7', 7), bits('next = 1', 1)], 0, [
       ['6: the 1 meets its partner and goes out', 'Yes. 7 ^ 1 = 6 = 0110, which is exactly 4 ^ 2. The two 1s cancelled, wherever they stood.'],
       ['8: 7 + 1', 'Addition carries, and a pair added twice leaves 2 × 1 behind instead of vanishing.'],
-      ['7: 7 | 1', 'OR can light a lantern but never put one out, so the second 1 can’t cancel the first.'],
+      ['7: 7 | 1', 'OR can set a bit but never put one out, so the second 1 can’t cancel the first.'],
     ]),
   step('acc = 6. The last value, 2, arrives and the values run out. What do you return?',
-    [row('Values', [4, 1, 2, 1, 2], { 4: 'NEXT' }, { tones: { 0: 'done', 1: 'done', 2: 'done', 3: 'done' } }), positions, lanterns('acc = 6', 6), lanterns('next = 2', 2)], 0, [
-      ['4: acc ^ 2 = 4, and with no values left, acc is the single', 'Yes. At loop exit every pair has met its partner and cancelled; the one value without a partner is all that is left lit.'],
+    [row('Values', [4, 1, 2, 1, 2], { 4: 'NEXT' }, { tones: { 0: 'done', 1: 'done', 2: 'done', 3: 'done' } }), positions, bits('acc = 6', 6), bits('next = 2', 2)], 0, [
+      ['4: acc ^ 2 = 4, and with no values left, acc is the single', 'Yes. At loop exit every pair has met its partner and cancelled; the one value without a partner is all that is left set.'],
       ['Build a count map first to be sure', 'That is correct but costs O(n) space. The fold is already exact: x ^ x = 0 and x ^ 0 = x.'],
       ['2: the last value read must be the single', 'Order says nothing about which value is single. The 2 here met its partner.'],
     ]),
   step('The same values arrive as [1, 2, 4, 2, 1]. Does the answer change?', [], 0, [
     ['No: XOR is commutative and associative, so the fold equals (1 ^ 1) ^ (2 ^ 2) ^ 4 = 4', 'Yes. You may regroup and reorder the fold freely, so every pair cancels no matter where its two halves stand.'],
-    ['Yes: the pairs aren’t next to each other, so they can’t cancel', 'Cancellation doesn’t need neighbours. Each lantern position just counts whether it was flipped an even or odd number of times.'],
+    ['Yes: the pairs aren’t next to each other, so they can’t cancel', 'Cancellation doesn’t need neighbours. Each bit position just counts whether it was flipped an even or odd number of times.'],
   ]),
 ];
 
@@ -93,31 +93,31 @@ export const missing = [
 
 export const popcount = [
   step('n = 12. One round of n &= n − 1. What is n now?',
-    [positions, lanterns('n = 12', 12, { 4: 'LOW' }), lanterns('n − 1 = 11', 11)], 1, [
-      ['00001011 (11), which is n − 1', 'Subtracting alone put out lantern 2 but lit lanterns 1 and 0. The AND with n is what puts them back out.'],
-      ['00001000 (8)', 'Yes. The lowest lit lantern, lantern 2, went out and nothing else changed. One round, one lantern.'],
-      ['00000110 (6), which is n shifted right', 'That is n >>> 1. A shift moves every lantern; this move puts out exactly one.'],
+    [positions, bits('n = 12', 12, { 4: 'LOW' }), bits('n − 1 = 11', 11)], 1, [
+      ['00001011 (11), which is n − 1', 'Subtracting alone cleared bit 2 but set bits 1 and 0. The AND with n is what puts them back out.'],
+      ['00001000 (8)', 'Yes. The lowest set bit, bit 2, went out and nothing else changed. One round, one bit.'],
+      ['00000110 (6), which is n shifted right', 'That is n >>> 1. A shift moves every bit; this move clears exactly one.'],
     ]),
-  step('n = −1: all 32 lanterns lit. How many rounds of n &= n − 1 until n is 0?',
+  step('n = −1: all 32 bits set. How many rounds of n &= n − 1 until n is 0?',
     [wide('n = −1', -1)], 1, [
-      ['1', 'Each round puts out exactly one lantern, the lowest lit one. 32 are lit.'],
-      ['32', 'Yes. One round per lit lantern, whatever the sign. The last round is MIN_VALUE & MAX_VALUE = 0.'],
-      ['It never stops, because −1 is negative', 'n & (n − 1) never shifts, so no sign copies come in. The sign lantern is put out like any other, last.'],
+      ['1', 'Each round clears exactly one bit, the lowest set one. 32 are set.'],
+      ['32', 'Yes. One round per set bit, whatever the sign. The last round is MIN_VALUE & MAX_VALUE = 0.'],
+      ['It never stops, because −1 is negative', 'n & (n − 1) never shifts, so no sign copies come in. The sign bit is cleared like any other, last.'],
     ]),
-  step('n = Integer.MIN_VALUE: only lantern 31 is lit. The >>> loop and the n &= n − 1 loop both return 1. How many rounds does each take?',
+  step('n = Integer.MIN_VALUE: only bit 31 is set. The >>> loop and the n &= n − 1 loop both return 1. How many rounds does each take?',
     [wide('n = MIN_VALUE', 0x80000000 | 0)], 1, [
-      ['32 each', 'The clearing loop takes one round per LIT lantern, and only one is lit.'],
-      ['The >>> loop takes 32; the clearing loop takes 1', 'Yes. The shift loop pays for every position up to the highest lit lantern; the clearing loop pays only for lit lanterns.'],
-      ['The >>> loop takes 1; the clearing loop takes 32', 'Backwards. The lit lantern sits at the top, so the shift loop needs 32 slides to reach it.'],
+      ['32 each', 'The clearing loop takes one round per SET bit, and only one is set.'],
+      ['The >>> loop takes 32; the clearing loop takes 1', 'Yes. The shift loop pays for every position up to the highest set bit; the clearing loop pays only for set bits.'],
+      ['The >>> loop takes 1; the clearing loop takes 32', 'Backwards. The set bit sits at the top, so the shift loop needs 32 slides to reach it.'],
     ]),
 ];
 
 export const countingBits = [
   step('bits[0..7] is filled. You need bits[8], and 8 is 1000. Which recurrence gives it?',
     [row('i', [0, 1, 2, 3, 4, 5, 6, 7]), row('bits[i]', [0, 1, 1, 2, 1, 2, 2, 3])], 1, [
-      ['bits[7] + 1 = 4: the row before, plus one', '7 is 0111 and 8 is 1000. Adding one carried through three lanterns and put them out. bits[i − 1] + 1 is only right when i is odd.'],
-      ['bits[8 >> 1] + (8 & 1) = bits[4] + 0 = 1', 'Yes. 8 >> 1 = 4 is 8 with its last lantern dropped (100). That dropped lantern was dark, so you add 0.'],
-      ['bits[8 >> 1] + 1 = 2', 'You add back the dropped lantern itself, 8 & 1, which is 0 here.'],
+      ['bits[7] + 1 = 4: the row before, plus one', '7 is 0111 and 8 is 1000. Adding one carried through three bits and put them out. bits[i − 1] + 1 is only right when i is odd.'],
+      ['bits[8 >> 1] + (8 & 1) = bits[4] + 0 = 1', 'Yes. 8 >> 1 = 4 is 8 with its last bit dropped (100). That dropped bit was clear, so you add 0.'],
+      ['bits[8 >> 1] + 1 = 2', 'You add back the dropped bit itself, 8 & 1, which is 0 here.'],
     ]),
   step('You fill bits from left to right. Why is bits[i >> 1] always ready when you reach i?', [], 0, [
     ['Because i >> 1 is smaller than i for every i ≥ 1', 'Yes. Halving makes the index smaller, so that entry was filled earlier. bits[0] = 0 is the only base case.'],
@@ -126,48 +126,48 @@ export const countingBits = [
   ]),
   step('The other recurrence: bits[i] = bits[i & (i − 1)] + 1. For i = 12 (1100), which entry does it read?',
     [row('i', [6, 8, 11, 12]), row('bits[i]', [2, 1, 3, 2])], 0, [
-      ['bits[8] + 1 = 2', 'Yes. 12 & 11 = 8 is 12 with its lowest lit lantern put out. 8 has one fewer lit lantern than 12, so add 1.'],
-      ['bits[11] + 1 = 4', 'That is the row before. 12 − 1 = 11 changes three lanterns, not one.'],
+      ['bits[8] + 1 = 2', 'Yes. 12 & 11 = 8 is 12 with its lowest set bit cleared. 8 has one fewer set bit than 12, so add 1.'],
+      ['bits[11] + 1 = 4', 'That is the row before. 12 − 1 = 11 changes three bits, not one.'],
       ['bits[6] + 1 = 3', '6 = 12 >> 1 belongs to the other recurrence, which adds 12 & 1 = 0, not 1.'],
     ]),
 ];
 
 export const reverse = [
-  step('n = 1 (only lantern 0 lit). You write while (n != 0) { result = (result << 1) | (n & 1); n >>>= 1; }. What happens?',
+  step('n = 1 (only bit 0 set). You write while (n != 0) { result = (result << 1) | (n & 1); n >>>= 1; }. What happens?',
     [wide('n = 1', 1)], 0, [
-      ['It returns 1, but the answer is 10000000 … 0 (−2147483648)', 'Yes. After one round n is 0 and the loop stops, before the lantern has travelled to position 31. Dark lanterns count too: always run exactly 32 rounds.'],
-      ['It returns −2147483648, correctly', 'That would need 31 more shifts of result. The loop stopped when n ran out of lit lanterns.'],
-      ['It never stops', '>>> lets dark lanterns in, so n reaches 0 after one round. The endless loop belongs to >> on a negative n.'],
+      ['It returns 1, but the answer is 10000000 … 0 (−2147483648)', 'Yes. After one round n is 0 and the loop stops, before the bit has travelled to position 31. Clear bits count too: always run exactly 32 rounds.'],
+      ['It returns −2147483648, correctly', 'That would need 31 more shifts of result. The loop stopped when n ran out of set bits.'],
+      ['It never stops', '>>> lets clear bits in, so n reaches 0 after one round. The endless loop belongs to >> on a negative n.'],
     ]),
   step('Round order. You write result |= n & 1; result <<= 1; (take, then make room) for 32 rounds on n = 1. What comes back?',
     [wide('n = 1', 1)], 0, [
-      ['0: the lantern taken in round 1 is shifted 32 times and falls off the top', 'Yes. Taking first means the last round shifts once too often. Make room first, then take: result = (result << 1) | (n & 1).'],
+      ['0: the bit taken in round 1 is shifted 32 times and falls off the top', 'Yes. Taking first means the last round shifts once too often. Make room first, then take: result = (result << 1) | (n & 1).'],
       ['−2147483648, correctly', 'It would be correct after 31 shifts. This order shifts 32 times.'],
       ['1', 'The result is shifted after every take, including the last one.'],
     ]),
-  step('n = 0xF0000000 (lanterns 31–28 lit, so n is negative). The loop runs exactly 32 rounds but slides with n >>= 1 (the signed crank). Is the result right?',
+  step('n = 0xF0000000 (bits 31–28 set, so n is negative). The loop runs exactly 32 rounds but slides with n >>= 1 (the signed shift). Is the result right?',
     [wide('n', 0xf0000000 | 0)], 1, [
-      ['No: copies of the sign lantern pour in and get reversed into the low end', 'They pour in at the top, but a copy that enters at position 31 in round k would need 31 more rounds to reach lantern 0, and the loop ends first. Only original lanterns are ever read.'],
-      ['Yes, by luck: in exactly 32 rounds no copy reaches lantern 0. Write >>> anyway', 'Yes, the result is 00000000 … 00001111 = 15. >>> says what you mean (unsigned), and it is the only safe crank for loops that stop when n reaches 0.'],
+      ['No: copies of the sign bit pour in and get reversed into the low end', 'They pour in at the top, but a copy that enters at position 31 in round k would need 31 more rounds to reach bit 0, and the loop ends first. Only original bits are ever read.'],
+      ['Yes, by luck: in exactly 32 rounds no copy reaches bit 0. Write >>> anyway', 'Yes, the result is 00000000 … 00001111 = 15. >>> says what you mean (unsigned), and it is the only safe shift for loops that stop when n reaches 0.'],
       ['It never stops', 'The loop counts 32 rounds; it doesn’t wait for n to reach 0. The endless loop belongs to while (n != 0) with >>.'],
     ]),
 ];
 
 export const masks = [
-  step('nums = [3, 5, 9]. Lantern i stands for nums[i]. The row shows mask = 6. Which subset is it?',
-    [row('Lantern', [2, 1, 0], {}, { tones: { 0: 'ghost', 1: 'ghost', 2: 'ghost' } }), row('mask = 6', ['1', '1', '0'], {}, { tones: { 0: 'hot', 1: 'hot' } }), row('stands for', ['nums[2] = 9', 'nums[1] = 5', 'nums[0] = 3'])], 1, [
-      ['{3, 5}', 'That reads the row left to right as nums[0], nums[1], nums[2]. Lantern 0 is on the RIGHT, and it is dark.'],
-      ['{5, 9}', 'Yes. Lanterns 1 and 2 are lit, so nums[1] = 5 and nums[2] = 9 are in.'],
+  step('nums = [3, 5, 9]. Bit i stands for nums[i]. The row shows mask = 6. Which subset is it?',
+    [row('Bit', [2, 1, 0], {}, { tones: { 0: 'ghost', 1: 'ghost', 2: 'ghost' } }), row('mask = 6', ['1', '1', '0'], {}, { tones: { 0: 'hot', 1: 'hot' } }), row('stands for', ['nums[2] = 9', 'nums[1] = 5', 'nums[0] = 3'])], 1, [
+      ['{3, 5}', 'That reads the row left to right as nums[0], nums[1], nums[2]. Bit 0 is on the RIGHT, and it is clear.'],
+      ['{5, 9}', 'Yes. Bits 1 and 2 are set, so nums[1] = 5 and nums[2] = 9 are in.'],
       ['{6}', 'The mask is a choice of positions, not a value to put in the set.'],
     ]),
   step('n = 3 items. Which masks does the loop for (mask = 0; mask < (1 << n); mask++) visit?', [], 0, [
-    ['0 through 7: 2³ = 8 subsets, from nobody (0) to everybody (7)', 'Yes. Every row of 3 lanterns appears exactly once, and every row is a different subset.'],
+    ['0 through 7: 2³ = 8 subsets, from nobody (0) to everybody (7)', 'Yes. Every row of 3 bits appears exactly once, and every row is a different subset.'],
     ['1 through 7, because the empty set isn’t a subset', 'The empty set is a subset, and LeetCode’s Subsets expects [] in the answer. Mask 0 produces it.'],
-    ['0 through 3', 'That covers only the rows where lantern 2 is dark: half the subsets.'],
+    ['0 through 3', 'That covers only the rows where bit 2 is clear: half the subsets.'],
   ]),
   step('mask = 13 (1101). Remove item 2. Which expression does it?', [], 0, [
-    ['13 & ~(1 << 2) = 9 (1001)', 'Yes. ~(1 << 2) is a stencil with every hole open except lantern 2; AND keeps everything else.'],
-    ['13 − 2 = 11 (1011)', 'That subtracts the number 2, lantern 1’s value. Lantern 1 is dark, so the subtraction borrows: lantern 2 goes out but lantern 1 lights up. You get items {0, 1, 3} instead of {0, 3}.'],
+    ['13 & ~(1 << 2) = 9 (1001)', 'Yes. ~(1 << 2) is a mask with every hole open except bit 2; AND keeps everything else.'],
+    ['13 − 2 = 11 (1011)', 'That subtracts the number 2, bit 1’s value. Bit 1 is clear, so the subtraction borrows: bit 2 goes out but bit 1 becomes set. You get items {0, 1, 3} instead of {0, 3}.'],
     ['13 & (1 << 2) = 4 (0100)', 'That keeps ONLY item 2. It is the membership test, not removal.'],
   ]),
 ];
@@ -185,8 +185,8 @@ export const clock = [
   ]),
   step('3¹³ mod 1000 by repeated squaring. 13 is 1101 in binary. Which powers of 3 are multiplied into the result?',
     [row('exponent bits', ['1', '1', '0', '1'], { 0: '8', 1: '4', 2: '2', 3: '1' }, { tones: { 0: 'hot', 1: 'hot', 3: 'hot' } })], 0, [
-      ['3¹, 3⁴ and 3⁸, because 1 + 4 + 8 = 13', 'Yes. Each lit lantern of the exponent takes the current square. 3¹³ mod 1000 = 323.'],
-      ['3¹, 3², 3⁴ and 3⁸', 'Those multiply to 3¹⁵. Lantern 1 of 13 is dark, so 3² is squared on but never taken.'],
+      ['3¹, 3⁴ and 3⁸, because 1 + 4 + 8 = 13', 'Yes. Each set bit of the exponent takes the current square. 3¹³ mod 1000 = 323.'],
+      ['3¹, 3², 3⁴ and 3⁸', 'Those multiply to 3¹⁵. Bit 1 of 13 is clear, so 3² is squared on but never taken.'],
       ['Compute 3¹³ in full, then take mod 1000', 'Fine for 3¹³ = 1,594,323, but for an exponent like 10⁹ the full power has millions of digits. Reduce after every multiply.'],
     ]),
   step('You need (a × b) % 1,000,000,007, where a and b are ints just below 1,000,000,007. What goes wrong with (a * b) % MOD?', [], 1, [
@@ -217,8 +217,8 @@ export const mixedReview = [
     ['A HashMap of counts', 'Correct, but O(n) space. The constraint rules it out.'],
   ]),
   step('Every value appears exactly THREE times except one. Why does the plain XOR fold fail?', [], 0, [
-    ['Three copies fold to x ^ x ^ x = x, so the triples don’t cancel', 'Yes. Count each lantern position mod 3 instead, or run the ones/twos state machine.'],
-    ['XOR can’t handle negative numbers', 'XOR works on any row of lanterns, negative or not. The problem is odd counts.'],
+    ['Three copies fold to x ^ x ^ x = x, so the triples don’t cancel', 'Yes. Count each bit position mod 3 instead, or run the ones/twos state machine.'],
+    ['XOR can’t handle negative numbers', 'XOR works on any row of bits, negative or not. The problem is odd counts.'],
     ['It works: the fold still returns the single', 'Try [2, 2, 3, 2]: the fold gives 2 ^ 3 = 1, not 3.'],
   ]),
   step('Count the 1 bits of every number from 0 to n, in O(n) total.', [], 2, [
@@ -232,19 +232,19 @@ export const mixedReview = [
     ['Count bits position by position', 'Bit counts mix every single value together; nothing isolates the repeated one.'],
   ]),
   step('n is an int that the problem says to treat as unsigned, and it may be negative. You count its 1s by shifting. Which shift?', [], 0, [
-    ['>>>, the logical shift: a dark lantern enters at the top', 'Yes. The loop ends after at most 32 rounds.'],
-    ['>>, the arithmetic shift', 'On a negative n it copies the sign lantern in forever. −1 >> 1 is −1, so while (n != 0) never ends.'],
+    ['>>>, the logical shift: a clear bit enters at the top', 'Yes. The loop ends after at most 32 rounds.'],
+    ['>>, the arithmetic shift', 'On a negative n it copies the sign bit in forever. −1 >> 1 is −1, so while (n != 0) never ends.'],
     ['Either; they are the same in Java', 'They differ exactly on negative numbers: −8 >> 1 = −4, but −8 >>> 1 = 2147483644.'],
   ]),
   step('Generate every subset of 12 distinct items.', [], 0, [
-    ['Count a mask from 0 to 2¹² − 1; lantern i lit means item i is in', 'Yes. 4,096 masks, each a different subset. Backtracking (choose, explore, un-choose) is the other standard answer.'],
+    ['Count a mask from 0 to 2¹² − 1; bit i set means item i is in', 'Yes. 4,096 masks, each a different subset. Backtracking (choose, explore, un-choose) is the other standard answer.'],
     ['Pick the items one by one with a greedy rule', 'There is nothing to optimise; the task is to list all 4,096 subsets.'],
     ['XOR the items together', 'That combines values. A subset is a choice of positions.'],
   ]),
   step('Is n a power of two? n is any int.', [], 1, [
     ['(n & (n − 1)) == 0', 'Two ints get through wrongly: 0 (0 & −1 = 0) and Integer.MIN_VALUE (MIN & MAX = 0). Both are rejected by also requiring n > 0.'],
-    ['n > 0 && (n & (n − 1)) == 0', 'Yes. Exactly one lit lantern, and it isn’t the sign lantern.'],
-    ['Integer.bitCount(n) == 1', 'MIN_VALUE has exactly one lit lantern but is negative. Add n > 0.'],
+    ['n > 0 && (n & (n − 1)) == 0', 'Yes. Exactly one set bit, and it isn’t the sign bit.'],
+    ['Integer.bitCount(n) == 1', 'MIN_VALUE has exactly one set bit but is negative. Add n > 0.'],
   ]),
   step('The answer must be returned mod 1,000,000,007 and you multiply two residues.', [], 2, [
     ['Multiply as ints, then take %', 'Two residues near 10⁹ multiply to about 10¹⁸, far beyond an int. It wraps before the % runs.'],

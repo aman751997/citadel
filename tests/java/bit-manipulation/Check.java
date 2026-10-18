@@ -85,10 +85,10 @@ public class Check {
         eq(MIN, Math.abs(MIN), "Math.abs(MIN)");
         eq(MIN, MAX + 1, "MAX + 1 wraps");
         eq(-6, ~5, "~5 = -6");
-        eq("11111111111111111111111111111011", tw.lanterns(-5), "lanterns(-5)");
-        eq("00000000000000000000000000000101", tw.lanterns(5), "lanterns(5)");
-        eq("1".repeat(32), tw.lanterns(-1), "lanterns(-1)");
-        for (int x : sampleInts(5000)) eq(bits32(x), tw.lanterns(x), "lanterns " + x);
+        eq("11111111111111111111111111111011", tw.toBits(-5), "toBits(-5)");
+        eq("00000000000000000000000000000101", tw.toBits(5), "toBits(5)");
+        eq("1".repeat(32), tw.toBits(-1), "toBits(-1)");
+        for (int x : sampleInts(5000)) eq(bits32(x), tw.toBits(x), "toBits " + x);
         boolean threw = false;
         try { Math.addExact(MAX, 1); } catch (ArithmeticException e) { threw = true; }
         ok(threw, "addExact(MAX, 1) throws");
@@ -114,7 +114,7 @@ public class Check {
         eq(-4, -7 >> 1, "-7 >> 1 floors"); eq(-3, -7 / 2, "-7 / 2 truncates");
         eq(1, 1 << 32, "shift distance is taken mod 32"); eq(MIN, 1 << 31, "1 << 31"); eq(1L << 40, 1099511627776L, "1L << 40");
         eq(-1, popcountSignedShift(-8, 1000), "the >> popcount loop never stops on -8");
-        eq(29, Integer.bitCount(-8), "-8 has 29 lit lanterns");
+        eq(29, Integer.bitCount(-8), "-8 has 29 set bits");
         eq(29, new B_hammingWeight().hammingWeight(-8), "the >>> loop returns 29 for -8");
 
         // ---------- Chapter 3: Single Number ----------
@@ -363,14 +363,14 @@ public class Check {
         { int n = 3, c = 0; for (int mask = 0; mask <= (1 << n); mask++) c++; eq(9, c, "mask <= (1 << n) gives 2^n + 1 subsets"); }
         eq(1162261467, (int) Math.pow(3, 19), "3^19"); ok(Math.pow(3, 20) > MAX, "3^20 exceeds int");
         for (int n = 1; n <= MAX && n > 0; n *= 3) { ok(1162261467 % n == 0, "power of three divides 3^19"); if (n > MAX / 3) break; }
-        { int[] bits = {0, 1}; eq(2, bits[1] + 1, "bits[i-1]+1 wrong at i = 2"); eq(1, Integer.bitCount(2), "2 has one lit lantern"); }
+        { int[] bits = {0, 1}; eq(2, bits[1] + 1, "bits[i-1]+1 wrong at i = 2"); eq(1, Integer.bitCount(2), "2 has one set bit"); }
         eq(4, 5 & 6 & 7, "AND of 5..7");
         { int num = MAX, highest = Integer.highestOneBit(num); eq(0, num ^ ((highest << 1) - 1), "complement of MAX via wrap"); eq(2, 5 ^ ((Integer.highestOneBit(5) << 1) - 1), "complement of 5"); }
         eq(MIN, 0x40000000 << 1, "0x40000000 << 1"); eq(MIN, 0x40000000 * 2, "0x40000000 * 2");
         eq(1 << 8, 1 << 40, "1 << 40 is 1 << 8");
         eq(144, 48 / new B_gcd().gcd(48, 18) * 18, "lcm(48, 18)");
         eq(-1073741825, Integer.reverse(-3), "Integer.reverse(-3)");
-        eq(31, Integer.bitCount(-3), "-3 has 31 lit lanterns");
+        eq(31, Integer.bitCount(-3), "-3 has 31 set bits");
         { int a = 999_999_999, b = 999_999_998; long M = 1_000_000_007L; ok((long) (a * b) % M != (long) a * b % M, "(long)(a*b) still wrong"); }
 
         System.out.println("OK bit-manipulation: " + cases + " checks passed");

@@ -152,7 +152,7 @@ test('chapter 7 (reverse bits) trace numbers', () => {
   for (let k = 0; k < 32; k++) { res = BigInt.asIntN(32, (res << 1n) | BigInt(((m % 2) + 2) % 2)); m = javaShr(m, 1); }
   assert.equal(Number(res), 15); assert.equal(reverseUnsigned(toSigned(0xf0000000)), 15);
   assert.match(correct(reverse[2]), /^Yes, by luck/);
-  // ... and the same holds for random ints: the fixed loop never reads a copied sign lantern
+  // ... and the same holds for random ints: the fixed loop never reads a copied sign bit
   let seed = 5; const rnd = () => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return toSigned(seed); };
   for (let t = 0; t < 300; t++) {
     let x = rnd(), acc = 0n; const x0 = x;
@@ -169,7 +169,7 @@ test('chapter 8 (masks) trace numbers', () => {
   assert.deepEqual(cells(masks[0].rows[1]), [...bin32(6).slice(29)]);
   assert.equal(2 ** 3, 8);
   assert.equal(fromBin('1101'), 13);
-  assert.equal(fromBin(bin32(13).slice(0, 29) + '0' + bin32(13).slice(30)), 9);   // clear lantern 2 by string
+  assert.equal(fromBin(bin32(13).slice(0, 29) + '0' + bin32(13).slice(30)), 9);   // clear bit 2 by string
   assert.match(correct(masks[2]), /= 9 \(1001\)/);
   assert.equal(13 - 2, 11); assert.equal(bin8(11).slice(4), '1011');
   assert.deepEqual([0, 1, 2, 3].filter(i => bin8(11)[7 - i] === '1'), [0, 1, 3]);
@@ -244,7 +244,7 @@ test('every lab mode and case terminates with the right result; wrong moves neve
   }
   // the reverse drill always takes 8 × 3 moves plus finish, whatever the input
   for (let v = 0; v < lab.modes.reverse.cases; v++) assert.equal(runCase(lab.create('reverse', v)).steps, 25);
-  // the clearing drill takes one move per lit lantern plus finish
+  // the clearing drill takes one move per set bit plus finish
   for (let v = 0; v < lab.modes.clear.cases; v++) { const s = lab.create('clear', v); assert.equal(runCase(s).steps, ones8(s.start) + 1); }
 });
 
@@ -290,7 +290,7 @@ test('the lab catches the classic mistakes with the board numbers', () => {
   assert.match(lab.move(s, 'or').state.message, /7 \| 1 = 7/);
   assert.match(lab.move(s, 'add').state.message, /7 \+ 1 = 8/);
   assert.match(lab.move(s, 'add').state.message, /7 \^ 1 = 6/);
-  // clear: x − 1 lights the lanterns below; x & −x keeps only the lowest
+  // clear: x − 1 sets the bits below; x & −x keeps only the lowest
   const clear = lab.create('clear', 0);                                    // 01011000
   assert.match(lab.move(clear, 'minus').state.message, /x − 1 = 01010111/);
   assert.match(lab.move(clear, 'isolate').state.message, /x & −x = 00001000/);
@@ -302,7 +302,7 @@ test('the lab catches the classic mistakes with the board numbers', () => {
   const early = lab.move(r, 'finish');
   assert.equal(early.accepted, false);
   assert.match(early.state.message, /returns 00000001 = 1 instead of 10000000 = 128/);
-  // reverse: the signed crank on a row whose top lantern is lit
+  // reverse: the signed shift on a row whose top bit is lit
   let top = lab.create('reverse', 0);                                      // 10110000
   top = lab.move(lab.move(top, 'room').state, 'take').state;
   assert.match(lab.move(top, 'signed').state.message, /rest would become 11011000 instead of 01011000/);

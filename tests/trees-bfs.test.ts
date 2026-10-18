@@ -65,12 +65,12 @@ test('chapter 2 trace numbers: slot formula and the flipped-line bug', () => {
   assert.deepEqual(zig(t), [[1], [3, 2], [4, 5, 6, 7]]);
   assert.equal(2 - 1 - 0, 1);                      // size − 1 − i for 2 at i = 0
   assert.match(correct(zigzag[1]), /= 1/);
-  // the friend's way: before a reversed floor, children join right-first
-  let line: T[] = [t!]; const got: number[][] = []; let floor = 0;
+  // the friend's way: before a reversed level, children join right-first
+  let line: T[] = [t!]; const got: number[][] = []; let level = 0;
   while (line.length) {
-    const next: T[] = [], row: number[] = [], reversedNext = (floor + 1) % 2 === 1;
+    const next: T[] = [], row: number[] = [], reversedNext = (level + 1) % 2 === 1;
     for (const n of line) { row.push(n.val); const kids = reversedNext ? [n.right, n.left] : [n.left, n.right]; for (const k of kids) if (k) next.push(k); }
-    got.push(row); line = next; floor++;
+    got.push(row); line = next; level++;
   }
   assert.deepEqual(got, [[1], [3, 2], [6, 7, 4, 5]]);
   assert.deepEqual(zigzag[2].rows[1].cells.map(c => Number(c.value)), [6, 7, 4, 5]);
@@ -88,7 +88,7 @@ test('chapter 3 trace numbers: right view and the right-first climb', () => {
   climb(t, 0);
   assert.equal(sizeWhenTwo, 2); assert.deepEqual(view, [1, 3, 4]);
   assert.match(correct(rightView[2]), /view.size\(\) is 2/);
-  // the east-stairs-only bug
+  // the east-child links-only bug
   const east: number[] = []; for (let n = t; n; n = n.right) east.push(n.val);
   assert.deepEqual(east, [1, 3]);
   const lc = parse([1, 2, 3, null, 5, null, 4]);
@@ -128,27 +128,27 @@ test('every figure annotates real nodes, and its numbers are right', () => {
     assert.deepEqual(nodeRows(t).map(r => r[r.length - 1].idx).sort((a, b) => a - b), seen);
     assert.deepEqual(lastOfRows(t), [1, 3, 4]);
   }
-  { // min depth: the first leaf is node at array index 1, on floor 1; 3 waits, 4/5/6 are never sent for
+  { // min depth: the first leaf is node at array index 1, on level 1; 3 waits, 4/5/6 are never sent for
     const t = parse(figures.minDepth.values)!;
     const leaves = nodes(t).filter(n => !n.left && !n.right);
     assert.deepEqual(leaves.map(n => depthOf(t, n)).sort(), [1, 4]);
     assert.equal(nodes(t).find(n => n.idx === 1)!.left, null);
     assert.deepEqual(nodes(t).filter(n => depthOf(t, n) >= 2).map(n => n.idx).sort((a, b) => a - b), [6, 8, 10]);
   }
-  { // width: renumbered seats per floor, and width 4 on floor 2
+  { // width: renumbered positions per level, and width 4 on level 2
     const t = parse(figures.width.values)!;
-    const seat = new Map<number, number>();
-    const go = (n: T | null, s: number) => { if (!n) return; seat.set(n.idx, s); go(n.left, 2 * s + 1); go(n.right, 2 * s + 2); };
+    const position = new Map<number, number>();
+    const go = (n: T | null, s: number) => { if (!n) return; position.set(n.idx, s); go(n.left, 2 * s + 1); go(n.right, 2 * s + 2); };
     go(t, 0);
     const renumbered = new Map<number, number>();
-    for (const row of nodeRows(t)) { const first = seat.get(row[0].idx)!; for (const n of row) renumbered.set(n.idx, seat.get(n.idx)! - first); }
+    for (const row of nodeRows(t)) { const first = position.get(row[0].idx)!; for (const n of row) renumbered.set(n.idx, position.get(n.idx)! - first); }
     for (const [idx, label] of Object.entries(figures.width.labels)) {
-      if (renumbered.has(Number(idx))) assert.equal(label, `seat ${renumbered.get(Number(idx))}`);
+      if (renumbered.has(Number(idx))) assert.equal(label, `position ${renumbered.get(Number(idx))}`);
     }
-    assert.equal(figures.width.labels[5], 'seat 2');                 // the dark frame between seats 1 and 3
+    assert.equal(figures.width.labels[5], 'position 2');                 // the dark frame between positions 1 and 3
     assert.equal(renumbered.get(6)! - renumbered.get(3)! + 1, 4);
   }
-  { // next ropes join same-floor neighbours only
+  { // next next pointers join same-level neighbours only
     const t = parse(figures.next.values)!;
     const all = nodes(t), byIdx = (i: number) => all.find(n => n.idx === i)!;
     for (const [a, b] of figures.next.arrows) {
@@ -157,7 +157,7 @@ test('every figure annotates real nodes, and its numbers are right', () => {
     }
     assert.equal(figures.next.arrows.length, nodeRows(t).reduce((s, r) => s + r.length - 1, 0));
   }
-  { // cousins: x and y on the same floor with different parents
+  { // cousins: x and y on the same level with different parents
     const t = parse(figures.cousins.values)!;
     const all = nodes(t), x = all.find(n => n.idx === 4)!, y = all.find(n => n.idx === 6)!;
     assert.deepEqual([x.val, y.val], [4, 5]);
@@ -173,7 +173,7 @@ test('every figure annotates real nodes, and its numbers are right', () => {
       assert.equal(label === 'target' ? 0 : Number(label.split(' ')[1]), dist(t, target, n));
     }
     assert.deepEqual(all.filter(n => dist(t, target, n) === 2).map(n => n.val).sort((a, b) => a - b), [1, 4, 7]);
-    assert.deepEqual(figures.distanceK.arrows, [[1, 0]]);          // the stair up from 5 to 3
+    assert.deepEqual(figures.distanceK.arrows, [[1, 0]]);          // the child link up from 5 to 3
   }
 });
 
@@ -262,16 +262,16 @@ test('lab agrees with depth-first oracles on random trees (incl. empty, single, 
 });
 
 test('the lab catches the classic bugs with the board numbers', () => {
-  // live bound: after floor 0 is fully called, calling again would pull 9 into floor 0
+  // live bound: after level 0 is fully called, calling again would pull 9 into level 0
   let s = lab.create('levels', 0);                    // [3, 9, 20, null, null, 15, 7]
   s = lab.move(s, 'snapshot').state;
   s = lab.move(s, 'poll').state;
   const extra = lab.move(s, 'poll');
   assert.equal(extra.accepted, false);
-  assert.match(extra.state.message, /front of the line is 9, from floor 1/);
+  assert.match(extra.state.message, /front of the line is 9, from level 1/);
   assert.match(lab.move(s, 'snapshot').state.message, /Close its row/);
   // calling before counting
-  assert.match(lab.move(lab.create('levels', 0), 'poll').state.message, /Let Size count first/);
+  assert.match(lab.move(lab.create('levels', 0), 'poll').state.message, /Take the size snapshot first/);
   // empty tree: the ArrayDeque null guard
   assert.match(lab.move(lab.create('levels', 3), 'snapshot').state.message, /NullPointerException/);
   // zigzag: wrong direction and flipping the line
@@ -281,13 +281,13 @@ test('the lab catches the classic bugs with the board numbers', () => {
   assert.match(lab.move(z, 'flip').state.message, /scrambled/);
   z = lab.move(z, 'prepend').state;
   assert.deepEqual(z.row, [null, 2]);
-  // right view: recording too early names who stands east
+  // right view: recording too early names who is to its right
   let r = lab.move(lab.create('right', 1), 'snapshot').state;   // [1, 2, 3, 4]
   r = lab.move(r, 'record').state;
   r = lab.move(r, 'snapshot').state;
-  assert.match(lab.move(r, 'record').state.message, /1 keeper\(s\) still stand east of her \(\[3\]\)/);
+  assert.match(lab.move(r, 'record').state.message, /1 node\(s\) are still to its right \(\[3\]\)/);
   r = lab.move(r, 'skip').state;
-  assert.match(lab.move(r, 'skip').state.message, /3 is the last of 2 on floor 1/);
+  assert.match(lab.move(r, 'skip').state.message, /3 is the last of 2 on level 1/);
 });
 
 // ---------- practice ----------

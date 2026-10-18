@@ -4,10 +4,10 @@
 import type { Challenge, PracticeSet } from '../../lib/practice.ts';
 
 export const strategies = {
-  floors: 'Go one depth at a time: count who is waiting, handle exactly that many',
+  levels: 'Go one depth at a time: count who is waiting, handle exactly that many',
   ends: 'Per depth, keep only the first or the last node you meet',
   early: 'Go one depth at a time and stop at the first depth that settles the answer',
-  seats: 'Number every position as if the tree were complete; compare numbers within one depth',
+  positions: 'Number every position as if the tree were complete; compare numbers within one depth',
   links: 'Walk a finished depth through its own links to build the next one',
   rings: 'Give every node a way back up, then spread outward from a start one step at a time',
   other: 'Another tool fits better: let each subtree report its answer upward',
@@ -62,7 +62,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const d = 1 + (Math.floor(v / 4) % (rows.length - 1));
       const answer = rows[d].map(i => nodes[i].val);
       return {
-        topic: 'One row of the tree', section: 'level-order', strategy: 'floors',
+        topic: 'One row of the tree', section: 'level-order', strategy: 'levels',
         prompt: `${intro(tree)} List the values at depth ${d} (the root is at depth 0), from left to right.`,
         question: 'Enter the values.', answer,
         hints: ['Rows must come out in order, top to bottom. Who should be handled before whom?', 'Keep a line of nodes waiting; each node you handle sends its children to the back.', 'Count the line before each row; handle exactly that many, then the line is the next row.'],
@@ -78,7 +78,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const forward = rows[d].map(i => nodes[i].val);
       const answer = d % 2 ? [...forward].reverse() : forward;
       return {
-        topic: 'Rows that alternate direction', section: 'zigzag', strategy: 'floors',
+        topic: 'Rows that alternate direction', section: 'zigzag', strategy: 'levels',
         prompt: `${intro(tree)} Its rows are read alternately: depth 0 left to right, depth 1 right to left, depth 2 left to right, and so on. Enter the row at depth ${d}, as it is read.`,
         question: 'Enter the row.', answer,
         hints: ['Collect each row in true left-to-right order first. What changes on alternate rows?', 'Only where each value is written changes; the waiting line keeps its order.', 'On a right-to-left row, the i-th node handled goes to slot size − 1 − i.'],
@@ -96,7 +96,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
         prompt: `${intro(tree)} Standing to the right of the tree, you see exactly one node at each depth: the rightmost one. List what you see, from the root’s depth downward.`,
         question: 'Enter the values you see.', answer,
         hints: ['“Rightmost at each depth” is not the same as “right children”.', 'Handle the tree one row at a time and keep one node per row.', 'Keep the last node handled in each row (or go right-first and keep the first node reached at each new depth).'],
-        rubric: ['A left child is visible when nothing stands to its right at its depth.', 'Row by row, keep i == size − 1; or right-first with depth == answer.size().', 'O(n) time; O(w) or O(h) extra space depending on the walk.'],
+        rubric: ['A left child is visible when nothing is to its right at its depth.', 'Row by row, keep i == size − 1; or right-first with depth == answer.size().', 'O(n) time; O(w) or O(h) extra space depending on the walk.'],
         explanation: `The view is ${JSON.stringify(answer).replace(/,/g, ', ')}.`,
       };
     }
@@ -109,7 +109,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const sums = rows.map(r => r.reduce((s, i) => s + nodes[i].val, 0));
       const answer = sums.indexOf(Math.max(...sums));
       return {
-        topic: 'An answer per depth', section: 'average-levels', strategy: 'floors',
+        topic: 'An answer per depth', section: 'average-levels', strategy: 'levels',
         prompt: `${intro(tree)} Which depth has the largest total of values? The root is at depth 0; if several depths tie, give the smallest one.`,
         question: 'Enter the depth.', answer,
         hints: ['You need one number per row, not one per node.', 'Handle the tree one row at a time, keeping a running total for the current row.', 'Compare each finished row’s total with the best so far; update only on a strictly larger total.'],
@@ -136,11 +136,11 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const bases: Tree[] = [[1, 3, 2, 5, 3, null, 9], [1, 3, 2, 5, null, null, 9, 6, null, 7], [1, 3, 2, 5], [1, 2, 3, 4, null, null, 5, 6, null, null, 7], [1, 2, null, 3, null, 4]];
       const tree = shift(bases[v % 5], 2 * (Math.floor(v / 5) % 4));
       const nodes = build(tree);
-      const seat: number[] = [];
-      nodes.forEach((n, i) => { seat[i] = n.parent < 0 ? 0 : 2 * seat[n.parent] + (nodes[n.parent].left === i ? 1 : 2); });
-      const answer = Math.max(...rowsOf(nodes).map(r => seat[r[r.length - 1]] - seat[r[0]] + 1));
+      const position: number[] = [];
+      nodes.forEach((n, i) => { position[i] = n.parent < 0 ? 0 : 2 * position[n.parent] + (nodes[n.parent].left === i ? 1 : 2); });
+      const answer = Math.max(...rowsOf(nodes).map(r => position[r[r.length - 1]] - position[r[0]] + 1));
       return {
-        topic: 'Width with gaps', section: 'max-width', strategy: 'seats',
+        topic: 'Width with gaps', section: 'max-width', strategy: 'positions',
         prompt: `${intro(tree)} The width of a depth is the number of positions from its leftmost node to its rightmost node, counting the empty positions between them that a complete tree would fill. What is the largest width over all depths?`,
         question: 'Enter the width.', answer,
         hints: ['Counting the nodes in a row ignores the gaps. Give every node a position number instead.', 'Root at position 0; the children of position p are at 2p + 1 and 2p + 2.', 'Width of a row = last position − first position + 1. Renumber each row from 0 to keep numbers small.'],
@@ -177,7 +177,7 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const nodes = build(tree), a = nodes[idOf(nodes, x)], b = nodes[idOf(nodes, y)];
       const answer = a.depth === b.depth && a.parent !== b.parent;
       return {
-        topic: 'Same depth, different parents', section: 'cousins', strategy: 'floors',
+        topic: 'Same depth, different parents', section: 'cousins', strategy: 'levels',
         prompt: `${intro(tree)} Values are unique. Two nodes are cousins when they are at the same depth but have different parents. Are ${x} and ${y} cousins?`,
         question: 'Enter yes or no.', answer,
         hints: ['You need two facts about each node: its depth and its parent.', 'Go one row at a time; while handling a node you can see both its children.', 'If one node’s two children are the pair, they are siblings. Otherwise, both in the same row means cousins.'],

@@ -38,7 +38,7 @@ export const routing = [
     ['Model M in the EU region', 'Right. Filter by hard constraints first (context length, region, capabilities), then pick the cheapest or fastest that survives.'],
     ['Model M in whichever region is fastest', 'The tenant is EU. If residency is part of the contract, region is a hard constraint, not a latency preference.'],
   ]),
-  step('Kestrel serves 20 million calls a day, all on Model M at about $0.0027 each ($54,000 a day). Sixty percent of calls are simple and could run on Model S at $0.00054. Daily cost after routing them?', [], 1, [
+  step('A platform serves 20 million calls a day, all on Model M at about $0.0027 each ($54,000 a day). Sixty percent of calls are simple and could run on Model S at $0.00054. Daily cost after routing them?', [], 1, [
     ['About $43,000', 'That would be a 20% cut. Compute it: 12M × $0.00054 + 8M × $0.0027.'],
     ['About $28,000', 'Right. 12M × $0.00054 = $6,480, plus 8M × $0.0027 = $21,600, total $28,080 — about 48% less. Routing by difficulty is often the biggest single cost lever.'],
     ['About $10,800', 'That is the cost if every call moved to Model S. Forty percent still need Model M.'],
@@ -53,7 +53,7 @@ export const fallbacks = [
   ]),
   step('Provider B has failed 60% of calls in the last 30 seconds. What should the gateway do with the next request routed to it?', [], 2, [
     ['Send it; every request deserves a fresh chance', 'Each call would wait for a timeout before failing over. Callers pay the latency of a dead provider on every request.'],
-    ['Remove Provider B from config until an engineer re-adds it', 'Manual removal is slow at 3 a.m. and easy to forget afterwards. Automate the decision.'],
+    ['Remove Provider B from config until an engineer re-adds it', 'Manual removal is slow during an incident and easy to forget afterwards. Automate the decision.'],
     ['Open the circuit for Provider B: skip it and fail over at once, then let a few probe calls through after a cool-down', 'Right. A circuit breaker per (provider, model, region) fails fast while open and probes in half-open state. Recovery is automatic.'],
   ]),
   step('The tier\'s fallback model is from a different provider. What must the gateway check before failing over?', [], 1, [

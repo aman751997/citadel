@@ -11,8 +11,8 @@ export const scoping = [
     ['Nothing — unauthenticated traffic is free', 'Anonymous traffic is exactly where floods and scrapers live. Leaving it unlimited protects the paying customers least.'],
     ['A session cookie', 'The client controls whether it sends the cookie at all. Drop it, and you get a fresh session and a fresh limit.'],
   ]),
-  step('Iris: “Enterprise customers must never be cut off in the middle of a campaign — but they pay for overage.” Which limit do Enterprise keys get?', [], 2, [
-    ['A hard limit: 429 at 100% of plan', 'That breaks the promise Iris just made. The contract says overage is allowed and billed.'],
+  step('Product requirement: “Enterprise customers must never be cut off in the middle of a campaign — but they pay for overage.” Which limit do Enterprise keys get?', [], 2, [
+    ['A hard limit: 429 at 100% of plan', 'That breaks the promise the product team made. The contract says overage is allowed and billed.'],
     ['No limit at all', 'One runaway Enterprise script can still melt the search cluster for everybody. Unlimited is not the same as generous.'],
     ['A soft limit: past 100% requests pass with a warning header and are metered as overage, up to a hard ceiling at 2× plan', 'Right. Soft means “allowed, but signalled and billed”. The ceiling is still a hard limit, because the backends have a capacity even if the contract is generous.'],
     ['Queue their extra requests until the next minute', 'Holding an API request for up to a minute is an outage from the client’s point of view. Queueing is for traffic that can wait.'],

@@ -405,28 +405,28 @@ test('lab agrees with brute force on random small inputs', () => {
 });
 
 test('the lab catches the classic wrong moves with the board numbers', () => {
-  // Kahn: forcing a stalled station in the 2 <-> 3 loop
+  // Kahn: forcing a stalled node in the 2 <-> 3 loop
   let k = lab.create('kahn', 1);
   for (const a of ['seed', 'pop', 'cut', 'pop', 'cut']) k = lab.move(k, a).state;
   assert.equal(lab.expected(k), 'cycle');
-  assert.match(lab.move(k, 'force').state.message, /Station 2 still waits on 1 unbuilt station\(s\) \(3\)/);
-  assert.match(lab.move(k, 'finish').state.message, /Only 2 of 4 stations are placed/);
+  assert.match(lab.move(k, 'force').state.message, /Node 2 still waits on 1 unbuilt node\(s\) \(3\)/);
+  assert.match(lab.move(k, 'finish').state.message, /Only 2 of 4 nodes are placed/);
   // Kahn: popping before cutting
   let k0 = lab.move(lab.move(lab.create('kahn', 0), 'seed').state, 'pop').state;
-  assert.match(lab.move(k0, 'pop').state.message, /tracks to 1, 2 still count against them/);
-  // union-find: re-pointing a member, and merging a clan with itself
+  assert.match(lab.move(k0, 'pop').state.message, /edges to 1, 2 still count against them/);
+  // union-find: re-pointing a member, and merging a group with itself
   let u = lab.create('uf', 3);                         // tracks 0–1, 2–3, 1–3, 0–2, 4–5
   for (const a of ['find', 'union', 'find', 'union']) u = lab.move(u, a).state;
-  assert.match(lab.move(u, 'link').state.message, /Junction 3 hangs under 2 \(clan head 2\)/);
+  assert.match(lab.move(u, 'link').state.message, /Node 3 hangs under 2 \(root 2\)/);
   for (const a of ['find', 'union', 'find']) u = lab.move(u, a).state;
   assert.equal(lab.expected(u), 'loop');
   assert.match(lab.move(u, 'union').state.message, /already connected/);
-  // Dijkstra: relaxing a stale ticket
+  // Dijkstra: relaxing a stale entry
   let d = lab.create('dijkstra', 1);
   for (const a of ['pop', 'relax', 'pop', 'relax', 'pop', 'relax', 'pop']) d = lab.move(d, a).state;
   assert.deepEqual(d.ticket, [4, 1]);
   assert.match(lab.move(d, 'relax').state.message, /dist\[1\] is already 3/);
-  assert.match(lab.move(d, 'skip').state.message, /stale ticket \(4, town 1\)/);
+  assert.match(lab.move(d, 'skip').state.message, /stale entry \(4, node 1\)/);
 });
 
 // ---------- practice ----------
@@ -476,7 +476,7 @@ test('every practice answer matches an independent computation from the prompt',
           break;
         }
         case 'build-order': {
-          const n = num(p, /Stations 0 to (\d+)/) + 1;
+          const n = num(p, /Nodes 0 to (\d+)/) + 1;
           const tracks = prereqTracks(pairsIn(p));
           const valid = permutations(range(n)).filter(o => forward(o, tracks));
           assert.equal(valid.length, 1, `${id} variant ${variant}: order must be unique`);
@@ -490,17 +490,17 @@ test('every practice answer matches an independent computation from the prompt',
           expected = valid.length ? valid[0] : 'none';
           break;
         }
-        case 'components': expected = componentCount(num(p, /^(\d+) junctions/), pairsIn(p)); break;
-        case 'valid-tree': expected = isTree(num(p, /^(\d+) junctions/), pairsIn(p)); break;
+        case 'components': expected = componentCount(num(p, /^(\d+) nodes/), pairsIn(p)); break;
+        case 'valid-tree': expected = isTree(num(p, /^(\d+) nodes/), pairsIn(p)); break;
         case 'redundant': {
-          const n = num(p, /Junctions 1 to (\d+)/);
+          const n = num(p, /Nodes 1 to (\d+)/);
           const es = pairsIn(p);
           const ok = es.filter((_, i) => isTree(n, es.filter((__, j) => j !== i).map(([a, b]) => [a - 1, b - 1] as E)));
           expected = ok[ok.length - 1];
           break;
         }
         case 'delay': {
-          const n = num(p, /numbered 1 to (\d+)/), k = num(p, /starts at relay (\d+)/);
+          const n = num(p, /numbered 1 to (\d+)/), k = num(p, /starts at node (\d+)/);
           const d = floyd(n, triplesIn(p).map(([a, b, w]) => [a - 1, b - 1, w] as W))[k - 1];
           expected = d.some(x => x === Infinity) ? -1 : Math.max(...d);
           break;

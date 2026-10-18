@@ -1,8 +1,8 @@
-// Decision puzzles and railway-map figures for the Advanced Graphs lesson (src/dsa-lessons/advanced-graphs.mdx).
+// Decision puzzles and graph figures for the Advanced Graphs lesson (src/dsa-lessons/advanced-graphs.mdx).
 // Every number here is re-derived independently in tests/advanced-graphs.test.ts.
 import { row, step } from '../../lib/trace.ts';
 
-// ---------- Railway-map figures (rendered by the <Rail> helper exported inside the lesson) ----------
+// ---------- Graph figures (rendered by the <Rail> helper exported inside the lesson) ----------
 export type Tone = 'gold' | 'blue' | 'green' | 'purple' | 'red' | 'dim';
 export interface RailNode { id: string; x: number; y: number; label?: string; note?: string; tone?: Tone }
 export interface RailEdge { from: string; to: string; label?: string; dir?: boolean; tone?: Tone; dashed?: boolean; bend?: number }
@@ -18,7 +18,7 @@ const px = (p: [number, number]) => p[0] * 44 + 40;
 const py = (p: [number, number]) => 210 - p[1] * 18;
 
 export const figures: Record<string, RailFigure> = {
-  // Chapter 1: prerequisites [[1,0],[2,0],[3,1],[3,2]] drawn as tracks b → a, noted with in-degrees.
+  // Chapter 1: prerequisites [[1,0],[2,0],[3,1],[3,2]] drawn as edges b → a, noted with in-degrees.
   diamond: {
     width: 420, height: 170,
     nodes: [node('0', 50, 85, { note: 'in 0', tone: 'green' }), node('1', 200, 35, { note: 'in 1' }), node('2', 200, 135, { note: 'in 1' }), node('3', 350, 85, { note: 'in 2' })],
@@ -48,7 +48,7 @@ export const figures: Record<string, RailFigure> = {
     nodes: [node('0', 165, 30, { tone: 'gold', note: 'root' }), node('1', 40, 95), node('2', 125, 95), node('3', 205, 95), node('4', 290, 95, { tone: 'blue' })],
     edges: [arrow('1', '0'), arrow('2', '0'), arrow('3', '0', { tone: 'green' }), arrow('4', '0', { tone: 'green' })],
   },
-  // Chapter 5: n = 4, [[0,1],[1,2],[2,0]] — n − 1 edges but a loop, and junction 3 alone.
+  // Chapter 5: n = 4, [[0,1],[1,2],[2,0]] — n − 1 edges but a loop, and node 3 alone.
   loopAndIsland: {
     width: 330, height: 150,
     nodes: [node('0', 60, 40), node('1', 200, 40), node('2', 130, 120), node('3', 285, 120, { tone: 'red', note: 'alone' })],
@@ -72,7 +72,7 @@ export const figures: Record<string, RailFigure> = {
     nodes: [node('0', 50, 100, { note: 'dist 0', tone: 'gold' }), node('1', 210, 40, { note: 'dist 3' }), node('2', 210, 165, { note: 'dist 1' }), node('3', 370, 100, { note: 'dist 4' })],
     edges: [arrow('0', '1', { label: '4', dashed: true, tone: 'dim' }), arrow('0', '2', { label: '1', tone: 'green' }), arrow('2', '1', { label: '2', tone: 'green' }), arrow('1', '3', { label: '1', tone: 'green' }), arrow('2', '3', { label: '5', dashed: true, tone: 'dim' })],
   },
-  // Chapter 7: A→B 2, A→C 3, C→B −2. Dijkstra settles B at 2; the true cheapest fare is 1.
+  // Chapter 7: A→B 2, A→C 3, C→B −2. Dijkstra settles B at 2; the true cheapest distance is 1.
   negative: {
     width: 380, height: 170,
     nodes: [node('A', 50, 85, { note: '0', tone: 'gold' }), node('B', 300, 40, { note: 'settled 2, true 1', tone: 'red' }), node('C', 300, 140, { note: '3' })],
@@ -90,7 +90,7 @@ export const figures: Record<string, RailFigure> = {
     nodes: [node('0', 50, 110, { tone: 'gold', note: 'src' }), node('1', 210, 40), node('2', 370, 110, { tone: 'blue', note: 'dst' })],
     edges: [arrow('0', '1', { label: '100' }), arrow('1', '2', { label: '100' }), arrow('0', '2', { label: '500' })],
   },
-  // Side quest 1: graph = [[1,2],[2,3],[5],[0],[5],[],[]] — safe stations 2, 4, 5, 6.
+  // Side quest 1: graph = [[1,2],[2,3],[5],[0],[5],[],[]] — safe courses 2, 4, 5, 6.
   safe: {
     width: 430, height: 200,
     nodes: [node('0', 50, 50, { tone: 'red' }), node('1', 170, 50, { tone: 'red' }), node('2', 290, 50, { tone: 'green' }), node('3', 110, 150, { tone: 'red' }), node('4', 290, 150, { tone: 'green' }), node('5', 400, 100, { tone: 'green', note: 'dead end' }), node('6', 400, 180, { tone: 'green', note: 'dead end' })],
@@ -107,40 +107,40 @@ export const figures: Record<string, RailFigure> = {
 // ---------- Decision puzzles ----------
 
 export const kahnSteps = [
-  step('Prerequisites [[1,0],[2,0],[3,1],[3,2]]; the pair [a, b] means “take b before a”. Which way does the track for [3, 1] run, and how many tracks run into course 3?',
+  step('Prerequisites [[1,0],[2,0],[3,1],[3,2]]; the pair [a, b] means “take b before a”. Which way does the edge for [3, 1] run, and how many edges run into course 3?',
     [row('Course', [0, 1, 2, 3], { 3: '?' })], 0, [
-      ['1 → 3, and course 3 has in-degree 2 (from 1 and from 2)', 'Yes. [3, 1] says 1 comes first, so the track runs 1 → 3. [3, 2] adds 2 → 3. Course 3 waits on two unfinished courses.'],
-      ['3 → 1, and course 1 has in-degree 2', 'That reverses the rule. [a, b] means b is the prerequisite, so the track starts at b. Reversed tracks give a reversed order: you would schedule course 3 first.'],
+      ['1 → 3, and course 3 has in-degree 2 (from 1 and from 2)', 'Yes. [3, 1] says 1 comes first, so the edge runs 1 → 3. [3, 2] adds 2 → 3. Course 3 waits on two unfinished courses.'],
+      ['3 → 1, and course 1 has in-degree 2', 'That reverses the rule. [a, b] means b is the prerequisite, so the edge starts at b. Reversed edges give a reversed order: you would schedule course 3 first.'],
       ['1 → 3, and course 3 has in-degree 1', 'Course 3 also waits on course 2, because of [3, 2]. Miss that and 3 becomes “ready” while 2 is still unbuilt.'],
     ]),
-  step('In-degrees start at [0, 1, 1, 2], so Ready holds [0]. You pop 0 and cut its tracks 0 → 1 and 0 → 2. What does Ready hold now?',
-    [row('In-degree', [0, 1, 1, 2], { 0: 'pop' }, { tones: { 0: 'done' } }), row('Ready', [0], {}, { tones: { 0: 'hot' } })], 1, [
-      ['[1, 2, 3]: everything 0 pointed toward, and beyond', 'Course 3 still has in-degree 2: it waits on 1 and 2, which are not built yet. Only stations that drop to 0 may board.'],
+  step('In-degrees start at [0, 1, 1, 2], so The queue holds [0]. You pop 0 and cut its edges 0 → 1 and 0 → 2. What does Queue hold now?',
+    [row('In-degree', [0, 1, 1, 2], { 0: 'pop' }, { tones: { 0: 'done' } }), row('Queue', [0], {}, { tones: { 0: 'hot' } })], 1, [
+      ['[1, 2, 3]: everything 0 pointed toward, and beyond', 'Course 3 still has in-degree 2: it waits on 1 and 2, which are not built yet. Only courses that drop to 0 may join the queue.'],
       ['[1, 2]: both dropped from 1 to 0', 'Yes. Cutting 0 → 1 and 0 → 2 brings both to zero. Course 3 stays at 2 until both of its prerequisites are popped.'],
       ['[]: nothing is ready until 3 is done', 'Readiness flows forward, from prerequisites to the courses that need them. 1 and 2 needed only 0, which is now done.'],
     ]),
-  step('Three courses, prerequisites [[1,0],[1,2],[2,1]]. You pop 0; course 1 drops from in-degree 2 to 1. Ready is now empty, with 1 of 3 courses taken. What do you report?',
-    [row('In-degree', [0, 1, 1], { 0: 'taken' }, { tones: { 0: 'done', 1: 'out', 2: 'out' } }), row('Ready', [])], 1, [
-      ['true: course 0 was taken, so the rest will follow', 'Nothing will follow. Ready is empty, so no further pop can happen, and two courses are still unplaced.'],
+  step('Three courses, prerequisites [[1,0],[1,2],[2,1]]. You pop 0; course 1 drops from in-degree 2 to 1. The queue is now empty, with 1 of 3 courses taken. What do you report?',
+    [row('In-degree', [0, 1, 1], { 0: 'taken' }, { tones: { 0: 'done', 1: 'out', 2: 'out' } }), row('Queue', [])], 1, [
+      ['true: course 0 was taken, so the rest will follow', 'Nothing will follow. The queue is empty, so no further pop can happen, and two courses are still unplaced.'],
       ['false: 1 waits on 2 and 2 waits on 1, so neither can ever reach in-degree 0', 'Yes. Leftover courses mean a cycle (or something downstream of one). Each course on the loop waits for the one before it, forever.'],
       ['Pop course 1 anyway: it has only one unmet prerequisite left', '“Only one” is not zero. Taking 1 now would schedule it before course 2, which [1, 2] forbids.'],
     ]),
 ];
 
 export const orderSteps = [
-  step('Same four courses: tracks 0 → 1, 0 → 2, 1 → 3, 2 → 3. Kahn’s algorithm pops 0, 1, 2, 3. Would [0, 2, 1, 3] also be accepted?',
+  step('Same four courses: edges 0 → 1, 0 → 2, 1 → 3, 2 → 3. Kahn’s algorithm pops 0, 1, 2, 3. Would [0, 2, 1, 3] also be accepted?',
     [row('Kahn’s order', [0, 1, 2, 3], {}, { join: '→' }), row('Proposed', [0, 2, 1, 3], {}, { join: '→' })], 0, [
-      ['Yes: every track still points forward (0 before 1 and 2; 1 and 2 before 3)', 'Yes. An order is valid exactly when every track goes from earlier to later. 1 and 2 have no track between them, so either may go first.'],
+      ['Yes: every edge still points forward (0 before 1 and 2; 1 and 2 before 3)', 'Yes. An order is valid exactly when every edge goes from earlier to later. 1 and 2 have no edge between them, so either may go first.'],
       ['No: the order must be unique', 'Most prerequisite maps allow many orders. The judge checks that every rule is respected, not that you matched one list.'],
       ['No: 1 must come before 2 because 1 < 2', 'Course numbers are labels, not rules. No pair [2, 1] or [1, 2] exists, so they are free relative to each other.'],
     ]),
-  step('Two courses, prerequisites [[1, 0]]. You build the track as a → b instead of b → a and run Kahn’s algorithm. What comes out?',
+  step('Two courses, prerequisites [[1, 0]]. You build the edge as a → b instead of b → a and run Kahn’s algorithm. What comes out?',
     [row('Pair', ['[1, 0]'])], 1, [
-      ['[0, 1]: Kahn’s algorithm fixes the direction itself', 'The algorithm trusts the tracks you give it. With 1 → 0, course 1 has in-degree 0 and is popped first.'],
+      ['[0, 1]: Kahn’s algorithm fixes the direction itself', 'The algorithm trusts the edges you give it. With 1 → 0, course 1 has in-degree 0 and is popped first.'],
       ['[1, 0]: course 1 before its own prerequisite, which is wrong', 'Yes. A reversed graph is still acyclic, so nothing crashes and Course Schedule I even passes. Only the order gives you away: it comes out exactly backwards.'],
-      ['[]: the reversed track is a cycle', 'One track cannot form a cycle in either direction. The output is a full order, just the wrong one.'],
+      ['[]: the reversed edge is a cycle', 'One edge cannot form a cycle in either direction. The output is a full order, just the wrong one.'],
     ]),
-  step('Four courses, tracks 0 → 1, 1 → 2, 2 → 3, 3 → 2. Kahn’s algorithm placed [0, 1]; Ready is empty; 2 and 3 wait on each other. What does findOrder return?',
+  step('Four courses, edges 0 → 1, 1 → 2, 2 → 3, 3 → 2. Kahn’s algorithm placed [0, 1]; The queue is empty; 2 and 3 wait on each other. What does findOrder return?',
     [row('Placed', [0, 1], {}, { tones: { 0: 'done', 1: 'done' } }), row('Stuck', [2, 3], {}, { tones: { 0: 'out', 1: 'out' } })], 2, [
       ['[0, 1]: the courses that could be taken', 'The problem asks for an order of ALL courses, or an empty array if none exists. A partial list is a wrong answer, not a partial credit.'],
       ['[0, 1, 2, 3]: append the stuck ones at the end', 'Putting 2 before 3 breaks the rule 3 → 2, and the reverse breaks 2 → 3. No placement of the stuck pair is valid.'],
@@ -157,7 +157,7 @@ export const alienSteps = [
     ]),
   step('The four neighbour pairs give t → f, w → e, r → t, e → r. Which letter has in-degree 0, and what alphabet comes out?',
     [row('Letter', ['w', 'e', 'r', 't', 'f']), row('In-degree', [0, 1, 1, 1, 1], {}, { tones: { 0: 'hot' } })], 1, [
-      ['f, because it appears last in the last word', 'Position inside words is not a rule. f has a track into it (t → f), so it cannot come first.'],
+      ['f, because it appears last in the last word', 'Position inside words is not a rule. f has an edge into it (t → f), so it cannot come first.'],
       ['w, and the order is "wertf"', 'Yes. w is the only letter nothing points to. Popping w frees e, then r, then t, then f.'],
       ['Several letters tie, so any order of all five works', 'Only w has in-degree 0 at the start, and each pop frees exactly one letter. This alphabet is fully determined.'],
     ]),
@@ -170,19 +170,19 @@ export const alienSteps = [
 ];
 
 export const componentSteps = [
-  step('Five junctions, parent = [0, 1, 2, 3, 4]. union(0, 1) made parent[1] = 0 (clan 0 now has size 2). The next track is (1, 2). find(1) = 0 and find(2) = 2. What do you set?',
+  step('Five nodes, parent = [0, 1, 2, 3, 4]. union(0, 1) made parent[1] = 0 (group 0 now has size 2). The next edge is (1, 2). find(1) = 0 and find(2) = 2. What do you set?',
     [row('parent', [0, 0, 2, 3, 4], { 0: 'root', 2: 'root' }, { tones: { 0: 'hot', 2: 'hot' } }), row('size', [2, 1, 1, 1, 1])], 0, [
-      ['parent[2] = 0: the smaller clan’s head joins the larger clan’s head', 'Yes. Always link root to root, smaller under larger. Trees stay shallow: a node only gets deeper when its clan at least doubles.'],
-      ['parent[1] = 2: point the edge’s first end at the second', 'Re-pointing 1 tears it out of clan 0. Junction 0 would sit alone with root 0, while 1 and 2 share root 2. The register would claim 0 and 1 are unconnected.'],
-      ['parent[0] = 2: the bigger clan joins the smaller', 'Connectivity stays right, but the bigger clan sinks a level. Do that every time and a chain of n junctions can reach height n − 1, so every find costs O(n).'],
+      ['parent[2] = 0: the smaller group’s root joins the larger group’s root', 'Yes. Always link root to root, smaller under larger. Trees stay shallow: a node only gets deeper when its group at least doubles.'],
+      ['parent[1] = 2: point the edge’s first end at the second', 'Re-pointing 1 tears it out of group 0. Node 0 would sit alone with root 0, while 1 and 2 share root 2. The union-find structure would claim 0 and 1 are unconnected.'],
+      ['parent[0] = 2: the bigger group joins the smaller', 'Connectivity stays right, but the bigger group sinks a level. Do that every time and a chain of n nodes can reach height n − 1, so every find costs O(n).'],
     ]),
-  step('All three tracks (0,1), (1,2), (3,4) are processed: parent = [0, 0, 0, 3, 3]. How many separate networks are there?',
+  step('All three edges (0,1), (1,2), (3,4) are processed: parent = [0, 0, 0, 3, 3]. How many separate components are there?',
     [row('parent', [0, 0, 0, 3, 3], { 0: 'root', 3: 'root' }, { tones: { 0: 'done', 3: 'done' } })], 1, [
-      ['3, one per track', 'Tracks merge clans; they don’t create them. Every successful union removes exactly one clan.'],
-      ['2: start with 5 clans, and three successful unions remove 3', 'Yes. Count = n − (successful unions) = 5 − 3 = 2. Equivalently, count the roots: 0 and 3.'],
-      ['1: every junction has a parent', 'A root is its own parent. Two junctions here, 0 and 3, are roots, so there are two clans.'],
+      ['3, one per edge', 'Edges merge groups; they don’t create them. Every successful union removes exactly one group.'],
+      ['2: start with 5 groups, and three successful unions remove 3', 'Yes. Count = n − (successful unions) = 5 − 3 = 2. Equivalently, count the roots: 0 and 3.'],
+      ['1: every node has a parent', 'A root is its own parent. Two nodes here, 0 and 3, are roots, so there are two groups.'],
     ]),
-  step('A register merged carelessly (no size rule) has parent = [0, 0, 1, 2]: find(3) walks 3 → 2 → 1 → 0. With path compression, what does parent look like afterwards?',
+  step('A union-find structure merged carelessly (no size rule) has parent = [0, 0, 1, 2]: find(3) walks 3 → 2 → 1 → 0. With path compression, what does parent look like afterwards?',
     [row('parent', [0, 0, 1, 2], { 3: 'find' }, { tones: { 3: 'hot' } })], 2, [
       ['[0, 0, 1, 2]: find only reads', 'Plain find only reads. Path compression rewrites every node it walked through, so the next find is one hop.'],
       ['[0, 0, 1, 0]: only the starting node is re-pointed', 'Recursive compression re-points every node on the walk, not just the first. Node 2 would still be two hops from the root.'],
@@ -191,78 +191,78 @@ export const componentSteps = [
 ];
 
 export const treeSteps = [
-  step('n = 5, tracks [[0,1],[0,2],[0,3],[1,4]]. That is 4 = n − 1 tracks, and no union failed. Is it a tree?',
-    [row('Track', ['0–1', '0–2', '0–3', '1–4'], {}, { tones: { 0: 'done', 1: 'done', 2: 'done', 3: 'done' } })], 0, [
-      ['Yes: n − 1 tracks and no cycle force a single connected piece', 'Yes. A forest with c pieces has exactly n − c tracks. With n − 1 tracks, c = 1.'],
-      ['Not yet: you must also run a BFS to check connectivity', 'No extra pass is needed. n − 1 tracks and no cycle already imply connected (a forest with c pieces has n − c tracks).'],
-      ['No: a tree needs a root', 'An undirected tree has no designated root. Any junction can serve as one.'],
+  step('n = 5, edges [[0,1],[0,2],[0,3],[1,4]]. That is 4 = n − 1 edges, and no union failed. Is it a tree?',
+    [row('Edge', ['0–1', '0–2', '0–3', '1–4'], {}, { tones: { 0: 'done', 1: 'done', 2: 'done', 3: 'done' } })], 0, [
+      ['Yes: n − 1 edges and no cycle force a single connected piece', 'Yes. A forest with c pieces has exactly n − c edges. With n − 1 edges, c = 1.'],
+      ['Not yet: you must also run a BFS to check connectivity', 'No extra pass is needed. n − 1 edges and no cycle already imply connected (a forest with c pieces has n − c edges).'],
+      ['No: a tree needs a root', 'An undirected tree has no designated root. Any node can serve as one.'],
     ]),
-  step('n = 4, tracks [[0,1],[1,2],[2,0]]. That is 3 = n − 1 tracks. Tree?',
-    [row('Track', ['0–1', '1–2', '2–0'], {}, { tones: { 2: 'out' } })], 1, [
-      ['Yes: the count is exactly n − 1', 'The count is necessary, not sufficient. Here the third track closes a loop, and junction 3 is left alone.'],
-      ['No: union(2, 0) finds both ends already joined, so it closes a cycle (and 3 is cut off)', 'Yes. A loop wastes a track, so one junction must go unconnected. Both checks are needed.'],
+  step('n = 4, edges [[0,1],[1,2],[2,0]]. That is 3 = n − 1 edges. Tree?',
+    [row('Edge', ['0–1', '1–2', '2–0'], {}, { tones: { 2: 'out' } })], 1, [
+      ['Yes: the count is exactly n − 1', 'The count is necessary, not sufficient. Here the third edge closes a loop, and node 3 is left alone.'],
+      ['No: union(2, 0) finds both ends already joined, so it closes a cycle (and 3 is cut off)', 'Yes. A loop wastes an edge, so one node must go unconnected. Both checks are needed.'],
     ]),
-  step('n = 4, tracks [[0,1],[2,3]]. No union fails. Tree?',
-    [row('Track', ['0–1', '2–3'])], 1, [
+  step('n = 4, edges [[0,1],[2,3]]. No union fails. Tree?',
+    [row('Edge', ['0–1', '2–3'])], 1, [
       ['Yes: no cycle', 'No cycle makes it a forest. A tree is a forest with exactly one piece, and this one has two.'],
-      ['No: 2 tracks, not n − 1 = 3, so it is two separate pieces', 'Yes. The edge-count check catches the disconnection immediately, before any union runs.'],
+      ['No: 2 edges, not n − 1 = 3, so it is two separate pieces', 'Yes. The edge-count check catches the disconnection immediately, before any union runs.'],
     ]),
 ];
 
 export const redundantSteps = [
-  step('Tracks in order [1,2], [2,3], [3,4], [1,4], [1,5]. The first three joined 1, 2, 3, 4 into one clan. Track [1,4] arrives: find(1) and find(4) return the same root. What now?',
-    [row('Track #', ['1–2', '2–3', '3–4', '1–4', '1–5'], { 3: 'now' }, { tones: { 0: 'done', 1: 'done', 2: 'done', 3: 'hot' } })], 0, [
-      ['Return [1, 4]: it closes the loop 1–2–3–4–1', 'Yes. Its ends were already connected, so it is the track that turned the tree into a loop.'],
+  step('Edges in order [1,2], [2,3], [3,4], [1,4], [1,5]. The first three joined 1, 2, 3, 4 into one group. Edge [1,4] arrives: find(1) and find(4) return the same root. What now?',
+    [row('Edge #', ['1–2', '2–3', '3–4', '1–4', '1–5'], { 3: 'now' }, { tones: { 0: 'done', 1: 'done', 2: 'done', 3: 'hot' } })], 0, [
+      ['Return [1, 4]: it closes the loop 1–2–3–4–1', 'Yes. Its ends were already connected, so it is the edge that turned the tree into a loop.'],
       ['Union them anyway and keep going', 'Union would do nothing (same root), and you would lose the one fact the problem asks for.'],
-      ['Keep scanning in case a later track also closes a loop, and return the last one', 'Only one loop exists (a tree plus one track), so exactly one union fails. The first failure is already the answer.'],
+      ['Keep scanning in case a later edge also closes a loop, and return the last one', 'Only one loop exists (a tree plus one edge), so exactly one union fails. The first failure is already the answer.'],
     ]),
   step('Removing [1, 2], [2, 3], [3, 4] or [1, 4] would each break the loop. Why is [1, 4] the one to return?',
     [], 1, [
       ['It has the largest numbers', 'Labels don’t matter. The tie-break in the problem is about input position.'],
-      ['The problem wants the loop track that appears last in the input, and the first track to fail union is always the loop’s last track', 'Yes. When a loop track fails union, every other track of the loop was already processed. So it is the latest of them.'],
-      ['Removing [1, 2] would disconnect 2', 'Removing any single loop track keeps everything connected; the rest of the loop still links its ends.'],
+      ['The problem wants the loop edge that appears last in the input, and the first edge to fail union is always the loop’s last edge', 'Yes. When a loop edge fails union, every other edge of the loop was already processed. So it is the latest of them.'],
+      ['Removing [1, 2] would disconnect 2', 'Removing any single loop edge keeps everything connected; the rest of the loop still links its ends.'],
     ]),
 ];
 
 export const dijkstraSteps = [
-  step('One-way roads 0→1 (4), 0→2 (1), 2→1 (2), 1→3 (1), 2→3 (5). You popped town 0. The heap holds (1, town 2) and (4, town 1). Which ticket do you take next?',
+  step('One-way edges 0→1 (4), 0→2 (1), 2→1 (2), 1→3 (1), 2→3 (5). You popped node 0. The heap holds (1, node 2) and (4, node 1). Which entry do you take next?',
     [row('dist', [0, 4, 1, '∞'], { 0: 'done' }, { tones: { 0: 'done' } }), row('Heap', ['(1, 2)', '(4, 1)'], {}, { tones: { 0: 'hot' } })], 0, [
-      ['(1, 2): the cheapest fare on the board', 'Yes. Every other route to 2 starts with a fare of at least 1 and only adds non-negative tolls, so 1 is final for town 2.'],
-      ['(4, 1): it was offered first', 'First-come order is a plain queue. Town 1 might still be cheaper through 2, and here it is: 1 + 2 = 3.'],
-      ['Both at once, they are one hop away', 'Hops don’t matter here; fares do. Dijkstra settles exactly one town at a time, the cheapest.'],
+      ['(1, 2): the cheapest distance in the table', 'Yes. Every other route to 2 starts with a distance of at least 1 and only adds non-negative weights, so 1 is final for node 2.'],
+      ['(4, 1): it was offered first', 'First-come order is a plain queue. Node 1 might still be cheaper through 2, and here it is: 1 + 2 = 3.'],
+      ['Both at once, they are one hop away', 'Hops don’t matter here; distances do. Dijkstra settles exactly one node at a time, the cheapest.'],
     ]),
-  step('From town 2 (fare 1): road 2→1 costs 2 and 2→3 costs 5. Before relaxing, dist[1] = 4 and dist[3] = ∞. What is on the board afterwards?',
+  step('From node 2 (distance 1): edge 2→1 costs 2 and 2→3 costs 5. Before relaxing, dist[1] = 4 and dist[3] = ∞. What is in the table afterwards?',
     [row('dist', [0, 4, 1, '∞'], { 2: 'here' }, { tones: { 0: 'done', 2: 'done' } })], 1, [
-      ['dist[1] stays 4: town 1 already has a ticket', 'An earlier offer is not a final price. 1 + 2 = 3 beats 4, so the board must improve. (Locking a town when it is first offered is a classic bug.)'],
-      ['dist[1] = 3, dist[3] = 6; push (3, 1) and (6, 3)', 'Yes. 1 + 2 = 3 beats 4, and 1 + 5 = 6 beats ∞. The old ticket (4, 1) stays in the heap; it is now stale.'],
-      ['dist[1] = 2, dist[3] = 5', 'Those are the road tolls alone. A fare is the fare to reach 2 (1) plus the toll.'],
+      ['dist[1] stays 4: node 1 already has an entry', 'An earlier offer is not a final price. 1 + 2 = 3 beats 4, so the table must improve. (Locking a node when it is first offered is a classic bug.)'],
+      ['dist[1] = 3, dist[3] = 6; push (3, 1) and (6, 3)', 'Yes. 1 + 2 = 3 beats 4, and 1 + 5 = 6 beats ∞. The old entry (4, 1) stays in the heap; it is now stale.'],
+      ['dist[1] = 2, dist[3] = 5', 'Those are the edge weights alone. A distance is the distance to reach 2 (1) plus the weight.'],
     ]),
   step('You popped (3, 1) and relaxed 1→3, so dist[3] = 4. The heap holds (4, 1), (4, 3) and (6, 3). You pop (4, 1), but dist[1] = 3. What now?',
     [row('dist', [0, 3, 1, 4], { 1: 'stale?' }, { tones: { 0: 'done', 1: 'done', 2: 'done' } }), row('Heap', ['(4, 3)', '(6, 3)'])], 0, [
-      ['Skip it: 4 > dist[1] = 3, so this is a stale ticket', 'Yes. Town 1 was settled at 3. Relaxing from 4 can only offer fares 1 higher than ones already offered.'],
-      ['Relax town 1’s roads again with fare 4', 'It never improves anything (4 + 1 = 5 is worse than 4 for town 3), but it repeats work. On dense graphs that repeated scanning adds up.'],
-      ['Set dist[1] = 4: the newest ticket wins', 'The board only ever goes down. Writing 4 over 3 would undo a cheaper route already found.'],
+      ['Skip it: 4 > dist[1] = 3, so this is a stale entry', 'Yes. Node 1 was settled at 3. Relaxing from 4 can only offer distances 1 higher than ones already offered.'],
+      ['Relax node 1’s edges again with distance 4', 'It never improves anything (4 + 1 = 5 is worse than 4 for node 3), but it repeats work. On dense graphs that repeated scanning adds up.'],
+      ['Set dist[1] = 4: the newest entry wins', 'The table only ever goes down. Writing 4 over 3 would undo a cheaper route already found.'],
     ]),
 ];
 
 export const primSteps = [
-  step('Points p0 (0,0), p1 (2,2), p2 (3,10), p3 (5,2), p4 (7,0); cable cost is Manhattan distance. The tree holds only p0. Cheapest links to the rest: p1 4, p2 13, p3 7, p4 7. Who joins next?',
+  step('Points p0 (0,0), p1 (2,2), p2 (3,10), p3 (5,2), p4 (7,0); edge cost is Manhattan distance. The tree holds only p0. Cheapest links to the rest: p1 4, p2 13, p3 7, p4 7. Who joins next?',
     [row('best link', ['—', 4, 13, 7, 7], { 0: 'tree' }, { tones: { 0: 'done', 1: 'hot' } })], 0, [
-      ['p1, for 4', 'Yes. 4 is the cheapest cable crossing from the tree to the rest, and the cut property says some cheapest network uses it.'],
+      ['p1, for 4', 'Yes. 4 is the cheapest edge crossing from the tree to the rest, and the cut property says some cheapest network uses it.'],
       ['p3 and p4 together, they tie at 7', 'Ties are fine, but 7 is not the minimum while 4 is available. One point joins per round.'],
       ['p2, the farthest, to get the hard one done', 'Joining expensive points early only locks in a cost that a nearer neighbour may later undercut. Here p2 will later join through p1 for 9, not 13.'],
     ]),
   step('p1 (2,2) joins. Update each outside point with min(old, distance to p1): p2 → 9, p3 → 3, p4 → 7. Who joins next?',
     [row('best link', ['—', '—', 9, 3, 7], { 0: 'tree', 1: 'tree' }, { tones: { 0: 'done', 1: 'done', 3: 'hot' } })], 1, [
       ['p4, for 7', 'p4’s best is still 7, but p3 now costs only 3 through p1. Always the global minimum.'],
-      ['p3, for 3', 'Yes. |2 − 5| + |2 − 2| = 3. Then p3 offers p4 a cable of |5 − 7| + |2 − 0| = 4, better than 7.'],
+      ['p3, for 3', 'Yes. |2 − 5| + |2 − 2| = 3. Then p3 offers p4 an edge of |5 − 7| + |2 − 0| = 4, better than 7.'],
       ['p2, for 9', '9 is the largest remaining link. It joins last.'],
     ]),
   step('p3 joins for 3, then p4 joins through p3, then p2 through p1. What is the total?',
     [row('joined for', [0, 4, 9, 3, 4], {}, { tones: { 1: 'done', 2: 'done', 3: 'done', 4: 'done' } })], 0, [
-      ['4 + 3 + 4 + 9 = 20', 'Yes, matching LeetCode’s answer. Four cables connect five points, and no cheaper set of four does.'],
+      ['4 + 3 + 4 + 9 = 20', 'Yes, matching LeetCode’s answer. Four edges connect five points, and no cheaper set of four does.'],
       ['4 + 3 + 7 + 9 = 23', 'That joins p4 with its old offer of 7. When p3 joined, p4’s best link dropped to 4. Forgetting that update overpays.'],
-      ['4 + 3 + 4 + 9 + 13 = 33', 'Five points need only four cables. The 13 to p2 was an offer that was beaten, never laid.'],
+      ['4 + 3 + 4 + 9 + 13 = 33', 'Five points need only four edges. The 13 to p2 was an offer that was beaten, never laid.'],
     ]),
 ];
 
@@ -270,18 +270,18 @@ export const flightSteps = [
   step('Flights 0→1 (100), 1→2 (100), 0→2 (500). From 0 to 2 with at most k = 0 stops. How many relaxation rounds do you run?',
     [row('Flight', ['0→1 · 100', '1→2 · 100', '0→2 · 500'])], 1, [
       ['0 rounds: no stops are allowed', 'Zero stops still allows one flight, the direct one. With 0 rounds you would never leave city 0.'],
-      ['k + 1 = 1 round: at most one flight', 'Yes. k stops means at most k + 1 flights, and round r discovers fares that use r flights.'],
-      ['n − 1 = 2 rounds, like textbook Bellman-Ford', 'n − 1 rounds find the cheapest fare with any number of flights. The stop limit is the whole point of this problem.'],
+      ['k + 1 = 1 round: at most one flight', 'Yes. k stops means at most k + 1 flights, and round r discovers distances that use r flights.'],
+      ['n − 1 = 2 rounds, like textbook Bellman-Ford', 'n − 1 rounds find the cheapest distance with any number of flights. The stop limit is the whole point of this problem.'],
     ]),
   step('Round 1. Flight 0→1 has just set cost[1] = 100. Next comes flight 1→2. Which value of cost[1] may it read?',
     [row('prev (start of round)', [0, '∞', '∞']), row('cost (being written)', [0, 100, '∞'], { 1: 'just set' }, { tones: { 1: 'hot' } })], 1, [
-      ['cost[1] = 100, so cost[2] = 200', 'That chains two flights (0→1→2) inside a round that allows one. With k = 0 you would answer 200, but the only legal ticket is the direct 500.'],
-      ['prev[1] = ∞, so this flight offers nothing this round; cost[2] = 500 from 0→2', 'Yes. Reading only last round’s board guarantees each round adds at most one flight. The answer for k = 0 is 500.'],
+      ['cost[1] = 100, so cost[2] = 200', 'That chains two flights (0→1→2) inside a round that allows one. With k = 0 you would answer 200, but the only legal entry is the direct 500.'],
+      ['prev[1] = ∞, so this flight offers nothing this round; cost[2] = 500 from 0→2', 'Yes. Reading only last round’s table guarantees each round adds at most one flight. The answer for k = 0 is 500.'],
     ]),
-  step('Now k = 1: run a second round, again reading only from the snapshot taken at its start. What is the cheapest fare from 0 to 2?',
+  step('Now k = 1: run a second round, again reading only from the copy taken at its start. What is the cheapest distance from 0 to 2?',
     [row('prev (start of round 2)', [0, 100, 500])], 2, [
       ['500: the direct flight is still cheapest', 'In round 2, 1→2 reads prev[1] = 100 and offers 200, which beats 500.'],
-      ['100: the last flight’s price', 'A fare adds every flight on the itinerary: 100 + 100.'],
+      ['100: the last flight’s price', 'A distance adds every flight on the itinerary: 100 + 100.'],
       ['200: 0→1→2, one stop', 'Yes. One stop is allowed now, and two flights at 100 each beat the direct 500.'],
     ]),
 ];
@@ -297,26 +297,26 @@ export const mixedReview = [
     ['A fresh BFS after every pair', 'Correct but O(V + E) per question. With 10⁵ pairs that is far too slow.'],
     ['Topological sort', 'Friendship has no direction and no order. You need grouping, not sequencing.'],
   ]),
-  step('Cheapest delivery route from one depot, road tolls between 0 and 100.', [], 2, [
-    ['Plain BFS', 'BFS minimises the number of roads, not the total toll. A two-road route can be cheaper than a one-road route.'],
-    ['Bellman-Ford, because it is simpler', 'It works, but O(V · E) is slower than needed. With non-negative tolls, Dijkstra is the standard answer.'],
-    ['Dijkstra: a min-heap of (fare, town), skipping stale tickets', 'Yes. Non-negative weights make “cheapest on the board” final when popped. O((V + E) log V).'],
+  step('Cheapest delivery route from one depot, edge weights between 0 and 100.', [], 2, [
+    ['Plain BFS', 'BFS minimises the number of edges, not the total weight. A two-edge route can be cheaper than a one-edge route.'],
+    ['Bellman-Ford, because it is simpler', 'It works, but O(V · E) is slower than needed. With non-negative weights, Dijkstra is the standard answer.'],
+    ['Dijkstra: a min-heap of (distance, node), skipping stale entries', 'Yes. Non-negative weights make “cheapest in the table” final when popped. O((V + E) log V).'],
   ]),
-  step('Same roads, but some tolls are negative (refunds), and there is no negative loop.', [], 1, [
-    ['Dijkstra still works if you skip stale tickets', 'A popped fare is no longer final: A→B 2, A→C 3, C→B −2 settles B at 2 although 1 is possible.'],
-    ['Bellman-Ford: V − 1 rounds of relaxing every road', 'Yes. It never assumes a popped fare is final, so negative tolls are fine. A V-th round that still improves would reveal a negative loop.'],
-    ['Take the absolute value of every toll', 'That changes the problem. A refund of 2 becomes a charge of 2, and the cheapest route changes.'],
+  step('Same edges, but some weights are negative (refunds), and there is no negative loop.', [], 1, [
+    ['Dijkstra still works if you skip stale entries', 'A popped distance is no longer final: A→B 2, A→C 3, C→B −2 settles B at 2 although 1 is possible.'],
+    ['Bellman-Ford: V − 1 rounds of relaxing every edge', 'Yes. It never assumes a popped distance is final, so negative weights are fine. A V-th round that still improves would reveal a negative loop.'],
+    ['Take the absolute value of every weight', 'That changes the problem. A refund of 2 becomes a charge of 2, and the cheapest route changes.'],
   ]),
   step('Fewest flights between two cities; every flight “counts as one”.', [], 0, [
     ['Plain BFS, level by level', 'Yes. With equal weights the queue already pops in distance order. Dijkstra would work, but its heap adds a log factor for nothing.'],
     ['Dijkstra with all weights 1', 'Correct, just heavier than needed. BFS gives the same answer in O(V + E).'],
-    ['Minimum spanning tree', 'An MST minimises the total cable to connect everyone, not the path between two given cities.'],
+    ['Minimum spanning tree', 'An MST minimises the total edge to connect everyone, not the path between two given cities.'],
   ]),
-  step('Lay cable so that all houses are connected, at least total cost. Is the tree of cheapest routes from house A the answer?', [], 1, [
+  step('Lay edge so that all houses are connected, at least total cost. Is the tree of cheapest routes from house A the answer?', [], 1, [
     ['Yes: cheapest routes from A connect everyone cheaply', 'Counterexample: A–B 2, A–C 2, B–C 1. Cheapest routes from A use A–B and A–C, total 4. The cheapest network uses B–C plus one of the others, total 3.'],
-    ['No: that is a shortest-path tree. Total cable needs an MST (Prim’s or Kruskal’s)', 'Yes. Shortest paths optimise each house’s distance from one source; an MST optimises the sum of all cables.'],
+    ['No: that is a shortest-path tree. Total edge needs an MST (Prim’s or Kruskal’s)', 'Yes. Shortest paths optimise each house’s distance from one source; an MST optimises the sum of all edges.'],
   ]),
-  step('Cheapest flight with at most K stops, Bellman-Ford style. Why read from a copy of last round’s fares?', [], 2, [
+  step('Cheapest flight with at most K stops, Bellman-Ford style. Why read from a copy of last round’s distances?', [], 2, [
     ['Copying makes it faster', 'Copying costs O(n) per round. It is about correctness, not speed.'],
     ['Java arrays cannot be read and written in the same loop', 'They can. That is exactly the bug: in-place writes are visible to later reads in the same round.'],
     ['Without it, one round can chain several flights, so the stop limit is silently exceeded', 'Yes. Round r must add at most one flight. 0→1 (100), 1→2 (100), 0→2 (500) with k = 0 returns 200 in place instead of 500.'],
@@ -326,12 +326,12 @@ export const mixedReview = [
     ['You should restart from one of the leftover jobs', 'Restarting cannot help: every leftover job still has an unfinished prerequisite.'],
     ['The queue was too small', 'The queue holds whatever is ready. Its emptiness is information, not a capacity problem.'],
   ]),
-  step('n junctions and exactly n − 1 two-way tracks. Is it automatically a tree?', [], 1, [
-    ['Yes: a tree has n − 1 edges', 'Necessary, not sufficient. n = 4 with a triangle 0–1–2 and junction 3 alone also has 3 tracks.'],
-    ['Only if there is also no cycle (equivalently, if it is connected)', 'Yes. n − 1 tracks plus either “no cycle” or “connected” implies the other. One union-find pass checks it.'],
+  step('n nodes and exactly n − 1 two-way edges. Is it automatically a tree?', [], 1, [
+    ['Yes: a tree has n − 1 edges', 'Necessary, not sufficient. n = 4 with a triangle 0–1–2 and node 3 alone also has 3 edges.'],
+    ['Only if there is also no cycle (equivalently, if it is connected)', 'Yes. n − 1 edges plus either “no cycle” or “connected” implies the other. One union-find pass checks it.'],
   ]),
-  step('Tracks are laid AND torn up over time, with “are x and y connected?” questions in between.', [], 2, [
-    ['Union-find with a delete operation', 'Union-find has no delete. Once two clans merge, nothing records which track joined them.'],
+  step('Edges are laid AND torn up over time, with “are x and y connected?” questions in between.', [], 2, [
+    ['Union-find with a delete operation', 'Union-find has no delete. Once two groups merge, nothing records which edge joined them.'],
     ['Union-find, re-run from scratch after every change', 'Correct but O(E) per change. Fine for tiny inputs only.'],
     ['Not plain union-find: process offline in reverse (deletions become unions), or use a dynamic-connectivity structure', 'Yes. Reversing time turns tear-ups into merges when all operations are known in advance. Truly online deletion needs heavier machinery.'],
   ]),

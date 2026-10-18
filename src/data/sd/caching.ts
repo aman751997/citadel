@@ -61,7 +61,7 @@ export const failures = [
 ];
 
 export const drills = [
-  step('Which sentence would pass Mara’s four-part rule for a product page cache?', [], 1, [
+  step('Which sentence passes the four-part rule (key shape, TTL with a reason, invalidation, failure plan) for a product page cache?', [], 1, [
     ['"We cache product pages in Redis for speed."', 'No key shape, no TTL, no invalidation, no failure plan. This is the sentence interviewers mark down.'],
     ['"Cache-aside on product:{id}, TTL 10 minutes because price edits tolerate brief staleness, delete-on-write from the catalog service, jittered TTLs and a per-key lock against stampedes."', 'Right: key shape, TTL with a reason, invalidation, failure plan. One breath, four parts.'],
     ['"Write-through caching with LRU eviction."', 'Names a write policy and an eviction policy. Still no key, TTL reason, or failure plan.'],

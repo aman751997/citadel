@@ -1,69 +1,63 @@
 ---
 title: 'Caching: Redis Patterns, Invalidation, Key Design'
-description: 'The night Kestrel’s database caught fire, and the four sentences that would have saved it. Cache-aside to leases, stampedes to hot keys — the lesson that retires your #1 logged gap.'
+description: 'What a cache buys you, who fills it, how it learns data changed, the races that make it lie, and what breaks when it fails. Cache-aside to leases, stampedes to hot keys, Redis clusters to eviction.'
 module: 2
 order: 2
-minutes: 60
+minutes: 90
 ---
 import PatternHub from '../components/PatternHub.astro';
-import Scene from '../components/Scene.astro';
 import Part from '../components/Part.astro';
 import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
 import Trace from '../components/Trace.astro';
 import Reveal from '../components/Reveal.astro';
 import Quiz from '../components/Quiz.astro';
+import ChapterDone from '../components/ChapterDone.astro';
+import LessonProgress from '../components/LessonProgress.astro';
+import RevisionCards from '../components/RevisionCards.astro';
+import AnswerModes from '../components/AnswerModes.astro';
+import StampedeSim from '../components/sim/StampedeSim.astro';
+import SwrSim from '../components/sim/SwrSim.astro';
+import ShardingSim from '../components/sim/ShardingSim.astro';
+import LruLfuSim from '../components/sim/LruLfuSim.astro';
+import OptimisticLockSim from '../components/sim/OptimisticLockSim.astro';
 import { hitRatio, invalidation, race, failures, drills } from '../data/sd/caching';
 import { BASE } from '../paths';
 
 <PatternHub
   pattern="sd-caching"
   start="prologue"
-  logline="A cache is not a box labelled Redis. It is four promises — what the key is, how long it lives, how it learns about change, and what happens when it fails. Say all four, every time, and the hardest part of most designs is already done."
-  cast={[
-    { name: 'You', role: 'Three weeks into your job at Kestrel. You have used Redis. You have never been paged because of it.' },
-    { name: 'Mara Quell', role: 'Principal engineer. Draws boxes on the whiteboard and asks questions until you find the answer yourself.' },
-    { name: 'Dev Okafor', role: 'SRE. Gets paged at 3 a.m. Narrates incidents in a very calm voice.' },
-    { name: 'Theo Brandt', role: 'Database whisperer. Has watched every way a cache can lie to a database.' },
-    { name: 'The Interviewer', role: 'Appears between chapters to show how the same idea is tested.' },
-  ]}
+  logline="A cache in a design is four promises: what the key is, how long the entry lives, how the cache learns that data changed, and what happens when the cache fails. Say all four every time and most of the hard part is done."
+  cast={[]}
   parts={[
-    { name: 'Part One · Why the box exists', description: 'Latency, hit ratio, and where caches live.', links: [['why-cache', 'The arithmetic of misses'], ['layers', 'Seven places to remember']] },
-    { name: 'Part Two · Keeping it honest', description: 'Read and write patterns, invalidation, races, keys.', links: [['patterns', 'Who fills the cache?'], ['invalidation', 'When the truth changes'], ['races', 'The race you can’t see'], ['keys', 'Naming things']] },
-    { name: 'Part Three · When it breaks', description: 'Stampedes, hot keys, penetration, and the cold start.', links: [['stampede', 'Nine o’clock exactly'], ['hot-keys', 'The celebrity'], ['penetration', 'Keys that don’t exist'], ['cache-down', 'The night the cache died']] },
-    { name: 'Part Four · Running it', description: 'Eviction, sizing, clusters, consistency.', links: [['eviction', 'What leaves when it’s full'], ['clusters', 'One cache, many machines'], ['consistency', 'What you can promise']] },
+    { name: 'Part One · Why the box exists', description: 'Latency, hit ratio, and where caches live.', links: [['why-cache', 'The arithmetic of misses'], ['layers', 'Where caches live']] },
+    { name: 'Part Two · Keeping it honest', description: 'Read and write patterns, invalidation, races, keys.', links: [['patterns', 'Who fills the cache?'], ['invalidation', 'When the data changes'], ['races', 'The races'], ['keys', 'Key design']] },
+    { name: 'Part Three · When it breaks', description: 'Stampedes, hot keys, penetration, avalanche, and a dead cache.', links: [['stampede', 'Stampede and stale-while-revalidate'], ['hot-keys', 'Hot keys'], ['penetration', 'Penetration and avalanche'], ['cache-down', 'When the cache is down']] },
+    { name: 'Part Four · Running it', description: 'Eviction, sizing, clusters, consistency.', links: [['eviction', 'Eviction and sizing'], ['clusters', 'Sharding, replication, failover'], ['consistency', 'What you can promise']] },
   ]}
   extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
   routes={[
-    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#prologue', title: '📖 Read the lesson', text: 'Problem → idea → numbers → code → trade-offs' },
     { href: '#decision-drills', title: '🧭 Decision drills', text: 'Make the calls interviewers probe, with feedback' },
-    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and five follow-ups' },
+    { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer and the follow-ups' },
   ]}
-  note="Read one part per sitting. The drills at the end mix everything; come back to them before any mock."
+  note="Read one part per sitting. The drills at the end mix everything. Come back to them before any mock."
 />
+
+<LessonProgress />
 
 <h2 id="prologue">Prologue · The four promises</h2>
 
-<Scene chapter="Prologue" title="3:07 a.m." mood="night">
+Here is a failure that happens in real systems. A profile service warms its Redis cache at 2:00 AM with a one-hour TTL. At 3:00:00 every one of those keys expires in the same second. Millions of requests miss Redis together and hit MySQL, and the database falls over. Redis looked healthy the whole time.
 
-Dev's message lands in the incident channel at 3:07 a.m.: *"Profile service p99 is 14 seconds. Primary database at 100% CPU. Redis looks… fine?"*
+"We added Redis" is not a design. It says nothing about the thing that went wrong. A cache in a design should answer four questions out loud:
 
-By the time you join the call, Theo has found it. A celebrity posted a photo. Ten million people tapped their profile. The profile cache had a TTL of exactly one hour, set when the cache was warmed at 2:00 a.m. — so at 3:00:00, every hot key expired in the same second.
+1. **Key shape.** Exactly what string maps to exactly what value.
+2. **TTL, and why that number.** How stale an answer you are willing to serve. (TTL means time to live: how long an entry stays before Redis deletes it.)
+3. **Invalidation story.** How the cache finds out that the data changed.
+4. **Failure plan.** What happens when the cache is cold, down, or stampeded.
 
-In the morning, Mara draws one box on the whiteboard and writes REDIS inside it. Then she crosses it out.
-
-*"That box is not a design,"* she says. *"Tell me four things. What is the key? How long does it live, and why? How does it learn the truth changed? And what happens when it fails?"*
-
-</Scene>
-
-This lesson exists for one reason. Your own mock logs say it plainly: *"Cache in Redis" without key shape, TTL rationale, or invalidation strategy — interviewer red flag.* After this lesson that sentence should be impossible for you to say.
-
-**The rule. A cache in your design is these four promises, spoken out loud, or it doesn't count:**
-
-1. **Key shape** — exactly what string maps to exactly what value.
-2. **TTL, and why that number** — the staleness you are willing to serve.
-3. **Invalidation story** — how the cache learns that the data changed.
-4. **Failure plan** — what happens when the cache is cold, down, or stampeded.
+A common slip in mock interviews is saying "cache in Redis" with no key shape, no TTL reason and no invalidation strategy. Interviewers mark that down. The four promises fix it.
 
 <Figure caption="The four promises. Every chapter below deepens one of them.">
   <Mermaid code={`flowchart LR
@@ -72,53 +66,113 @@ This lesson exists for one reason. Your own mock logs say it plainly: *"Cache in
     I --> F["4 · Failure plan\nlocks, jitter, L1, shed load"]`} />
 </Figure>
 
+<Quiz id="caching-prologue" title="Prologue checkpoint" questions={[
+  {
+    kind: 'failure',
+    q: 'A cache is warmed at 2:00 AM with a one-hour TTL on every key. At 3:00:00 MySQL falls over although Redis is healthy. Which of the four promises was weakest?',
+    options: [
+      'Key shape: the keys were not namespaced',
+      'TTL and failure plan: every key expires in the same second and nothing limits the miss wave',
+      'Invalidation story: nobody deleted the keys on write',
+    ],
+    answer: 1,
+    why: 'Same TTL for a batch means a mass expiry. The fix is jittered TTLs plus a plan for the miss wave (lock, stale-while-revalidate, load shedding).',
+    explain: [
+      'Namespacing prevents collisions. It would not change when the keys expire.',
+      'Correct: a batch created together with an identical TTL dies together, and the design had no failure plan for that.',
+      'Invalidation is about changed data. Nothing changed here; the keys simply expired.',
+    ],
+  },
+]} />
+
+<ChapterDone id="prologue" />
+
 <Part n="Part One" title="Why the box exists">
 
-Before you design a cache, know what it buys you — in milliseconds and in database load.
+Before designing a cache, know what it buys you, in milliseconds and in database load.
 
 </Part>
 
 <h2 id="why-cache">Chapter 1 · The arithmetic of misses</h2>
 
-<Scene chapter="Chapter 1" title="The arithmetic of misses" mood="dawn">
+**What is it?** A cache sits in front of a slower source of truth (here, MySQL) and remembers recent answers. A **hit** means the cache had the answer. A **miss** means it did not, so the request goes on to the database.
 
-Mara hands you a marker. *"The database can do twenty thousand reads a second before it starts to sweat. At peak we serve two hundred thousand profile reads a second. What hit ratio do we need?"*
+**Why do we need it?** Two numbers decide whether a cache helps.
 
-You start to say "high". She raises an eyebrow. You do the arithmetic instead.
-
-</Scene>
-
-A cache sits in front of a slower source of truth and remembers recent answers. Two numbers decide whether it works.
-
-**Latency.** Rough orders of magnitude worth carrying in your head: reading main memory takes about 100 ns; a network round trip inside one data centre about 0.5 ms; a Redis `GET` in the same data centre usually well under a millisecond; a database query that touches disk or does real work, several milliseconds to tens of milliseconds. The cache wins because it skips the work and the disk, not because Redis is magic.
+**Latency.** Rough orders of magnitude, as generally accepted rules of thumb: reading main memory takes about 100 ns. A network round trip inside one data centre takes about 0.5 ms. A Redis `GET` in the same data centre is usually well under a millisecond. A database query that touches disk or does real work takes several milliseconds to tens of milliseconds. The cache wins because it skips the work and the disk, not because Redis is magic.
 
 **Hit ratio, h.** The fraction of reads the cache answers.
 
 - **Database load = (1 − h) × read QPS.** The database only sees misses.
-- **Average latency ≈ h × hit latency + (1 − h) × (hit latency + source latency).** A miss pays for the cache lookup *and* the source.
+- **Average latency ≈ hit latency + (1 − h) × source latency.** Every read pays for the cache lookup. Only misses also pay for the database.
 
-**Worked numbers for Kestrel.** 200,000 reads/s at peak; the database budget is 20,000 reads/s.
+**Assumption for this example:** 200,000 profile reads per second at peak, and a MySQL setup that handles about 20,000 reads per second comfortably.
 
 | Hit ratio | Misses reaching the DB | Average latency (1 ms cache, 10 ms DB) |
 |---|---|---|
-| 80% | 40,000/s — **overload** | 1 + 0.20 × 10 = 3.0 ms |
-| 90% | 20,000/s — at the limit | 1 + 0.10 × 10 = 2.0 ms |
-| 95% | 10,000/s — healthy | 1 + 0.05 × 10 = 1.5 ms |
-| 99% | 2,000/s — idle | 1 + 0.01 × 10 = 1.1 ms |
+| 80% | 40,000/s: **overload** | 1 + 0.20 × 10 = 3.0 ms |
+| 90% | 20,000/s: at the limit | 1 + 0.10 × 10 = 2.0 ms |
+| 95% | 10,000/s: healthy | 1 + 0.05 × 10 = 1.5 ms |
+| 99% | 2,000/s: idle | 1 + 0.01 × 10 = 1.1 ms |
 
-The database feels the **miss rate**, not the hit rate. Going from 90% to 99% hits cuts database load **tenfold**. That is why the failure chapters matter: anything that briefly drops the hit ratio — a mass expiry, a restart — multiplies database load.
+The database feels the **miss rate**, not the hit rate. Going from 90% to 99% hits cuts database load **tenfold**. That is why the failure chapters matter. Anything that briefly drops the hit ratio, such as a mass expiry or a restart, multiplies database load.
 
 <Trace title="Do the arithmetic" steps={hitRatio} takeaway="The database sees (1 − h) × QPS. Small changes in hit ratio are huge changes in miss rate." />
 
-**Catch the trap:** "We'll add a cache to make it fast." Fast for whom? If the workload is write-heavy, or every read is unique (a search with a random query), the hit ratio will be poor and the cache adds a hop. Say what the read/write ratio is and why the same keys repeat.
+**When should I use it?** When reads far outnumber writes and the same keys repeat. Say the read/write ratio and why keys repeat.
 
-<h2 id="layers">Chapter 2 · Seven places to remember</h2>
+**When is a cache the wrong tool?** If the workload is write-heavy, or every read is unique (a search with a random query), the hit ratio will be poor and the cache just adds a network hop.
 
-<Scene chapter="Chapter 2" title="Seven places to remember">
+**Interview takeaway.** "At 200K reads/s against a 20K/s database I need at least a 90% hit ratio, so I will aim for 95% or better."
 
-Theo draws the path of a single profile request from a phone to the disk. Every arrow, he says, is a place someone could have remembered the answer. *"Most outages I've seen were two of these layers disagreeing."*
+<Quiz id="caching-why-cache" title="Chapter 1 checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'Assumption: the database handles 20,000 reads/s. Peak traffic doubles from 200,000 to 400,000 reads/s and the hit ratio stays at 95%. What happens?',
+    options: [
+      'Fine: 95% is still a high hit ratio',
+      'The database sees 20,000 misses/s: right at its limit with no headroom, so aim for about 97% or better',
+      'The database sees 40,000 misses/s and overloads',
+    ],
+    answer: 1,
+    why: 'Database load = (1 - h) x QPS = 0.05 x 400,000 = 20,000/s. A fixed hit ratio does not protect you when traffic grows.',
+    explain: [
+      'The hit ratio is a percentage. Absolute database load still grows with traffic.',
+      'Correct: 5% of 400,000 is 20,000. It is exactly the limit, so any dip in the hit ratio overloads it.',
+      'That would be the load at 90%, not 95%.',
+    ],
+  },
+  {
+    kind: 'failure',
+    q: 'Redis restarts empty during peak (200,000 reads/s, database comfortable at 20,000/s). What does the database see in the first seconds?',
+    options: [
+      'About 20,000 queries/s, same as always',
+      'Up to 200,000 queries/s, ten times its comfortable load, until the cache warms',
+      'Nothing: the app returns errors instead',
+    ],
+    answer: 1,
+    why: 'With hit ratio 0 every read is a miss. This is why the cache is load-bearing at this scale, and why Chapter 10 exists.',
+    explain: [
+      '20,000/s is the load at a 90% hit ratio, not at 0%.',
+      'Correct: (1 - 0) x 200,000. Nothing is cached, so every request reaches MySQL.',
+      'Errors only happen if the app is built to fail closed. A fail-open app sends the traffic to the database.',
+    ],
+  },
+]} />
 
-</Scene>
+<RevisionCards id="caching-why-cache" cards={[
+  { front: 'Formula for database load behind a cache?', back: '(1 - h) x read QPS. The database only sees misses.' },
+  { front: 'Average latency with a cache?', back: 'hit latency + (1 - h) x source latency. Every read pays the lookup; only misses pay for the database.' },
+  { front: 'Going from 90% to 99% hits does what to database load?', back: 'Cuts it tenfold (10% of reads miss down to 1%).' },
+  { front: 'When is a cache the wrong tool?', back: 'Write-heavy workloads or reads that are all unique. The hit ratio is poor and you add a network hop.' },
+  { front: 'Is the cache load-bearing?', back: 'If the database could not carry the full read load without it, yes. Say so and plan for the cache failing.' },
+]} />
+
+<ChapterDone id="why-cache" />
+
+<h2 id="layers">Chapter 2 · Where caches live</h2>
+
+A single profile request passes through several places that could have remembered the answer. Most real outages in this area are two layers disagreeing about what is true.
 
 <Figure caption="Each layer trades freshness for distance. The further left the answer is found, the faster and the staler it may be.">
   <Mermaid code={`flowchart LR
@@ -127,63 +181,104 @@ Theo draws the path of a single profile request from a phone to the disk. Every 
 
 | Layer | Holds | Typical TTL | Invalidate by |
 |---|---|---|---|
-| Browser / app | Responses the server marks cacheable (`Cache-Control: max-age`) | Seconds to a year (immutable assets) | Changing the URL (fingerprinted file names) or validators (`ETag` → `304 Not Modified`) |
+| Browser / app | Responses the server marks cacheable (`Cache-Control: max-age`) | Seconds to a year (immutable assets) | Changing the URL (fingerprinted file names) or validators (`ETag`, then `304 Not Modified`) |
 | CDN | Static assets, public pages, images, video segments | Minutes to forever | Purge API, versioned URLs, `s-maxage` |
-| Gateway | Whole API responses for identical requests | Seconds | TTL; rarely worth more |
-| In-process L1 | Tiny, very hot objects (config, a celebrity profile) | About 1–5 seconds | TTL — it can't hear about changes easily |
-| Distributed cache | The working set of objects: profiles, sessions, feeds, counters | Minutes to hours | Delete on write, CDC, TTL |
+| Gateway | Whole API responses for identical requests | Seconds | TTL. Rarely worth more |
+| In-process L1 | Tiny, very hot objects (config, a celebrity profile) | About 1 to 5 seconds | TTL. It can't hear about changes easily |
+| Distributed cache | The working set: profiles, sessions, feeds, counters | Minutes to hours | Delete on write, CDC, TTL |
 | DB buffer pool | Pages of the database itself | Managed by the DB | Automatic |
 
-In an interview, "the cache" almost always means the distributed layer. Mentioning the others when they genuinely help is free credit: *"Avatars are immutable and fingerprinted, so they go to the CDN with a one-year max-age and never reach us."*
+"L1" here means the first, smallest cache a request checks, inside the app process. The shared Redis is then the second level.
+
+In an interview, "the cache" almost always means the distributed layer. Mentioning the others when they genuinely help is free credit: "Avatars are immutable and fingerprinted, so they go to the CDN with a one-year max-age and never reach us."
 
 <Reveal q="Why is an in-process L1 cache usually limited to a few seconds of TTL?">
 
-Each app server has its own copy, and the copies don't hear about writes. Delete-on-write would have to reach every server (a pub/sub broadcast), which is possible but adds machinery. A one-second TTL bounds the staleness without any of that — perfect for read-mostly hot objects, wrong for anything a user must see change immediately.
+Each app server has its own copy, and the copies don't hear about writes. Delete-on-write would have to reach every server (a pub/sub broadcast). That is possible but adds machinery. A one-second TTL bounds the staleness without any of that. It suits read-mostly hot objects and is wrong for anything a user must see change immediately.
 
 </Reveal>
 
+<Quiz id="caching-layers" title="Chapter 2 checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'Users can replace their avatar. The image is served through a CDN. Which approach avoids stale avatars with the least machinery?',
+    options: [
+      'Keep a fixed URL and call the CDN purge API on every upload',
+      'Put a content hash or version in the URL and use a long max-age: a new upload is a new URL',
+      'Set max-age to 5 seconds so nothing is stale for long',
+    ],
+    answer: 1,
+    why: 'Changing the URL sidesteps invalidation completely and lets you cache for a year.',
+    explain: [
+      'Works, but purges are slow or rate-limited, can miss browser caches, and add a failure path.',
+      'Correct: nothing needs invalidating, because the old URL is simply never requested again.',
+      'A 5 s TTL throws away most of the benefit of the CDN and still allows 5 s of staleness.',
+    ],
+  },
+  {
+    kind: 'tradeoff',
+    q: 'You add a 60 s in-process cache for a feature-flag config object on 100 app servers. The config changes. What do users see?',
+    options: [
+      'Every server flips at the same instant',
+      'Servers disagree for up to 60 s, each switching when its own copy expires',
+      'Redis pushes the change to every server automatically',
+    ],
+    answer: 1,
+    why: 'Each process has its own copy and none hear about writes. That is why L1 TTLs are kept to a few seconds.',
+    explain: [
+      'Each copy was loaded at a different time, so each expires at a different time.',
+      'Correct: staleness is bounded by the L1 TTL, and different servers can serve different answers meanwhile.',
+      'Plain Redis does not notify in-process caches. You would need pub/sub or Redis client-side tracking.',
+    ],
+  },
+]} />
+
+<ChapterDone id="layers" />
+
 <Part n="Part Two" title="Keeping it honest">
 
-A cache that serves wrong data quickly is worse than no cache. This part is about the truth.
+A cache that serves wrong data quickly is worse than no cache. This part is about keeping it correct.
 
 </Part>
 
 <h2 id="patterns">Chapter 3 · Who fills the cache?</h2>
 
-<Scene chapter="Chapter 3" title="Who fills the cache?">
+**What is it?** There are five common read and write patterns. They look alike. The question that separates them is: **when the data is not in the cache, who loads it? And when someone writes, who updates the cache?**
 
-The new feature is a "recently viewed" list. Iris wants it instant. Mara asks the room a question that sounds trivial: *"When the data isn't in the cache — whose job is it to put it there? And when someone writes, who tells the cache?"* Nobody answers for a while.
+**Why do we need to know?** Because the choice decides how much code the app owns, how fresh reads are after a write, and what you lose when the cache dies.
 
-</Scene>
+### Cache-aside (lazy loading)
 
-**Cache-aside (lazy loading)** — the default for about nine designs in ten. The application owns all the logic:
+The default for about nine designs in ten. The **application** owns all the logic. The cache is a dumb key-value store that knows nothing about MySQL.
 
-```text
-read(key):
-    value = cache.get(key)
-    if value is missing:
-        value = db.query(...)
-        cache.set(key, value, ttl)
-    return value
+```python
+import json, redis, pymysql
 
-write(key, newValue):
-    db.update(...)
-    cache.delete(key)          # never cache.set — see Chapter 5
+r = redis.Redis(decode_responses=True)
+db = pymysql.connect(db="app", cursorclass=pymysql.cursors.DictCursor)
+
+def get_profile(user_id):
+    key = f"v1:profile:user:{user_id}"
+    cached = r.get(key)                      # GET key
+    if cached is not None:
+        return json.loads(cached)            # hit
+    with db.cursor() as cur:                 # miss: the APP loads it
+        cur.execute("SELECT id, name, bio FROM users WHERE id=%s", (user_id,))
+        row = cur.fetchone()
+    if row is not None:
+        r.set(key, json.dumps(row), ex=900)  # SET key val EX 900
+    return row
+
+def update_bio(user_id, bio):
+    with db.cursor() as cur:
+        cur.execute("UPDATE users SET bio=%s WHERE id=%s", (bio, user_id))
+    db.commit()
+    r.delete(f"v1:profile:user:{user_id}")   # DEL, never SET (Chapter 5)
 ```
 
-Only data that is actually read gets cached, so the cache holds the hot set. A cache outage degrades to "slow", not "broken" (if the database can take it — Chapter 9).
+Only data that is actually read gets cached, so the cache holds the hot set. If Redis is down, the app can still read MySQL. It gets slower, not broken, provided the database can take the load (Chapter 10).
 
-The alternatives, each worth one sentence in an interview:
-
-| Pattern | How it works | Good for | Watch out |
-|---|---|---|---|
-| **Cache-aside** | App reads cache, falls back to DB, populates; writes go to DB then delete | The default | First read after a change is a miss |
-| **Read-through** | The cache library loads from the DB on a miss | Same as cache-aside, less app code | Couples the cache to your data access |
-| **Write-through** | Every write goes to the cache and the DB together | Read-after-write freshness | Writes are slower; cache fills with data nobody reads |
-| **Write-behind (write-back)** | Write to the cache; flush to the DB asynchronously | Absorbing write bursts (counters, metrics) | **Data loss** if the cache dies before flushing — say this |
-| **Write-around** | Writes skip the cache entirely; reads populate it | Data written once, rarely read soon | First read is always a miss |
-
-<Figure caption="Cache-aside, read path and write path. The write path deletes; it never sets.">
+<Figure caption="Cache-aside, read path and write path. The write path deletes. It never sets.">
   <Mermaid code={`sequenceDiagram
     participant App
     participant Cache
@@ -198,46 +293,238 @@ The alternatives, each worth one sentence in an interview:
     App->>Cache: DEL user:42`} />
 </Figure>
 
-<h2 id="invalidation">Chapter 4 · When the truth changes</h2>
+### Read-through
 
-<Scene chapter="Chapter 4" title="When the truth changes" mood="dusk">
+The **cache layer** loads from the database on a miss. The app only ever calls `cache.get(key)`. You give the cache a loader function once.
 
-A support ticket: *"I changed my bio an hour ago and my friends still see the old one."* Dev checks. The profile cache has a one-hour TTL and nothing else. *"Technically,"* he says, *"it's working exactly as designed."*
+```python
+class ReadThroughCache:
+    def __init__(self, redis_client, loader, ttl):
+        self.r, self.loader, self.ttl = redis_client, loader, ttl
 
-Mara writes on the board: **Every cached value is a promise that the truth hasn't changed. How does the cache find out it has?**
+    def get(self, key):
+        v = self.r.get(key)
+        if v is None:
+            v = self.loader(key)             # the CACHE layer calls the DB
+            self.r.set(key, v, ex=self.ttl)
+        return v
+```
 
-</Scene>
+Plain Redis does not do this by itself. Read-through comes from a library or a caching service in front of the store. It is the same flow as cache-aside, with the loading code moved out of the app.
 
-Three honest strategies, usually combined:
+### Write-through
+
+Every write goes to the cache and the database **as one operation**, and the call returns only when both are done. The cache is always warm for data that was just written.
+
+```python
+def save_profile_write_through(user):
+    with db.cursor() as cur:                       # 1. database first
+        cur.execute("UPDATE users SET bio=%s WHERE id=%s",
+                    (user["bio"], user["id"]))
+    db.commit()
+    r.set(f"v1:profile:user:{user['id']}",         # 2. then cache
+          json.dumps(user), ex=900)
+```
+
+This is a simple sketch, and it has the Chapter 5 race: two concurrent writers can set the cache in the opposite order from their database writes. A real write-through layer serializes writes per key, or uses versions.
+
+### Write-behind (write-back)
+
+Write to the cache only, return immediately, and **flush to the database later**, asynchronously.
+
+```python
+def increment_views(post_id):
+    r.hincrby("views:pending", post_id, 1)         # fast, in memory only
+
+def flush_views():                                 # runs every few seconds
+    pending = r.hgetall("views:pending")
+    for post_id, n in pending.items():
+        with db.cursor() as cur:
+            cur.execute("UPDATE posts SET views=views+%s WHERE id=%s",
+                        (int(n), post_id))
+        db.commit()
+        r.hincrby("views:pending", post_id, -int(n))
+```
+
+The write is acknowledged before the database has it. If Redis dies before a flush, those writes are gone. That is acceptable for an approximate view counter and dangerous for user posts or payments.
+
+### Write-around
+
+Writes go **straight to the database and skip the cache**. The cache is filled only by reads. It is the write half of cache-aside without the delete, so a stale copy may remain until its TTL ends or a delete is added. Good for data that is written once and rarely read soon (log records, uploads).
+
+### Who loads data after a miss, and who writes
+
+| Pattern | Who loads on a miss | Who writes on update | Good for | Watch out |
+|---|---|---|---|---|
+| **Cache-aside** | The **app** reads the DB and calls `SET` | App writes the DB, then `DEL`s the key | The default | First read after a change is a miss |
+| **Read-through** | The **cache layer** calls the loader | Usually the app writes the DB and invalidates | Same as cache-aside with less app code | Couples the cache to your data access |
+| **Write-through** | Misses still need a loader (read-through or aside) | Cache and DB are written together, synchronously | Read-after-write freshness | Slower writes. Fills with data nobody reads |
+| **Write-behind** | Same as write-through | Only the cache is written. A background job flushes the DB | Absorbing write bursts (counters, metrics) | **Data loss** if the cache dies before flushing |
+| **Write-around** | A later read misses, then the app loads it | Only the DB is written | Written once, rarely read soon | First read is always a miss. Stale copy if the key was cached earlier |
+
+The pair people confuse most is **cache-aside vs read-through**. In both, a miss ends up in the database. The only difference is who runs that code: your app (aside) or the cache layer (read-through). The other confused pair is **write-through vs write-behind**: both write to the cache first, but write-through waits for the database and write-behind does not.
+
+**Interview takeaway.** "I would use cache-aside: the app reads the DB on a miss and populates Redis. On writes it updates MySQL and deletes the key. I would only use write-behind for data I can afford to lose, like view counters."
+
+<Quiz id="caching-patterns" title="Chapter 3 checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'A video page counts views: 50,000 increments/s, and losing the last few seconds after a crash is acceptable. Which pattern fits?',
+    options: [
+      'Write-behind: increment in Redis, flush batches to MySQL every few seconds',
+      'Write-through: update MySQL and Redis together on every view',
+      'Cache-aside: UPDATE MySQL on every view and delete the key',
+    ],
+    answer: 0,
+    why: 'Write-behind turns 50,000 writes/s into a few batched writes. The cost is possible loss of unflushed counts, which is acceptable for an approximate counter.',
+    explain: [
+      'Correct: batching protects MySQL. You accept losing unflushed increments if Redis dies.',
+      'Synchronous writes to MySQL at 50,000/s is the exact load you are trying to avoid.',
+      'Same problem: one database write per view, plus a cache miss after each.',
+    ],
+  },
+  {
+    kind: 'tradeoff',
+    q: 'A teammate says: "We use read-through now, so cache-aside logic is gone." What precisely changed?',
+    options: [
+      'Misses no longer reach the database',
+      'The cache layer runs the loader on a miss instead of the application',
+      'Writes are now synchronous to both cache and database',
+    ],
+    answer: 1,
+    why: 'Cache-aside vs read-through differs only in who runs the load-on-miss code.',
+    explain: [
+      'A miss still ends up in the database. Only the caller of the loader changed.',
+      'Correct: the app calls cache.get(key) and the layer calls the loader.',
+      'That describes write-through, which is about the write path, not misses.',
+    ],
+  },
+]} />
+
+<RevisionCards id="caching-patterns" cards={[
+  { front: 'Cache-aside: who loads on a miss?', back: 'The application. It reads MySQL and calls SET. The cache is a dumb key-value store.' },
+  { front: 'Cache-aside vs read-through?', back: 'Same flow. Aside: the app runs the loader. Read-through: the cache layer runs it.' },
+  { front: 'Write-through vs write-behind?', back: 'Both write to the cache first. Write-through waits for the database. Write-behind returns early and flushes later, so it can lose data.' },
+  { front: 'Write-around?', back: 'Writes go to the database only. The cache is filled by reads, so an older cached copy can linger until TTL or delete.' },
+  { front: 'Default pattern and one-line reason?', back: 'Cache-aside: caches only data that is read, and the app still works (slower) if Redis is down.' },
+]} />
+
+<ChapterDone id="patterns" />
+
+<h2 id="invalidation">Chapter 4 · When the data changes</h2>
+
+**What is it?** Invalidation is how a cache learns that a stored value is no longer true.
+
+**Why do we need it?** Say a user edits their bio and an hour later friends still see the old one. If the only mechanism is a one-hour TTL, that is the design working as written. Every cached value is a promise that the data has not changed. Something has to break that promise when it stops being true.
+
+### The three strategies
 
 | Strategy | How | When it's right |
 |---|---|---|
-| **TTL only** | Entries expire; you accept staleness up to the TTL | Data where bounded staleness is fine: public profiles, product pages, rankings |
-| **Delete on write** | After the DB write commits, `DEL` the key; the next read repopulates | Default when writes go through your service |
-| **Change-data-capture (CDC)** | A consumer reads the database's change log (e.g. Debezium on the binlog/WAL) and deletes affected keys | Many writers, other services, batch jobs touch the same tables |
+| **TTL only** | Entries expire. You accept staleness up to the TTL | Where bounded staleness is fine: public profiles, product pages, rankings |
+| **Delete on write** | After the DB write commits, `DEL` the key. The next read repopulates | Default when writes go through your service |
+| **Change-data-capture (CDC)** | A consumer reads the database's change log (the MySQL binlog, for example, via Debezium) and deletes affected keys | Many writers: other services, batch jobs, admin scripts touch the same tables |
 
-**Two rules that sound senior because they are:**
+They are usually combined: delete on write, CDC for writers you don't control, and a TTL as the backstop for everything.
 
-- **Delete, don't update, on writes.** Setting the new value from the writer races with other writers (next chapter). Delete is self-healing: the worst case is one extra miss.
-- **Keep a TTL even when you invalidate.** It is the backstop for every delete that gets lost — a crashed process, a network blip, a forgotten code path.
+### Delete vs update on write
 
-<Trace title="Choose the invalidation" steps={invalidation} takeaway="Delete on write when you own the writes; CDC when you don't; a TTL always, as the backstop." />
+After a write you can either **delete** the cached key or **update** it with the new value. Delete is the safer default.
 
-**Picking the TTL number.** Say it as a business statement: *"15 minutes, because a stale bio for 15 minutes hurts nobody, and we delete on the owner's write anyway."* For prices or inventory, seconds — or don't cache the authoritative check at all (cache the product page, re-check stock at checkout).
+| | Delete the key | Update (SET the new value) |
+|---|---|---|
+| Next read | One miss, then reloaded from the DB | Hit, if the update landed |
+| Two racing writers | Cannot install a stale value | Cache can end up holding the older value (Chapter 5) |
+| Computing the value | Done by the reader, once, when needed | Done by every writer, even if nobody reads it |
+| Failure case | Lost delete leaves the old value until the TTL | Same, and the wrong value may be permanent without a TTL |
 
-<h2 id="races">Chapter 5 · The race you can’t see</h2>
+Delete is self-healing. The worst case is one extra miss. An update can store a wrong value.
 
-<Scene chapter="Chapter 5" title="The race you can’t see" mood="night">
+### CDC-driven invalidation
 
-Theo has a favourite bug, and he tells it like a ghost story. Two moderators edit the same post within a millisecond. Both writes reach the database in the right order. Both update the cache. And for the next eleven days, everyone sees the *older* edit — because the post had no TTL.
+Delete-on-write only works for writes that go through your code. If five other services, a nightly batch and an admin script also write to `users`, any of them can change a row and leave the cache stale.
 
-*"The database was right the whole time,"* he says. *"The cache just believed the wrong person."*
+With CDC, a connector (for example Debezium) tails the MySQL binlog. Every committed change appears as an event, whoever made it. A small consumer turns each event into a `DEL`.
 
-</Scene>
+```python
+# consumer of change events (for example from a Kafka topic fed by Debezium)
+for event in change_events("app.users"):
+    user_id = event["after"]["id"] if event["after"] else event["before"]["id"]
+    r.delete(f"v1:profile:user:{user_id}")
+```
 
-**Race 1 — update-on-write.** If writers SET the cache after writing the database, their cache writes can arrive in the opposite order to their database writes. The cache ends up holding the loser, possibly forever.
+Properties to know:
 
-<Figure caption="Writer A’s database write happens first, but its cache write lands last. The cache now disagrees with the database until the TTL saves you — if there is one.">
+- It catches **every committed write**, so no writer can forget.
+- It fires only **after commit**, so the delete can't happen before the data is visible in MySQL.
+- It is **asynchronous**, so there is a small lag. Staleness is bounded by that lag plus the TTL.
+- Deletes are idempotent, so processing an event twice is harmless.
+- It is another system to run. If your service is the only writer, plain delete-on-write is simpler.
+
+<Trace title="Choose the invalidation" steps={invalidation} takeaway="Delete on write when you own the writes. CDC when you don't. A TTL always, as the backstop." />
+
+### Picking the TTL number
+
+Say it as a business statement: "15 minutes, because a stale bio for 15 minutes hurts nobody, and we delete on the owner's write anyway." For prices or inventory, use seconds, or don't cache the authoritative check at all. Cache the product page and re-check stock at checkout.
+
+**Interview takeaway.** "On writes I delete the key after the DB commit, never update it. A CDC consumer on the binlog covers other writers, and a TTL backstops any lost delete."
+
+<Quiz id="caching-invalidation" title="Chapter 4 checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'The users table is written by your API, a nightly import and admin SQL scripts. Your API deletes the cache key on write. What goes stale?',
+    options: [
+      'Nothing: Redis notices the table changed',
+      'Rows changed by the import and the scripts stay stale until the TTL, so add CDC-driven deletes',
+      'Only rows changed by the API',
+    ],
+    answer: 1,
+    why: 'Delete-on-write only covers writers that run your code. CDC reads the binlog, so it sees every committed change.',
+    explain: [
+      'Redis knows nothing about MySQL. It only holds the keys you give it.',
+      'Correct: the import and scripts never run the delete. A binlog consumer deletes keys for every writer.',
+      'The API writes are fine. The problem is the writers that bypass it.',
+    ],
+  },
+  {
+    kind: 'failure',
+    q: 'Your CDC consumer is down for 20 minutes. What happens, and how do you recover?',
+    options: [
+      'Readers get errors until it restarts',
+      'Stale values stay until their TTL. On restart the consumer resumes from its saved offset and replays the deletes, which is safe because deletes are idempotent',
+      'Writes to MySQL are blocked until the consumer catches up',
+    ],
+    answer: 1,
+    why: 'CDC is asynchronous. Staleness is bounded by consumer lag plus the TTL, which is why the TTL stays as a backstop.',
+    explain: [
+      'The cache still serves; it just serves older data.',
+      'Correct: the binlog retains the changes, and replaying a DEL twice is harmless.',
+      'CDC reads the log after commit. It never blocks the writer.',
+    ],
+  },
+]} />
+
+<RevisionCards id="caching-invalidation" cards={[
+  { front: 'Three invalidation strategies?', back: 'TTL only, delete on write, change-data-capture (CDC) from the binlog. Usually combined, with TTL as the backstop.' },
+  { front: 'Why delete instead of update on write?', back: 'A delete cannot install a stale value; worst case is one extra miss. An update can store the wrong value if two writes reorder.' },
+  { front: 'When do you need CDC?', back: 'When writers other than your service touch the same tables: other services, batch jobs, admin scripts.' },
+  { front: 'Properties of CDC invalidation?', back: 'Sees every committed write, fires after commit, asynchronous (small lag), idempotent deletes, one more system to run.' },
+  { front: 'How do you pick a TTL?', back: 'As a business statement: how stale can this data be before it hurts? Seconds for prices and stock, minutes for bios.' },
+]} />
+
+<ChapterDone id="invalidation" />
+
+<h2 id="races">Chapter 5 · The races</h2>
+
+**What is it?** A race is a bug that only appears when two operations interleave in an unlucky order. Caches have several. They are hard to see because the database is always right and the cache is quietly wrong.
+
+**Why do we need to know them?** They are the main reason a cache serves stale data for hours even though "we delete on write". Each one below names the exact order of events and the fix.
+
+### Race 1: set-after-set (update on write)
+
+If writers `SET` the cache after writing MySQL, their cache writes can arrive in the opposite order to their database writes. The cache ends up holding the loser.
+
+<Figure caption="Writer A’s database write happens first, but its cache write lands last. The cache disagrees with the database until the TTL saves you, if there is one.">
   <Mermaid code={`sequenceDiagram
     participant A as Writer A
     participant B as Writer B
@@ -250,115 +537,795 @@ Theo has a favourite bug, and he tells it like a ghost story. Two moderators edi
     Note over DB,C: DB holds v2, cache holds v1`} />
 </Figure>
 
-**Race 2 — even delete-on-write has a gap.** A reader misses, reads the old row, then stalls (a GC pause, a slow network). Meanwhile a writer commits the new value and deletes the key. The reader wakes up and SETs the old value it read earlier. Stale until the TTL.
+With no TTL, the cache is wrong forever. With delete-on-write this race cannot happen: both writers `DEL`, and the next reader loads the truth.
 
-<Trace title="Find the stale value" steps={race} takeaway="Delete-on-write shrinks the window; a TTL bounds it; leases or versioned writes close it." />
+### Race 2: the read-then-delete race
 
-**How real systems close the gap:**
+Even delete-on-write has a gap. A reader misses and reads the old row. Then it stalls (a GC pause, a slow network). Meanwhile a writer commits the new value and deletes the key. The reader wakes up and `SET`s the old value it read earlier.
 
-- **Short TTL** bounds the damage. Usually enough, and the honest default answer.
-- **Leases.** On a miss the cache hands the reader a token; a delete invalidates outstanding tokens; a SET with an invalid token is rejected. Facebook described this for memcache — it also throttles stampedes (Chapter 7).
-- **Versioned values.** Store a version (or the row's updated-at) with the value and only overwrite with a newer version (a compare-and-set, e.g. a small Lua script in Redis).
-- **Delayed double delete.** Delete after the write, then delete again a short time later to catch a racing reader. Cheap, narrows the window, guarantees nothing — describe it as a mitigation.
+<Figure caption="The reader’s SET lands after the writer’s DEL, so it re-inserts a value that was already out of date.">
+  <Mermaid code={`sequenceDiagram
+    participant R as Reader
+    participant W as Writer
+    participant DB
+    participant C as Cache
+    R->>C: GET (miss)
+    R->>DB: SELECT bio (reads v1)
+    W->>DB: UPDATE bio = v2
+    W->>C: DEL
+    R->>C: SET bio = v1
+    Note over DB,C: DB holds v2, cache holds v1`} />
+</Figure>
+
+This window is narrow: the reader has to be slower than a database write plus a delete. It is rare, but at high traffic rare events happen daily.
+
+<Trace title="Find the stale value" steps={race} takeaway="Delete-on-write shrinks the window. A TTL bounds it. Leases or versioned writes close it." />
+
+### Race 3: wrong order, delete before the DB write
+
+A frequent mistake is to delete the key first and then update MySQL. Between the two steps a reader misses, loads the old row from MySQL and caches it. Then the writer's update lands. The cache holds the old value, and no later delete is coming.
+
+```text
+writer: DEL key
+reader: GET miss, SELECT (still the old row), SET old value
+writer: UPDATE row (new value committed)
+result: cache holds the old value
+```
+
+The rule: **update the database first, delete the cache second.** That is why Chapter 3's code orders it that way.
+
+### Race 4: the delete is lost
+
+The DB commit succeeds, then the process crashes or Redis is unreachable before `DEL`. The cache keeps the old value until the TTL ends. Fixes: a TTL backstop, retrying the delete, writing the "invalidate key X" intent to an outbox table in the same MySQL transaction, or CDC, which deletes from the binlog regardless of what the app did.
+
+### Race 5: replica lag
+
+If the reader loads from a MySQL **read replica**, the replica may not have the new row yet. The sequence: writer commits on the primary and deletes the key, a reader misses, reads the lagging replica (old value), and caches it. The cache is stale and the primary is right. Fixes: read from the primary on a cache miss for data that must be fresh, or delay the delete by more than the usual replica lag (see double delete below). Note that CDC on the primary's binlog does not wait for replicas by itself, so it has the same race unless the consumer delays or checks replica lag before deleting.
+
+### How to close the gaps
+
+| Technique | What it does | What it does not do |
+|---|---|---|
+| **Short TTL** | Bounds the damage. The honest default | Doesn't prevent staleness inside the TTL |
+| **Delayed double delete** | Delete after the write. Then delete again after a short delay (say 500 ms to a few seconds) to catch a reader that cached the old value in the gap | Guarantees nothing. A slower reader or bigger replica lag still wins. Describe it as a mitigation |
+| **Lease / token** | On a miss the cache hands the reader a token. A delete invalidates outstanding tokens. A `SET` with an invalid token is rejected | Needs cache support (Facebook's memcache leases are the well-known example. In Redis you build it yourself) |
+| **Versioned writes** | Store a version with the value. Only overwrite with a newer version | Needs a version from the DB and a compare-and-set |
+
+**Delayed double delete** in code:
+
+```python
+def update_bio(user_id, bio):
+    key = f"v1:profile:user:{user_id}"
+    with db.cursor() as cur:
+        cur.execute("UPDATE users SET bio=%s WHERE id=%s", (bio, user_id))
+    db.commit()
+    r.delete(key)
+    schedule(delay_seconds=1, fn=lambda: r.delete(key))  # job queue or timer
+```
+
+**Versioned writes.** Add a `version` column to MySQL and increment it on every update (`UPDATE users SET bio=%s, version=version+1 WHERE id=%s`). The reader's cache write is then a compare-and-set that only succeeds if the version is newer. It must run atomically inside Redis, so use a Lua script:
+
+```python
+SET_IF_NEWER = r.register_script("""
+local cur = redis.call('HGET', KEYS[1], 'v')
+if (not cur) or tonumber(cur) < tonumber(ARGV[1]) then
+  redis.call('HSET', KEYS[1], 'v', ARGV[1], 'data', ARGV[2])
+  redis.call('PEXPIRE', KEYS[1], ARGV[3])
+  return 1
+end
+return 0
+""")
+
+def cache_row(row):                      # row includes id and version
+    SET_IF_NEWER(keys=[f"v1:profile:user:{row['id']}"],
+                 args=[row["version"], json.dumps(row), 900_000])
+```
+
+One caveat: if the writer simply `DEL`s the key, the stored version is gone and a stale reader can set the old value again. To close that, the writer does not delete. After committing, it runs the same script with the new version and empty data, plus a short `PEXPIRE` (a few seconds to a minute, longer than your slowest reader). That is a **tombstone**. Readers treat empty data as a miss and reload from MySQL. A stale reader still holding the old version loses the compare-and-set.
+
+Limits of this approach: it needs a version column, every reader must use the hash layout (`HGET` on `data`), and once the tombstone expires a very slow reader could still re-insert an old value. It bounds the problem, it does not remove it. Treat this as a design sketch and test it before relying on it.
+
+**Delete beats update, in one line.** An update can install a stale value if two operations reorder. A delete cannot install anything, so the worst outcome is one extra miss.
+
+### Strong consistency is not on offer
+
+With cache-aside, expect **eventual consistency with bounded staleness**. Anything stronger needs the database in the read path.
 
 <Reveal q="The interviewer asks: 'So is your cache strongly consistent with the database?' What do you say?">
 
-No — and say so plainly. Cache-aside with delete-on-write gives **eventual consistency with bounded staleness**: almost always fresh, stale for at most the TTL in rare races. If a path truly needs the latest value (a balance before a payment, stock at checkout), it reads the database — or uses versioned writes — and the cache serves the paths that tolerate staleness. Naming which paths are which is the answer they want.
+No, and say so plainly. Cache-aside with delete-on-write gives **eventual consistency with bounded staleness**: almost always fresh, stale for at most the TTL in rare races. If a path truly needs the latest value (a balance before a payment, stock at checkout), it reads the database, or uses versioned writes. The cache serves the paths that tolerate staleness. Naming which paths are which is the answer they want.
 
 </Reveal>
 
-<h2 id="keys">Chapter 6 · Naming things</h2>
+**Interview takeaway.** "Update the database first, then delete. Don't SET on write. Racing readers can still re-cache a stale value, so I keep a TTL, and for the strict cases I add versioned writes."
 
-<Scene chapter="Chapter 6" title="Naming things" mood="dawn">
+<Quiz id="caching-races" title="Chapter 5 checkpoint" questions={[
+  {
+    kind: 'predict',
+    q: 'Delete-on-write is in place. These steps interleave. What does the next GET return, and for how long?',
+    code: "writer: DEL user:7\nreader: GET user:7        -> miss\nreader: SELECT bio        -> 'old'\nwriter: UPDATE users SET bio='new'; COMMIT\nreader: SET user:7 'old'",
+    options: [
+      "'new', because the writer committed last",
+      "'old', until the TTL expires or another delete happens",
+      'An error, because the key was deleted',
+    ],
+    answer: 1,
+    why: 'The writer deleted before committing, so the reader cached the old row afterwards. Fix: update the database first, then delete.',
+    explain: [
+      'Commit order in MySQL does not decide the cache content. The reader wrote last.',
+      'Correct. This is Race 3 (delete before the DB write). Nothing deletes the key again.',
+      'The reader re-created the key, so a GET returns the old value.',
+    ],
+  },
+  {
+    kind: 'failure',
+    q: 'A writer commits on the MySQL primary and deletes the key. A reader misses and loads from a read replica that is 2 s behind. What is cached?',
+    options: [
+      'The new value, since the primary committed',
+      'The old value, and the key is now stale until TTL',
+      'Nothing: replicas refuse reads while lagging',
+    ],
+    answer: 1,
+    why: 'Replicas can be behind. For data that must be fresh, read from the primary on a miss, or use a delayed second delete as a mitigation.',
+    explain: [
+      'The reader never talked to the primary.',
+      'Correct. This is Race 5. The delete already happened, so the stale copy sits in the cache.',
+      'MySQL replicas serve reads even when lagging unless you add checks.',
+    ],
+  },
+  {
+    kind: 'tradeoff',
+    q: 'Why is delayed double delete described as a mitigation, not a fix?',
+    options: [
+      'It deletes too many keys',
+      'A reader slower than the delay, or a replica lagging more than the delay, can still cache stale data',
+      'Redis ignores the second delete',
+    ],
+    answer: 1,
+    why: 'The delay is a guess about reader and replica speed. Versioned writes or a TTL actually bound the problem.',
+    explain: [
+      'Deleting a missing key is harmless and cheap.',
+      'Correct: the delay is a guess, so it narrows the window without closing it.',
+      'Redis executes every DEL.',
+    ],
+  },
+]} />
 
-A migration renames a field in the profile object. Half the app servers deploy the new code; half still run the old. For ten minutes, each half writes a profile shape the other half can't parse, into the *same* keys. Dev calls it "the shapeshifter incident".
+<p>The ideas behind versioned writes are the same as an optimistic lock in a database: only accept a write if nobody changed the data since you read it. This simulation shows the database version, with the lost update you get without the check:</p>
 
-</Scene>
+<OptimisticLockSim />
 
-- **Namespace every key.** `profile:user:123`, `feed:user:123:page:1`, not `123`. Prevents collisions between features, enables targeted invalidation, makes debugging humane.
-- **Tenant in the key** for multi-tenant systems: `t:42:profile:user:123`. You already know this instinct from your day job — it also stops one tenant's bug from reading another's data.
-- **Version prefix** as an escape hatch: `v2:profile:user:123`. Changing the shape? Bump the version — old and new code read different keys, nothing needs scanning or flushing, and the old keys age out by TTL.
-- **Granularity.** Cache whole objects by default (`profile:user:123` → JSON). Split into fields (a Redis hash) only when fields change at very different rates or are read separately.
-- **Composite results** (a feed page, a search result) are expensive to invalidate precisely. Give them short TTLs, or cache the ids and fetch each item from its own cache key.
+<RevisionCards id="caching-races" cards={[
+  { front: 'Correct write order for cache-aside?', back: 'Update the database first, commit, then delete the cache key. Never delete first.' },
+  { front: 'Race 2 (read-then-delete)?', back: 'A reader reads the old row, stalls, a writer commits and deletes, then the reader SETs the old value. Narrow but real at high traffic.' },
+  { front: 'Why is a lost delete not fatal?', back: 'The TTL backstop expires the value. Also retry the delete, use an outbox row, or CDC.' },
+  { front: 'Replica lag race?', back: 'Reader repopulates from a lagging replica. Read from the primary on a miss for fresh-critical data.' },
+  { front: 'Ways to close the gaps?', back: 'Short TTL (bounds), delayed double delete (mitigates), leases (reject stale SET), versioned writes (compare-and-set in Lua).' },
+  { front: 'What consistency does cache-aside give?', back: 'Eventual consistency with bounded staleness. Not strong consistency.' },
+]} />
 
-**Catch the trap:** keys built from unbounded user input (a raw search string) create unlimited distinct keys and a near-zero hit ratio. Normalise the input (lowercase, trim, sort filters) and cap what you cache.
+<ChapterDone id="races" />
+
+<h2 id="keys">Chapter 6 · Key design</h2>
+
+A bad key scheme causes collisions, impossible invalidation and a hit ratio near zero. Rules that prevent it:
+
+- **Namespace every key.** `profile:user:123` or `feed:user:123:page:1`, not `123`. This prevents collisions between features, allows targeted invalidation and makes debugging humane.
+- **Tenant in the key** for multi-tenant systems: `t:42:profile:user:123`. It also stops one tenant's bug from reading another tenant's data.
+- **Version prefix** as an escape hatch: `v2:profile:user:123`. When the cached shape changes, bump the version. During a rolling deploy, old code reads `v1:` keys and new code reads `v2:` keys, so neither tries to parse the other's format. Old keys age out by TTL. Without this, half the servers can write shapes the other half can't read.
+- **Granularity.** Cache whole objects by default (`profile:user:123` holds JSON). Split into fields (a Redis hash) only when fields change at very different rates or are read separately.
+- **Composite results** (a feed page, a search result) are expensive to invalidate precisely. Give them short TTLs, or cache the ids and fetch each item from its own key.
+- **Hash tags in Redis Cluster.** The part of a key inside `{...}` decides its slot. Chapter 12 covers when to use them.
+
+**A common trap:** keys built from unbounded user input (a raw search string) create unlimited distinct keys and a near-zero hit ratio. Normalise the input (lowercase, trim, sort filters) and cap what you cache.
+
+**Interview takeaway.** "Keys are namespaced, include the tenant and a schema version, and are built from normalised input so the key space stays bounded."
+
+<Figure caption="A well-formed key: tenant, schema version, namespace, entity, id. Normalise anything that comes from user input before it goes in.">
+  <Mermaid code={`flowchart LR
+    T["t:42\ntenant"] --> V["v2\nschema version"] --> N["profile:user\nnamespace"] --> I["123\nid"]
+    U["raw user input\nSearch Shoes "] --> NORM["normalise\nlowercase, trim, sort filters"] --> K2["search:shoes\nbounded key space"]`} />
+</Figure>
+
+<Quiz id="caching-keys" title="Chapter 6 checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'A search endpoint caches by the raw query string. After a week the hit ratio is 3% and Redis memory keeps growing. What is the likely cause and fix?',
+    options: [
+      'Redis is too small: buy a bigger node',
+      'The key space is unbounded: normalise queries (lowercase, trim, sort filters) and only cache the common ones with short TTLs',
+      'The TTL is too short: raise it to 24 hours',
+    ],
+    answer: 1,
+    why: 'Unbounded input creates a new key for nearly every request. More memory and longer TTLs only store more one-off keys.',
+    explain: [
+      'A bigger node delays the problem and does not raise the hit ratio.',
+      'Correct: normalisation makes equal queries share a key, and capping what you cache protects memory.',
+      'A longer TTL keeps useless one-off keys around for longer.',
+    ],
+  },
+  {
+    kind: 'failure',
+    q: 'A deploy changes the cached JSON shape. The rollout takes 10 minutes, so old and new servers run side by side. What keeps them from crashing on each other\'s data?',
+    options: [
+      'Flush Redis just before the deploy',
+      'A version prefix in the key (v1: and v2:), so each version reads only its own entries',
+      'Longer TTLs',
+    ],
+    answer: 1,
+    why: 'Flushing causes a cold-cache stampede and does not stop old servers from writing the old shape during the rollout. Versioned keys make both shapes coexist.',
+    explain: [
+      'Old servers keep writing v1 entries during the rollout, and the flush itself empties the cache at once.',
+      'Correct: old keys age out by TTL. Nothing needs deleting.',
+      'TTL does not change which servers can read which shape.',
+    ],
+  },
+]} />
+
+<ChapterDone id="keys" />
 
 <Part n="Part Three" title="When it breaks">
 
-The chapters interviewers love most — because they show whether you have run a cache, or only drawn one.
+These are the failure modes interviewers ask about most, because they show whether you have run a cache or only drawn one. They look alike, so here is the whole family first.
 
 </Part>
 
-<h2 id="stampede">Chapter 7 · Nine o’clock exactly</h2>
+| Problem | What happens | Which keys | First fix |
+|---|---|---|---|
+| **Stampede** (thundering herd, dog-pile) | A popular key expires. Many requests miss together and all recompute | One key that exists | Single-flight, lock, stale-while-revalidate |
+| **Hot key** | One key gets so much traffic that its Redis shard saturates | One key that exists and is cached fine | In-process L1, key splitting |
+| **Penetration** | Requests for keys that do not exist miss every time | Keys that are not in the DB at all | Negative caching, Bloom filter |
+| **Avalanche** | Many keys vanish at once (same expiry, or the cache restarts) | Many keys | Jittered TTL, replicas, warm-up |
 
-<Scene chapter="Chapter 7" title="Nine o’clock exactly" mood="storm">
+<h2 id="stampede">Chapter 7 · Stampede and stale-while-revalidate</h2>
 
-The post-mortem of the 3 a.m. incident has one slide that makes everyone wince. A graph of database queries per second: flat, flat, flat — then at 03:00:00 a cliff straight up, as every warmed key expired in the same second and every request went looking for the truth at once.
+**What is it?** Say a popular Redis key expires at 9:00 AM. 10,000 requests ask for it in the next 50 ms. All of them miss Redis, so all 10,000 run the same MySQL query and then all 10,000 `SET` the same value. This is a **cache stampede**.
 
-</Scene>
+**Why do we need to fix it?** The database sees a spike exactly when it was relying on the cache. If the query is slow, the pile-up makes it slower, requests time out, and retries make it worse.
 
-**The stampede (thundering herd, dog-pile).** A hot key expires; thousands of concurrent requests miss together; each one recomputes from the database. The database sees a spike exactly when it can least afford one.
+Try it. Set the hit ratio to 0, then switch the mitigation (lock, jitter, stale-while-revalidate) and watch how many queries reach the database:
 
-| Fix | How it works | Cost |
+<StampedeSim />
+
+### Fix 1: single-flight (request coalescing) inside one process
+
+Within one app server, make concurrent requests for the same key share a single in-flight database call.
+
+```python
+import threading
+
+_inflight = {}                       # key -> (event, result holder)
+_lock = threading.Lock()
+
+def single_flight(key, load):
+    with _lock:
+        entry = _inflight.get(key)
+        leader = entry is None
+        if leader:
+            entry = (threading.Event(), {})
+            _inflight[key] = entry
+    event, box = entry
+    if leader:
+        try:
+            box["value"] = load()
+        finally:
+            with _lock:
+                del _inflight[key]
+            event.set()
+    else:
+        event.wait()
+    return box.get("value")
+```
+
+With 200 app servers this reduces 10,000 queries to at most 200, one per server. For one query total, you need a cross-server lock.
+
+### Fix 2: a per-key lock (lease) in Redis
+
+The first request that misses takes a short lock. The others either wait briefly and re-read the cache, or serve a stale copy.
+
+```redis
+SET lock:profile:42 <random-token> NX PX 3000
+```
+
+`NX` means "set only if the key does not exist", so exactly one caller wins. `PX 3000` expires the lock after 3000 ms, so a crashed holder cannot block everyone forever.
+
+```python
+import uuid, time
+
+RELEASE = r.register_script("""
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+""")
+
+def get_with_lock(user_id):
+    key = f"v1:profile:user:{user_id}"
+    lock = f"lock:{key}"
+    for _ in range(5):
+        cached = r.get(key)
+        if cached is not None:
+            return json.loads(cached)
+        token = uuid.uuid4().hex
+        if r.set(lock, token, nx=True, px=3000):      # I won the lock
+            try:
+                row = load_from_mysql(user_id)
+                r.set(key, json.dumps(row), ex=900)
+                return row
+            finally:
+                RELEASE(keys=[lock], args=[token])    # only delete MY lock
+        time.sleep(0.05)                              # someone else is loading
+    return load_from_mysql(user_id)                   # give up waiting
+```
+
+Details that matter:
+
+- **The token** makes release safe. If your load takes longer than 3 s, the lock expires and another process takes it. A plain `DEL` would then delete their lock. The Lua script deletes only if the token still matches.
+- **Waiters add latency**, bounded here to about 250 ms before falling back to the database.
+- **The lock does not protect correctness.** If it expires mid-load, two loaders may run. That is fine here because the result is idempotent, a cache fill. (This is not the same as a lock guarding money.)
+
+### Fix 3: probabilistic early refresh (XFetch)
+
+Instead of waiting for expiry, each reader may refresh a little early, with a probability that rises as the expiry nears. One reader usually refreshes before anyone sees a miss. No locks are needed.
+
+```python
+import math, random, time
+
+def should_refresh(delta, expires_at, beta=1.0):
+    # delta: how long recomputing took, stored with the value
+    return time.time() - delta * beta * math.log(random.random()) >= expires_at
+```
+
+`log(random())` is negative, so the check pushes "now" forward by a random amount. The slower the recompute (`delta`), the earlier it starts. This is the XFetch algorithm. It needs `delta` and the expiry stored with the value.
+
+### Fix 4: jittered TTLs
+
+If a batch of keys is created together with the same TTL, they expire together. Add randomness:
+
+```python
+ttl = int(900 * random.uniform(0.9, 1.1))   # 15 min ± 10%
+r.set(key, value, ex=ttl)
+```
+
+This is free. Always do it. It fixes the avalanche version of the problem (many keys, same second). It does nothing for one popular key.
+
+### Fix 5: stale-while-revalidate (SWR)
+
+**What is it?** Serve the old value immediately while one request refreshes it in the background. Readers never wait for the database.
+
+**Single TTL vs SWR, precisely.** With a single TTL, the key has one deadline. When it passes, Redis deletes the key, and the next request has nothing to serve. With SWR, the entry has **two** deadlines:
+
+- **Soft expiry:** "this value is old enough to refresh." Stored *inside* the value as a timestamp.
+- **Hard expiry:** "this value is too old to serve at all." This is the real Redis TTL, set later than the soft expiry.
+
+| | Single TTL | Stale-while-revalidate |
 |---|---|---|
-| **Per-key lock / lease** | The first miss takes a short lock (`SET key:lock NX PX 3000`) and recomputes; others wait briefly and re-read, or get a stale copy | Waiters add latency; the lock needs a timeout in case the holder dies |
-| **Stale-while-revalidate** | Store a soft expiry inside the value, keep the key longer; after the soft expiry, one request refreshes in the background while everyone else gets the slightly old value | Serves stale data for a moment — usually fine |
-| **Probabilistic early refresh** | Each reader refreshes early with a probability that rises as expiry nears (the "XFetch" algorithm); one reader usually refreshes before anyone misses | No locks; needs the recompute time stored with the value |
-| **Jittered TTLs** | TTL = base ± random (e.g. 15 min ± 10%) so keys warmed together don't expire together | Free. Do it always |
+| Deadlines | One | Two: soft (inside the value), hard (the Redis TTL) |
+| Before the deadline | Serve from cache | Before soft: serve from cache |
+| Just after it | Key is gone. Request waits on the database | Between soft and hard: serve the **old value now**, one request refreshes in the background |
+| Who waits for the DB | Every request that misses (unless locked) | Nobody, except after hard expiry |
+| If the refresh fails | Request errors or retries | Old value keeps being served until hard expiry |
+| Cost | Simple | Serves data up to (hard − fresh) seconds old. Needs a wrapper around the value |
 
-The 3 a.m. incident needed two of these: **jitter** (the whole warm-up batch expired in one second) and **a per-key lock** (one hot key, millions of readers).
+Example: soft expiry 10 minutes, hard expiry 15 minutes.
 
-<h2 id="hot-keys">Chapter 8 · The celebrity</h2>
+```text
+t = 0..10 min    fresh. Serve from cache.
+t = 10..15 min   stale. Serve the old value, ONE request refreshes in the background.
+t > 15 min       key is gone. Normal miss. Use the lock from Fix 2.
+```
 
-<Scene chapter="Chapter 8" title="The celebrity">
+Step through the timeline below. Add requests before and after the soft and hard expiry, and compare with a single TTL:
 
-Even after the fix, one shard of the Redis cluster runs hotter than all the others combined. Dev pulls the top keys. One profile — the celebrity's — takes half a million reads per second. *"We sharded the cluster,"* Iris says. *"Why doesn't sharding help?"*
+<SwrSim />
 
-</Scene>
+```python
+def get_swr(user_id):
+    key = f"v1:profile:user:{user_id}"
+    raw = r.get(key)
+    if raw is None:                                   # past hard expiry
+        return load_and_store(user_id)                # use the lock from Fix 2
+    entry = json.loads(raw)                           # {"data":..., "soft": ts}
+    if time.time() > entry["soft"]:                   # past soft expiry
+        if r.set(f"lock:{key}", "1", nx=True, px=3000):  # one refresher only
+            executor.submit(load_and_store, user_id)  # background thread
+    return entry["data"]                              # serve now, stale or not
 
-A **hot key** is not a capacity problem; it is a concentration problem. A key hashes to exactly one shard, so adding shards or buying bigger machines doesn't spread its load.
+def load_and_store(user_id):
+    row = load_from_mysql(user_id)
+    entry = {"data": row, "soft": time.time() + 600}
+    r.set(f"v1:profile:user:{user_id}", json.dumps(entry), ex=900)  # hard expiry
+    return row
+```
 
-- **In-process L1 cache** with a ~1 s TTL on every app server. With 200 app servers, Redis sees about 200 reads per second for that key instead of 500,000. Staleness is bounded at one second. This is the first answer.
-- **Key replication**: store copies as `profile:user:123#1` … `#N` on different shards and read a random one. Writes must delete all N copies.
-- **Request coalescing**: within one server, concurrent requests for the same key share a single in-flight fetch.
-- **Detect it**: hot keys are found by sampling (Redis has tooling for this, e.g. `redis-cli --hotkeys` with an LFU policy) or by client-side counters — say you'd monitor for them rather than assume.
+HTTP has the same idea for browsers and CDNs: `Cache-Control: max-age=600, stale-while-revalidate=300` means fresh for 600 s, then usable for 300 s more while a refresh happens (RFC 5861).
 
-<Trace title="Name the failure" steps={failures} takeaway="Stampede: many recomputes at once → lock, lease, SWR, jitter. Hot key: one key on one shard → L1, replicas. Penetration: keys that don't exist → negative cache, Bloom filter." />
+### Which fix when
 
-<h2 id="penetration">Chapter 9 · Keys that don’t exist</h2>
+| Fix | Prevents | Cost |
+|---|---|---|
+| Single-flight | Many queries from one server | Per-process only |
+| Lock / lease | Many queries across servers | Waiters add latency. Lock needs a timeout and a token |
+| SWR | Waiting, and mass recompute | Serves slightly stale data. Two deadlines to manage |
+| XFetch | The miss itself | Needs stored recompute time. Probabilistic |
+| Jitter | Many keys expiring in the same second | None. Always do it |
 
-<Scene chapter="Chapter 9" title="Keys that don’t exist" mood="night">
+The 3 AM incident from the prologue needed two of these: **jitter** (the whole warm-up batch expired in one second) and **a per-key lock or SWR** (a few keys with enormous read volume).
 
-A scraper starts walking profile ids: 1, 2, 3 … 900 million. Most don't exist. Every request misses the cache — because there is nothing to cache — and lands on the database.
+**Interview takeaway.** "On a stampede, one request recomputes while the rest wait or get the stale copy. I use a lock with `SET NX PX` or stale-while-revalidate, and I jitter TTLs so keys don't expire together."
 
-</Scene>
+<Quiz id="caching-stampede" title="Chapter 7 checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'A popular key expires on a fleet of 200 app servers. You added single-flight inside each process. How many MySQL queries can the expiry still cause?',
+    options: [
+      '1',
+      'Up to 200, one per app server',
+      'Up to 10,000, single-flight does not help at all',
+    ],
+    answer: 1,
+    why: 'Single-flight shares work inside one process. Across servers you need a Redis lock or stale-while-revalidate to get to one query.',
+    explain: [
+      'That needs a cross-server lock. Each process coalesces only its own requests.',
+      'Correct: each server makes one query, so 200 total, down from 10,000.',
+      'Single-flight does collapse concurrent calls inside each server.',
+    ],
+  },
+  {
+    kind: 'failure',
+    q: 'Your lock is SET lock:k token NX PX 3000, but the loader sometimes takes 5 s. If release is a plain DEL lock:k, what can go wrong?',
+    options: [
+      'Nothing, the lock expires on its own',
+      'Loader A\'s lock expires, loader B takes it, then A finishes and its DEL removes B\'s lock, letting a third loader in',
+      'Redis rejects DEL on keys with a TTL',
+    ],
+    answer: 1,
+    why: 'Release must be compare-and-delete in Lua: delete only if the value still equals my token. Also remember the lock only reduces load; it does not guarantee a single loader.',
+    explain: [
+      'Expiry is why you need the token: the lock can disappear before you finish.',
+      'Correct: that is exactly why release checks the token atomically with a Lua script.',
+      'DEL works on any key.',
+    ],
+  },
+  {
+    kind: 'failure',
+    q: 'Soft expiry is 10 min, hard expiry 15 min. MySQL goes down at minute 11 for 3 minutes. What do readers of this key get during the outage?',
+    options: [
+      'Errors from minute 11',
+      'The old value, because the entry is between soft and hard expiry. Refreshes fail but readers still get served',
+      'Fresh data from a replica',
+    ],
+    answer: 1,
+    why: 'SWR keeps serving until the hard expiry. After minute 15 the key is gone and you are back to a normal miss, so the hard expiry bounds how stale you can ever be.',
+    explain: [
+      'With a single TTL that would hurt only after the TTL. With SWR the stale value is still in Redis.',
+      'Correct: the failed background refresh does not remove the entry. Past 15 minutes it ends.',
+      'Nothing in this design reads a replica.',
+    ],
+  },
+]} />
 
-**Cache penetration**: requests for keys that don't exist bypass the cache every time.
+<RevisionCards id="caching-stampede" cards={[
+  { front: 'What is a cache stampede?', back: 'A popular key expires, many requests miss together and all run the same database query.' },
+  { front: 'Single-flight vs Redis lock?', back: 'Single-flight coalesces within one process (up to one query per server). A Redis lock (SET NX PX) coordinates across servers.' },
+  { front: 'Safe lock release?', back: 'Lua compare-and-delete: delete only if the stored token is still mine.' },
+  { front: 'Single TTL vs stale-while-revalidate?', back: 'Single TTL: one deadline, then the key is gone. SWR: soft expiry (inside the value) triggers one background refresh while old data is served; hard expiry (Redis TTL) is the limit.' },
+  { front: 'XFetch in one line?', back: 'Refresh early when now - delta x beta x ln(rand) >= expiry. Slow recomputes start earlier. No locks, probabilistic.' },
+  { front: 'What does jitter fix?', back: 'Many keys expiring in the same second (avalanche). It does nothing for one hot key.' },
+]} />
 
-- **Negative caching**: cache the "not found" result too, with a short TTL (say 60 s), so repeated lookups stop at the cache. Remember to delete it when the object is created.
-- **Bloom filter** of valid ids in front of the lookup. It never says "absent" for something present (no false negatives), so a "no" can be trusted; a rare false "maybe" just falls through to the database.
-- **Rate-limit** the caller. Penetration is often abuse.
+<ChapterDone id="stampede" />
 
-**Cache avalanche** is the cousin: a large fraction of keys disappears at once — a mass expiry (jitter fixes it) or the cache itself restarting (next chapter).
+<h2 id="hot-keys">Chapter 8 · Hot keys</h2>
 
-<h2 id="cache-down">Chapter 10 · The night the cache died</h2>
+**What is it?** A hot key is one key with extreme read volume. Say a celebrity's profile takes 500,000 reads per second.
 
-<Scene chapter="Chapter 10" title="The night the cache died" mood="storm">
+**Why is it a problem?** It is a concentration problem, not a capacity problem. A key lives on exactly one shard (one primary), so adding shards or buying bigger machines does not spread its load. That one shard hits 100% CPU while the others idle. A hot key differs from a stampede: the key is cached fine, it just draws more traffic than one Redis node can serve.
 
-Months later, a bad config push restarts every Redis node at once. They come back in seconds — empty. Mara watches the dashboards and says the quietest, scariest sentence of the year: *"Now we find out if the cache was an optimisation or a load-bearing wall."*
+**Fixes, first to last:**
 
-</Scene>
+- **In-process L1 cache** with about a 1 s TTL on every app server. With 200 app servers, Redis sees about 200 reads per second for that key instead of 500,000. Staleness is capped at one second.
 
-Ask one question in every design: **if the cache vanished, would the database survive the full read load?**
+```python
+import time
 
-At Kestrel's numbers — 200,000 reads/s against a 20,000 reads/s database — the answer is no. The cache is **load-bearing**, so the design must say what happens when it fails:
+_l1 = {}                                   # key -> (expires_at, value)
 
-- **Replicas and failover** so one node's death doesn't empty a shard.
-- **Circuit breaking and load shedding**: when the database is saturated, fail fast or serve degraded responses (cached-but-stale, a simplified page) rather than queueing until everything times out.
-- **Warm-up** after a cold start: pre-load the known hot set, or let traffic in gradually.
-- **Persistence where it matters**: Redis can snapshot (RDB) or log writes (AOF) so a restart isn't fully cold — but treat a cache as rebuildable, never as the only copy of data.
+def get_hot(key, load_from_redis):
+    hit = _l1.get(key)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    value = load_from_redis(key)
+    _l1[key] = (time.monotonic() + 1.0, value)
+    return value
+```
 
-**Catch the trap:** "The cache is just an optimisation." That is only true if you have checked that the database can carry the load without it. Saying the check out loud is the senior move.
+- **Key splitting (replication).** Store copies as `profile:user:123#0` to `#N-1`, which usually hash to different slots (so different shards), and read a random one. Writes (and deletes) must touch all N copies.
+
+```python
+N = 8
+def read_hot(user_id):
+    return r.get(f"profile:user:{user_id}#{random.randrange(N)}")
+
+def invalidate_hot(user_id):
+    r.delete(*[f"profile:user:{user_id}#{i}" for i in range(N)])
+```
+
+- **Request coalescing** (the Chapter 7 single-flight) so concurrent requests in one server share one fetch.
+- **Detect it.** Find hot keys by sampling (`redis-cli --hotkeys` works when an LFU policy is set. Check current docs) or client-side counters. Say you would monitor for them rather than assume.
+- **Client-side caching with server tracking** (Redis 6+): the server tells clients when their locally held keys change. Look it up if you need L1 without waiting out the TTL.
+
+| | L1 in-process | Key splitting |
+|---|---|---|
+| Reduces load on Redis | Hugely (per app server) | Spreads over N shards |
+| Staleness | Up to the L1 TTL | None beyond normal |
+| Invalidation | Hard. Rely on short TTL | Delete N keys |
+| Extra memory | Per app server | N copies in Redis |
+| Best for | Read-mostly, tolerates 1 s stale | Must be fresh, load is huge |
+
+<Trace title="Name the failure" steps={failures} takeaway="Stampede: many recomputes at once, so use a lock, lease, SWR, jitter. Hot key: one key on one shard, so use L1 or key splitting. Penetration: keys that don't exist, so negative cache or Bloom filter." />
+
+**Interview takeaway.** "Sharding doesn't help a hot key because it lives on one shard. I would put a one-second in-process cache in front, or split the key into N copies."
+
+<Quiz id="caching-hot-keys" title="Chapter 8 checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'A celebrity profile takes 500,000 reads/s and its Redis shard is at 100% CPU. A teammate proposes doubling the number of shards. Result?',
+    options: [
+      'Load halves because the key moves to a bigger cluster',
+      'No change: the key lives on exactly one shard, so doubling shards does not spread it',
+      'The load spreads evenly because Redis rebalances hot keys automatically',
+    ],
+    answer: 1,
+    why: 'A hot key is a concentration problem. Use an in-process L1 cache or key splitting.',
+    explain: [
+      'More shards means more places for different keys. This one key still has one home.',
+      'Correct. Throwing hardware at a hot key does not work.',
+      'Redis does not split a key across nodes by itself.',
+    ],
+  },
+  {
+    kind: 'tradeoff',
+    q: 'A product price key is hot but must never be more than a moment stale. Which fix suits better: 1 s in-process L1 on every app server, or key splitting into 8 copies?',
+    options: [
+      'In-process L1: it is the simplest',
+      'Key splitting: copies live in Redis, so a delete clears all 8 immediately and staleness is not extended',
+      'Neither: just use a longer TTL',
+    ],
+    answer: 1,
+    why: 'L1 adds up to its TTL of extra staleness and is hard to invalidate. Key splitting costs N writes and N deletes but stays fresh.',
+    explain: [
+      'It is simple, but staleness is up to 1 s per server and invalidation is hard.',
+      'Correct: write and delete touch all N copies, so freshness is the same as a normal key.',
+      'A longer TTL adds staleness without reducing the hot key load.',
+    ],
+  },
+]} />
+
+<RevisionCards id="caching-hot-keys" cards={[
+  { front: 'Hot key vs stampede?', back: 'Stampede: a key expired and many recompute. Hot key: the key is cached fine but one shard cannot serve its traffic.' },
+  { front: 'Why does adding shards not help a hot key?', back: 'A key lives on exactly one shard. More shards spread other keys.' },
+  { front: 'Fix 1: in-process L1?', back: 'About 1 s TTL on each app server. 200 servers means about 200 Redis reads/s. Staleness up to the L1 TTL.' },
+  { front: 'Fix 2: key splitting?', back: 'Copies key#0..N-1, read a random one, write and delete all N. Fresh, but costs N writes and N copies.' },
+  { front: 'How do you find hot keys?', back: 'Sampling (redis-cli --hotkeys needs an LFU policy; check docs) or client-side counters. Monitor, do not assume.' },
+]} />
+
+<ChapterDone id="hot-keys" />
+
+<h2 id="penetration">Chapter 9 · Penetration and avalanche</h2>
+
+**What is penetration?** Requests for keys that do not exist bypass the cache every time. Say a scraper walks profile ids 1, 2, 3 up to 900 million. Most don't exist. Every request misses Redis, because there is nothing to cache, and lands on MySQL.
+
+**Why is it different from a stampede?** A stampede is about a key that exists and expired. Penetration is about keys that never exist, so no TTL or lock helps. Caching more doesn't help either.
+
+**Fixes:**
+
+- **Negative caching.** Cache the "not found" result too, with a short TTL (say 60 s), so repeated lookups stop at the cache. Delete it when the object is created.
+
+```python
+MISSING = "__none__"
+
+def get_profile_neg(user_id):
+    key = f"v1:profile:user:{user_id}"
+    cached = r.get(key)
+    if cached == MISSING:
+        return None                          # known not to exist
+    if cached is not None:
+        return json.loads(cached)
+    row = load_from_mysql(user_id)
+    if row is None:
+        r.set(key, MISSING, ex=60)           # short TTL
+        return None
+    r.set(key, json.dumps(row), ex=900)
+    return row
+```
+
+- **Bloom filter** of valid ids in front of the lookup. A Bloom filter is a compact bit structure that answers "is this id in the set?" It never says "absent" for something present (no false negatives), so a "no" can be trusted and the request is rejected without touching MySQL. A rare false "maybe" just falls through to the database. It can live in the app or in Redis through a module (RedisBloom. Check current docs).
+- **Rate-limit or block** the caller. Penetration is often abuse.
+- **Validate input.** Reject ids that can't be valid (wrong format, out of range) before any lookup.
+
+| | Negative caching | Bloom filter |
+|---|---|---|
+| Memory | One small key per missing id seen | Fixed, small, for all ids |
+| Protects against | Repeated lookups of the same missing key | Random, never-repeating missing keys too |
+| Weakness | Attacker uses a new random id each time, so the cache never helps | Must be updated when new ids are created. Standard Bloom filters can't delete |
+| Staleness | Id created within the TTL looks missing until deleted | Same until the filter is updated |
+
+**What is avalanche?** A large fraction of keys disappears at once. Two causes: a mass expiry (a warm-up batch with one TTL), or the cache itself restarting empty. The database sees a wall of misses. Fixes: jittered TTLs (Chapter 7), replicas and failover so a node's death doesn't empty a shard, warm-up, and the load-shedding in the next chapter.
+
+**Interview takeaway.** "For ids that don't exist I use negative caching with a short TTL plus a Bloom filter, and I rate-limit the caller. For avalanche I jitter TTLs and plan the cold start."
+
+<Figure caption="Where each defence sits. Bloom filter and input validation protect the database from keys that never exist. Negative caching handles the repeats.">
+  <Mermaid code={`flowchart LR
+    Q["request for id"] --> V{"valid format?"}
+    V -- no --> X1["reject"]
+    V -- yes --> B{"in Bloom filter?"}
+    B -- no --> X2["return not found"]
+    B -- maybe --> R[("Redis")]
+    R -- hit or cached not-found --> OK["answer"]
+    R -- miss --> DB[("MySQL")]
+    DB --> R`} />
+</Figure>
+
+<Quiz id="caching-penetration" title="Chapter 9 checkpoint" questions={[
+  {
+    kind: 'failure',
+    q: 'A scraper requests random ids that do not exist. You added negative caching with a 60 s TTL, but database load barely changed. Why?',
+    options: [
+      'Negative entries are ignored by Redis',
+      'Every request uses a new random id, so there is never a repeat to hit the negative entry. You need a Bloom filter, validation and rate limiting',
+      'The negative TTL should be 24 hours',
+    ],
+    answer: 1,
+    why: 'Negative caching only helps when the same missing key is asked again. Random never-repeating ids need the Bloom filter or a block.',
+    explain: [
+      'Redis stores them like any other key.',
+      'Correct: each id is a cold miss. The Bloom filter rejects ids that are definitely absent without touching MySQL.',
+      'A longer TTL does not help if nothing repeats, and it makes a newly created id invisible for longer.',
+    ],
+  },
+  {
+    kind: 'failure',
+    q: 'A new user signs up and immediately opens their profile. Your Bloom filter was built last night. What happens?',
+    options: [
+      'The filter says "maybe", so the request falls through to MySQL and works',
+      'The filter says "definitely not present": the new user is shown as missing until the filter is updated, so add ids on create',
+      'Bloom filters update themselves from MySQL',
+    ],
+    answer: 1,
+    why: 'A Bloom filter has no false negatives only for ids that were inserted. A new id that was never added is rightly reported absent. Insert on create.',
+    explain: [
+      'A "maybe" only happens for ids that were added, or by false positive. A never-added id usually returns "no".',
+      'Correct: add the id to the filter in the same code path that creates the user (or rebuild from a change feed).',
+      'The filter is a plain bit array. Something has to feed it.',
+    ],
+  },
+]} />
+
+<RevisionCards id="caching-penetration" cards={[
+  { front: 'Penetration vs stampede?', back: 'Stampede: the key exists and expired. Penetration: the key never exists, so every lookup misses and no TTL or lock helps.' },
+  { front: 'Negative caching?', back: 'Cache the not-found result with a short TTL (about 60 s). Delete it when the object is created.' },
+  { front: 'What does a Bloom filter guarantee?', back: 'No false negatives: a "no" is certain. A "maybe" may be a false positive and falls through to the database.' },
+  { front: 'Negative cache vs Bloom filter weakness?', back: 'Negative cache fails for random never-repeating ids. Bloom filters must be updated on create and cannot delete (unless counting).' },
+  { front: 'What is avalanche?', back: 'Many keys vanish at once: shared expiry or an empty restart. Fix with jittered TTLs, replicas, warm-up, load shedding.' },
+]} />
+
+<ChapterDone id="penetration" />
+
+<h2 id="cache-down">Chapter 10 · When the cache is down</h2>
+
+**What is it?** Redis is unreachable, restarted empty, or slow. Your app still has to answer.
+
+**The first question in every design:** if the cache vanished, would MySQL survive the full read load? With the Chapter 1 numbers (200,000 reads/s against a 20,000 reads/s database) the answer is no. The cache is **load-bearing**, not an optimisation, and the design must say what happens when it fails.
+
+**What to do:**
+
+- **Fail open.** If the cache call errors or times out, treat it as a miss and go to the database. Use a very short client timeout (tens of milliseconds) so a sick Redis doesn't add seconds to every request.
+- **Circuit breaker.** After N failures in a window, stop calling Redis for a few seconds, go straight to the next step, and probe occasionally to see if it recovered. This avoids paying the timeout on every request.
+- **Load shedding.** Cap concurrent database queries. Beyond that, fail fast or serve a degraded response (a stale copy, a simplified page) instead of queueing until everything times out.
+- **Warm-up.** After a cold start the hit ratio is 0%, which is the most dangerous period. Pre-load the known hot set (top N keys, or replay recent access logs), or let traffic in gradually.
+- **Persistence where it matters.** Redis can snapshot (RDB) or log writes (AOF) so a restart isn't fully cold. Treat the cache as rebuildable, never as the only copy of data.
+- **Replicas and failover** so one node's death doesn't empty a shard (Chapter 12).
+
+```python
+import time, threading
+
+db_slots = threading.BoundedSemaphore(50)        # at most 50 concurrent DB reads
+breaker = {"fails": 0, "open_until": 0.0}
+
+def cache_get(key):
+    if time.monotonic() < breaker["open_until"]:
+        return None                              # breaker open: skip Redis
+    try:
+        v = r.get(key)                           # client has socket_timeout=0.05
+        breaker["fails"] = 0
+        return v
+    except redis.RedisError:
+        breaker["fails"] += 1
+        if breaker["fails"] >= 5:
+            breaker["open_until"] = time.monotonic() + 5
+        return None                              # fail open: treat as a miss
+
+def get_profile_safe(user_id):
+    v = cache_get(f"v1:profile:user:{user_id}")
+    if v is not None:
+        return json.loads(v)
+    if not db_slots.acquire(blocking=False):     # load shedding
+        raise ServiceBusy()                      # map to HTTP 503 + Retry-After
+    try:
+        return load_from_mysql(user_id)
+    finally:
+        db_slots.release()
+```
+
+This sketch skips the breaker's half-open probe and thread safety on the counters. A real library handles both.
+
+| | Fail open | Fail closed |
+|---|---|---|
+| Cache down means | Go to the database | Return an error |
+| Good when | Database can carry some load, or you shed the rest | Data must come from the cache (a session store, a rate-limit counter) |
+| Risk | Database overload | Outage |
+
+**A common trap:** "The cache is just an optimisation." That is true only if you have checked that the database can carry the load without it. Say the check out loud.
+
+**Interview takeaway.** "I would say up front whether the cache is load-bearing. If so, the app fails open with short timeouts, a circuit breaker, a cap on concurrent DB queries, and a warm-up plan for restarts."
+
+<Figure caption="Fail-open request path with a breaker. The slot cap protects MySQL when the cache is gone.">
+  <Mermaid code={`flowchart LR
+    A["request"] --> BR{"breaker open?"}
+    BR -- yes --> S
+    BR -- no --> RD[("Redis, 50 ms timeout")]
+    RD -- hit --> OK["answer"]
+    RD -- error or miss --> S{"free DB slot?"}
+    S -- yes --> DB[("MySQL")]
+    S -- no --> SH["503 + Retry-After"]
+    DB --> OK`} />
+</Figure>
+
+<Quiz id="caching-cache-down" title="Chapter 10 checkpoint" questions={[
+  {
+    kind: 'failure',
+    q: 'Redis becomes slow and each call now takes 2 s before timing out. There is no circuit breaker. What do users see even though MySQL is healthy?',
+    options: [
+      'Normal latency: failed cache calls are treated as misses',
+      'Every request is about 2 s slower, and threads pile up waiting on Redis until the app runs out of workers',
+      'Nothing, because Redis calls are asynchronous',
+    ],
+    answer: 1,
+    why: 'Fail open only helps if failing is fast. Use a client timeout of tens of milliseconds and a breaker that stops calling Redis after repeated failures.',
+    explain: [
+      'The miss only happens after the timeout. Meanwhile each request waits.',
+      'Correct: slow Redis is often worse than dead Redis. Timeouts and a breaker keep the app alive.',
+      'A blocking client call ties up the worker whatever the library.',
+    ],
+  },
+  {
+    kind: 'tradeoff',
+    q: 'Redis stores user login sessions and it goes down. Fail open or fail closed?',
+    options: [
+      'Fail open: send every session lookup to MySQL',
+      'Fail closed: sessions live only in Redis, so the app returns errors or asks users to log in, unless sessions were designed with a database fallback',
+      'Skip authentication until Redis returns',
+    ],
+    answer: 1,
+    why: 'Fail open assumes the database holds the same data. For a session store or a rate-limit counter the cache is the source of truth. Skipping authentication is never acceptable.',
+    explain: [
+      'Only works if MySQL has the sessions. If it does not, there is nothing to fall back to.',
+      'Correct: pick fail closed (or a deliberate fallback design) when the cache is the only copy.',
+      'That is a security hole, not a design option.',
+    ],
+  },
+]} />
+
+<RevisionCards id="caching-cache-down" cards={[
+  { front: 'First question when Redis fails?', back: 'Would MySQL survive the full read load? If not, the cache is load-bearing and the design needs a plan.' },
+  { front: 'Fail open?', back: 'On cache error treat it as a miss and read the database, with a short client timeout (tens of ms).' },
+  { front: 'Circuit breaker?', back: 'After N failures stop calling Redis for a few seconds, then probe. Avoids paying the timeout on every request.' },
+  { front: 'Load shedding?', back: 'Cap concurrent DB queries and fail fast (503 + Retry-After) or serve a degraded response beyond it.' },
+  { front: 'Cold start?', back: 'Hit ratio is 0%, the most dangerous moment. Warm the hot set or let traffic in gradually.' },
+]} />
+
+<ChapterDone id="cache-down" />
 
 <Part n="Part Four" title="Running it">
 
@@ -366,70 +1333,240 @@ Sizing, eviction, distribution, and the consistency you can actually promise.
 
 </Part>
 
-<h2 id="eviction">Chapter 11 · What leaves when it’s full</h2>
+<h2 id="eviction">Chapter 11 · Eviction and sizing</h2>
 
-<Scene chapter="Chapter 11" title="What leaves when it’s full" mood="dawn">
+### Size the working set, not the dataset
 
-Iris asks for a cache of "everything". Mara asks how big everything is. Nobody knows. That, she says, is the first thing to know.
+**Assumption for this example:** 50 million profiles at about 2 KB each is **100 GB** total. Daily actives touch roughly 10% of profiles, a **10 GB working set**. A cache node with about 25 GB usable memory holds it with room for overhead. (Redis has per-key overhead, so budget extra.)
 
-</Scene>
+So capacity needs **one** node. You cluster for **throughput** (200,000 reads/s is more than you would want on one node. A simple-GET Redis node handles very roughly 100,000 ops/s, so benchmark it) and for **availability** (replicas). That chain, dataset to working set to node size to why a cluster, is what "no hand-waving" sounds like.
 
-**Size the working set, not the dataset.**
+### Eviction: what leaves when memory is full
 
-Kestrel has 50 million profiles × about 2 KB each = **100 GB** total. Daily actives touch roughly 10% of profiles = **10 GB working set**. A cache node with ~25 GB usable memory holds it with room for overhead (Redis has per-key overhead; budget extra). So capacity needs **one** node; you cluster for **throughput** (200,000 reads/s is more than you'd want on one node; a simple-GET Redis node handles very roughly 100,000 ops/s — benchmark it) and for **availability** (replicas). That chain — dataset → working set → node size → *why* a cluster — is exactly what "no hand-waving" sounds like.
+Redis starts evicting when memory reaches `maxmemory`. The `maxmemory-policy` setting says what to remove.
 
-**Eviction** decides what leaves when memory is full:
-
-| Policy | Evicts | Good when |
+| Policy | Evicts | Applies to |
 |---|---|---|
-| **LRU** (least recently used) | The key untouched longest | Default; recency predicts reuse |
-| **LFU** (least frequently used) | The key used least often | Stable hot sets; a one-off scan shouldn't flush the favourites |
-| **TTL-based** (`volatile-ttl`) | Keys closest to expiry | Mostly time-bounded data |
-| **No eviction** | Nothing; writes fail when full | Data you must never silently lose (then it's not really a cache) |
+| `noeviction` | Nothing. Writes fail when full | All keys |
+| `allkeys-lru` | Least recently used | All keys |
+| `volatile-lru` | Least recently used | Only keys with a TTL |
+| `allkeys-lfu` | Least frequently used | All keys |
+| `volatile-lfu` | Least frequently used | Only keys with a TTL |
+| `allkeys-random` / `volatile-random` | Random key | All / TTL keys |
+| `volatile-ttl` | Key closest to expiry | Only keys with a TTL |
 
-Redis exposes these as `maxmemory-policy` values such as `allkeys-lru`, `allkeys-lfu`, `volatile-lru` (only keys with a TTL), `volatile-ttl` and `noeviction`. Its LRU and LFU are approximations based on sampling — good enough, and cheap.
+For a pure cache, `allkeys-lru` or `allkeys-lfu` is the usual choice. `volatile-*` policies only touch keys with a TTL, so if none have one, they behave like `noeviction`. Redis's own default is `noeviction` (check the docs for your version). Its LRU and LFU are approximations based on sampling a few keys, which is good enough and cheap.
+
+**LRU vs LFU.**
+
+| | LRU (least recently used) | LFU (least frequently used) |
+|---|---|---|
+| Question it asks | When was this last touched? | How often is this touched? |
+| Good when | Recency predicts reuse | The hot set is stable |
+| Weakness | **Scan pollution**: a one-time scan makes cold keys look recent and pushes hot keys out | Slow to adapt: an old favourite with a high count lingers (Redis decays counts over time) |
+| Example | Users browsing recent items | A nightly job reads every profile once. LFU ignores it, LRU gets flushed |
+
+Try it: run the `scan` preset and compare how LRU and LFU treat the one-off keys.
+
+<LruLfuSim preset="scan" />
 
 <Reveal q="A nightly analytics job reads every profile once. Why can that hurt an LRU cache, and what helps?">
 
-The scan touches millions of cold keys once each, and each one becomes "most recently used", pushing genuinely hot keys out — scan pollution. LFU resists it (the scanned keys have a frequency of one), or the job can bypass the cache entirely and read from a replica.
+The scan touches millions of cold keys once each, and each one becomes "most recently used", pushing genuinely hot keys out. That is scan pollution. LFU resists it, because the scanned keys have a frequency of one. Or the job can bypass the cache entirely and read from a replica.
 
 </Reveal>
 
-<h2 id="clusters">Chapter 12 · One cache, many machines</h2>
+**Interview takeaway.** "I size the working set, not the dataset: 10 GB here, so one node holds it and the cluster is for throughput and availability. Eviction is `allkeys-lru`, or LFU if one-off scans are a risk."
 
-<Scene chapter="Chapter 12" title="One cache, many machines">
+<Quiz id="caching-eviction" title="Chapter 11 checkpoint" questions={[
+  {
+    kind: 'predict',
+    q: 'A Redis instance used as a cache reaches maxmemory under its default maxmemory-policy. What happens to new writes? (Check the docs for your version.)',
+    options: [
+      'Redis evicts the least recently used keys and keeps accepting writes',
+      'Writes that need more memory fail with an out-of-memory error, while reads keep working (policy noeviction)',
+      'Redis crashes',
+    ],
+    answer: 1,
+    why: 'The default policy is noeviction. A cache should explicitly set allkeys-lru or allkeys-lfu.',
+    explain: [
+      'That is allkeys-lru, which you have to configure.',
+      'Correct: by default Redis does not evict, so a full cache turns into write errors.',
+      'Redis refuses the write; it does not crash.',
+    ],
+  },
+  {
+    kind: 'scenario',
+    q: 'A nightly job reads every profile once and your hit ratio drops for an hour afterwards. Which policy change helps most?',
+    options: [
+      'Switch to allkeys-lfu, so keys read once do not look valuable',
+      'Add more RAM',
+      'Switch to allkeys-random',
+    ],
+    answer: 0,
+    why: 'LRU sees the scanned keys as recently used and evicts the real hot set. LFU counts frequency, so one-off reads rank low. Or bypass the cache from the job.',
+    explain: [
+      'Correct: scan pollution is the classic LRU weakness.',
+      'May hide the symptom briefly, but a full scan of the dataset will eventually still evict hot keys.',
+      'Random eviction is not selective, so hot keys are as likely to go as scanned ones.',
+    ],
+  },
+]} />
 
-The cache outgrows one machine's network card before it outgrows its memory. Theo draws a ring, then crosses it out and draws sixteen thousand tiny boxes. *"Same idea,"* he says. *"Different bookkeeping."*
+<RevisionCards id="caching-eviction" cards={[
+  { front: 'Size the cache by what?', back: 'The working set (the hot slice of data), not the whole dataset. Add per-key overhead.' },
+  { front: 'Default Redis maxmemory-policy?', back: 'noeviction: writes fail when memory is full. For a cache choose allkeys-lru or allkeys-lfu.' },
+  { front: 'What do volatile-* policies evict?', back: 'Only keys with a TTL. If no key has one they behave like noeviction.' },
+  { front: 'LRU vs LFU weakness?', back: 'LRU: scan pollution. LFU: slow to adapt to a changing hot set (Redis decays counts).' },
+  { front: 'Why cluster if the data fits on one node?', back: 'For throughput (ops/s) and availability (replicas), not capacity.' },
+]} />
 
-</Scene>
+<ChapterDone id="eviction" />
 
-Keys must be spread across nodes so that adding a node moves only a little data.
+<h2 id="clusters">Chapter 12 · Sharding, replication, failover</h2>
 
-- **Consistent hashing** (common with Memcached clients): nodes and keys hash onto a ring; a key belongs to the next node clockwise. Adding a node moves only about 1/N of the keys. Virtual nodes smooth out the imbalance.
-- **Hash slots** (Redis Cluster): every key maps to one of **16,384 slots** (CRC16 of the key, mod 16384); slots are assigned to primaries and moved between them when the cluster resizes. **Hash tags** — the part of a key inside `{…}` — force related keys into the same slot so multi-key operations work: `{user:123}:profile` and `{user:123}:settings`.
-- **Replication**: each primary has replicas; on failure a replica is promoted. Replication is asynchronous, so a failover can lose the last few writes — fine for a cache, worth saying.
+**What is it?** Splitting keys across several Redis nodes (sharding) and keeping copies for safety (replication).
+
+**Why do we need it?** One node runs out of network or CPU before memory, and one node dying empties your cache. The goal is to spread keys so that adding a node moves only a little data.
+
+### Sharding
+
+- **Consistent hashing** (common with Memcached clients). Nodes and keys hash onto a ring. A key belongs to the next node clockwise. Adding a node moves only about 1/N of the keys. Virtual nodes (each machine appears at many points on the ring) smooth out imbalance. Compare plain `hash(key) mod N`: changing N remaps nearly every key, which is an avalanche.
+- **Hash slots** (Redis Cluster). Every key maps to one of **16,384 slots**: `CRC16(key) mod 16384`. Slots are assigned to primaries and moved between them when the cluster resizes. Clients learn the slot map and talk to the right node.
+- **Hash tags.** If a key contains `{...}`, only that part is hashed. `{user:123}:profile` and `{user:123}:settings` land in the same slot, so multi-key commands and Lua scripts across them work. Overusing one tag creates a hot slot.
+
+| | Consistent hashing | Redis Cluster hash slots |
+|---|---|---|
+| Who decides placement | Client library | Cluster slot map, clients follow redirects |
+| Unit of movement | Ranges on the ring | Whole slots (16,384 of them) |
+| Resize moves | About 1/N of keys | Only the slots you migrate |
+| Multi-key operations | Not guaranteed | Only within one slot (hash tags) |
+
+Try it: start with `mod`, add a shard, and count the keys that move. Then switch to the ring and hash slots.
+
+<ShardingSim mode="mod" shards={4} keys={1000} />
+
+### Replication and failover
+
+Each primary has one or more replicas. If a primary fails, a replica is promoted. Caveats to say aloud:
+
+- **Replication is asynchronous.** The primary acknowledges a write before replicas have it. If it fails at that moment, the promoted replica is missing the last few writes. That can include a recent `DEL`, which brings a stale value back. Fine for a cache, worth saying. (`WAIT` can ask for replica acknowledgement, but it does not make Redis strongly consistent.)
+- **Failover takes time.** There is a detection timeout (`cluster-node-timeout` in Redis Cluster, or Sentinel's equivalent) plus election. During it, that shard's keys are unavailable. Your fail-open path from Chapter 10 handles it.
+- **Reads from replicas can be stale** by the replication lag. Use them only for data that tolerates it.
+- **A shard with no replica to promote** loses its slots. By default Redis Cluster stops serving when slots are uncovered (`cluster-require-full-coverage`, check docs). Decide whether you want that or partial service.
+- **After failover the promoted node's hit ratio is fine**, but a primary that restarts empty means a cold shard. Warm it before sending traffic.
+
+### Redis vs Memcached
 
 | | Redis | Memcached |
 |---|---|---|
-| Data types | Strings, hashes, lists, sets, sorted sets, streams… | Strings (blobs) |
+| Data types | Strings, hashes, lists, sets, sorted sets, streams | Strings (blobs) |
 | Persistence | Optional (RDB snapshots, AOF) | None |
 | Replication / failover | Built in | Client-side or none |
 | Threads | Command execution mostly single-threaded per node (I/O threads optional) | Multi-threaded |
 | Pick when | You need structures (leaderboards, rate limiters, sessions) or replication | You need a simple, very fast blob cache |
 
+**Interview takeaway.** "Redis Cluster hashes keys into 16,384 slots spread over primaries, with replicas for failover. Replication is async, so a failover can lose recent writes, which is acceptable for a cache."
+
+<Quiz id="caching-clusters" title="Chapter 12 checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'Your client hashes keys with hash(key) mod 4. You add a fifth node and use mod 5. Roughly what share of keys now map to a different node?',
+    options: [
+      'About 20%',
+      'About 80%: a key keeps its node only if both remainders happen to match',
+      'None: keys stay put until they are read again',
+    ],
+    answer: 1,
+    why: 'Changing N remaps nearly every key, which empties the cache for practical purposes (avalanche). Consistent hashing or hash slots move only about 1/N.',
+    explain: [
+      '20% is roughly what consistent hashing moves when you add a fifth node.',
+      'Correct: roughly 1 in 5 keys keeps its node by luck, so about 4 in 5 move.',
+      'Lookups use the new formula immediately, so most keys are not found.',
+    ],
+  },
+  {
+    kind: 'failure',
+    q: 'A primary acknowledges DEL user:9, then crashes before the replica receives it. The replica is promoted. What can a reader see?',
+    options: [
+      'Nothing: replication is synchronous',
+      'The old value for user:9 reappears, because the delete was lost. Acceptable for a cache, keep a TTL backstop',
+      'A permanent error for that key',
+    ],
+    answer: 1,
+    why: 'Redis replication is asynchronous. WAIT can ask for acknowledgements but does not make Redis strongly consistent.',
+    explain: [
+      'It is asynchronous by default.',
+      'Correct: that is why even a delete is not a hard guarantee and a TTL still matters.',
+      'The key just holds the older value.',
+    ],
+  },
+]} />
+
+<RevisionCards id="caching-clusters" cards={[
+  { front: 'Redis Cluster slot formula?', back: 'slot = CRC16(key) mod 16384. Slots are assigned to primaries and migrated on resize.' },
+  { front: 'Why not hash(key) mod N?', back: 'Changing N remaps nearly every key. Consistent hashing or slots move about 1/N.' },
+  { front: 'Hash tags?', back: 'Only the part inside {...} is hashed, so related keys share a slot and multi-key commands or Lua work. Overuse makes a hot slot.' },
+  { front: 'Replication caveat?', back: 'Asynchronous: a failover can lose the last writes, including a DEL. WAIT helps but is not strong consistency.' },
+  { front: 'What if a shard has no replica to promote?', back: 'Its slots are uncovered. By default Redis Cluster stops serving (cluster-require-full-coverage, check docs).' },
+]} />
+
+<ChapterDone id="clusters" />
+
 <h2 id="consistency">Chapter 13 · What you can promise</h2>
 
-<Scene chapter="Chapter 13" title="What you can promise" mood="dusk">
+Name the guarantee per path, not for the whole system. Two different promises are easy to mix up: "will I see my own edit?" and "will my friends see it soon?"
 
-Iris has one last question, and it's the one that matters to users. *"If I change my bio and refresh, will I see it?"* Mara smiles. *"That,"* she says, *"is a different promise from 'will my friends see it'. Let's make both on purpose."*
+- **Bounded staleness** for most readers: "at most the TTL, usually much less."
+- **Read-your-own-writes** for the author. Delete-on-write already gives it in the common case. For a guarantee, route the author's reads to the primary database for a short window after their write, or write the author's own session copy.
+- **Strong consistency** where money or inventory is involved: don't serve it from the cache. Cache the page, and check the truth at the decision point.
 
-</Scene>
+**Interview takeaway.** "Most readers get bounded staleness, the author gets read-your-own-writes by reading the primary briefly after an edit, and money or stock reads go to the database."
 
-Name the guarantee per path, not for the whole system:
+<Figure caption="Two kinds of readers get two different promises.">
+  <Mermaid code={`flowchart LR
+    W["author edits bio"] --> P[("MySQL primary")]
+    P --> D["DEL key"]
+    A["author reloads"] -->|"reads primary for a few seconds"| P
+    F["friends"] -->|"cache, bounded staleness"| C[("Redis")]`} />
+</Figure>
 
-- **Bounded staleness** for most readers: "at most the TTL, usually much less".
-- **Read-your-own-writes** for the author: delete-on-write already gives it in the common case; for a guarantee, route the author's reads to the database (or a primary) for a short window after their write, or write-through their own session's copy.
-- **Strong consistency** where money or inventory is involved: don't serve it from the cache. Cache the page; check the truth at the decision point.
+<Quiz id="caching-consistency" title="Chapter 13 checkpoint" questions={[
+  {
+    kind: 'scenario',
+    q: 'A user edits their bio, reloads, and sometimes sees the old text. Other users seeing the old text for a minute is acceptable. Best fix?',
+    options: [
+      'Remove the cache from the profile service',
+      'Read-your-own-writes: after an edit, send that user\'s reads to the primary for a short window (or return the new value from the write)',
+      'Set the TTL to 1 second for everyone',
+    ],
+    answer: 1,
+    why: 'The author needs a stronger promise than everyone else. Give it to the author only, instead of paying for it on every read.',
+    explain: [
+      'That solves one problem by recreating the load problem from Chapter 1.',
+      'Correct: a narrow guarantee for the one reader who would notice.',
+      'A 1 s TTL for all increases the miss rate a lot and still leaves a 1 s window.',
+    ],
+  },
+  {
+    kind: 'tradeoff',
+    q: 'Which statement can you safely make in an interview about a cache-aside design with delete-on-write?',
+    options: [
+      'It is strongly consistent with the database',
+      'It is eventually consistent with bounded staleness, and money or stock decisions read the database',
+      'It is consistent as long as Redis has replicas',
+    ],
+    answer: 1,
+    why: 'Races and lost deletes exist. Name the paths that bypass the cache.',
+    explain: [
+      'The races in Chapter 5 mean it is not.',
+      'Correct: it is honest, and it shows you know where stronger guarantees are needed.',
+      'Replicas do not remove races; they add replication lag.',
+    ],
+  },
+]} />
+
+<ChapterDone id="consistency" />
 
 <h2 id="decision-drills">Decision drills · Make the calls</h2>
 
@@ -437,83 +1574,176 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
 
 <Trace title="The cache review" steps={drills} takeaway="Four promises, every time: key shape, TTL with a reason, invalidation, failure plan. Then size it, and say whether it is load-bearing." />
 
-<Quiz questions={[
+<Quiz id="caching-drills" title="Mixed scenarios" questions={[
   {
-    q: 'Hot key expires; 10K requests hit the DB simultaneously. Name and fix?',
+    kind: 'scenario',
+    q: 'A hot key expires and 10K requests hit the DB at once. Name the problem and pick the fix.',
     options: [
-      'Hot key — add replicas',
-      'Stampede — a per-key lock or stale-while-revalidate, so one request refreshes while the others wait or get slightly stale data',
-      'Cache penetration — use a Bloom filter',
-      'Eviction storm — switch LRU to LFU'
+      'Hot key: add replicas',
+      'Stampede: a per-key lock or stale-while-revalidate, so one request refreshes while the others wait or get slightly stale data',
+      'Cache penetration: use a Bloom filter',
+      'Eviction storm: switch LRU to LFU',
     ],
     answer: 1,
-    why: 'Stampede = many concurrent misses on one expiry. A lock, lease or SWR collapses 10K DB hits into one. Penetration is the related-but-different case: repeated misses on keys that don’t exist.'
+    why: 'Stampede = many concurrent misses on one expiry. A lock, lease or SWR collapses 10K DB hits into one. Penetration is the related-but-different case: repeated misses on keys that do not exist.',
+    explain: [
+      'A hot key is about traffic on a cached key. Nothing here says the key was cached and overloaded.',
+      'Correct: one key expired, many concurrent misses. Replicas and Bloom filters would not reduce that wave.',
+      'The key exists in MySQL, so a Bloom filter would say "maybe" and let all requests through.',
+      'Nothing was evicted: the key expired.',
+    ],
   },
   {
+    kind: 'failure',
     q: 'Delete-on-write is in place. Can a stale value still end up in the cache?',
     options: [
-      'No — the delete always wins',
-      'Yes — a slow reader can read the old row before the write and SET it after the delete; a TTL bounds it, leases or versioned writes close it',
+      'No: the delete always wins',
+      'Yes: a slow reader can read the old row before the write and SET it after the delete; a TTL bounds it, leases or versioned writes close it',
       'Only if Redis loses the delete',
-      'Only with write-behind'
+      'Only with write-behind',
     ],
     answer: 1,
-    why: 'The read-populate race. Most designs accept it with a short TTL; mention leases or versioned sets if the interviewer pushes.'
+    why: 'The read-populate race. Most designs accept it with a short TTL; mention leases or versioned sets if the interviewer pushes.',
+    explain: [
+      'The reader\'s SET can land after the writer\'s DEL, so the delete does not always win.',
+      'Correct: this is Race 2. Rare but real at high traffic.',
+      'A lost delete is another cause, not the only one.',
+      'Write-behind is a different problem (lost writes).',
+    ],
   },
   {
+    kind: 'tradeoff',
     q: 'Write-behind (write-back) caching is proposed for user posts. The main risk?',
     options: [
       'Slower reads',
       'Lost writes if the cache node fails before flushing to the database',
       'Higher memory use',
-      'More cache misses'
+      'More cache misses',
     ],
     answer: 1,
-    why: 'Write-behind acknowledges writes the database hasn’t stored yet. Fine for approximate counters; dangerous for user content.'
+    why: 'Write-behind acknowledges writes the database has not stored yet. Fine for approximate counters; dangerous for user content.',
+    explain: [
+      'Reads are fast, since the data is in the cache.',
+      'Correct: the user got "saved" but MySQL never received it.',
+      'Memory use is similar to other patterns.',
+      'Miss rate is unaffected by the write policy.',
+    ],
+  },
+  {
+    kind: 'scenario',
+    q: 'Traffic grows 100x. Which change does NOT help, assuming reads are concentrated on a few viral keys?',
+    options: [
+      'In-process L1 caches in front of Redis',
+      'More Redis shards',
+      'Key splitting for the viral keys',
+    ],
+    answer: 1,
+    why: 'Hot keys are a concentration problem. More shards spread different keys, not a single key.',
+    explain: [
+      'It cuts the reads that reach Redis from every app server.',
+      'Correct: the viral key still lives on exactly one shard.',
+      'It spreads one key over several slots.',
+    ],
+  },
+  {
+    kind: 'failure',
+    q: 'Redis is down and the DB can carry only 10% of normal load. Which response is best?',
+    options: [
+      'Fail open to MySQL for every request',
+      'Fail open with a short timeout, a breaker, and a cap on concurrent DB queries, serving a degraded response beyond it',
+      'Return 500 for every request',
+    ],
+    answer: 1,
+    why: 'Fail open alone overloads MySQL and turns a partial outage into a full one. Shedding keeps part of the traffic working.',
+    explain: [
+      'That sends 100% of reads to a database that can take 10%.',
+      'Correct: protect the database and serve what you can.',
+      'Safe for the database, but an avoidable total outage.',
+    ],
   },
 ]} />
 
+<ChapterDone id="decision-drills" />
+
 <h2 id="interview-script">Say it in the room</h2>
 
-<Scene title="The interview room" mood="night">
+The interviewer has a profile service on the whiteboard and asks: "How would you make this faster?" Saying "Redis" is not enough. Say the four promises.
 
-The Interviewer has a profile service on the whiteboard and asks, almost lazily: *"How would you make this faster?"* Two years ago you would have said "Redis". Today you take a breath and say four things.
+**The main answer** (adapt the nouns). Say it aloud before opening the model answer:
 
-</Scene>
+<AnswerModes id="caching-how-faster" q="The profile service is slow. How would you make reads faster?">
+<Fragment slot="short">
+Reads far outnumber writes and keys repeat, so I would add a Redis cache using cache-aside: read Redis, on a miss read MySQL and SET with a 15-minute jittered TTL. On writes I update MySQL, then delete the key. I would size for the working set and make sure the app still works, with load shedding, if Redis is down.
+</Fragment>
+<Fragment slot="medium">
+Reads outnumber writes about 100 to 1 and the same profiles repeat, so a cache pays off. I'd use **cache-aside** in Redis. **Key**: `v1:profile:user:{id}`, holding the profile JSON. **TTL** 15 minutes with ±10% jitter, because a slightly stale bio is fine for viewers. **Invalidation**: the profile service updates MySQL and then deletes the key. Since other services also write that table, a CDC consumer on the binlog deletes too, and the TTL is the backstop. **Failure plan**: at 200K reads/s versus a 20K/s database, the cache is load-bearing, so: replicas with failover, a per-key lock or stale-while-revalidate against stampedes, a one-second in-process cache for celebrity hot keys, negative caching for missing ids, and a circuit breaker with load shedding if Redis is down. **Sizing**: about a 10 GB working set fits one node. I'd run three primaries with replicas for throughput and availability. The author reads their own profile from the primary for a few seconds after editing, so they always see their change.
+</Fragment>
+<Fragment slot="deep">
+**Numbers first.** Assume 200K reads/s and a database that is comfortable at 20K/s. The database load is (1 - h) x QPS, so I need a hit ratio of at least 90% and I would aim for 95% or better. That makes the cache load-bearing, so I design for its failure.
 
-**The 90-second answer** (adapt the nouns):
+**Four promises.** Key `v1:profile:user:id` (namespace, schema version, tenant if multi-tenant). TTL 15 minutes with plus or minus 10% jitter. Invalidation: update MySQL then delete (never the reverse, never SET), a CDC consumer for other writers, TTL as backstop. Failure plan below.
 
-> "Reads outnumber writes about 100 to 1 and the same profiles repeat, so a cache pays off. I'd use **cache-aside** in Redis. **Key**: `v1:profile:user:{id}`, holding the profile JSON. **TTL** 15 minutes with ±10% jitter — a slightly stale bio is fine for viewers. **Invalidation**: the profile service deletes the key after each committed write; since other services also write that table, a CDC consumer deletes too, and the TTL is the backstop. **Failure plan**: at 200K reads/s versus a 20K/s database, the cache is load-bearing, so: replicas with failover, a per-key lock against stampedes, a one-second in-process cache for celebrity hot keys, negative caching for missing ids, and load shedding if the cache is down. **Sizing**: ~10 GB working set fits one node; I'd run three primaries with replicas for throughput and availability. The author reads their own profile from the primary for a few seconds after editing, so they always see their change."
+**Races I name.** A slow reader can re-cache an old value after a delete. A lost delete leaves stale data until TTL. A lagging replica can repopulate stale data. I accept bounded staleness and use versioned writes only for strict paths.
 
-**Five follow-ups you will get:**
+**Failure plan.** Stampede: per-key `SET NX PX` lock with a Lua compare-and-delete release, or stale-while-revalidate. Hot keys: 1 s in-process cache or key splitting. Penetration: negative cache plus Bloom filter plus rate limiting. Redis down: short timeout, circuit breaker, DB concurrency cap, warm-up on restart.
+
+**Sizing and cluster.** 50M profiles x 2 KB = 100 GB, 10% active = 10 GB. One node fits it, so I cluster for throughput and replicas for availability. Eviction is allkeys-lru, or LFU if scans are a risk. Replication is async, so failover can lose the last writes, which is fine for a cache.
+</Fragment>
+</AnswerModes>
+
+**Follow-ups you will get:**
 
 <Reveal q="1 · Why not update the cache on write instead of deleting?">
 
-Concurrent writers can apply their cache SETs in the opposite order to their database writes, leaving the older value cached — forever without a TTL. A delete can't install a stale value; the worst case is one extra miss.
+Concurrent writers can apply their cache SETs in the opposite order to their database writes, leaving the older value cached, forever without a TTL. A delete can't install a stale value. The worst case is one extra miss.
 
 </Reveal>
 
 <Reveal q="2 · What happens when a very popular key expires?">
 
-A stampede. One request takes a short per-key lock (or lease) and recomputes; the rest wait briefly or get the stale copy (stale-while-revalidate). TTLs are jittered so keys warmed together don't expire together.
+A stampede. One request takes a short per-key lock (`SET lock NX PX`) and recomputes. The rest wait briefly or get the stale copy (stale-while-revalidate). TTLs are jittered so keys warmed together don't expire together.
 
 </Reveal>
 
 <Reveal q="3 · One key gets 500K reads per second. Sharding didn't help. Why, and what now?">
 
-A key lives on exactly one shard, so more shards don't spread it. Put a ~1 s in-process L1 cache on each app server (200 servers → ~200 Redis reads/s for that key), or replicate the key under N suffixes and read a random copy.
+A key lives on exactly one shard, so more shards don't spread it. Put a ~1 s in-process L1 cache on each app server (200 servers means about 200 Redis reads/s for that key), or split the key into N suffixed copies and read a random one.
 
 </Reveal>
 
 <Reveal q="4 · How big is the cache, and why that many nodes?">
 
-Working set, not dataset: 50M profiles × 2 KB = 100 GB total, ~10% active = 10 GB. It fits on one node, so the cluster exists for throughput (200K ops/s) and availability (replicas), not capacity.
+Working set, not dataset: 50M profiles × 2 KB = 100 GB total, about 10% active = 10 GB. It fits on one node, so the cluster exists for throughput (200K ops/s) and availability (replicas), not capacity.
 
 </Reveal>
 
 <Reveal q="5 · Is the cache consistent with the database?">
 
-Eventually, with bounded staleness: fresh in the common case, stale for at most the TTL in rare races. Paths that need the truth — balances, inventory at checkout — read the database. The author's own reads go to the primary for a short window after a write.
+Eventually, with bounded staleness: fresh in the common case, stale for at most the TTL in rare races. Paths that need the truth, such as balances or inventory at checkout, read the database. The author's own reads go to the primary for a short window after a write.
+
+</Reveal>
+
+<Reveal q="6 · Cache-aside vs read-through?">
+
+Both load from the database on a miss. In cache-aside the application runs that code. In read-through the cache layer does, through a loader you register. Same flow, different owner.
+
+</Reveal>
+
+<Reveal q="7 · Single TTL vs stale-while-revalidate?">
+
+A single TTL has one deadline. After it the key is gone and a request waits on the database. SWR has a soft expiry inside the value and a hard expiry as the Redis TTL. Between them readers get the old value immediately while one request refreshes it in the background.
+
+</Reveal>
+
+<Reveal q="8 · Does delayed double delete fix the race?">
+
+It narrows it. A second delete shortly after the first removes a value a slow reader cached in the gap. But a reader slower than the delay, or a lagging replica, can still cache stale data. It is a mitigation. Versioned writes or a TTL actually bound the problem.
+
+</Reveal>
+
+<Reveal q="9 · What if Redis goes down?">
+
+First say whether the cache is load-bearing. If it is: fail open with short timeouts, a circuit breaker so we stop calling Redis, a cap on concurrent database queries with degraded responses beyond it, and a warm-up plan for when it returns empty.
 
 </Reveal>
 
@@ -523,54 +1753,51 @@ Eventually, with bounded staleness: fresh in the common case, stale for at most 
 |---|---|
 | "Make reads faster" | Cache-aside, then the four promises |
 | Read-heavy, repeated keys | Hit ratio target from (1 − h) × QPS ≤ DB budget |
-| Data changes through your service | Delete on write + TTL backstop |
+| Data changes through your service | Update DB, then delete the key. TTL backstop |
 | Many writers to the same table | CDC-driven deletes |
-| "Is it consistent?" | Bounded staleness; truth-critical paths read the DB |
-| A hot key expired, DB spiked | Stampede: lock/lease, stale-while-revalidate, jitter |
-| One key melts one shard | Hot key: in-process L1, key replicas |
+| "Is it consistent?" | Bounded staleness. Truth-critical paths read the DB |
+| A hot key expired, DB spiked | Stampede: single-flight, lock `SET NX PX`, SWR, jitter |
+| One key melts one shard | Hot key: in-process L1, key splitting |
 | Lookups for ids that don't exist | Penetration: negative cache, Bloom filter |
 | Many keys gone at once | Avalanche: jitter, replicas, warm-up |
-| "What if Redis dies?" | Is it load-bearing? Then failover, shedding, warm-up |
-| "How big?" | Working set → node size → cluster for throughput/availability |
+| "What if Redis dies?" | Load-bearing? Then fail open, breaker, shedding, warm-up |
+| "How big?" | Working set, then node size, then cluster for throughput and availability |
 | Shape change in a deploy | Version prefix in keys |
 | Static assets, images | CDN with fingerprinted URLs, long max-age |
+| Race on writes | Delete not update, DB first then delete, versions if strict |
 
-## Five mistakes to leave behind
+**Common mistakes**
 
 1. **"Cache it in Redis."** Without key, TTL reason, invalidation and failure plan, it isn't a design.
 2. **Updating the cache on write.** Delete instead.
-3. **TTLs that all expire together.** Jitter them.
-4. **Assuming the cache is optional.** Check whether the database survives without it.
-5. **Promising strong consistency.** Promise bounded staleness, and name the paths that bypass the cache.
+3. **Deleting before the database write.** Update the database first.
+4. **TTLs that all expire together.** Jitter them.
+5. **Assuming the cache is optional.** Check whether the database survives without it.
+6. **Promising strong consistency.** Promise bounded staleness, and name the paths that bypass the cache.
+7. **Calling a lock a correctness tool.** A cache-fill lock only reduces load. It can expire mid-load.
 
-<Scene title="Mara’s last word" mood="dusk">
+**Keep it warm:** run a drill with a study partner, five rounds: a cache for a feed, a session store, a rate limiter, typeahead and a product catalogue. Ninety seconds each: key shape, TTL and reason, invalidation, failure mode.
 
-On your last day of the quarter, Mara erases the whiteboard except for one corner, where the four promises are still written in her handwriting. *"Leave those,"* she says. *"Someone new starts on Monday."*
-
-</Scene>
-
-**Keep it warm:** with the buddy, run the **commit drill, five rounds** — a cache for a feed, a session store, a rate limiter, typeahead, and a product catalogue. Ninety seconds each: key shape, TTL and reason, invalidation, failure mode. This is the drill for your number-one gap; expect it in every mock until it's reflex.
-
-Related: <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a> (sizing the working set) · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> (what the cache protects) · <a href={`${BASE}sd/lessons/blob-cdn/`}>Blob storage & CDN</a> · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> (Redis as a data structure server) · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a>.
+Related: <a href={`${BASE}sd/lessons/estimation/`}>Estimation</a> (sizing the working set) · <a href={`${BASE}sd/lessons/databases/`}>Databases</a> (what the cache protects) · <a href={`${BASE}sd/lessons/blob-cdn/`}>Blob storage & CDN</a> · <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a> (Redis as a data structure server) · <a href={`${BASE}sd/lessons/queues-streams/`}>Queues & streams</a> (CDC and the outbox) · <a href={`${BASE}sd/lessons/pattern-partitioning/`}>Partitioning</a> · <a href={`${BASE}sd/war/failure-modes/`}>War Room: failure modes</a> · <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and races</a>.
 
 <h2 id="beyond">Beyond this page</h2>
 
 **Further study**
 
-- *Designing Data-Intensive Applications* (Martin Kleppmann) — chapter 5 (replication lag, read-your-writes) and chapter 11 (change data capture) give the theory behind Chapters 4, 5 and 13.
-- [Scaling Memcache at Facebook](https://www.usenix.org/conference/nsdi13/technical-sessions/presentation/nishtala) (NSDI 2013) — leases, regional invalidation, and the stale-set race from Chapter 5, at enormous scale.
-- [Redis documentation: key eviction](https://redis.io/docs/latest/develop/reference/eviction/) — the `maxmemory-policy` options and how the approximate LRU/LFU work.
-- [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/) — hash slots, hash tags, failover.
-- [RFC 9111: HTTP Caching](https://www.rfc-editor.org/rfc/rfc9111) and [RFC 5861](https://www.rfc-editor.org/rfc/rfc5861) (`stale-while-revalidate`, `stale-if-error`) — the browser and CDN layers.
-- [Debezium](https://debezium.io/documentation/) — the usual open-source answer for CDC-driven invalidation.
-- [Cache stampede (Wikipedia)](https://en.wikipedia.org/wiki/Cache_stampede) — summarises locking, early recomputation, and the probabilistic XFetch approach.
+- *Designing Data-Intensive Applications* (Martin Kleppmann): chapter 5 (replication lag, read-your-writes) and chapter 11 (change data capture) give the theory behind Chapters 4, 5 and 13.
+- [Scaling Memcache at Facebook](https://www.usenix.org/conference/nsdi13/technical-sessions/presentation/nishtala) (NSDI 2013): leases, regional invalidation, and the stale-set race from Chapter 5, at enormous scale.
+- [Redis documentation: key eviction](https://redis.io/docs/latest/develop/reference/eviction/): the `maxmemory-policy` options and how the approximate LRU/LFU work.
+- [Redis Cluster specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/): hash slots, hash tags, failover.
+- [RFC 9111: HTTP Caching](https://www.rfc-editor.org/rfc/rfc9111) and [RFC 5861](https://www.rfc-editor.org/rfc/rfc5861) (`stale-while-revalidate`, `stale-if-error`): the browser and CDN layers.
+- [Debezium](https://debezium.io/documentation/): the usual open-source answer for CDC-driven invalidation.
+- [Cache stampede (Wikipedia)](https://en.wikipedia.org/wiki/Cache_stampede): summarises locking, early recomputation, and the probabilistic XFetch approach.
 
 **Look these up yourself**
 
-- **Cache warming strategies** — replaying recent access logs versus loading top-N keys; how to avoid warming the cold tail.
-- **Client-side caching in Redis 6+ ("tracking")** — the server tells clients when their locally cached keys change; an alternative to short-TTL L1 caches.
-- **Cache-key cardinality and memory overhead** — how per-key overhead in Redis changes sizing when values are tiny.
-- **Write coalescing for counters** — batching increments in memory and flushing periodically (likes, views), and what you lose on a crash.
-- **Multi-region caching** — invalidating caches in other regions (Facebook's "remote markers"), and why cross-region delete ordering is hard.
-- **TinyLFU / W-TinyLFU** (used by Java's Caffeine) — a modern admission policy that beats plain LRU for in-process caches.
-- **Bloom filter sizing** — choosing bits per element for a target false-positive rate, and counting Bloom filters for deletions.
+- **Cache warming strategies**: replaying recent access logs versus loading top-N keys, and how to avoid warming the cold tail.
+- **Client-side caching in Redis 6+ ("tracking")**: the server tells clients when their locally cached keys change. An alternative to short-TTL L1 caches.
+- **Cache-key cardinality and memory overhead**: how per-key overhead in Redis changes sizing when values are tiny.
+- **Write coalescing for counters**: batching increments in memory and flushing periodically (likes, views), and what you lose on a crash.
+- **Multi-region caching**: invalidating caches in other regions, and why cross-region delete ordering is hard.
+- **TinyLFU / W-TinyLFU** (used by Java's Caffeine): a modern admission policy that beats plain LRU for in-process caches.
+- **Bloom filter sizing**: choosing bits per element for a target false-positive rate, and counting Bloom filters for deletions.

@@ -4,7 +4,7 @@ import { row, step } from '../../lib/trace.ts';
 // Every number here is worked in the lesson text; the arithmetic was checked with a throwaway script.
 
 export const shape = [
-  step('Kestrel’s metrics pipeline takes 1,000,000 samples a second. Dashboards and alert rules issue about 1,200 queries a second. Which store shape fits?', [], 1, [
+  step('A metrics pipeline takes 1,000,000 samples a second. Dashboards and alert rules issue about 1,200 queries a second. Which store shape fits?', [], 1, [
     ['A B-tree row store with an index on (metric, timestamp), updating rows in place', 'Samples are never updated, and a million random index inserts a second is the workload B-trees handle worst. You would pay for flexibility nobody uses.'],
     ['Append-only, grouped by series, sorted by time, so a query reads a few contiguous runs', 'Right. Writes are appends to the newest end of each series; reads ask for one or many series over a time range. Shape the storage for exactly that.'],
     ['A document store with one document per sample', 'One document per 16-byte sample spends far more on per-document overhead than on data, and range reads become scattered lookups.'],
@@ -75,15 +75,15 @@ export const cardinality = [
 ];
 
 export const rollups = [
-  step('Raw data (10 s) costs about 200 GB a day compressed. An hourly rollup keeps min, max, sum and count. How big is a day of hourly rollups?', [], 1, [
-    ['About 50 GB — a quarter', 'Rollups shrink by samples per bucket ÷ numbers kept. One hour is 360 samples, not 4.'],
-    ['About 2.2 GB — 360 samples become 4 numbers, 90× fewer', 'Right. 200 GB ÷ 90 ≈ 2.2 GB a day, so a year is about 0.8 TB.'],
+  step('Raw data (10 s) costs about 200 GB a day compressed. An hourly rollup keeps min, max, sum and count in a 40 B row; 360 raw samples are about 720 B. How big is a year of hourly rollups for 10M series?', [], 1, [
+    ['About 73 TB — rollups are as big as raw data', 'That is a year of raw data. An hourly row replaces 360 samples (about 720 B) with 40 B.'],
+    ['About 3.5 TB — 10M series × 24 rows a day × 40 B = 9.6 GB a day, about 18x smaller than raw', 'Right. 9.6 GB × 365 ≈ 3.5 TB, against 73 TB for a year of raw data, about 20x less.'],
     ['About 200 GB — rollups are views, not data', 'A rollup is stored data: computed once, kept for the long retention.'],
   ]),
-  step('A 1-minute rung keeps the same four numbers per minute (6 raw samples → 4 numbers). Kept for 30 days it costs about 4 TB — more than 15 days of raw (3 TB). Why keep it?', [], 2, [
-    ['To save disk', 'It saves only a third per day compared with raw, and it is kept twice as long, so in total it costs more.'],
+  step('A 1-minute rung keeps one 40 B row per series per minute: about 576 GB a day, three times the raw tier\'s 200 GB a day. Why would anyone keep it?', [], 2, [
+    ['To save disk', 'It costs more per day than raw, because a 40 B row replaces only six samples (about 12 B).'],
     ['Because raw data cannot be read after 15 days', 'True, but the hourly rung also covers older data. The question is why a middle rung.'],
-    ['For query cost: a 7-day panel reads 10,080 points per series at 1 minute instead of 60,480 raw', 'Right. Middle rungs are an index for reads, not a storage saving. If disk matters more, use a 5-minute rung (30 samples → 4 numbers, 7.5× smaller).'],
+    ['For query cost: a 7-day panel reads 10,080 points per series at 1 minute instead of 60,480 raw', 'Right. Middle rungs are an index for reads, not a storage saving. Keep one only for days, or use a coarser 5-minute rung.'],
   ]),
   step('A chart is about 1,000 pixels wide. The user picks “last 30 days”. Which rung should the query planner read?', [], 2, [
     ['Raw: 259,200 points per series', 'More than 250 points per pixel. The chart throws almost all of it away after paying to read it.'],
@@ -181,7 +181,7 @@ export const topk = [
 ];
 
 export const leaderboard = [
-  step('Kestrel Daily has 20 million players in one Redis sorted set. A player opens the leaderboard: show their rank and the 5 players either side. Which calls?', [], 1, [
+  step('A daily puzzle game has 20 million players in one Redis sorted set. A player opens the leaderboard: show their rank and the 5 players either side. Which calls?', [], 1, [
     ['ZRANGE the whole set and find the player in the app', '20 million entries over the network per view. Ranks are what the sorted set already knows.'],
     ['ZREVRANK lb player → r, then ZREVRANGE lb r−5 r+5 WITHSCORES', 'Right. Two O(log N) calls (plus the 11 rows returned). The skip list knows ranks without scanning.'],
     ['ZSCORE the player, then ZCOUNT everyone above, then ZRANGEBYSCORE around it', 'Works, but it is three calls to do what ZREVRANK and one range do directly.'],
@@ -226,9 +226,9 @@ export const alerting = [
 
 export const walkthrough = [
   step('Sixty-minute round, “design a metrics system like Datadog”. At 0:12 you are still listing features (logs? traces? APM? SLOs?). What do you say?', [], 0, [
-    ['“Metrics only: ingest, query, dashboards, threshold alerts. Logs and traces are out of scope — happy to come back to them.” Then move to entities.', 'Right. Scope it in one breath and leave at the checkpoint. Your logged gap is the 18-minute requirements phase; this is where it bites.'],
+    ['“Metrics only: ingest, query, dashboards, threshold alerts. Logs and traces are out of scope — happy to come back to them.” Then move to entities.', 'Right. Scope it in one breath and leave at the checkpoint. A common slip is letting the requirements phase run to 18 minutes; this is where it bites.'],
     ['Ask about each of the other products, one by one', 'Each is a system the size of this one. Exploring them burns the minutes deep dives need.'],
-    ['Skip entities and API to make up time', 'Silently skipping steps is the other logged gap. Compress them to a minute each and say so out loud.'],
+    ['Skip entities and API to make up time', 'Silently skipping steps is the other common slip. Compress them to a minute each and say so out loud.'],
   ]),
   step('You have 20 minutes of deep dives. Which pair earns the most signal for this question?', [], 1, [
     ['Dashboard UI rendering and the auth system', 'Real work, but not what makes metrics systems hard. They show you can build CRUD.'],

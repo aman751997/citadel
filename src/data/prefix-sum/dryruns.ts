@@ -7,8 +7,11 @@ const arr = (name: string, values: Val[], extra: Partial<Extract<View, { kind: '
 const mapView = (name: string, entries: [Val, Val][], changed?: number[], note?: string): View => ({ kind: 'map', name, entries, ...(changed ? { changed } : {}), ...(note ? { note } : {}) });
 // Puts the correct option at position `slot` so the right answer is not always first.
 function ask(question: string, correct: string, wrong: string[], slot: number, explain: string): Predict {
-  const options = [...wrong];
-  options.splice(slot % (wrong.length + 1), 0, correct);
+  // Wrong options can collide with each other or the answer (zeros, negatives, k = 1); dedupe, and pad numeric answers back to 3 options.
+  const options = [...new Set(wrong)].filter(o => o !== correct);
+  const n = Number(correct);
+  for (let d = 1; options.length < 2 && Number.isFinite(n); d++) for (const c of [String(n + d), String(n - d)]) if (options.length < 2 && c !== correct && !options.includes(c)) options.push(c);
+  options.splice(slot % (options.length + 1), 0, correct);
   return { question, options, answer: options.indexOf(correct), explain };
 }
 

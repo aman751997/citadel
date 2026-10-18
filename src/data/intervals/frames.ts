@@ -80,7 +80,7 @@ export function insertFrames(ledger: P[], nw: P): Frame[] {
     r.frame(`${s(e)} starts at ${e[0]}, which is at most the newcomer's end. They overlap (touching counts), so the newcomer becomes ${start}–${end}: min of starts, max of ends.`,
       [arr({ ...tones }), tvars(snap(), prev)],
       q(`Entry ${s(e)} reaches the newcomer. What is the newcomer afterwards?`,
-        [`${start}–${end}`, `${e[0]}–${e[1]}`, `${nw[0]}–${nw[1]}`], 0, 'Take the smaller start and the larger end so no booked time is lost.'));
+        [...new Set([`${start}–${end}`, `${e[0]}–${e[1]}`, `${nw[0]}–${nw[1]}`, `${start}–${end + 1}`, `${start - 1}–${end}`])].slice(0, 3), 0, 'Take the smaller start and the larger end so no booked time is lost.'));
     i++; prev = snap();
   }
   out.push([start, end]);

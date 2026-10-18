@@ -194,7 +194,7 @@ export function productFrames(a: number[], k: number): Frame[] {
     title: 'product', values: a,
     add: i => { product *= a[i]; },
     drop: i => { product /= a[i]; },
-    bad: () => product >= k,
+    bad: (l, r) => l <= r && product >= k, // an empty window has product 1; without the guard k <= 1 would shrink past the end
     addNote: () => `Product becomes ${product}; it must stay below ${k}.`,
     dropNote: () => `Dividing by the dropped value leaves product ${product}.`,
     why: () => `product ${product} >= k ${k}`,

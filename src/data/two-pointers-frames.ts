@@ -13,7 +13,14 @@ const arr = (name: string, values: Val[], ptrs: Ptr[] = [], tones: Tones = {}, r
   tones: { ...tones },
   regions: regions.filter(g => g.from <= g.to),
 });
-const ask = (question: string, options: string[], answer: number, explain: string): Predict => ({ question, options, answer, explain });
+// Numeric distractors can coincide with each other or the answer on small inputs; dedupe and pad numeric choices back to 3.
+const ask = (question: string, options: string[], answer: number, explain: string): Predict => {
+  const correct = options[answer], unique = [...new Set(options)];
+  const n = Number(correct);
+  if (unique.every(o => o !== '' && Number.isFinite(Number(o))))
+    for (let d = 1; unique.length < 3; d++) for (const c of [String(n + d), String(n - d)]) if (unique.length < 3 && !unique.includes(c)) unique.push(c);
+  return { question, options: unique, answer: unique.indexOf(correct), explain };
+};
 const J = (x: unknown) => JSON.stringify(x);
 const fill = (from: number, to: number, tone: CellTone): Tones =>
   Object.fromEntries(Array.from({ length: Math.max(0, to - from + 1) }, (_, k) => [from + k, tone]));

@@ -1,0 +1,162 @@
+---
+import Base from '../layouts/Base.astro';
+import { BASE } from '../paths';
+---
+<Base title="Review" description="Spaced revision queue across all wings">
+  <article class="rv">
+    <h1>Review queue</h1>
+    <p class="rv-lead">Items you got wrong, found difficult or rated in lessons come back here on a fixed schedule (1, 3, 7, 14, 30 days). Everything is stored only in this browser.</p>
+    <noscript><p class="rv-msg">This page needs JavaScript to read your revision queue from this browser. Nothing is sent to a server.</p></noscript>
+    <p class="rv-msg" data-blocked hidden>Browser storage is blocked, so your queue only lasts until you close this tab. Use Export below to keep a copy.</p>
+    <p class="rv-msg rv-warn" data-warning hidden></p>
+    <div data-app data-base={BASE} hidden>
+      <div class="rv-status" role="status" aria-live="polite" data-live></div>
+      <div data-wings></div>
+      <section class="rv-tools" aria-labelledby="rv-tools-h">
+        <h2 id="rv-tools-h">Your data</h2>
+        <div class="rv-row">
+          <button type="button" data-export>Export JSON</button>
+          <label class="rv-file">Import JSON <input type="file" accept="application/json,.json" data-import-file /></label>
+          <label class="rv-inline"><input type="checkbox" data-replace /> Replace instead of merge</label>
+          <button type="button" class="rv-danger" data-reset>Reset all</button>
+        </div>
+        <p class="rv-note">Import merges by item (the more recently reviewed copy wins). Import and reset keep a copy of the previous data under the browser key <code>citadel-revision-backup</code>.</p>
+      </section>
+    </div>
+  </article>
+</Base>
+
+<style>
+  .rv-lead { color: var(--text-dim); }
+  .rv-msg { border: 1px solid var(--accent-dim); background: var(--bg-raised); border-radius: var(--radius); padding: .6rem .9rem; }
+  .rv-warn { border-color: var(--red); }
+  .rv [hidden] { display: none; }
+  .rv-status { min-height: 1.5rem; color: var(--green); font-size: .9rem; }
+  .rv-wing { border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); padding: .2rem 1rem .8rem; margin: 1rem 0; }
+  .rv-wing h2 { border: 0; margin: .7rem 0 .1rem; font-size: 1.15rem; }
+  .rv-meta { color: var(--text-dim); font-size: .82rem; font-family: var(--mono); margin: 0 0 .5rem; }
+  .rv-list { list-style: none; padding: 0; margin: 0; display: grid; gap: .6rem; }
+  .rv-item { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: .6rem .8rem; min-width: 0; }
+  .rv-title { margin: 0 0 .2rem; overflow-wrap: anywhere; }
+  .rv-sub { margin: 0 0 .5rem; font-size: .8rem; color: var(--text-dim); overflow-wrap: anywhere; }
+  .rv-actions, .rv-row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  .rv button, .rv-file { background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: .4rem .85rem; font: inherit; font-size: .85rem; cursor: pointer; }
+  .rv button:hover, .rv-file:hover { background: var(--bg-hover); }
+  .rv button:focus-visible, .rv-file:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .rv [data-rate="remembered"]:hover { border-color: var(--green); }
+  .rv [data-rate="difficult"]:hover { border-color: var(--accent); }
+  .rv [data-rate="forgotten"]:hover, .rv-danger:hover { border-color: var(--red); }
+  .rv-file input { max-width: 100%; font-size: .8rem; }
+  .rv-inline { font-size: .85rem; color: var(--text-dim); }
+  .rv-note { font-size: .8rem; color: var(--text-dim); }
+  .rv-empty { color: var(--text-dim); margin: .3rem 0; }
+  @media (max-width: 480px) { .rv-actions button { flex: 1 1 auto; } .rv-wing { padding: .2rem .7rem .7rem; } }
+</style>
+
+<script>
+  import {
+    WINGS, WING_LABEL, loadStore, saveStore, replaceStore, loadWarning, rateItem, dueItems, summarize, exportJSON, importJSON,
+    storageWorks, emptyStore, type Rating, type Wing,
+  } from '../lib/revision.ts';
+
+  const app = document.querySelector<HTMLElement>('[data-app]')!;
+  const base = app.dataset.base!;
+  const wingsEl = app.querySelector<HTMLElement>('[data-wings]')!;
+  const live = app.querySelector<HTMLElement>('[data-live]')!;
+  const say = (m: string) => { live.textContent = m; };
+  const fmt = (t: number) => new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  const el = <K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  };
+
+  function render() {
+    const store = loadStore();
+    const now = Date.now();
+    const sum = summarize(store, now);
+    const due = dueItems(store, now);
+    wingsEl.replaceChildren();
+    if (!due.length) {
+      const total = Object.keys(store.items).length;
+      wingsEl.append(el('p', 'rv-msg', total ? 'Nothing due right now. Your next items are scheduled below.' : 'Nothing due. Answer a quiz wrong, rate a revision card or mark a chapter in a lesson and it will show up here.'));
+    }
+    for (const wing of WINGS as readonly Wing[]) {
+      const s = sum[wing];
+      const sec = el('section', 'rv-wing');
+      sec.setAttribute('aria-labelledby', `rv-h-${wing}`);
+      const h = el('h2', undefined, `${WING_LABEL[wing]} · ${s.due} due`);
+      h.id = `rv-h-${wing}`;
+      sec.append(h, el('p', 'rv-meta', `${s.total} tracked · ${s.due} due · ${s.nextDue ? 'next due ' + fmt(s.nextDue) : 'nothing scheduled ahead'}`));
+      const mine = due.filter((i) => i.wing === wing);
+      if (!mine.length) sec.append(el('p', 'rv-empty', 'Nothing due in this wing.'));
+      else {
+        const ul = el('ul', 'rv-list');
+        for (const it of mine) {
+          const li = el('li', 'rv-item');
+          const a = el('a', undefined, it.title || it.id);
+          a.href = `${base}${it.path}#${it.anchor}`;
+          const p = el('p', 'rv-title');
+          p.append(a);
+          li.append(p, el('p', 'rv-sub', `${it.kind} · ${it.lesson || it.path} · box ${it.box} of 5`));
+          const acts = el('div', 'rv-actions');
+          acts.setAttribute('role', 'group');
+          acts.setAttribute('aria-label', `Rate: ${it.title}`);
+          for (const r of ['remembered', 'difficult', 'forgotten'] as Rating[]) {
+            const b = el('button', undefined, r[0].toUpperCase() + r.slice(1));
+            b.type = 'button';
+            b.dataset.rate = r;
+            b.addEventListener('click', () => {
+              const s2 = loadStore();
+              if (!saveStore(rateItem(s2, it.id, r, Date.now()))) { say('Could not save: stored data is from an unknown version and is protected.'); return; }
+              say(`Marked ${r}.`);
+              render();
+              (wingsEl.querySelector('[data-rate]') as HTMLElement | null)?.focus();
+            });
+            acts.append(b);
+          }
+          li.append(acts);
+          ul.append(li);
+        }
+        sec.append(ul);
+      }
+      wingsEl.append(sec);
+    }
+  }
+
+  if (!storageWorks()) document.querySelector<HTMLElement>('[data-blocked]')!.hidden = false;
+  render();
+  const w = loadWarning();
+  if (w) { const n = document.querySelector<HTMLElement>('[data-warning]')!; n.hidden = false; n.textContent = `Stored revision data was not recognised (${w}). It is left untouched and copied to citadel-revision-backup; new progress will not be saved until you import or reset.`; }
+  app.hidden = false;
+
+  app.querySelector('[data-export]')!.addEventListener('click', () => {
+    const url = URL.createObjectURL(new Blob([exportJSON(loadStore())], { type: 'application/json' }));
+    const a = el('a');
+    a.href = url;
+    a.download = `citadel-revision-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    say('Exported.');
+  });
+
+  const file = app.querySelector<HTMLInputElement>('[data-import-file]')!;
+  file.addEventListener('change', async () => {
+    const f = file.files?.[0];
+    if (!f) return;
+    const res = importJSON(await f.text(), loadStore(), app.querySelector<HTMLInputElement>('[data-replace]')!.checked ? 'replace' : 'merge');
+    file.value = '';
+    if (!res.ok) { say(`Import failed, nothing changed: ${res.reason}.`); return; }
+    replaceStore(res.store);
+    render();
+    say(`Imported ${Object.keys(res.store.items).length} items.`);
+  });
+
+  app.querySelector('[data-reset]')!.addEventListener('click', () => {
+    if (!confirm('Delete all revision data in this browser? Export first if unsure.')) return;
+    replaceStore(emptyStore());
+    render();
+    say('All revision data reset.');
+  });
+</script>

@@ -179,6 +179,7 @@ const kindLabel = { scenario: 'Scenario', predict: 'Predict the output', tradeof
 
 <script>
   import { quizKey, scorePicks, bestOf, normalizeQuizState, getJSON, setJSON } from '../lib/learn-store.ts';
+  import { pageSpec, recordSignal, seedFromLegacy } from '../lib/revision.ts';
 
   const quizzes = Array.from(document.querySelectorAll<HTMLElement>('[data-quiz]'));
   quizzes.forEach((root, index) => {
@@ -194,6 +195,14 @@ const kindLabel = { scenario: 'Scenario', predict: 'Predict the output', tradeof
     let best: number | null = null;
 
     const save = () => setJSON(key, { picks, best });
+
+    // Wrong answers become revisit items in the spaced-revision scheduler (anchor = the question element).
+    const quizLocalId = root.dataset.quizId || `q${index}`;
+    const revSpec = (qi: number) => {
+      const el = qEls[qi];
+      el.id = `rv-quiz-${quizLocalId}-${qi}`;
+      return pageSpec('quiz', `${quizLocalId}-${qi}`, el.id, [...el.querySelector('.quiz-question')!.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').replace(/^\s*\d+\.\s*/, '').replace(/\s+/g, ' ').trim());
+    };
 
     function render(qi: number, focus: boolean) {
       const q = qEls[qi];
@@ -254,6 +263,7 @@ const kindLabel = { scenario: 'Scenario', predict: 'Predict the output', tradeof
         if (picks[qi] !== null) return;
         picks[qi] = Number(b.dataset.idx);
         save();
+        if (picks[qi] !== answers[qi]) { const sp = revSpec(qi); if (sp) recordSignal(sp, 'wrong'); }
         render(qi, true);
         finish();
       }));
@@ -283,7 +293,13 @@ const kindLabel = { scenario: 'Scenario', predict: 'Predict the output', tradeof
       renderScore(false);
     }
     restore();
+    // Migrate pre-scheduler wrong picks and make anchors resolvable (ids are set from script, so honour a #hash here).
+    qEls.forEach((_, qi) => {
+      const sp = revSpec(qi);
+      if (sp && picks[qi] !== null && picks[qi] !== answers[qi]) seedFromLegacy(sp, 1);
+    });
     live.hidden = false;
+    if (location.hash && root.contains(document.getElementById(location.hash.slice(1)))) document.getElementById(location.hash.slice(1))!.scrollIntoView();
     document.addEventListener('citadel:progress-reset', restore);
   });
 </script>

@@ -89,7 +89,9 @@ Controls: add request at the current time, a current-time slider, play (jumps to
 
 All follow the same rules as above: real buttons, `aria-live` status text, reduced-motion safe, state via `src/lib/learn-store.ts`, readable text without JS.
 
-**RevisionCards** - `<RevisionCards id="solid-srp" cards={[{ front: 'What problem does SRP solve?', back: '...' }]} title? />`. Card fronts are `<button aria-expanded>` (click/Enter/Space); after flipping, "Got it" / "Review again". Header shows "4 of 6 got it" and "Reset". Back text is plain text. Key: `citadel-cards-v1:<pathname>:<id>`. No JS: a definition list of all fronts and backs.
+**Spaced revision** - `Quiz` (wrong answers), `RevisionCards` ("Got it" / "Difficult" / "Review again") and `ChapterDone` (Remembered / Difficult / Forgotten row) feed `src/lib/revision.ts`; due items appear on `/review/`. Give each component an explicit `id` (it forms the stable item id `<wing>:<slug>:<kind>:<id>`); anchors are `rv-quiz-*`, `rv-cards-*`, `rv-chapter-*`. Algorithm, ids, keys, migration: `docs/REVISION.md`.
+
+**RevisionCards** - `<RevisionCards id="solid-srp" cards={[{ front: 'What problem does SRP solve?', back: '...' }]} title? />`. Card fronts are `<button aria-expanded>` (click/Enter/Space); after flipping, "Got it" / "Difficult" / "Review again". Header shows "4 of 6 got it" and "Reset". Back text is plain text. Key: `citadel-cards-v1:<pathname>:<id>`. No JS: a definition list of all fronts and backs.
 
 **AnswerModes** - `<AnswerModes id="rabbit-vs-kafka" q="Why RabbitMQ over Kafka?">` with `<Fragment slot="short|medium|deep">` children (markdown works in MDX; any subset of slots). The answer stays hidden until "Show model answer"; tabs (`role=tablist`, Left/Right/Home/End) switch 30 seconds / 2 minutes / Detailed; checkbox "I answered it myself first" persists with the last tab. Key: `citadel-answer-v1:<pathname>:<id>`. No JS: all depths shown in order.
 

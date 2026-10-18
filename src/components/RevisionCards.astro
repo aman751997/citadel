@@ -1,5 +1,6 @@
 ---
 // End-of-chapter flip cards with self-rating. Usage in MDX:
+// "Got it" / "Difficult" / "Review again" also feed the spaced-revision scheduler (src/lib/revision.ts, docs/REVISION.md).
 //   <RevisionCards id="solid-srp" cards={[{ front: 'What problem does SRP solve?', back: '...' }]} />
 // Click / Enter / Space on a card reveals the answer; then "Got it" or "Review again". State: citadel-cards-v1:<pathname>:<id>.
 // Without JS a definition list shows every front and back.
@@ -14,7 +15,7 @@ const { id, cards, title = 'Revision cards' } = Astro.props;
   </header>
   <div class="rc-list" data-list hidden>
     {cards.map((c, i) => (
-      <div class="rc-card" data-card data-i={i}>
+      <div class="rc-card" data-card data-i={i} id={`rv-cards-${id}-${i}`}>
         <button type="button" class="rc-front" aria-expanded="false" aria-controls={`rc-${id}-${i}`} data-flip>
           <span class="rc-n">{i + 1}</span><span>{c.front}</span><span class="rc-state" data-state></span>
         </button>
@@ -22,6 +23,7 @@ const { id, cards, title = 'Revision cards' } = Astro.props;
           <p>{c.back}</p>
           <div class="rc-actions">
             <button type="button" data-got>Got it</button>
+            <button type="button" data-hard>Difficult</button>
             <button type="button" data-again>Review again</button>
           </div>
         </div>
@@ -42,13 +44,15 @@ const { id, cards, title = 'Revision cards' } = Astro.props;
   .rc-list { display: grid; gap: .5rem; }
   .rc-card { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
   .rc-card[data-status="got"] { border-color: var(--green); }
-  .rc-card[data-status="again"] { border-color: var(--accent); }
+  .rc-card[data-status="again"] { border-color: var(--red); }
+  .rc-card[data-status="hard"] { border-color: var(--accent); }
   .rc-front { display: flex; gap: .6rem; align-items: baseline; width: 100%; text-align: left; background: transparent; color: var(--text); border: 0; padding: .65rem .8rem; font: inherit; cursor: pointer; border-radius: 8px; }
   .rc-front:hover { background: var(--bg-hover); }
   .rc-n { font-family: var(--mono); font-size: .75rem; color: var(--text-dim); }
   .rc-state { margin-left: auto; font-size: .75rem; font-weight: 700; white-space: nowrap; }
   .rc-card[data-status="got"] .rc-state { color: var(--green); }
-  .rc-card[data-status="again"] .rc-state { color: var(--accent); }
+  .rc-card[data-status="again"] .rc-state { color: var(--red); }
+  .rc-card[data-status="hard"] .rc-state { color: var(--accent); }
   .rc-back { border-top: 1px dashed var(--border); padding: .2rem .8rem .7rem; }
   .rc-back[hidden], .rc-list[hidden], .rc-nojs[hidden], .rc-count[hidden], .rc-reset[hidden] { display: none; }
   .rc-back p { margin: .6rem 0; white-space: pre-wrap; }
@@ -56,7 +60,8 @@ const { id, cards, title = 'Revision cards' } = Astro.props;
   .rc button:not(.rc-front) { background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: .4rem .85rem; font: inherit; font-size: .85rem; cursor: pointer; }
   .rc button:not(.rc-front):hover { background: var(--bg-hover); }
   .rc [data-got]:hover { border-color: var(--green); }
-  .rc [data-again]:hover { border-color: var(--accent); }
+  .rc [data-hard]:hover { border-color: var(--accent); }
+  .rc [data-again]:hover { border-color: var(--red); }
   .rc button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .rc-nojs dt { font-weight: 700; margin-top: .6rem; }
   .rc-nojs dd { margin: .2rem 0 0 1rem; color: var(--text-dim); }
@@ -65,20 +70,22 @@ const { id, cards, title = 'Revision cards' } = Astro.props;
 
 <script>
   import { getJSON, setJSON, remove } from '../lib/learn-store.ts';
-  type Status = 'got' | 'again' | null;
+  import { pageSpec, recordSignal, seedFromLegacy, type Rating } from '../lib/revision.ts';
+  type Status = 'got' | 'hard' | 'again' | null;
+  const RATING: Record<'got' | 'hard' | 'again', Rating> = { got: 'remembered', hard: 'difficult', again: 'forgotten' };
 
   document.querySelectorAll<HTMLElement>('[data-rc]').forEach((el) => {
     const key = `citadel-cards-v1:${location.pathname}:${el.dataset.id}`;
     const cards = [...el.querySelectorAll<HTMLElement>('[data-card]')];
     const stored = getJSON<Status[]>(key);
-    const status: Status[] = cards.map((_, i) => (stored?.[i] === 'got' || stored?.[i] === 'again' ? stored[i] : null));
+    const status: Status[] = cards.map((_, i) => (stored?.[i] === 'got' || stored?.[i] === 'hard' || stored?.[i] === 'again' ? stored[i] : null));
     const count = el.querySelector<HTMLElement>('[data-count]')!;
     const reset = el.querySelector<HTMLButtonElement>('[data-reset]')!;
 
     const paint = () => {
       cards.forEach((c, i) => {
         c.dataset.status = status[i] ?? '';
-        c.querySelector<HTMLElement>('[data-state]')!.textContent = status[i] === 'got' ? '✓ Got it' : status[i] === 'again' ? '↻ Review again' : '';
+        c.querySelector<HTMLElement>('[data-state]')!.textContent = status[i] === 'got' ? '✓ Got it' : status[i] === 'hard' ? '≈ Difficult' : status[i] === 'again' ? '↻ Review again' : '';
       });
       count.textContent = `${status.filter((s) => s === 'got').length} of ${cards.length} got it`;
       reset.hidden = status.every((s) => s === null);
@@ -92,8 +99,17 @@ const { id, cards, title = 'Revision cards' } = Astro.props;
     cards.forEach((c, i) => {
       const btn = c.querySelector<HTMLButtonElement>('[data-flip]')!;
       btn.addEventListener('click', () => flip(c, btn.getAttribute('aria-expanded') !== 'true'));
-      const rate = (s: Status) => { status[i] = s; save(); paint(); flip(c, false); btn.focus(); };
+      const spec = () => pageSpec('cards', `${el.dataset.id}-${i}`, c.id, btn.querySelector('span:nth-child(2)')!.textContent ?? '');
+      const rate = (s: 'got' | 'hard' | 'again') => {
+        status[i] = s; save(); paint(); flip(c, false); btn.focus();
+        const sp = spec();
+        if (sp) recordSignal(sp, RATING[s]);
+      };
+      // Migrate pre-scheduler ratings: seed an item once, never overwrite one.
+      const old = status[i], sp0 = old ? spec() : null;
+      if (sp0 && old) seedFromLegacy(sp0, old === 'got' ? 2 : 1);
       c.querySelector('[data-got]')!.addEventListener('click', () => rate('got'));
+      c.querySelector('[data-hard]')!.addEventListener('click', () => rate('hard'));
       c.querySelector('[data-again]')!.addEventListener('click', () => rate('again'));
     });
     reset.addEventListener('click', () => { status.fill(null); remove(key); paint(); cards.forEach((c) => flip(c, false)); });

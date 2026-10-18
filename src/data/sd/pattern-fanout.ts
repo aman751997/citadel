@@ -24,17 +24,17 @@ export const strategies = [
 ];
 
 export const celebrity = [
-  step('Juno Vale has 12M followers on Kestrel and posts 6 times in one awards night. The fan-out workers have 30,000 inserts/s of spare capacity. How long until the last follower gets the sixth post?', [], 1, [
+  step('A celebrity account has 12M followers and posts 6 times in one evening. The fan-out workers have 30,000 inserts/s of spare capacity. How long until the last follower gets the sixth post?', [], 1, [
     ['About 4 minutes', 'Check the multiplication: 6 × 12M = 72M inserts.'],
-    ['About 40 minutes', 'Right. 72,000,000 ÷ 30,000/s = 2,400 s = 40 minutes — and every ordinary user’s post queued behind hers waits too.'],
+    ['About 40 minutes', 'Right. 72,000,000 ÷ 30,000/s = 2,400 s = 40 minutes — and every ordinary user’s post queued behind it waits too.'],
     ['About 6 seconds', 'One post is not one write under push. Each post becomes one insert per follower.'],
   ]),
-  step('You move to hybrid with a 100K-follower threshold. Alice follows 799 ordinary accounts and Juno. What does her timeline read do now?', [], 0, [
-    ['Read her pushed timeline, fetch Juno’s recent posts, merge by time', 'Right. One range read for the 799 pushed authors, one lookup for the celebrity (a hot, cached list), then a merge of two sorted lists.'],
+  step('You move to hybrid with a 100K-follower threshold. Alice follows 799 ordinary accounts and one celebrity. What does her timeline read do now?', [], 0, [
+    ['Read her pushed timeline, fetch the celebrity’s recent posts, merge by time', 'Right. One range read for the 799 pushed authors, one lookup for the celebrity (a hot, cached list), then a merge of two sorted lists.'],
     ['Query all 800 followees and merge', 'That is pure pull. Only accounts above the threshold are pulled.'],
-    ['Read her pushed timeline only', 'Juno’s posts are no longer pushed, so they would never appear.'],
+    ['Read her pushed timeline only', 'The celebrity’s posts are no longer pushed, so they would never appear.'],
   ]),
-  step('Juno’s recent-posts list is read by millions of followers. What keeps that one key from melting its cache shard?', [], 2, [
+  step('The celebrity’s recent-posts list is read by millions of followers. What keeps that one key from melting its cache shard?', [], 2, [
     ['Shard the cluster more finely', 'One key still hashes to one shard. More shards do not spread one key.'],
     ['Push her posts after all', '50M-scale writes per post are the problem you just removed.'],
     ['A short-TTL in-process cache of celebrity post lists on every feed server', 'Right. It is the hot-key fix from the caching lesson: 200 feed servers each fetch the list about once a second, instead of every read reaching Redis.'],
@@ -47,7 +47,7 @@ export const storage = [
     ['A sorted set: ZADD with the post time as score and the post id as member', 'Right. Order comes from the score, not arrival, and re-adding the same member is a no-op — retries are idempotent for free.'],
     ['A hash keyed by post id', 'A hash has no order, so every read would sort the whole thing.'],
   ]),
-  step('Kestrel uses 64-bit time-ordered post ids. Someone proposes using the id itself as the sorted-set score. What goes wrong?', [], 2, [
+  step('A system uses 64-bit time-ordered post ids. Someone proposes using the id itself as the sorted-set score. What goes wrong?', [], 2, [
     ['Nothing — ids are time-ordered', 'The ordering idea is right; the number type is the problem.'],
     ['Sorted sets cannot hold more than 2³² members', 'Size is not the issue here, and timelines are capped at 800 anyway.'],
     ['Scores are double-precision floats, exact only up to 2⁵³; large 64-bit ids round, so neighbours can collide or misorder', 'Right. Use a millisecond timestamp as the score (exact in a double) and the id as the member; equal scores fall back to ordering by member.'],
@@ -85,7 +85,7 @@ export const readPath = [
     ['Mark it deleted in the post store; hydration drops it at read time; an async job may clean timelines later', 'Right. Timelines hold ids, so the one source of truth decides. Over-fetch a little (25 ids for a 20-item page) so filtered items do not leave short pages.'],
     ['Wait for it to fall off the 800-entry cap', 'It would be visible until then — unacceptable for a delete.'],
   ]),
-  step('A user who has not opened Kestrel in 60 days logs in. Their timeline key was never maintained. What happens?', [], 2, [
+  step('A user who has not opened the app in 60 days logs in. Their timeline key was never maintained. What happens?', [], 2, [
     ['Show an empty feed until new posts arrive', 'A returning user seeing nothing is the worst first impression you can design.'],
     ['Fan-out keeps every user’s timeline forever, so it is already there', 'That spends writes and memory on users who never read them. Skipping inactive followers is the point.'],
     ['Cache miss → rebuild by pulling recent posts from their followees, merge, write the top 800, serve page one', 'Right. A one-time pull, then they rejoin push fan-out.'],
@@ -121,7 +121,7 @@ export const notifications = [
     ['Never retry push notifications', 'Then every transient provider error drops a notification.'],
     ['An idempotency key per (notification id, device), checked in a store before sending; providers may also accept a collapse key', 'Right. Record the key on send; a redelivery finds it and skips. A small race window remains if the crash lands between send and record — say so.'],
   ]),
-  step('“Juno is live” goes to 50M followers. If 5% open the app within one minute, how many extra feed reads per second hit the read path?', [], 0, [
+  step('“A celebrity is live” goes to 50M followers. If 5% open the app within one minute, how many extra feed reads per second hit the read path?', [], 0, [
     ['About 42,000/s', 'Right. 50M × 5% = 2.5M opens ÷ 60 s ≈ 41,667/s — two-thirds of the normal 60,000/s peak on top. Stagger the send over several minutes.'],
     ['About 4,200/s', 'Check the arithmetic: 2.5M opens in 60 seconds.'],
     ['About 830,000/s', 'That is 50M ÷ 60, as if every follower opened at once.'],

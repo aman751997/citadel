@@ -84,7 +84,7 @@ public class Check {
         void erase(String w) { BugCounts n = this; for (char c : w.toCharArray()) n = n.children[c - 'a']; n.end--; }
         int countWordsStartingWith(String p) { BugCounts n = this; for (char c : p.toCharArray()) { n = n.children[c - 'a']; if (n == null) return 0; } return n.pass; }
     }
-    static String longestRootBug(List<String> roots, String word) {              // keeps walking past the first bloom
+    static String longestRootBug(List<String> roots, String word) {              // keeps walking past the first end mark
         String best = word; boolean any = false;
         for (int i = 1; i <= word.length(); i++) if (roots.contains(word.substring(0, i))) { best = word.substring(0, i); any = true; }
         return any ? best : word;
@@ -257,7 +257,7 @@ public class Check {
             eq("the cat was rat by the bat", s.replaceWords(List.of("cat", "bat", "rat"), "the cattle was rattled by the battery"), "LC 1");
             eq("a a b c", s.replaceWords(List.of("a", "b", "c"), "aadsfasf absbs bbab cadsfafs"), "LC 2");
             eq("a", s.replaceWords(List.of("a", "aa", "aaa"), "aaaa"), "shortest root wins");
-            eq("aaa", longestRootBug(List.of("a", "aa", "aaa"), "aaaa"), "catch-the-bug: walking past the first bloom gives aaa");
+            eq("aaa", longestRootBug(List.of("a", "aa", "aaa"), "aaaa"), "catch-the-bug: walking past the first end mark gives aaa");
             eq("ca do do ca crab", s.replaceWords(List.of("ca", "cat", "do"), "cattle dog dodge cabin crab"), "practice example");
             for (int trial = 0; trial < 3000; trial++) {
                 List<String> roots = new ArrayList<>();

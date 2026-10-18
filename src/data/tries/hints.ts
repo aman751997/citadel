@@ -23,11 +23,11 @@ export const hints: Record<string, [string, string, string]> = {
   replaceWords: [
     'For each word in the sentence you want the SHORTEST root that is a prefix of it. Which walk finds the shortest one first?',
     'Put the roots in a trie. Walk each sentence word letter by letter from the root.',
-    'Return the prefix at the FIRST node with isEnd set. If a branch is missing before any bloom, or the word runs out, keep the word unchanged. Join the results with single spaces.',
+    'Return the prefix at the FIRST node with isEnd set. If a branch is missing before any end mark, or the word runs out, keep the word unchanged. Join the results with single spaces.',
   ],
   longestWord: [
     'A word qualifies only if every one of its prefixes is also a word. In a trie, what does that say about the path to it?',
-    'Every node on the path (except the root) must have isEnd set. So only walk into children that bloom.',
+    'Every node on the path (except the root) must have isEnd set. So only walk into children that are end nodes.',
     'DFS from the root, visiting children a..z, entering a child only if it is an end node. Replace the best only when the depth is STRICTLY greater: a..z order then keeps the lexicographically smallest of the longest words.',
   ],
   suggestions: [

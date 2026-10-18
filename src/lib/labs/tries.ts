@@ -1,5 +1,5 @@
 // Tries playground: plant words one letter at a time (follow an existing branch, grow a new one, tie
-// the bloom); answer search vs startsWith with the same walk (the bloom decides only for search); and
+// the end mark); answer search vs startsWith with the same walk (the end mark decides only for search); and
 // run a wildcard search by hand, branching at every dot and backing out of dead ends.
 import { makeLab, type LabBase, type LabRow } from '../lab.ts';
 
@@ -85,13 +85,13 @@ const name = (prefix: string) => (prefix ? q(prefix) : 'the root');
 const below = (s: TrieState, prefix: string) => [...new Set(s.words)].filter(w => w.startsWith(prefix));
 const listWords = (ws: string[]) => ws.map(q).join(', ');
 
-// ---------- shared view of the garden ----------
+// ---------- shared view of the trie ----------
 function gardenRows(s: TrieState, tone: (id: number) => 'hot' | 'done' | 'out' | 'ghost' | undefined): LabRow[] {
   const maxDepth = Math.max(0, ...s.nodes.map(n => n.depth));
   const rows: LabRow[] = [{ name: 'Root', cells: [{ value: '·', label: 'root', tone: tone(0) }] }];
   for (let d = 1; d <= maxDepth; d++) {
     const ids = s.nodes.map((n, id) => ({ n, id })).filter(x => x.n.depth === d).sort((a, b) => (a.n.prefix < b.n.prefix ? -1 : 1));
-    rows.push({ name: `Garden, ${d} letter${d > 1 ? 's' : ''} deep`, cells: ids.map(({ n, id }) => ({ value: n.ch, label: n.prefix + (n.end ? ' ✓' : ''), tone: tone(id) })) });
+    rows.push({ name: `Trie, ${d} letter${d > 1 ? 's' : ''} deep`, cells: ids.map(({ n, id }) => ({ value: n.ch, label: n.prefix + (n.end ? ' ✓' : ''), tone: tone(id) })) });
   }
   return rows;
 }
@@ -108,7 +108,7 @@ function insertExpected(s: TrieState) {
   return 'bloom';
 }
 function insertReject(s: TrieState, action: string) {
-  if (s.wi >= s.words.length) return 'Every word is planted. Close the garden.';
+  if (s.wi >= s.words.length) return 'Every word is planted. Close the trie.';
   const w = s.words[s.wi], here = s.nodes[s.at];
   if (action === 'finish') return `${s.words.length - s.wi} word(s) still waiting, starting with ${q(w)}.`;
   if (s.pos >= w.length) return `Every letter of ${q(w)} is walked; you stand on its last node. What remains is to mark that a word ends here.`;
@@ -118,7 +118,7 @@ function insertReject(s: TrieState, action: string) {
     const lost = below(s, next).filter(x => s.words.slice(0, s.wi).includes(x));
     return `The ${q(c)} branch already grows under ${name(here.prefix)}. Growing a fresh one would overwrite that slot and cut off ${lost.length ? listWords(lost) : 'everything already below it'}. Follow it: shared beginnings are stored once.`;
   }
-  return `${q(w)} isn’t finished: ${w.length - s.pos} letter(s) left (${q(w.slice(s.pos))}). A bloom here would claim ${here.prefix ? q(here.prefix) : 'the empty string'} is a word.`;
+  return `${q(w)} isn’t finished: ${w.length - s.pos} letter(s) left (${q(w.slice(s.pos))}). An end mark here would claim ${here.prefix ? q(here.prefix) : 'the empty string'} is a word.`;
 }
 function insertApply(s: TrieState, action: string) {
   const w = s.words[s.wi];
@@ -133,17 +133,17 @@ function insertApply(s: TrieState, action: string) {
     parent.kids[c] = s.nodes.length - 1;
     s.at = s.nodes.length - 1;
     s.pos++;
-    s.message = `Grew a new ${q(c)} branch: node ${q(s.nodes[s.at].prefix)}. The garden now has ${s.nodes.length - 1} letter node(s).`;
+    s.message = `Grew a new ${q(c)} branch: node ${q(s.nodes[s.at].prefix)}. The trie now has ${s.nodes.length - 1} letter node(s).`;
   } else if (action === 'bloom') {
     const node = s.nodes[s.at], again = node.end;
     node.end = true;
     s.message = again
-      ? `${q(w)} already blooms here, so inserting it again changes nothing (a counter would say “twice”; a flag can’t).`
-      : `Bloom tied on ${q(w)}: isEnd = true. search(${q(w)}) will now say true.`;
+      ? `${q(w)} is already marked as a word end here, so inserting it again changes nothing (a counter would say “twice”; a flag can’t).`
+      : `End mark set on ${q(w)}: isEnd = true. search(${q(w)}) will now say true.`;
     s.wi++; s.pos = 0; s.at = 0;
   } else {
     s.done = true;
-    s.message = s.words.length ? `Planted ${s.words.length} word(s) using ${s.nodes.length - 1} letter node(s).` : 'No words: the garden is just the root.';
+    s.message = s.words.length ? `Planted ${s.words.length} word(s) using ${s.nodes.length - 1} letter node(s).` : 'No words: the trie is just the root.';
   }
 }
 function insertView(s: TrieState): LabRow[] {
@@ -155,7 +155,7 @@ function insertView(s: TrieState): LabRow[] {
   ];
 }
 function insertDescribe(s: TrieState) {
-  if (s.done) return `Garden closed: ${s.nodes.length - 1} letter node(s).`;
+  if (s.done) return `Trie closed: ${s.nodes.length - 1} letter node(s).`;
   if (s.wi >= s.words.length) return 'Every word is planted.';
   const w = s.words[s.wi], here = s.nodes[s.at].prefix;
   if (s.pos < w.length) return `Planting ${q(w)}: ${s.pos} of ${w.length} letters walked. Next letter ${q(w[s.pos])} under ${name(here)}.`;
@@ -170,7 +170,7 @@ function queryExpected(s: TrieState) {
   return kind === 'prefix' || s.nodes[s.at].end ? 'true' : 'false';
 }
 function queryReject(s: TrieState, action: string) {
-  if (s.qi >= s.queries.length) return 'Every question is answered. Close the garden.';
+  if (s.qi >= s.queries.length) return 'Every question is answered. Close the trie.';
   const { kind, text } = s.queries[s.qi], here = s.nodes[s.at];
   const op = kind === 'search' ? 'search' : 'startsWith';
   if (action === 'finish') return `${s.queries.length - s.qi} question(s) still waiting.`;
@@ -183,13 +183,13 @@ function queryReject(s: TrieState, action: string) {
   if (action === 'step') return `Every letter of ${q(text)} is walked. Decide now.`;
   if (action === 'true') {
     const ws = below(s, text);
-    return `You stand on ${q(text)}, but no bloom hangs here: it is only the beginning of ${listWords(ws)}. ${op} needs isEnd, and isEnd is false.`;
+    return `You stand on ${q(text)}, but no end mark is here: it is only the beginning of ${listWords(ws)}. ${op} needs isEnd, and isEnd is false.`;
   }
   if (kind === 'prefix') {
     const ws = below(s, text);
-    return `startsWith asks only whether a stored word passes through ${q(text)} — and ${q(ws[0])} does. No bloom needed.`;
+    return `startsWith asks only whether a stored word passes through ${q(text)} — and ${q(ws[0])} does. No end mark needed.`;
   }
-  return `A bloom hangs on ${q(text)}: it was inserted. search returns true.`;
+  return `An end mark is on ${q(text)}: it was inserted. search returns true.`;
 }
 function queryApply(s: TrieState, action: string) {
   if (action === 'step') {
@@ -202,7 +202,7 @@ function queryApply(s: TrieState, action: string) {
     const why = s.pos < text.length
       ? `no ${q(text[s.pos])} branch under ${name(s.nodes[s.at].prefix)}`
       : kind === 'prefix' ? 'the walk finished, so a stored word passes through here'
-        : value ? 'the walk finished on a bloom' : 'the walk finished on a node with no bloom';
+        : value ? 'the walk finished on an end mark' : 'the walk finished on a node with no end mark';
     s.answers.push(value);
     s.message = `${op}(${q(text)}) = ${value}: ${why}.`;
     s.qi++; s.pos = 0; s.at = 0;
@@ -244,7 +244,7 @@ function wildReject(s: TrieState, action: string) {
   const untried = () => c === '.'
     ? `Child ${q(kidLetters(node)[f.next])} of ${at} hasn’t been tried yet. Giving up on ${at} now could miss a match below it.`
     : `The ${q(c)} branch under ${at} exists and hasn’t been explored. Giving up now could miss a match.`;
-  const match = `All ${len} pattern letters are matched and a bloom hangs on ${q(node.prefix)}. That is a match: answer true.`;
+  const match = `All ${len} pattern letters are matched and an end mark is on ${q(node.prefix)}. That is a match: answer true.`;
   if (action === 'found') {
     if (f.i < len) return `Only ${f.i} of ${len} pattern letters are matched. Keep going.`;
     return `All ${len} pattern letters are matched, but no word ends at ${q(node.prefix)}: it is only a beginning. A dot matches exactly one letter, so the lengths must agree. Back up.`;
@@ -259,7 +259,7 @@ function wildReject(s: TrieState, action: string) {
     if (expected === 'found') return match;
     return untried();
   }
-  if (f.i === len) return `The pattern is used up (${len} letters matched); there is no letter left to step on. ${node.end ? 'A bloom hangs here.' : 'No word ends here.'}`;
+  if (f.i === len) return `The pattern is used up (${len} letters matched); there is no letter left to step on. ${node.end ? 'An end mark is here.' : 'No word ends here.'}`;
   if (action === 'step') {
     if (c === '.') return `Position ${f.i} is a dot: any letter fits, so there is no single branch to follow. Try the children one at a time.`;
     if (f.next > 0) return `You already explored the ${q(c)} branch from ${at}, and it failed. ${retreat}`;
@@ -316,12 +316,12 @@ function wildDescribe(s: TrieState) {
 
 export const lab = makeLab<TrieState>({
   insert: {
-    name: 'Plant words: follow, grow, bloom',
+    name: 'Plant words: follow, grow, mark the end',
     cases: insertCases.length,
     actions: [
       { action: 'follow', label: 'Follow the existing branch' },
       { action: 'grow', label: 'Grow a new branch' },
-      { action: 'bloom', label: 'Tie the bloom (isEnd = true)' },
+      { action: 'bloom', label: 'Mark the word end (isEnd = true)' },
       { action: 'finish', label: 'Every word is planted' },
     ],
     create: v => fromInput({ mode: 'insert', words: insertCases[v] }),

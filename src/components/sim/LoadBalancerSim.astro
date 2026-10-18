@@ -1,0 +1,74 @@
+---
+import SimShell from '../SimShell.astro';
+// Props (all optional): algo, slow (server 0 speed as a percent of normal), stale (load-data age in ticks, 0 = live).
+interface Props { algo?: 'roundrobin' | 'random' | 'leastconn' | 'p2c'; slow?: number; stale?: number }
+const { algo = 'roundrobin', slow = 20, stale = 0 } = Astro.props;
+const fallback = `Eight servers, each able to finish 10 requests per tick, receive 56 requests per tick (70% load). Server 0 slows to 20% speed. (1) Round robin keeps sending it 1/8 of the traffic, 7 per tick, while it finishes 2, so its queue grows by 5 every tick and reaches about 250 after 50 ticks. (2) Least connections and power of two choices with live queue counts send it only what it can finish, so queues stay near zero. (3) With load data that is 5 ticks old, least connections sends every request to the one server that looked emptiest: a herd, and a queue of hundreds. Power of two choices only picks that server when it is one of the two sampled, so the damage is mild.`;
+---
+<SimShell title="Load balancer: where do 56 requests per tick go when a server slows down?" fallback={fallback}>
+  <div class="lbs" data-lbsim data-algo={algo}>
+    <div class="sim-row">
+      <label>Algorithm
+        <select data-in="algo">
+          <option value="roundrobin">Round robin</option>
+          <option value="random">Random</option>
+          <option value="leastconn">Least connections</option>
+          <option value="p2c">Power of two choices</option>
+        </select></label>
+      <label>Server 0 speed <output data-o="slow"></output>
+        <input type="range" min="5" max="100" step="5" value={slow} data-in="slow" /></label>
+      <label>Load data age (ticks, 0 = live) <output data-o="stale"></output>
+        <input type="range" min="0" max="10" step="1" value={stale} data-in="stale" /></label>
+    </div>
+    <div data-lanes></div>
+    <div class="sim-row">
+      <div class="sim-stat"><b data-s="share"></b><small>traffic sent to server 0 (fair share 12.5%)</small></div>
+      <div class="sim-stat"><b data-s="max"></b><small>deepest queue ever</small></div>
+      <div class="sim-stat"><b data-s="backlog"></b><small>requests still waiting at the end</small></div>
+    </div>
+    <p class="sim-live" role="status" aria-live="polite" aria-atomic="true" data-caption></p>
+    <p class="lbs-assume">Model: 8 servers, each finishes 10 requests per tick; 56 requests arrive per tick (70% load); 50 ticks. Bars show each server queue length after the last tick.</p>
+  </div>
+</SimShell>
+
+<style is:global>
+  .lbs .sim-row { align-items: flex-end; }
+  .lbs-assume { color: var(--text-dim); font-size: .78rem; margin: .8rem 0 0; }
+  .sim select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: .45rem .6rem; font: inherit; font-size: .85rem; }
+  .lbs .sim-chip { left: 0; padding: 0 .3rem; min-width: 2px; transition: width .25s; }
+</style>
+
+<script>
+  import { fmt } from '../../lib/sim.ts';
+  import { simulate, type Algo } from '../../lib/sim/loadbalancer.ts';
+
+  document.querySelectorAll<HTMLElement>('[data-lbsim]').forEach((el) => {
+    const q = <T extends HTMLElement>(s: string) => el.querySelector<T>(s)!;
+    q<HTMLSelectElement>('[data-in=algo]').value = el.dataset.algo!;
+    const num = (k: string) => Number(q<HTMLInputElement>(`[data-in=${k}]`).value);
+    const render = () => {
+      const algo = q<HTMLSelectElement>('[data-in=algo]').value as Algo;
+      const slow = num('slow'), stale = num('stale');
+      q('[data-o=slow]').textContent = `${slow}%`;
+      q('[data-o=stale]').textContent = String(stale);
+      const r = simulate({ algo, servers: 8, arrivalsPerTick: 56, capacityPerTick: 10, slowFactor: slow / 100, staleTicks: stale, ticks: 50, seed: 7 });
+      const max = Math.max(r.maxQueue, r.queue.reduce((a, b) => Math.max(a, b), 0), 20);
+      q('[data-lanes]').innerHTML = r.queue.map((len, s) => {
+        const bad = len > 40;
+        return `<div class="sim-lane"><span>S${s}${s === 0 ? ' slow' : ''}</span><div class="sim-track"><div class="sim-chip ${bad ? 'bad' : 'ok'}" style="width:${Math.max((len / max) * 100, 0.5)}%">${fmt(len)} queued</div></div></div>`;
+      }).join('');
+      q('[data-s=share]').textContent = `${(r.slowShare * 100).toFixed(1)}%`;
+      q('[data-s=max]').textContent = fmt(r.maxQueue);
+      q('[data-s=backlog]').textContent = fmt(r.backlog);
+      const note: Record<Algo, string> = {
+        roundrobin: 'Round robin ignores queues: the slow server keeps its fair share and its queue only grows.',
+        random: 'Random is round robin with noise. It does not look at queues either.',
+        leastconn: stale > 0 ? `Least connections with data ${stale} ticks old: every request goes to the server that looked emptiest, so queues swing from one server to another (a herd).` : 'Least connections with live counts: the slow server holds many requests, so new ones go elsewhere.',
+        p2c: stale > 0 ? 'Two choices with old data: the emptiest-looking server wins only when it is one of the two sampled, so the bias is mild, not a stampede.' : 'Two choices: sample two servers, send to the shorter queue. A slow server loses almost every comparison.',
+      };
+      q('[data-caption]').textContent = note[algo];
+    };
+    el.querySelectorAll('[data-in]').forEach((n) => n.addEventListener('input', render));
+    render();
+  });
+</script>

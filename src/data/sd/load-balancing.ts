@@ -2,8 +2,8 @@ import { row, step } from '../../lib/trace.ts';
 
 // Chapter 1 · capacity, utilisation, zones
 export const capacity = [
-  step('Kestrel Drops peak at 50,000 requests per second. A load test shows one app server saturates at 1,000 requests per second, and you plan to run servers at 70% utilisation. How many servers?', [], 1, [
-    ['50', 'That is 1,000 per server — 100% utilisation. Queues grow without limit at saturation, so latency explodes at exactly the moment the drop goes live.'],
+  step('A flash sale peaks at 50,000 requests per second. A load test shows one app server saturates at 1,000 requests per second, and you plan to run servers at 70% utilisation. How many servers?', [], 1, [
+    ['50', 'That is 1,000 per server — 100% utilisation. Queues grow without limit at saturation, so latency explodes at exactly the moment the sale opens.'],
     ['72', 'Right. 50,000 ÷ (1,000 × 0.7) = 71.4, and you round up. Each server then runs at about 694 requests per second.'],
     ['35', 'You multiplied by 0.7 instead of dividing. Targeting 70% means each server takes only 700 requests per second, so you need more servers than 50, not fewer.'],
   ]),
@@ -214,7 +214,7 @@ export const outliers = [
 // Chapter 11 · deploys: draining, slow start
 export const deploys = [
   step('During a rolling deploy, the balancer deregisters server 3 and the process is killed in the same second. What do users see?', [], 0, [
-    ['A burst of 502s and reset connections — the requests in flight on server 3 die', 'Right. That is the prologue’s mystery minute. Draining fixes it: stop sending new requests, let in-flight ones finish (with a deadline), then stop the process.'],
+    ['A burst of 502s and reset connections — the requests in flight on server 3 die', 'Right. Draining fixes it: stop sending new requests, let in-flight ones finish (with a deadline), then stop the process.'],
     ['Nothing — the balancer retries everything', 'A balancer can retry a request that never reached the server, or an idempotent one. A half-finished POST is not safely retryable.'],
     ['Slower responses', 'The requests do not slow down. They fail.'],
   ]),
@@ -251,7 +251,7 @@ export const lbHa = [
 
 // Chapter 13 · global load balancing
 export const global = [
-  step('Kestrel serves 60,000 requests per second from three regions, 20,000 each. One region fails. What must each surviving region be able to carry?', [], 2, [
+  step('An app serves 60,000 requests per second from three regions, 20,000 each. One region fails. What must each surviving region be able to carry?', [], 2, [
     ['20,000 — the same as before', 'The failed region’s users do not vanish. They arrive at the survivors.'],
     ['40,000', 'That would be one survivor taking all of the failed region’s load. Global balancing splits it across both.'],
     ['30,000 — 1.5× its normal load', 'Right. 60,000 ÷ 2 = 30,000. With N regions, each must handle N ÷ (N − 1) of its normal share; with only two regions, that is 2×.'],
@@ -270,7 +270,7 @@ export const global = [
 
 // Chapter 14 · client-side, server-side, sidecar
 export const placement = [
-  step('Kestrel has 400 services in Java, Go and Python. You want per-request balancing, retries, outlier ejection and mutual TLS everywhere, without changing application code. Which approach?', [], 2, [
+  step('A company has 400 services in Java, Go and Python. You want per-request balancing, retries, outlier ejection and mutual TLS everywhere, without changing application code. Which approach?', [], 2, [
     ['A client-side balancing library in every service', 'Three languages means three libraries kept in step, and every team must upgrade. It changes application code everywhere.'],
     ['One central L7 balancer for all internal traffic', 'It works, but every call takes an extra hop through a shared fleet that becomes a big blast radius.'],
     ['A service mesh: a sidecar proxy next to every service instance', 'Right. The sidecar does the balancing, retries and mTLS for its local app, configured centrally. The price is a proxy hop on each side of every call and a fleet of sidecars to run and upgrade.'],
@@ -340,12 +340,12 @@ export const drills = [
     ['"We restart it quickly if it fails"', 'Restarting takes minutes; requests fail in the meantime.'],
     ['"It runs as a redundant pair or fleet behind a floating virtual IP or ECMP, and globally behind several DNS addresses or anycast"', 'Right. One sentence, and the interviewer knows the box is not magic.'],
   ]),
-  step('A monolith with one service. The design has a client, an "API gateway", a "load balancer", and the app. What would Mara say?', [], 1, [
+  step('A monolith with one service. The design has a client, an "API gateway", a "load balancer", and the app. What is wrong with this design?', [], 1, [
     ['Good — more layers, more safety', 'Each box adds latency, cost and failure modes. Boxes need reasons.'],
     ['Every box earns its sentence: one L7 balancer doing TLS, routing and health checks is enough until there are many services or a public API with keys', 'Right. Box inflation without justification is a known interview smell. Draw the gateway when you can name two of its jobs.'],
     ['Replace both with DNS round robin', 'DNS cannot health-check quickly, terminate TLS or rate-limit.'],
   ]),
-  step('Kestrel runs at 70% utilisation across three zones. Why is that number not automatically safe?', [], 0, [
+  step('A fleet runs at 70% utilisation across three zones. Why is that number not automatically safe?', [], 0, [
     ['Losing a zone multiplies load on the survivors by 1.5×, taking 70% to 105%', 'Right. Choose utilisation from the failure you must survive: (zones − 1) ÷ zones of your maximum safe level, minus burst headroom.'],
     ['70% is always too high', 'With six zones, losing one only multiplies survivor load by 1.2×, so 70% becomes 84% — tolerable.'],
     ['Utilisation does not matter if you autoscale', 'Autoscaling takes minutes; a zone dies in a second.'],

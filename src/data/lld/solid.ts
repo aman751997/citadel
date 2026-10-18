@@ -52,9 +52,9 @@ export const hints: Record<string, [string, string, string]> = {
 };
 
 export const srp = [
-  step('Describe ShiftReport in one sentence: “It loads the day’s tickets, adds up revenue, lays out the text and emails Bram.” How many reasons to change does it have?', [], 2, [
-    ['One — it is one feature, the shift report', 'A feature is not a responsibility. Finance, Bram, IT and the database owner can each ask for a change on a different day for a different reason, and all four edit the same file.'],
-    ['Two — business logic and I/O', 'Closer, but finance’s arithmetic and Bram’s layout are both “logic” and change for different people. Split by who asks, not by layer.'],
+  step('Describe ShiftReport in one sentence: “It loads the day’s tickets, adds up revenue, lays out the text and emails the manager.” How many reasons to change does it have?', [], 2, [
+    ['One — it is one feature, the shift report', 'A feature is not a responsibility. Finance, the product owner, IT and the database owner can each ask for a change on a different day for a different reason, and all four edit the same file.'],
+    ['Two — business logic and I/O', 'Closer, but finance’s arithmetic and the layout rules are both “logic” and change for different people. Split by who asks, not by layer.'],
     ['Four — storage, arithmetic, layout and delivery', 'Right. Four actors could each ask for a change, so the split gives each one its own class, plus a thin coordinator.'],
     ['Seven — one per method', 'SRP is not one method per class. Methods that change for the same actor belong together.'],
   ]),
@@ -78,7 +78,7 @@ export const ocp = [
     ['An SRP violation: ParkingLot should not compute fees at all', 'True, but also not the whole answer. Even outside ParkingLot, a ladder would still need editing for every new rule.'],
     ['Both: fee calculation is its own responsibility, and the pricing axis should be open', 'Right. The ladder inside ParkingLot fails twice. Extract a FeeStrategy: ParkingLot asks, strategies decide, and surge becomes a decorator.'],
   ]),
-  step('Bram wants trucks at 40 an hour. With the strategy map, what changes?', [], 1, [
+  step('The client wants trucks at 40 an hour. With the strategy map, what changes?', [], 1, [
     ['FeeCalculator.fee() gets a new branch for TRUCK', 'Then FeeCalculator is a ladder again. It only looks up a strategy; it never needs to know which types exist.'],
     ['One enum constant and one wiring line — new HourlyFee(40)', 'Right. Trucks differ from cars only in data, so the existing HourlyFee class serves them. No working behaviour is reopened.'],
     ['A new TruckFee class, plus edits to HourlyFee', 'A new class is unnecessary when only the rate differs, and HourlyFee should never need editing for a new vehicle.'],
@@ -231,7 +231,7 @@ export const drills = [
     ['A race condition — add synchronized', 'Nothing here is concurrent. The input that changes with the time of day is the clock.'],
     ['The test is flaky — retry it three times', 'Retrying hides a real dependency on wall-clock time; it will fail again at the wrong moment.'],
   ]),
-  step('Bram: “EV owners can choose between two charging speeds, priced differently.” With FeeStrategy in place, what do you need?', [], 2, [
+  step('The client: “EV owners can choose between two charging speeds, priced differently.” With FeeStrategy in place, what do you need?', [], 2, [
     ['A new branch in FeeCalculator for EV speed', 'That reopens the calculator and turns it back into a ladder.'],
     ['A FastEv subclass of HourlyPlusChargingFee overriding fee()', 'Subclassing a concrete strategy couples you to its internals; and if only the rates differ, a subclass is a constructor argument wearing a hierarchy.'],
     ['Pick the strategy by (type, speed) — e.g. two HourlyPlusChargingFee instances with different rates — and wire it at the root', 'Right. If the difference is data, it’s two instances of one class; the lookup key gains the speed. No existing behaviour changes.'],

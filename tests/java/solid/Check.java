@@ -44,6 +44,8 @@ public class Check {
         notifications();
         repo();
         entry();
+        mess();
+        combine();
 
         System.out.println("OK solid: " + checks + " checks passed");
     }
@@ -196,11 +198,11 @@ public class Check {
         List<String> mail = new ArrayList<>();
         B_report.TicketLog log = d -> d.equals(day) ? tickets : List.of();
         B_report.Mailer mailer = (to, subject, body) -> mail.add(to + "|" + subject + "|" + body);
-        b.new ShiftReportFlow(log, b.new RevenueTotals(), b.new ReportFormatter(), mailer).send(day, "bram@copperline.example");
-        eq(List.of("bram@copperline.example|Shift report 2026-03-13|Shift report 2026-03-13\nT-1  60\nT-2  10\nT-3  105\nTickets: 3  Revenue: 175"), mail, "flow formats and mails once");
+        b.new ShiftReportFlow(log, b.new RevenueTotals(), b.new ReportFormatter(), mailer).send(day, "manager@copperline.example");
+        eq(List.of("manager@copperline.example|Shift report 2026-03-13|Shift report 2026-03-13\nT-1  60\nT-2  10\nT-3  105\nTickets: 3  Revenue: 175"), mail, "flow formats and mails once");
         mail.clear();
-        b.new ShiftReportFlow(log, b.new RevenueTotals(), b.new ReportFormatter(), mailer).send(day.plusDays(1), "bram@copperline.example");
-        eq(List.of("bram@copperline.example|Shift report 2026-03-14|Shift report 2026-03-14\nTickets: 0  Revenue: 0"), mail, "empty shift report");
+        b.new ShiftReportFlow(log, b.new RevenueTotals(), b.new ReportFormatter(), mailer).send(day.plusDays(1), "manager@copperline.example");
+        eq(List.of("manager@copperline.example|Shift report 2026-03-14|Shift report 2026-03-14\nTickets: 0  Revenue: 0"), mail, "empty shift report");
     }
 
     // Side quest 2: the CSV format; plain text output identical to Chapter 1's formatter.
@@ -299,5 +301,34 @@ public class Check {
         eq(new B_entry.IssuedTicket("T-2", FRI_0900), gate.issue(), "second ticket");
         String random = e.new RandomTicketIds().next();
         yes(random.startsWith("T-") && random.length() == 2 + 36, "random ids are T- plus a UUID");
+    }
+
+    // Bad designs failing: SRP (testing the sum also sends mail), ISP (compiles, breaks at runtime), DIP (clock and vendor welded in).
+    static void mess() {
+        B_reportMess rm = new B_reportMess();
+        B_reportMess.ShiftReport report = rm.new ShiftReport(() -> List.of(new B_reportMess.Ticket("T-1", 60), new B_reportMess.Ticket("T-2", 10)));
+        eq(70L, report.run(), "the mess computes the right total");
+        eq(List.of("Revenue: 70"), report.outbox, "but testing the total also sent a mail");
+
+        B_notifierMess nm = new B_notifierMess();
+        B_notifierMess.SmsOnlyNotifier sms = nm.new SmsOnlyNotifier();
+        throwsOn(UnsupportedOperationException.class, () -> nm.new ReceiptMailer(sms).sendReceipt("a@example.com", "T-1"), "SMS-only notifier compiles into a receipt mailer and fails at runtime");
+
+        B_checkoutMess cm = new B_checkoutMess();
+        B_checkoutMess.CheckoutService live = cm.new CheckoutService();
+        long fee = live.checkout("T-17", LocalDateTime.of(2026, 3, 13, 15, 30));
+        yes(fee != 60, "welded-in clock: the fee depends on when the test runs, not 60");
+        eq(1, live.pennyPay.debits.size(), "welded-in vendor: the test hit the real client");
+    }
+
+    // Chapter 4: composition vs inheritance, running.
+    static void combine() {
+        B_combine c = new B_combine();
+        eq("Ticket T-1: 60", c.new PlainReceipt().text(), "plain");
+        eq("TICKET T-1: 60", c.new UpperReceipt().text(), "inheritance: upper");
+        eq("Copperline: Ticket T-1: 60", c.new PrefixedReceipt().text(), "inheritance: prefixed");
+        eq("COPPERLINE: TICKET T-1: 60", c.new Upper(c.new Prefixed("Copperline: ", c.new Plain())).text(), "upper around prefixed");
+        eq("Copperline: TICKET T-1: 60", c.new Prefixed("Copperline: ", c.new Upper(c.new Plain())).text(), "prefixed around upper: order is chosen at construction");
+        eq("Daily report\na\nb", c.new DailyReportJob().render(List.of("a", "b")), "template method skeleton");
     }
 }

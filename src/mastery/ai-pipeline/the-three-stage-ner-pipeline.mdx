@@ -7,6 +7,11 @@ minutes: 7
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import Reveal from '../../components/Reveal.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
 
 **One-line answer.** "Three stages, each covering what the previous one cannot: MedCAT for fast, cheap, code-linked UMLS concepts; GLiNER, a zero-shot span tagger, on the text MedCAT left untouched; and an LLM only for what a dictionary cannot do — normalising values, dates and doses, and discovering entity types the first two missed. The output of each stage narrows the input of the next, so the expensive model sees the least text."
 
@@ -51,6 +56,8 @@ Resolver              every quote → char_start/char_end/page; 49/49 exact
 **Pack.** UMLS Small v1 (`umls_sm_pt2ch`, 573,284 concepts, 607 MB CDB, a MetaCAT Status LSTM). Requires a UMLS licence (granted August 2026). Runs in its own container with `mem_limit: 6g`.
 
 **The story that always lands in interviews:** MedCAT v2 silently auto-converts a v1 pack in-process. That conversion took 13–16 GB of RAM inside a 19.5 GB Docker Desktop VM and wedged the daemon twice, taking Postgres down with it. Fix: pin the v1 library (`medcat[meta-cat,spacy]==1.16.12`), CPU-only torch from the PyTorch index, `--only-binary :all:` to avoid Cython builds, a memory fuse, and a compose profile so nobody starts it by accident. Lesson: a model server is a database — provision it like one.
+
+**STAR: the MedCAT memory incident.** Situation: MedCAT v2 silently auto-converted a v1 pack in-process, using 13–16 GB of RAM inside a 19.5 GB Docker Desktop VM; it wedged the daemon twice and took Postgres down. Task: make the model server safe to run next to the database. Action: pinned the v1 library, CPU-only torch, `--only-binary :all:`, a memory fuse, and a compose profile. Result: not quantified in source (the repo's compose file does set `mem_limit: 6g` for the service).
 
 ### 2.2 Stage 2 — GLiNER (zero-shot span NER)
 
@@ -110,3 +117,81 @@ The service has one switch, `NER_MODE`: `medgemma_only` (three whole-document Me
 * [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output) — why the schema, not the prompt, guarantees the JSON shape
 * Background: Jurafsky & Martin, [Speech and Language Processing](https://web.stanford.edu/~jurafsky/slp3/), the NER and information-extraction chapters
 
+## Status
+
+| Piece | Status |
+| --- | --- |
+| Legacy path: MedCAT, GLiNER on masked leftovers, Gemini enrich and discover, span resolver | <StatusBadge kind="implemented" /> |
+| `NER_MODE` switch (`medgemma_only`, `gliner_medgemma`, `legacy`), blank `MEDGEMMA_URL` forces legacy | <StatusBadge kind="implemented" /> |
+| Counts on five demo notes track the ground truth; 100% exact spans on measured runs | <StatusBadge kind="tested" /> |
+| Precision and recall per stage against a gold set | <StatusBadge kind="planned" /> |
+| Allergy extraction (not extracted at all today) | <StatusBadge kind="planned" /> |
+
+Checked against the repo: `NER_MODE` exists with exactly those three values, but its default is `medgemma_only`, not `legacy`. <StatusBadge kind="unverified" /> Confirm which mode your demo ran; this chapter's walk-through describes `legacy`.
+
+## Design decisions, and how to answer them
+
+<AnswerModes id="why-three-stages" q="Why three models? Why not just an LLM?">
+<Fragment slot="short">
+
+Each stage covers what the previous one cannot, and each narrows the input of the next so the expensive model sees the least text. MedCAT is fast, free and gives codes; GLiNER catches phrasing UMLS misses; the LLM only normalises values and discovers missing types.
+
+</Fragment>
+<Fragment slot="medium">
+
+Four reasons not to use the LLM for everything. Cost: Gemini output is $2.50 per million tokens and a whole-note extraction is 1,000+ tokens, while MedCAT is free. Latency: 25 s median for full discovery versus 1.2 s. PHI: the AI Studio key has no BAA, so the less clinical text leaves the building the better. Provenance and codes: an LLM will invent a close-enough code, while MedCAT's CUI is a lookup.
+
+The LLM's real strength is the long tail: values with units, dates in prose, drug schedules, which is exactly what we send it.
+
+</Fragment>
+<Fragment slot="deep">
+
+Add the mechanism: MedCAT's covered spans are space-masked (characters replaced by spaces) so GLiNER sees only leftovers and every offset stays valid with no bookkeeping. Enrichment takes GLiNER spans only, because MedCAT hits already have codes. Discovery runs only for entity types with zero hits. All three `NER_MODE` values end in the same span resolver and entity record, so downstream cannot tell which ran; that is what let me swap the expensive model out when it proved too slow. At higher scale <StatusBadge kind="hypothetical" /> the gold set would decide which stage earns its place.
+
+</Fragment>
+</AnswerModes>
+
+<AnswerModes id="ner-quality-claims" q="How good is it? What can you claim?">
+<Fragment slot="short">
+
+I measured counts, not precision and recall, and I say so. Counts on five demo notes track the ground truth and 100% of spans resolved to exact offsets. A gold set is the next step.
+
+</Fragment>
+<Fragment slot="medium">
+
+10 labs in the panel gave 10 lab entities, and 4 current meds gave 4 with 3.8-flash. 2.5-flash over-extracts the same fact from every sentence (13–21 "labs" for a 10-lab panel); dedup absorbs it but it is noise. The plan: annotate the five demo notes (labs, meds, diagnoses, allergies) and score each stage and each model. Known gap: allergies are not extracted at all.
+
+</Fragment>
+</AnswerModes>
+
+## Mock interview questions
+
+<Reveal q="Basic: what does NER return, and what two extra jobs does clinical NER add?">
+
+Spans (start and end character offsets) labelled with a type. Clinical NER adds linking to a coded concept (UMLS CUI, ICD-10, SNOMED, RxNorm, LOINC) and context: negated, historical, family, hypothetical.
+
+</Reveal>
+
+<Reveal q="Intermediate: why mask MedCAT's spans with spaces instead of deleting them?">
+
+Spaces preserve every remaining character's offset, so GLiNER's spans are already in document coordinates. The same mask is used by the MedGemma cascade.
+
+</Reveal>
+
+<Reveal q="Advanced: a clinician says an allergy was missed. Where does it fail and what do you do?">
+
+Allergies have no entity type and no prompt line, so "ALLERGIES: Penicillin (rash)" is read straight past. Fix <StatusBadge kind="planned" />: add the type and prompt line, annotate allergies in the gold set, score recall. Say up front it is arguably the most dangerous omission.
+
+</Reveal>
+
+<RevisionCards id="ap-ner" title="Three-stage NER: facts to recite" cards={[
+  { front: 'The three stages', back: 'MedCAT (UMLS Small, 573,284 concepts) then GLiNER medium v2.1 on masked leftovers then Gemini enrich and discover.' },
+  { front: 'Stage timings', back: 'MedCAT about 1.2 s; GLiNER about 1 s; Gemini enrich about 4 s, discover 3 to 8 s.' },
+  { front: 'Entities per note', back: '49 to 75 total: MedCAT 38 to 68, GLiNER 6 to 13, LLM discovery 5 to 10.' },
+  { front: 'Why not LLM for everything?', back: 'Cost, latency, PHI, provenance and codes.' },
+  { front: 'MedCAT incident and fix', back: 'v2 auto-converted a v1 pack using 13 to 16 GB; pinned medcat 1.16.12, CPU torch, memory fuse, compose profile.' },
+  { front: 'What can you not claim?', back: 'Precision and recall: no gold set. And allergies are not extracted.' },
+  { front: 'GLiNER limit', back: 'Truncates at 384 word tokens, so long notes are windowed.' }
+]} />
+
+<ChapterDone id="ap-ner" />

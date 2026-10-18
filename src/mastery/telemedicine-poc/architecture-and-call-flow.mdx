@@ -1,16 +1,41 @@
 ---
 title: "1. Architecture & Call Flow"
-description: "A video call needs three things: a way for two browsers to find each other (signalling), a server that forwards audio and video packets between them (an SFU, \"selective forwarding…"
+description: "The processes and ports, the single-origin HTTPS proxy, the full call as a sequence, the three paths into finalise, and the on-disk layout of the telemedicine proof of concept."
 project: "telemedicine-poc"
 order: 1
 minutes: 5
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import DryRun from '../../components/DryRun.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import Reveal from '../../components/Reveal.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
+
+export const callFrames = [
+  { caption: 'The doctor and patient each ask the token server for a JWT. The server only mints a signed grant (roomJoin, room, canPublish, canSubscribe); it does not touch media.',
+    views: [{ kind: 'queue', name: 'Hop 1: tokens', items: ['GET /api/token (doctor)', 'GET /api/token (patient)'], changed: [0, 1], note: 'No authentication on this route in the PoC.' }] },
+  { caption: 'Both browsers connect to livekit-server through the proxied /lk websocket and publish their microphone. Media then flows directly over UDP (DTLS-SRTP).',
+    views: [{ kind: 'queue', name: 'Hop 2: join and publish', items: ['wss /lk (signalling)', 'publish mic', 'UDP 50000-50200 media'], changed: [0, 1, 2] }] },
+  { caption: 'The doctor asks for consent. Every remote identity goes into pendingConsents; recording does not start until the set is empty.',
+    views: [{ kind: 'set', name: 'pendingConsents', items: ['patient:Ravi'], changed: [0], note: 'Control messages go over the data channel and an HTTP relay.' }] },
+  { caption: 'The patient accepts, the set empties, and the doctor browser calls POST /recording/start. The server lists participants and starts one track egress per microphone.',
+    views: [{ kind: 'set', name: 'pendingConsents', items: [], removed: ['patient:Ravi'] }, { kind: 'queue', name: 'Hop 3: egress', items: ['startTrackEgress(doctor mic)', 'startTrackEgress(patient mic)'], changed: [0, 1] }] },
+  { caption: 'On End the server finalises first: stopEgress, poll listEgress until COMPLETE (up to 20 x 500 ms), write manifest.json with startedAtNs per track. Only then deleteRoom.',
+    views: [{ kind: 'queue', name: 'Hop 4: finalise then close', items: ['stopEgress x2', 'poll until COMPLETE', 'manifest.json', 'deleteRoom'], changed: [0, 1, 2, 3] }] },
+  { caption: 'The manifest enters a serialised queue. transcribe.py writes transcript.json and .md, audio is deleted on success, then MedGemma drafts the summary. A summary failure does not affect the transcript.',
+    views: [{ kind: 'queue', name: 'Hop 5: after hang-up', items: ['transcribe.py', 'delete *.ogg', 'MedGemma summary'], changed: [0, 1, 2] }] },
+  { caption: 'The doctor edits and signs. signed-note.json is written once; a second sign returns 409. transcript.json is never modified.',
+    views: [{ kind: 'queue', name: 'Hop 6: sign-off', items: ['POST /sign', 'signed-note.json (write-once)'], changed: [0, 1] }] },
+];
 
 ## In plain words first
 
 A video call needs three things: a way for two browsers to find each other (signalling), a server that forwards audio and video packets between them (an SFU, "selective forwarding unit"), and permission tokens so random people cannot join a consultation. LiveKit gives us the SFU and the token format; we wrote the small server that mints tokens, starts recordings, and turns finished recordings into notes. Everything runs on one Mac; the patient joins from a phone on the same Wi-Fi.
+
+<StatusBadge kind="tested" label="Prototyped on one Mac" /> Everything on this page ran in the August 2026 demo. None of it is a production deployment.
 
 ## Processes and ports
 
@@ -21,6 +46,14 @@ A video call needs three things: a way for two browsers to find each other (sign
 | `livekit/egress` (Docker) | — | Joins rooms as a hidden participant and writes track audio to `/out` (bind-mounted `./recordings`) | `docker compose up` |
 | Token/API server (Express 5, ESM) | 3001 | Mint JWTs, start/stop egress, finalise, transcribe, summarise, sign, serve sessions | `start-all.sh` |
 | Vite dev server (HTTPS, self-signed) | 5173 | Serves the React app and proxies `/api` and `/lk` | `start-all.sh` |
+
+In plain English, each component does one job:
+
+* **Redis:** the shared notebook LiveKit and the egress worker use to find each other.
+* **livekit-server:** the SFU. Forwards audio and video, holds room state, fires webhooks.
+* **egress (Docker):** a hidden participant that writes one microphone track to a file.
+* **Token/API server:** the server we wrote ourselves. Tokens, recording control, finalise, transcription trigger, summary, sign-off.
+* **Vite dev server:** serves the React app and hides two backends behind one HTTPS address.
 
 ## The single-origin trick (the networking decision worth explaining)
 
@@ -35,6 +68,24 @@ Browsers grant microphone and camera access only on secure origins. A phone on t
     P <-->|"UDP 50000–50200<br>DTLS-SRTP media, direct"| L`} />
 
 Interview line: "One certificate warning per device, not two, and no mixed-content errors. Media never touches the proxy."
+
+<AnswerModes id="single-origin" q="Why proxy both the API and the signalling websocket through Vite?">
+<Fragment slot="short">
+
+Browsers only give microphone access on secure origins, so the phone must load the app over HTTPS. An HTTPS page cannot open a plain ws:// socket, and a second port would need a second self-signed certificate. Proxying /api and /lk through one HTTPS dev server gives one origin and one certificate warning. Media still goes direct over UDP.
+
+</Fragment>
+<Fragment slot="medium">
+
+Three constraints collide: getUserMedia needs a secure origin, mixed content blocks ws:// from an HTTPS page, and a separate API port means a second certificate prompt on every phone. Vite serves HTTPS with one self-signed cert and proxies /api to :3001 and /lk to ws://:7880 with ws: true. Trade-off: it is a dev server and a self-signed cert, which is fine for a LAN demo.
+
+</Fragment>
+<Fragment slot="deep">
+
+Add that WebRTC media is encrypted by DTLS-SRTP regardless of the proxy and goes directly to UDP 50000-50200, so the proxy only carries HTTP and signalling. The production change is a CA-signed certificate and a real reverse proxy. <StatusBadge kind="hypothetical" label="At higher scale" />
+
+</Fragment>
+</AnswerModes>
 
 ## The full call, as a sequence
 
@@ -76,6 +127,12 @@ Interview line: "One certificate warning per device, not two, and no mixed-conte
     D->>T: GET /sessions (3 s poll), /transcript, /summary (4 s poll)
     D->>T: POST /sign {edited text, signature}
     T-->>D: signed-note.json (second sign → 409)`} />
+
+## The call, hop by hop
+
+Step through the call. Each hop matches the sequence diagram below; nothing here is added beyond it.
+
+<DryRun title="One consultation, hop by hop" frames={callFrames} />
 
 ## Three paths into one finalise
 
@@ -123,6 +180,30 @@ Session folder name is `toISOString()` with `:` and `.` replaced by `-`, so a ro
 
 LiveKit signs webhooks. Verification needs the _unparsed_ body, so the route uses `express.raw({ type: "application/webhook+json" })` and hands the raw buffer plus the `Authorization` header to `WebhookReceiver.receive`. A bad signature is a 400. Only `room_finished` is acted on. Interview line: "If you JSON-parse before verifying, you cannot verify."
 
+<AnswerModes id="idempotent-finalise" q="A browser can die mid-call. How do you make sure the recording is still finalised exactly once?">
+<Fragment slot="short">
+
+Three paths call the same finalise: Stop, doctor End, and the signature-verified room_finished webhook. Finalise removes the room from the in-memory activeRecordings map before any await, so a second caller finds nothing and returns, and it ignores errors from egresses that already ended.
+
+</Fragment>
+<Fragment slot="medium">
+
+The webhook covers the nobody-pressed-anything case. Verification needs the raw body, so that route uses express.raw and hands the buffer plus the Authorization header to WebhookReceiver; a bad signature is a 400. End finalises before deleteRoom so egress stops cleanly before the room disappears, and the later room_finished finds an empty map. Trade-off: the map is in memory, so a server restart loses active recordings. <StatusBadge kind="planned" label="Fix: persist sessions" />
+
+</Fragment>
+<Fragment slot="deep">
+
+Also cover the poll: stopping an egress is asynchronous and startedAt appears later, so finalise polls listEgress up to 20 x 500 ms. If the poll gives up, startedAtNs is 0 and alignment silently falls back to relative time. The better design is the egress_ended webhook and failing loudly. <StatusBadge kind="hypothetical" label="Improvement" />
+
+</Fragment>
+</AnswerModes>
+
+<Reveal q="Why does End call finalise first and deleteRoom second?">
+
+If the room were deleted first, egress would be cut off mid-flush and the start timestamps might never be written. Finalising first stops the recorders cleanly. The room_finished webhook that follows finds the room already removed from the map and does nothing.
+
+</Reveal>
+
 ## Read more
 
 * [LiveKit: intro](https://docs.livekit.io/home/get-started/intro-to-livekit/), [Egress overview](https://docs.livekit.io/home/egress/overview/), [Webhooks](https://docs.livekit.io/home/server/webhooks/), [Access tokens and grants](https://docs.livekit.io/home/get-started/authentication/).
@@ -131,3 +212,14 @@ LiveKit signs webhooks. Verification needs the _unparsed_ body, so the route use
 * [MDN: Secure contexts](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts) — why getUserMedia needs HTTPS.
 * [Vite server.proxy](https://vitejs.dev/config/server-options.html#server-proxy) — the `ws: true` option.
 
+<RevisionCards id="poc-architecture" cards={[
+  { front: 'Which ports does the system use?', back: 'Redis 6379, livekit-server 7880 ws/http, 7881 tcp fallback, 50000-50200 udp media, token server 3001, Vite HTTPS 5173.' },
+  { front: 'Why one origin for the phone?', back: 'getUserMedia needs a secure origin, an HTTPS page blocks ws:// as mixed content, and a second port needs a second self-signed certificate. Vite proxies /api and /lk. Media goes direct over UDP.' },
+  { front: 'Why is Redis not in Docker?', back: 'Docker Desktop port proxy added latency that LiveKit keepalives could not tolerate. Egress reaches host Redis via host.docker.internal.' },
+  { front: 'Why does End finalise before deleteRoom?', back: 'So egress stops cleanly and timestamps are written before the room disappears.' },
+  { front: 'Why does the webhook route use express.raw?', back: 'Signature verification needs the unparsed body. If you JSON-parse first you cannot verify. A bad signature is a 400.' },
+  { front: 'What makes finalise idempotent?', back: 'activeRecordings.delete(room) before any await, and swallowing egress already ended errors.' },
+  { front: 'What is the on-disk layout?', back: 'recordings/room/session folder with ogg files, egress JSON, manifest.json, transcript.json and .md, summary, signed-note.json. The filesystem is the database.' },
+]} />
+
+<ChapterDone id="poc-architecture" />

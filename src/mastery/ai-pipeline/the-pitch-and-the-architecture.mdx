@@ -7,6 +7,13 @@ minutes: 6
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import Reveal from '../../components/Reveal.astro';
+import DryRun from '../../components/DryRun.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
+import { recorder } from '../../lib/dryrun';
 
 ## The 60-second pitch (memorise this)
 
@@ -67,6 +74,39 @@ BROWSER  useAiSections re-fetches the one section → card flips "Rebuilt at 18:
 ```
 
 Practise until you can draw the boxes in two minutes. When they ask "where does the LLM sit", point at three places: enrichment/discovery inside NER, the reasoning pass inside critical alerts, and (in Java, being retired) the section generator.
+
+### Each box in plain English
+
+| Component | What it does for the user |
+| --- | --- |
+| Java patient-service | Accepts the upload, stores the PDF, turns it into text, announces "text is ready" |
+| RabbitMQ | Holds the announcement until the pipeline can pick it up |
+| Python consumer | Takes one announcement at a time and runs the whole analysis |
+| NER stage | Finds medicines, labs and diagnoses in the text and records where each came from |
+| Chunk and embed stage | Cuts the text into pieces and indexes them for search (pgvector) |
+| Profile merge and alerts | Combines everything known about the patient and checks for danger |
+| Section-ready webhooks | Tell Java that each of the four sections can be refreshed |
+| STOMP push | Makes the card on the doctor's screen update without a reload |
+
+### Walk one document through, hop by hop
+
+export const hops = (() => {
+  const r = recorder();
+  const v = (stage, where, note) => [{ kind: 'text', vars: [{ name: 'stage', value: stage }, { name: 'where', value: where }, { name: 'payload', value: note }] }];
+  r.frame('The browser uploads a PDF. Java stores the file in S3 and writes a documents row, so the user gets an answer in about a second.', v('Upload', 'Java patient-service', 'PDF + row'));
+  r.frame('Java turns the PDF into text (PDFBox, or Gemini OCR for scans) and stores the text in S3. This is text extraction, not AI.', v('Text extraction', 'Java patient-service', 'extracted text in S3'));
+  r.frame('Java publishes ExtractionCompletedEvent on the topic exchange. It carries pointers only, never clinical text (the claim-check pattern).', v('Announce', 'RabbitMQ exchange', 'routing key extraction.completed, pointers'));
+  r.frame('The pipeline queue delivers the event to the Python consumer (prefetch 5, semaphore 1). The consumer fetches the text from S3 itself.', v('Consume', 'Python ai-pipeline', 'fetch text from S3'));
+  r.frame('NER and chunk/embed run concurrently. NER: MedCAT, GLiNER, Gemini, then the span resolver. Chunk/embed: 512-token chunks to 768-d vectors in pgvector.', v('Analyse', 'Python ai-pipeline', 'entities to S3 + Postgres; chunks to pgvector'));
+  r.frame('Profile merge recomputes from all of the patient\'s entities, then critical alerts run: YAML rules first, one Gemini reasoning pass second.', v('Merge and alerts', 'Python ai-pipeline', 'risk flags persisted'));
+  r.frame('Four POSTs to Java (X-Service-Auth, idempotency key), one per section. Java queues a section job and writes a result row.', v('Webhooks', 'Python to Java', '4 x section-ready'));
+  r.frame('Java pushes a STOMP message on the patient topic. The browser re-fetches only that section and the card updates.', v('Push', 'Java to browser', '/topic/patients.id.ai-sections'));
+  return r.frames;
+})();
+
+<DryRun title="One document, end to end" frames={hops} />
+
+<StatusBadge kind="unverified" label="Entry point mode" /> The mental model above is the legacy NER path (MedCAT, GLiNER, Gemini). In the repo's config the default `NER_MODE` is `medgemma_only`, and a blank `MEDGEMMA_URL` forces `legacy`. Confirm which mode your demo or deployment actually ran before you say "MedCAT then GLiNER then Gemini" as fact.
 
 ## Why event-driven and not a REST call?
 
@@ -130,3 +170,83 @@ The honest trade-off: _debugging is harder_ (a request has no single stack trace
 * Designing Data-Intensive Applications (Kleppmann), ch. 11 "Stream Processing" — the best chapter on at-least-once, idempotence and exactly-once myths
 * [Google Cloud Architecture Framework: reliability](https://cloud.google.com/architecture/framework/reliability) — vocabulary for "production-ready" answers
 
+## Design decisions, and how to answer them
+
+<AnswerModes id="why-event-driven" q="Why is this event-driven and not a REST call?">
+<Fragment slot="short">
+
+Reading a document takes tens of seconds to minutes, so no HTTP client should hold a connection that long. With a queue the upload returns in about a second, a down service on either side cannot take the other down, and the broker absorbs load.
+
+</Fragment>
+<Fragment slot="medium">
+
+Three reasons, in order of weight. Latency mismatch: a model reading a page is slow, even Gemini takes about 10 s per call, and the uploader should get a 201 immediately. Decoupled failure: if the AI service is down, uploads still work and events wait in RabbitMQ; if Java is down when analysis finishes, the webhook retries. Back-pressure and fan-out: concurrency is one knob on the consumer, and a second consumer can subscribe to the same exchange without touching Java.
+
+The trade-off I accept: debugging is harder because there is no single stack trace, and ordering is not guaranteed. I paid for that with per-stage progress events and idempotency keys.
+
+</Fragment>
+<Fragment slot="deep">
+
+Everything in the medium answer, plus the pattern name: the event carries pointers, not text (claim check), so the broker is never a PHI store. Tenancy and auth stay in Java; the pipeline receives `tenantId` on the event. Honest limits: no ordering guarantee across messages (sections are recomputed from all entities on every merge, so the end state is the same whichever finishes last), and failures need a dead-letter queue that someone actually drains, which today nobody does (page 2).
+
+</Fragment>
+</AnswerModes>
+
+<AnswerModes id="rabbit-vs-kafka" q="Why RabbitMQ and not Kafka?">
+<Fragment slot="short">
+
+It was already the platform broker, we need work-queue semantics (ack per message, dead-letter, retry) rather than a replayable log, and the STOMP plugin gives the browser relay for free.
+
+</Fragment>
+<Fragment slot="medium">
+
+Three reasons from the project: RabbitMQ was already there, the job is a work queue (one document, one worker, ack when done, dead-letter when it fails), and the STOMP plugin on 61613 feeds the browser without another component.
+
+Kafka would be the answer if we needed replay or multiple independent consumer groups reading history. <StatusBadge kind="hypothetical" label="At higher scale" /> That is a proposal, not something built; design drill 7 covers it.
+
+</Fragment>
+</AnswerModes>
+
+<AnswerModes id="why-python-beside-java" q="Why Python for the pipeline when the company is Java?">
+<Fragment slot="short">
+
+The models are Python-native (MedCAT, GLiNER, transformers). Java owns the record; Python owns the reading. The boundary is a queue and two authenticated HTTP contracts.
+
+</Fragment>
+<Fragment slot="medium">
+
+Java already had the system of record: JWT, tenancy, RBAC, the result table, the job queue with retries, S3 persistence and the WebSocket relay. Python has the ML ecosystem and aioboto3. So the integration is a source swap behind Java's existing AI-section machinery, not a rebuild. The cost is one shared Postgres with two repos: Java owns the schema through Flyway and Python writes three tables directly, a known trap (page 9).
+
+</Fragment>
+</AnswerModes>
+
+## Mock interview questions
+
+<Reveal q="Basic: draw the architecture and name the six things a follow-up hangs off.">
+
+Browser, Java patient-service, S3, RabbitMQ topic exchange, Python pipeline (NER, chunk/embed, profile merge and alerts), four webhooks back to Java, STOMP to the browser. The six things: event-driven, three-stage NER, provenance, sections, RAG index, numbers. Point at the three places the LLM sits: enrichment and discovery inside NER, the reasoning pass inside critical alerts, and the Java section generator that is being retired.
+
+</Reveal>
+
+<Reveal q="Intermediate: why does the event carry pointers instead of the extracted text?">
+
+The broker is not a PHI store, messages get logged and inspected, and a queue full of 100 KB notes is a different capacity problem. The consumer fetches the text from S3 itself. The pattern is called claim check.
+
+</Reveal>
+
+<Reveal q="Advanced: Java is down when analysis finishes, and a second hospital joins. What happens, and what breaks first?">
+
+Java down: the webhook retries (two attempts with backoff), then is logged and the message is acked; sections stay queryable through the pipeline's API. Second hospital: Java enforces tenancy (JWT `tenantId`, Hibernate filter, per-tenant uniqueness), the pipeline forwards `tenantId` and entity rows carry it. The honest gap the text names is chunk tenancy, which depends on a DB lookup (page 9). Design drill 3 works the rest.
+
+</Reveal>
+
+<RevisionCards id="ap-architecture" title="Architecture: facts to recite" cards={[
+  { front: 'Why event-driven? (three reasons)', back: 'Latency mismatch, decoupled failure, back-pressure and fan-out. Cost: harder debugging, no ordering guarantee.' },
+  { front: 'What does the event contain?', back: 'Pointers (tenantId, patientId, documentId, extractionId, S3 key). Never clinical text: claim check.' },
+  { front: 'Who owns what?', back: 'Java: documents, auth, tenancy, PDF to text, result cache and push, schema (Flyway). Python: NER, provenance, chunks and embeddings, section computation.' },
+  { front: 'Why RabbitMQ not Kafka?', back: 'Already the platform broker; work-queue semantics; STOMP plugin for the browser. Kafka if replay or many consumer groups were needed.' },
+  { front: 'Stack in one line', back: 'Python 3.12, FastAPI, aio-pika, asyncpg, aioboto3; RabbitMQ; Postgres 18 plus pgvector 0.8; S3; MedCAT, GLiNER, MedCPT, Gemini; Prometheus and Grafana.' },
+  { front: 'Numbers', back: '55 s end to end (was 131 s); 12 to 24 s NER; 4 webhooks at 60 to 100 ms; 512/50/768 chunk, overlap, dimensions.' }
+]} />
+
+<ChapterDone id="ap-architecture" />

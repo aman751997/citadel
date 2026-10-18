@@ -6,6 +6,13 @@ order: 7
 minutes: 9
 ---
 
+import StatusBadge from '../../components/StatusBadge.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import Reveal from '../../components/Reveal.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
+import Quiz from '../../components/Quiz.astro';
+
 **One-line answer.** "The LLM is a component with a contract, not an oracle: every call has a JSON schema it must satisfy, a token budget, a timeout, a retry policy with backoff, and metrics for latency, tokens and cost. I found the default 'thinking' mode was 75% of our latency and turned it off for extraction; I measured a 27B on-prem model at 8 tok/s and parked it; and the model name is configuration, so the next comparison is a one-line change."
 
 ## 1. Where the LLM sits (and where it does not)
@@ -87,6 +94,8 @@ GEMINI_ESTIMATED_COST_USD.labels(model=model).inc(estimate_cost_usd(model, in_to
 
 Story: the table had been two model generations stale (0.15/0.60), so the cost panel under-reported by \~4×. Nobody had checked because the counter moved. Lesson I quote: a metric that moves is not a metric that is right — cost tables need a "checked on" date.
 
+**STAR: the stale price table.** Situation: the cost table was two model generations stale (0.15/0.60), so the cost panel under-reported by about 4x. Task: make cost numbers trustworthy. Action: updated to the paid-tier list prices with a "checked" date and counted thought tokens as output. Result: panel now correct as of the checked date; no cost-saving figure in source. Repo check: the table in `app/llm/gemini_api.py` matches the three rows shown, and a model missing from the table is priced as 2.5 Flash so the counter still moves.
+
 ## 6. Reliability around the call
 
 * **Retries:** up to 4 attempts, exponential backoff from 1 s, on API errors; 429s counted separately (`gemini_rate_limit_total`).
@@ -116,3 +125,113 @@ Story: the table had been two model generations stale (0.15/0.60), so the cost p
 * [Prompt Engineering Guide](https://www.promptingguide.ai/) — the structured-output and few-shot sections
 * ["Not what you've signed up for: Compromising Real-World LLM-Integrated Applications with Indirect Prompt Injection"](https://arxiv.org/abs/2302.12173) (Greshake et al.) — the threat model for notes-as-input
 
+## Status
+
+| Piece | Status |
+| --- | --- |
+| Schema-constrained Gemini calls, thinking off for extraction, retries with backoff, token and cost metrics | <StatusBadge kind="implemented" /> |
+| Reasoning-pass thinking budget as a setting (`GEMINI_REASONING_THINKING_BUDGET`) | <StatusBadge kind="implemented" /> |
+| 4x latency win from turning thinking off (40.3 s to 10.2 s on one note); 2.5-flash vs 3.8-flash comparison on five notes | <StatusBadge kind="tested" /> |
+| MedGemma 27B on an L4: 8.3 tok/s decode, parked; recommendation to DevOps for MedGemma 4B | <StatusBadge kind="tested" /> |
+| Vertex AI backend with a BAA (the switch exists; production use not shown) | <StatusBadge kind="unverified" /> |
+| Treating `finish_reason=MAX_TOKENS` as an error on the Python side | <StatusBadge kind="planned" /> |
+| Fine-tuned extraction model on annotated notes; P/R-based prompt evaluation in CI | <StatusBadge kind="hypothetical" /> |
+
+Repo check: `GEMINI_EXTRACTION_MODEL` defaults to `gemini-2.5-flash` in config, so "extraction runs on 3.8-flash locally" is a local override the repo does not show. <StatusBadge kind="unverified" /> Confirm which model your reported numbers came from. The Vertex row: `llm_backend` accepts `gemini_api` or `vertex_ai` (default `gemini_api`), so the switch is real; whether it ever served real traffic is not established.
+
+## Production story: the 4x latency win
+
+**STAR.** Situation: one discovery call took 40.3 s with 7,004 thought tokens. Task: cut latency without hurting output. Action: set `thinking_budget=0` for structured extraction (nothing to reason about), kept thinking configurable for the alert reasoning pass, and added a `thought` token direction to the metrics. Result: 10.2 s with the same schema and comparable output, about 4x faster; the thought tokens were also billed as output at $2.50 per million, so the saving is real money at volume (a figure is not quantified in source).
+
+## Design decisions, and how to answer them
+
+<AnswerModes id="llm-as-component" q="Which model and why? How did you cut latency 4x?">
+<Fragment slot="short">
+
+I treat the LLM as a component with a contract: a JSON schema, a token budget, retries and metrics. The default thinking mode was most of the latency, so I turned it off for extraction: 40 s down to 10 s on one note.
+
+</Fragment>
+<Fragment slot="medium">
+
+Gemini 2.5 Flash thinks by default, generating hidden tokens that are billed as output and waited for but never returned. Structured extraction is not reasoning, so thinking is off there and configurable for the one reasoning call. On model choice I measured five notes: 3.8-flash had a 9.6 s median against 25.4 s for 2.5-flash and its counts matched the notes; 2.5-flash re-extracted the same fact from every sentence. I add the caveat that counts are not precision and recall.
+
+</Fragment>
+<Fragment slot="deep">
+
+Add the surrounding engineering: schema-enforced output (the API enforces shape, the enrichment schema has no free-text field), a job-boundary line in each prompt, verbatim quote per answer, batches of at most 30 spans, and "return [] if nothing" for the empty case. Retries are up to 4 attempts with exponential backoff, with 429s counted separately. Known trap: a truncated response parses to an empty list with no metric, and Java hit `MAX_TOKENS` on `RECENT_LABS` because thinking ate the 8,192 budget. The model name is configuration, so the next comparison is a one-line change.
+
+</Fragment>
+</AnswerModes>
+
+<AnswerModes id="on-prem-vs-cloud" q="On-prem or cloud for the model, and what about PHI?">
+<Fragment slot="short">
+
+The intent is on-prem, because the AI Studio key has no BAA so no real patient text may go to it. I measured MedGemma 27B at 8.3 tok/s on an L4, about 154 s per document, so it is parked.
+
+</Fragment>
+<Fragment slot="medium">
+
+The 27B model is memory-bandwidth-bound: an L4 has about 300 GB/s and each token streams the whole 18 GB of weights, so about 16 tok/s is the ceiling and 8 is realistic. It is not misconfiguration: 100% of layers are on the GPU. I sent DevOps the numbers, the Grafana board and the Postman collection, recommending MedGemma 4B for extraction, 27B only for reasoning if at all, or an L40S or A100. Meanwhile all local runs use synthetic notes; production choices are Vertex AI with a BAA or on-prem.
+
+</Fragment>
+</AnswerModes>
+
+## Checkpoint
+
+<Quiz id="ap-llm" title="LLM engineering checkpoint" questions={[
+  {
+    kind: 'failure',
+    q: 'A discovery call takes 40 s and returns thousands of tokens you never see. What is the most likely cause, and the fix?',
+    options: ['The schema is too strict', 'Default thinking mode generates hidden reasoning tokens', 'The prompt is too short'],
+    answer: 1,
+    why: 'Default thinking tokens are billed as output and waited for but never returned; extraction does not need them.',
+    explain: [
+      'A schema constrains shape; it does not add 30 s of latency.',
+      'Correct: set the thinking budget to 0 for structured extraction (40.3 s to 10.2 s on the measured note).',
+      'A short prompt is not slow; the hidden thought tokens are.'
+    ]
+  },
+  {
+    kind: 'tradeoff',
+    q: 'Why was MedGemma 27B parked?',
+    options: ['It returned invalid JSON', 'Decode is about 8 tok/s on an L4, so about 154 s per document', 'It needed a BAA'],
+    answer: 1,
+    why: 'Memory-bandwidth-bound decode: each token streams about 18 GB of weights.',
+    explain: [
+      'Output validity was not the reported problem.',
+      'Correct: 100% on GPU, so it is bandwidth, not misconfiguration.',
+      'On-prem is the way to avoid needing a BAA, not the reason it was parked.'
+    ]
+  }
+]} />
+
+## Mock interview questions
+
+<Reveal q="Basic: where does the LLM sit in the pipeline, and where does it not?">
+
+Enrichment and discovery inside NER, and the reasoning pass inside critical alerts (plus Java's section generator, being retired). Not the LLM: concept linking, span tagging, grouping, trends, thresholds, dedupe and provenance resolution.
+
+</Reveal>
+
+<Reveal q="Intermediate: how do you evaluate a prompt change?">
+
+Today: the five-note comparison harness (per-note timing and entity counts by type). Tomorrow <StatusBadge kind="planned" />: the gold set with precision and recall per entity type, run in CI.
+
+</Reveal>
+
+<Reveal q="Advanced: a note contains 'ignore previous instructions'. What is your exposure?">
+
+The schema limits the blast radius (it cannot return arbitrary shapes), the models never call tools, and the reasoning pass sees only structured fields, not free text. The text itself calls this not a full answer: content-level defences are on the list <StatusBadge kind="planned" />.
+
+</Reveal>
+
+<RevisionCards id="ap-llm-engineering" title="LLM engineering: facts to recite" cards={[
+  { front: 'The thinking-budget numbers', back: '40.3 s with 7,004 thought tokens vs 10.2 s with thinking_budget=0, same schema.' },
+  { front: 'Model comparison medians', back: '2.5-flash 25.4 s; 3.8-flash 9.6 s (2.6x); 3.8 counts match the notes. Counts are not precision and recall.' },
+  { front: 'MedGemma 27B on an L4', back: '8.3 tok/s decode, about 430 tok/s prefill, about 154 s per document; bandwidth-bound; parked; recommend 4B for extraction.' },
+  { front: 'Prices (checked 2026-09-10)', back: '2.5 Flash 0.30 in / 2.50 out per million; thought tokens count as output.' },
+  { front: 'Retries and traps', back: 'Up to 4 attempts, backoff from 1 s; truncation parses to an empty list with no metric; Java hit MAX_TOKENS with thinking on.' },
+  { front: 'PHI rule', back: 'AI Studio key has no BAA: synthetic notes only. Production: Vertex AI with a BAA or on-prem. Entities in S3, pointers in Postgres and the broker.' }
+]} />
+
+<ChapterDone id="ap-llm-engineering" />

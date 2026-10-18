@@ -6,6 +6,12 @@ order: 4
 minutes: 6
 ---
 
+import StatusBadge from '../../components/StatusBadge.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import Reveal from '../../components/Reveal.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
+
 **One-line answer.** "Two signals: a NegEx-style lexical rule — a negation cue earlier in the same sentence with no scope-breaker between it and the mention — and MedCAT's MetaCAT _Status_ model. The rule decides; the model is recorded. Because on real notes the model called 'Denies chest pain' _Affirmed_ at 0.54 and a live nephropathy _Other_ at 0.998. To improve it I would move from cue lists to ConText-style bidirectional scope with termination terms, fine-tune MetaCAT on our own annotated notes, use the LLM as an adjudicator only for the disagreements, and — before any of that — build a gold set so I can measure the change."
 
 ## 1. Why this is the question they ask
@@ -33,7 +39,9 @@ def _is_negated(text: str, start: int) -> bool:
     return not _NEG_SCOPE_BREAK.search(window[last_cue.end():])  # nothing broke the scope
 ```
 
-Then, per MedCAT entity: `negated = _is_negated(text, start) or meta_anns["Status"] == "Other" with high confidence…` — the MetaCAT _Status_ value and its confidence are also stored on the entity (`status`, `status_confidence`) so downstream can see both opinions. Negated entities are dropped from the sections but their spans still count as "covered" so GLiNER does not re-find them.
+Then, per MedCAT entity: `negated = _is_negated(text, start) or <legacy Negated category>` — the MetaCAT _Status_ value and its confidence are also stored on the entity (`status`, `status_confidence`) so downstream can see both opinions. Negated entities are dropped from the sections but their spans still count as "covered" so GLiNER does not re-find them.
+
+<StatusBadge kind="implemented" /> Checked against `services/medcat-service/main.py`: the rule is `_is_negated(...)`, OR-ed with MetaCAT's legacy `Negated` category if a pack ever has one. The code does not turn the `Status == "Other"` value into a negation; it only stores `status` and `status_confidence`. The original chapter text said Status "Other" also negated; that did not match the repo and has been corrected above. Say "the rule decides, the model is recorded", which is what the code does.
 
 ### Walk through the real sentence
 
@@ -96,3 +104,70 @@ And _Other_ lumps together negated, historical and hypothetical. Past medical hi
 * Peng et al., [NegBio](https://arxiv.org/abs/1712.05898) (2017) — dependency-based negation for radiology reports
 * [negspaCy](https://spacy.io/universe/project/negspacy) — NegEx as a spaCy component, five minutes to try
 
+## Status of what is built versus proposed
+
+| Piece | Status |
+| --- | --- |
+| NegEx-style forward-scope rule with scope-breakers; "not" deliberately not a cue; MetaCAT status recorded alongside | <StatusBadge kind="implemented" /> |
+| Unit tests for the negation rule | <StatusBadge kind="implemented" /> |
+| Observation that MetaCAT Status was wrong on two real mentions (0.54 and 0.998) | <StatusBadge kind="tested" /> |
+| Gold set with the i2b2 six assertion labels | <StatusBadge kind="planned" /> |
+| ConText-style Experiencer and Temporality, section-aware scope, pseudo-negation and post-negation cues | <StatusBadge kind="hypothetical" /> |
+| Fine-tuning MetaCAT; LLM adjudication of rule-versus-model disagreements; keeping ruled-out facts in the timeline | <StatusBadge kind="hypothetical" /> |
+
+## Production story: MetaCAT was wrong in both directions
+
+**STAR.** Situation: MetaCAT's _Status_ model called "Denies chest pain" _Affirmed_ at 0.54 and a live nephropathy _Other_ at 0.998. Task: stop the record from showing diagnoses the doctor ruled out, without deleting the real problem list. Action: a lexical rule decides negation; the model's value and confidence are kept on the entity so downstream can see both opinions; "not" is deliberately not a cue. Result: not quantified in source; the checks are the walked-through sentences above, and there is no gold set yet.
+
+## Design decisions, and how to answer them
+
+<AnswerModes id="negation-approach" q="How does it know 'denies chest pain' is not chest pain, and how would you improve it?">
+<Fragment slot="short">
+
+A NegEx-style rule: a negation cue earlier in the same sentence with no scope-breaker between it and the mention. The rule decides; MetaCAT's Status model is recorded, not trusted, because on real notes it was confidently wrong. To improve it, I would build a gold set first, then move to ConText-style scope.
+
+</Fragment>
+<Fragment slot="medium">
+
+Two signals exist: the rule and MetaCAT's BiLSTM Status model. I trust the rule because MetaCAT said Affirmed at 0.54 for a negated chest pain and Other at 0.998 for a live nephropathy, and Other lumps negated, historical and hypothetical together; dropping everything Other would delete the problem list.
+
+Two deliberate choices: "not" is not a cue ("not well controlled hypertension" is real hypertension), and scope runs forward to the end of the sentence or the first breaker, so "denies A, B, or C" negates all three.
+
+</Fragment>
+<Fragment slot="deep">
+
+Add the improvement order, all <StatusBadge kind="hypothetical" />: measure first on the i2b2 six labels; ConText with pseudo-negation, post-negation, a termination list and Experiencer and Temporality as separate fields instead of one boolean; section-aware scope (FAMILY HISTORY, ROS headers); fine-tune MetaCAT on 200–500 labelled mentions; LLM adjudication only for rule-versus-model disagreements, with a strict schema and an evidence quote; carry ruled-out facts into the timeline; turn every sentence on the page into a regression test. Never let the LLM decide alone on the full note: that brings back cost, latency and hallucination.
+
+</Fragment>
+</AnswerModes>
+
+## Mock interview questions
+
+<Reveal q="Basic: why is negation the question interviewers ask?">
+
+It separates someone who understands clinical NLP from someone who called an API. Roughly half of clinical concept mentions are negated, historical or about someone else; ignoring that gives a record where the patient has every disease the doctor ruled out.
+
+</Reveal>
+
+<Reveal q="Intermediate: why is 'not' not a negation cue in your rule?">
+
+"Hypertension, not well controlled, complicated by early diabetic nephropathy" describes real hypertension and a real nephropathy. Treating bare "not" as a cue would negate both.
+
+</Reveal>
+
+<Reveal q="Advanced: 'Patient's mother had diabetes.' What does your current rule produce, and what fixes it?">
+
+Not negated and not the patient. The current rule has no Experiencer, so this becomes a diabetes diagnosis. A boolean is not enough: ConText-style Experiencer (patient or other) and Temporality as separate fields fix it <StatusBadge kind="hypothetical" />.
+
+</Reveal>
+
+<RevisionCards id="ap-negation" title="Negation: facts to recite" cards={[
+  { front: 'The rule, in one sentence', back: 'A negation cue earlier in the same sentence with no scope-breaker (but, however, although, ; :) between it and the mention.' },
+  { front: 'Why is MetaCAT Status only recorded?', back: '"Denies chest pain" came back Affirmed at 0.54; a live nephropathy came back Other at 0.998. Other also lumps historical and hypothetical.' },
+  { front: 'Two deliberate rule choices', back: '"not" is not a cue; scope runs forward to the end of the sentence or the first breaker.' },
+  { front: 'NegEx vs ConText', back: 'NegEx: pre and post cues, pseudo-negation, about 5-token window. ConText adds Temporality and Experiencer, termination terms, bidirectional scope.' },
+  { front: 'What happens to negated entities today?', back: 'Dropped from sections, but their spans still count as covered so GLiNER does not re-find them.' },
+  { front: 'Improvement order', back: 'Measure (gold set), ConText, section-aware scope, fine-tune MetaCAT, LLM adjudication for disagreements, carry ruled-out facts.' }
+]} />
+
+<ChapterDone id="ap-negation" />

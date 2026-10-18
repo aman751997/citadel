@@ -7,8 +7,15 @@ minutes: 6
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import Reveal from '../../components/Reveal.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
 
 **One-line answer.** "Every document is split into 512-token chunks with 50-token overlap along clinical section headers, embedded with MedCPT — a biomedical encoder — into 768-dimensional vectors, and stored in pgvector with an HNSW index next to the entities. The index is live and filled; the retrieval endpoint that reads it is the next story. I chose Postgres + pgvector over a vector database because the vectors must be filtered by patient and tenant, joined to entities, and covered by the same backups and access control as the rest of the record."
+
+**Status at a glance.** <StatusBadge kind="implemented" /> chunking, MedCPT embeddings, pgvector table and HNSW index, filled on every document. <StatusBadge kind="planned" /> the retrieval pipeline (hybrid search, fusion, rerank, cited answers) and its evaluation. Nothing reads the vectors in production yet.
 
 ## 1. Why a RAG layer at all, when the sections are computed?
 
@@ -46,6 +53,12 @@ CREATE INDEX idx_chunks_embedding_hnsw ON document_chunks
 * **The filter trap**, which interviewers love: `WHERE patient_id = ? ORDER BY embedding <=> ? LIMIT 10`. HNSW finds the global top-k _then_ the filter drops most of them, so a patient with few chunks gets fewer than 10 results — silently. pgvector 0.8's `iterative_scan` keeps walking the graph until the filter is satisfied. That is why the setting is there and why the version matters.
 * **Why not IVFFlat:** needs training on existing data and re-clustering as data grows; HNSW builds incrementally, which suits a stream of uploads.
 
+<Reveal q="A patient has only 4 chunks. Your query asks for the top 10 filtered by patient_id. What can go wrong with a plain HNSW index, and what fixes it?">
+
+HNSW finds the global top-k first and the `WHERE patient_id = ?` filter drops most of them afterwards, so the patient gets fewer than 10 results, silently. pgvector 0.8's `hnsw.iterative_scan = strict_order` keeps walking the graph until the filter is satisfied. That is why the setting exists and why the pgvector version matters.
+
+</Reveal>
+
 ## 5. Why pgvector and not Pinecone / Weaviate / Milvus
 
 1. **Tenancy and access control are already in Postgres.** The vectors must be filtered by patient and tenant on every query; doing that in the same database as the row-level rules is one filter, not two systems to keep in sync.
@@ -53,7 +66,27 @@ CREATE INDEX idx_chunks_embedding_hnsw ON document_chunks
 3. **Operations.** One backup, one HA story, one set of credentials — in a HIPAA context that is not laziness, it is fewer systems holding PHI.
 4. **Scale.** Millions of vectors per instance is fine for pgvector; we are at thousands per patient. If we ever hit hundreds of millions, the answer changes — and I would say so.
 
+<AnswerModes id="why-pgvector" q="Why pgvector and not a dedicated vector database?">
+<Fragment slot="short">
+
+The vectors must be filtered by patient and tenant on every query, joined to entities, and covered by the same backups and access control as the rest of the record. All of that already lives in Postgres, so pgvector is one system instead of two to keep in sync.
+
+</Fragment>
+<Fragment slot="medium">
+
+Four reasons. Tenancy and access control are already in Postgres, so the patient and tenant filter is one filter, not two systems. A retrieved chunk links to its entities and the document page with a SQL join, not an API round-trip. Operations: one backup, one HA story, one set of credentials; in a HIPAA context that is fewer systems holding PHI. Scale: we are at thousands of vectors per patient, and pgvector handles millions per instance.
+
+</Fragment>
+<Fragment slot="deep">
+
+Everything in the medium answer, plus the honest ceiling: if we ever hit hundreds of millions of vectors the answer changes, and I would say so. Also name the cost of the choice: chunk text lives in Postgres, a deliberate exception to the PHI-in-S3 split, because you cannot vector-search S3. And the index choice follows the same logic: HNSW over IVFFlat because it builds incrementally for a stream of uploads, with the filter trap handled by `iterative_scan` (pgvector 0.8 or later).
+
+</Fragment>
+</AnswerModes>
+
 ## 6. The retrieval design that is planned (stories 404 / 405R)
+
+<StatusBadge kind="planned" /> Everything in this section is the design, not running code. The one exception is noted in section 7.
 
 <Mermaid code={`flowchart LR
     Q[clinician question] --> HY[hybrid retrieval]
@@ -73,9 +106,10 @@ CREATE INDEX idx_chunks_embedding_hnsw ON document_chunks
 
 ## 7. Honest status
 
-* Indexing: live, every document, 1.5–2 s per note, runs concurrently with NER.
-* Reads: **nothing reads the vectors yet.** Say it plainly. The reason is sequencing: the four sections are what the product ships first; retrieval has no consumer until the Main screen exists.
-* Known trap: chunk tenancy falls back to a DB lookup of the document row and to null if the row is missing — the event carries `tenantId` and should be used.
+* <StatusBadge kind="implemented" /> Indexing: live, every document, 1.5–2 s per note, runs concurrently with NER.
+* <StatusBadge kind="planned" /> Reads: **nothing reads the vectors yet.** Say it plainly. The reason is sequencing: the four sections are what the product ships first; retrieval has no consumer until the Main screen exists.
+* <StatusBadge kind="tested" /> Repo check (read-only, working tree of the service, not committed when I looked): `chunk_repo.py` already has `search_dense` (cosine, patient-scoped, `SET LOCAL hnsw.iterative_scan = strict_order`) and `search_lexical` (`tsvector`, `websearch_to_tsquery`), the embedding service has a separate query encoder (`MedCPT-Query-Encoder`; chunks use the Article encoder), and there are unit tests for them. There is no fusion, no reranker and no API endpoint. Confirm for yourself whether this has merged before you describe it as done.
+* <StatusBadge kind="implemented" /> Known trap: chunk tenancy falls back to a DB lookup of the document row and to null if the row is missing — the event carries `tenantId` and should be used.
 
 ## 8. Read more
 
@@ -88,3 +122,14 @@ CREATE INDEX idx_chunks_embedding_hnsw ON document_chunks
 * [RAGAS](https://docs.ragas.io/) — faithfulness, answer relevance, context recall metrics
 * [Chunking strategies for LLM applications](https://www.pinecone.io/learn/chunking-strategies/) — a good survey of the options
 
+<RevisionCards id="rag-layer" cards={[
+  { front: 'Chunking parameters and why', back: '512 tokens (tiktoken cl100k, the MedCPT limit), 50 overlap (about one long sentence), split on clinical section headers first, then paragraphs, then sentences. Tokens, not characters.' },
+  { front: 'Embedding model and caveat', back: 'ncbi/MedCPT-Article-Encoder, 768-d, biomedical, self-hosted on CPU in embedding-service. Trained on PubMed articles, not clinical notes. Not OpenAI/Gemini because PHI would leave the building.' },
+  { front: 'HNSW parameters', back: 'm=16 (default), ef_construction=64, cosine ops. Query-time ef_search default 40 trades latency for recall.' },
+  { front: 'The filter trap', back: 'HNSW takes the global top-k then the patient filter drops most of them, so results are silently short. pgvector 0.8 hnsw.iterative_scan = strict_order keeps walking until the filter is satisfied.' },
+  { front: 'Why pgvector, not a vector DB', back: 'Tenancy and filters, joins to entities, one backup and credential set in a HIPAA context, scale of thousands of vectors per patient. Answer changes at hundreds of millions.' },
+  { front: 'Planned retrieval design', back: 'Vector top-k plus tsvector top-k, reciprocal rank fusion (k about 60), cross-encoder rerank top-20 to top-5, cited answer, RAGAS-style evaluation.' },
+  { front: 'Honest status', back: 'Indexing is live on every document (1.5-2 s per note). Nothing reads the vectors in production yet; the reason is sequencing behind the sections path.' },
+]} />
+
+<ChapterDone id="rag-layer" />

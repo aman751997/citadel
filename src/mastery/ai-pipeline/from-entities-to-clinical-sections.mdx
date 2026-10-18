@@ -7,6 +7,11 @@ minutes: 7
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import Reveal from '../../components/Reveal.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
 
 **One-line answer.** "Four sections computed from the patient's entities, not from prose: active medications (deduped by canonical name, latest dose wins), recent labs (grouped by LOINC code, unit-normalised, trended over time), a timeline (events by clinical date with importance tiers), and critical alerts — deterministic threshold rules from a YAML file first, then one LLM reasoning pass for cross-variable patterns the rules cannot see. Rules are auditable and free; the LLM finds the drug–lab interactions. Both return the entities they used."
 
@@ -97,6 +102,8 @@ Notice the division of labour: the rules caught the single-value facts; the mode
 
 `CRITICAL_ALERTS` is written to `patient_health_profile.risk_flags` after every document merge and served from that row in \~30 ms. The other three sections are still computed on read (5–20 s cold because they fetch entity JSONs from S3) — that is J14, the next pipeline story: persist them the same way.
 
+<StatusBadge kind="tested" label="J14" /> Repo check: the project's plan file (`docs/plans/2026-09-11-game-plan.md`) records J14 as built and green in a separate worktree (`feature/j14-persist-sections`, a `patient_section_cache` table) but uncommitted at the time of writing. So "next story" in the text is now "prototyped, not merged"; confirm its current state yourself before claiming it is shipped.
+
 ## 6. Trade-offs to state out loud
 
 * **Rules vs LLM.** Rules: cheap, explainable, stable ids, no false creativity, but only see one variable. LLM: sees interactions, costs 6–30 s and money, non-deterministic (7 vs 9 concerns on identical input with thinking off). Both, with the LLM explicitly forbidden from repeating what rules cover.
@@ -113,3 +120,84 @@ Notice the division of labour: the rules caught the single-value facts; the mode
 * [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output) and [thinking budgets](https://ai.google.dev/gemini-api/docs/thinking)
 * Clinical decision support background: Osheroff et al., [Improving Outcomes with Clinical Decision Support](https://www.himss.org/resources/improving-outcomes-clinical-decision-support-implementers-guide) — the "five rights" of CDS
 
+## Status
+
+| Piece | Status |
+| --- | --- |
+| Medications, labs, timeline computed by deterministic code over entities | <StatusBadge kind="implemented" /> |
+| YAML threshold rules plus one Gemini reasoning pass, persisted to `patient_health_profile.risk_flags` | <StatusBadge kind="implemented" /> |
+| Persisting the other three sections (J14) | <StatusBadge kind="tested" /> |
+| Deterministic alert keys so "dismiss" survives re-analysis (J13) | <StatusBadge kind="planned" /> |
+| Fix for dedupe and tier grouping using different identities (name vs code); confidence filter on cached alerts | <StatusBadge kind="planned" /> |
+
+Repo check: the rules file has more rules than the six shown in section 5.1 (it also holds Severe Hyperglycemia, Elevated Creatinine and Severe Hypokalemia, for example). The six shown are a subset; the thresholds shown match the file.
+
+## Production story: two grouping and unit bugs
+
+**STAR: grouping by display name.** Situation: labs were grouped by the display name of whichever phrasing the model emitted first. Task: make alert rules fire reliably. Action: group by LOINC first, with a canonical-name map as fallback. Result: not quantified in source; the symptom was an alert rule for "hba1c" never matching a group labelled "Hemoglobin A1c".
+
+**STAR: normalised value thrown away.** Situation: an older path computed the unit-normalised value and then discarded it, so glucose in mg/dL and mmol/L made a trend look like 148 to 8.2 to 152. Task: trend on comparable numbers. Action: fixed the path and added a regression test. Result: not quantified in source.
+
+## Design decisions, and how to answer them
+
+<AnswerModes id="rules-and-llm" q="Rules or LLM for alerts? Why both?">
+<Fragment slot="short">
+
+Deterministic YAML threshold rules first, then one LLM reasoning pass for cross-variable patterns the rules cannot see. Rules are auditable and free; the LLM finds drug-lab interactions. Both return the entities they used.
+
+</Fragment>
+<Fragment slot="medium">
+
+Rules are cheap, explainable, have stable ids and are editable by a clinician without a deploy, but they only see one variable. The LLM sees combinations (metformin with declining eGFR, the ACE inhibitor, diuretic and NSAID "triple whammy") but costs 6 to 30 s and money and is non-deterministic: 7 versus 9 concerns on identical input. So the prompt forbids repeating single abnormal values, which belong to the rules, and says to return an empty array rather than fabricate.
+
+</Fragment>
+<Fragment slot="deep">
+
+Add the operational detail: the reasoning call receives structured meds and labs as JSON, not the note, and its response is schema-constrained. Alerts are persisted after every merge and served from `risk_flags` in about 30 ms. Thinking on gave 23 s and 9 concerns; off gave 6 to 8 s and 7 to 9; it is left on by default behind `GEMINI_REASONING_THINKING_BUDGET` because that is a clinical judgement. Known flaws, said first: LLM concerns get a fresh UUID per run so dismissals do not survive (J13, planned), and the confidence filter is ignored on cached alerts.
+
+</Fragment>
+</AnswerModes>
+
+<AnswerModes id="sections-computed-not-generated" q="What does it produce, and why compute sections rather than generate them?">
+<Fragment slot="short">
+
+Four sections computed by plain code over structured entities. The AI reads; the sections are computed. If a clinician disputes a trend, I can show the entities and the sort key that produced it.
+
+</Fragment>
+<Fragment slot="medium">
+
+Medications are grouped by normalised name with the newest document's record winning, and a discontinuation flips status without deleting history. Labs group by LOINC, normalise units first, and order by clinical time (collection date, else document date), never upload order. The timeline buckets dated facts with rule-based importance tiers. Only alerts add free-text reasoning.
+
+</Fragment>
+</AnswerModes>
+
+## Mock interview questions
+
+<Reveal q="Basic: name the four sections and how each is built.">
+
+ACTIVE_MEDICATIONS (group by name, latest dose wins), RECENT_LABS (group by LOINC, normalised units, trend), PATIENT_TIMELINE (events by date with importance tiers), CRITICAL_ALERTS (YAML rules plus Gemini reasoning).
+
+</Reveal>
+
+<Reveal q="Intermediate: why order labs by clinical time instead of ingestion time?">
+
+A cross-document trend cannot order correctly on upload order; the demo uploads are out of chronological order on purpose. Use the lab's own collection date, else the document date.
+
+</Reveal>
+
+<Reveal q="Advanced: a clinician dismisses an LLM alert, then a new document arrives. What happens?">
+
+Today the dismissal is lost: rule alerts have stable ids (rule plus patient), but each LLM concern gets a fresh UUID per run. The fix <StatusBadge kind="planned" /> is a deterministic key from category plus the entities involved (J13).
+
+</Reveal>
+
+<RevisionCards id="ap-sections" title="Sections: facts to recite" cards={[
+  { front: 'The four sections', back: 'ACTIVE_MEDICATIONS, RECENT_LABS, PATIENT_TIMELINE, CRITICAL_ALERTS.' },
+  { front: 'Lab grouping key', back: 'LOINC first, canonical-name map as fallback; units normalised before grouping.' },
+  { front: 'Rules vs LLM', back: 'Rules: one variable, free, auditable. LLM: combinations, 6 to 30 s, non-deterministic, forbidden from repeating rule alerts.' },
+  { front: 'Where are alerts stored?', back: 'patient_health_profile.risk_flags after every merge; served in about 30 ms.' },
+  { front: 'Thinking on vs off for reasoning', back: 'On: 23 s, 9 concerns. Off: 6 to 8 s, 7 to 9 concerns. Left on, exposed as GEMINI_REASONING_THINKING_BUDGET.' },
+  { front: 'Known flaws to say first', back: 'LLM alert ids are fresh per run (J13); dedupe and tier use different identities; confidence filter ignored on cached alerts.' }
+]} />
+
+<ChapterDone id="ap-sections" />

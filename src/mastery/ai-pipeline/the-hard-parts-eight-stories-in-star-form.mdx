@@ -6,7 +6,15 @@ order: 10
 minutes: 7
 ---
 
+import StatusBadge from '../../components/StatusBadge.astro';
+import Reveal from '../../components/Reveal.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
+
 Each story is **Situation → Task → Action → Result**, then the one-sentence _lesson_ to close with. Pick two before an interview; know the numbers in them cold. When asked "what was the most challenging part", lead with story 1 or 3 — they are technical, measurable, and end in a design principle.
+
+**Reading the Result lines.** Where the source gives a number, the Result carries it. Where it does not, the Result says **Not quantified in source** so you do not invent a figure in the room. Each story's fix is <StatusBadge kind="implemented" /> in the service unless a story says otherwise. Repo-verified (read-only): the shared S3 client with a 32-way cap on entity fetches, `thinking_budget=0` on extraction calls with a separate configurable reasoning budget, the pinned `medcat[meta-cat,spacy]==1.16.12`, `mem_limit: 6g`, the misspelt `MEDCAT_AVOID_LECACY_CONVERSION` flag in the logs, and `X-Service-Auth` on the webhook client. The Java-side parts of stories 4, 5, 6 and 7 come from the original text and were not re-checked here.
 
 ## 1. The section read that took 100 seconds — S3 fan-out
 
@@ -16,7 +24,7 @@ Each story is **Situation → Task → Action → Result**, then the one-sentenc
 
 **A.** Read the metrics rather than the code first: `s3_operation_duration_seconds_sum / count` for `get_object` = 359 calls, 18,826 s → **52 s average per GET**. Absurd for S3. Reproduced in the container: a single GET took 60 ms; 20 concurrent GETs with per-call clients took 1.07 s. So the primitive was fine — the pattern was not. The section code fetched every entity JSON for the patient (\~700) with an _unbounded_ `asyncio.gather`, each call creating its own `aioboto3.Session().client()`: 700 clients and TCP handshakes at the same instant, starving each other. Fix: one lazily-created shared client with a connection pool sized to the concurrency, and an `asyncio.Semaphore(32)` around the fetch.
 
-**R.** Next document: **55 s** end to end; the merge stage collapsed to the reasoning call alone (31 s). Average GET back to \~0.5 s including queueing.
+**R.** *(Quantified.)* Next document: **55 s** end to end; the merge stage collapsed to the reasoning call alone (31 s). Average GET back to \~0.5 s including queueing.
 
 **Lesson.** Concurrency without a bound is a load test against yourself. And per-stage telemetry found this in minutes; a single "processing time" number never would have.
 
@@ -28,7 +36,7 @@ Each story is **Situation → Task → Action → Result**, then the one-sentenc
 
 **A.** Traced it to MedCAT 2.x silently auto-converting the v1 UMLS pack in-process on every start (`cat.py`, with an env flag misspelt `MEDCAT_AVOID_LECACY_CONVERSION`). Rather than convert, ran the pack on the library it was built for: pinned `medcat[meta-cat,spacy]==1.16.12`, CPU-only torch from the PyTorch index, `--only-binary :all:` so blis/thinc never compile from source on Python 3.12. Put the container behind a compose profile with `mem_limit: 6g`, removed it from other services' `depends_on` so `docker compose up grafana` could not resurrect it.
 
-**R.** 1.5 GB resident, 1.2 s per note, 38–68 concepts with UMLS codes; the daemon has not wedged since.
+**R.** *(Quantified.)* 1.5 GB resident, 1.2 s per note, 38–68 concepts with UMLS codes; the daemon has not wedged since (no duration given in source).
 
 **Lesson.** A model server is infrastructure — provision it like a database: memory limits, no implicit start-up, and read the migration notes of the library you upgrade.
 
@@ -40,7 +48,7 @@ Each story is **Situation → Task → Action → Result**, then the one-sentenc
 
 **A.** Looked at `usage_metadata`: 7,004 _thought_ tokens per call — the model's hidden reasoning, billed as output, never returned. Structured extraction is not a reasoning task. Set `thinking_budget=0` on the extraction calls only; kept it on for the clinical-reasoning pass and made that a setting.
 
-**R.** 40.3 s → 10.2 s on the same prompt and schema; comparable output. Then measured 3.8-flash vs 2.5-flash on five notes: 9.6 s vs 25.4 s median, with counts that matched the notes.
+**R.** *(Quantified.)* 40.3 s → 10.2 s on the same prompt and schema; comparable output. Then measured 3.8-flash vs 2.5-flash on five notes: 9.6 s vs 25.4 s median, with counts that matched the notes.
 
 **Lesson.** Read the usage metadata before blaming the model. Defaults are tuned for chat, not for pipelines.
 
@@ -52,7 +60,7 @@ Each story is **Situation → Task → Action → Result**, then the one-sentenc
 
 **A.** Three causes by reading: no `/internal/**` matcher so the chain ended in `anyRequest().authenticated()`; the service-auth filter validated the token but never set an `Authentication`; header name mismatch (`X-Internal-Token` vs the monorepo's `X-Service-Auth`). Then a fourth by running it: the `RateLimiterFilter` ran _after_ security, keyed its bucket on a user JWT, and rejected the request that Spring had just authorised. Fixed all four; Python switched header (one config), Java became the standard.
 
-**R.** 4 × 202 per document, 60–100 ms each. And the fourth cause revealed that an existing production internal endpoint was broken the same way — its test had mocked the rate limiter out.
+**R.** *(Quantified.)* 4 × 202 per document, 60–100 ms each. And the fourth cause revealed that an existing production internal endpoint was broken the same way — its test had mocked the rate limiter out.
 
 **Lesson.** Filter order is behaviour. A test that mocks a filter tests a chain that does not exist.
 
@@ -64,7 +72,7 @@ Each story is **Situation → Task → Action → Result**, then the one-sentenc
 
 **A.** Persisted in-flight upload rows in `sessionStorage` so a reload cannot blank them. Merged develop — and discovered develop had replaced cookie-based auth with an auth-service round-trip (`/auth/me`), which meant two more Java services to run locally. Judgement call with the lead: revert the merge, rebuild the feature as a single commit on latest develop with nothing else in it, and schedule the auth stack for the next day.
 
-**R.** One clean PR (38 files) that will merge; two superseded PRs closed; a plan for the auth stack with a 90-minute time box.
+**R.** One clean PR (38 files) that will merge; two superseded PRs closed; a plan for the auth stack with a 90-minute time box. *Partly quantified: file count and time box are given; whether the PR actually merged is not stated in the source, so say "was expected to merge".*
 
 **Lesson.** Don't merge upstream into a feature branch mid-task without asking — and separate "bring the branch current" from "add the feature" so each is reviewable on its own.
 
@@ -76,7 +84,7 @@ Each story is **Situation → Task → Action → Result**, then the one-sentenc
 
 **A.** Renumbered ours to V76/V77 on the PR branches; on the local DB renumbered the two `flyway_schema_history` rows and enabled `out-of-order` once so develop's real V74/V75 could apply behind them. Also found a second Flyway failure: a `${REDIS_ENABLED:false}` quoted in a SQL comment was parsed as a placeholder.
 
-**R.** Boots; two rules written down: take the migration number on merge day, and never quote a placeholder in a migration comment.
+**R.** Boots; two rules written down: take the migration number on merge day, and never quote a placeholder in a migration comment. *Not quantified in source.*
 
 **Lesson.** Schema versioning is a coordination problem, not a technical one.
 
@@ -88,7 +96,7 @@ Each story is **Situation → Task → Action → Result**, then the one-sentenc
 
 **A.** Traced: Java generated a Gemini _summary_ per document on upload, then aggregated summaries and asked Gemini _again_ per section. The pipeline's NER output fed only RAG and its own alerts. Two Gemini bills per document, and the clinician saw prose never grounded in the span-located entities. Stopped the dead-code PR from deleting the summary path (it was live input) and moved the source swap (J3) to the top of the plan.
 
-**R.** A plan that fixes the right thing: persist sections in the pipeline (J14), point Java at them (J3), delete the summary generator afterwards.
+**R.** A plan that fixes the right thing: persist sections in the pipeline (J14), point Java at them (J3), delete the summary generator afterwards. <StatusBadge kind="planned" /> *Not quantified in source, and J14 and J3 are still plan items, not shipped.*
 
 **Lesson.** "It works" and "it does what we think" are different claims. Verify data lineage, not just the UI.
 
@@ -100,9 +108,33 @@ Each story is **Situation → Task → Action → Result**, then the one-sentenc
 
 **A.** Grepped every metric name against the code: several counters were declared and never incremented; one histogram was exported under a name Prometheus renamed (`_total`/`_bucket` suffix rules). Deleted the dead ones, fixed the increments (the three NER stage counters had never moved in a year), removed a `patient_id` label (unbounded cardinality, and a patient identifier in a metrics store). Built one dashboard, one row per pipeline stage, plus a Pushgateway board for one-shot benchmarks.
 
-**R.** Every panel moves when a document is processed; the MedGemma benchmark went to DevOps as a screenshot with numbers, not a paragraph.
+**R.** Every panel moves when a document is processed; the MedGemma benchmark went to DevOps as a screenshot with numbers, not a paragraph. *Not quantified in source (no before/after count of dead panels).*
 
 **Lesson.** A dashboard is a claim about the system; audit it like code.
+
+<AnswerModes id="most-challenging" q="What was the most challenging technical problem you solved on this project?">
+<Fragment slot="short">
+
+One document took 131 s. Per-stage progress events showed a 115 s hole in the profile-merge stage. The metrics said the average S3 GET took 52 s, but a single GET took 60 ms in the container. The cause was an unbounded `asyncio.gather` over about 700 entity fetches, each creating its own client. A shared client with a connection pool and a semaphore of 32 brought the document to 55 s.
+
+</Fragment>
+<Fragment slot="medium">
+
+Situation: after the chain worked, one document took 131 s, NER was done at 15 s, and the merge stage, whose only work was recomputing critical alerts, sat for 115 s; the Gemini reasoning call inside was 32 s, so 80 seconds were unaccounted for. I read the metrics before the code: `s3_operation_duration_seconds_sum / count` for `get_object` gave 359 calls and 18,826 s, so 52 s per GET. I reproduced it in the container: one GET 60 ms, 20 concurrent GETs with per-call clients 1.07 s. So the primitive was fine and the pattern was not. Fix: one lazily created shared client with a pool sized to the concurrency, plus `asyncio.Semaphore(32)`. Result: 55 s end to end and an average GET near 0.5 s including queueing. Lesson: concurrency without a bound is a load test against yourself.
+
+</Fragment>
+<Fragment slot="deep">
+
+Add the mechanism: the section code fetched every entity JSON for the patient (about 700) with an unbounded `asyncio.gather`, each call creating its own `aioboto3.Session().client()`, so 700 clients and TCP handshakes happened at the same instant and starved each other. Add why it was findable: per-stage telemetry showed the hole in `PROFILE_MERGE` in minutes; a single "processing time" number never would have. Then connect it to the plan: section reads were still 5-20 s cold until J14 persists the sections, which removes the S3 fan-out from the read path entirely.
+
+</Fragment>
+</AnswerModes>
+
+<Reveal q="Interviewer: 'Tell me about a time you were wrong or changed course.' Which story do you pick, and what is the one-sentence lesson?">
+
+Story 5 (merged develop into a feature branch mid-task, which dragged in an auth rewrite; reverted and rebuilt the feature as one clean commit) or story 7 (the live cards were not built from the pipeline's entities). Lesson for 5: do not merge upstream into a feature branch mid-task without asking, and separate "bring the branch current" from "add the feature". Lesson for 7: "it works" and "it does what we think" are different claims, so verify data lineage, not just the UI. Also usable: the "three retries" that turned out to be none (chapter 9).
+
+</Reveal>
 
 ## Quick picks by question
 
@@ -115,3 +147,15 @@ Each story is **Situation → Task → Action → Result**, then the one-sentenc
 | "Working with other teams' code?" | 6 or 4 |
 | "Observability?" | 8, then 1 (found by telemetry) |
 
+<RevisionCards id="stories" cards={[
+  { front: 'Story 1: S3 fan-out numbers', back: '131 s document, 115 s hole in PROFILE_MERGE, 359 GETs / 18,826 s = 52 s average, single GET 60 ms, 700 unbounded clients. Fix: shared client + Semaphore(32). Result: 55 s.' },
+  { front: 'Story 2: MedCAT and the Docker daemon', back: 'MedCAT 2.x auto-converted the v1 UMLS pack on every start (13.5-16 GB in a 19.5 GB VM). Pinned medcat 1.16.12, CPU torch, mem_limit 6g, compose profile. Result: 1.5 GB, 1.2 s per note.' },
+  { front: 'Story 3: thinking tokens', back: '7,004 hidden thought tokens per call. thinking_budget=0 on extraction only. 40.3 s to 10.2 s. 3.8-flash 9.6 s vs 2.5-flash 25.4 s median on five notes.' },
+  { front: 'Story 4: four causes of one 401', back: 'No /internal/** matcher; filter never set an Authentication; header mismatch (X-Internal-Token vs X-Service-Auth); rate limiter ran after security and keyed on a user JWT. Result: 4 x 202 at 60-100 ms.' },
+  { front: 'Story 5 and 6 lessons', back: '5: do not merge upstream mid-task; separate "make current" from "add feature". 6: Flyway numbering is coordination; take the number on merge day; never quote a placeholder in a migration comment.' },
+  { front: 'Story 7: the cards that were not ours', back: 'Java generated Gemini summaries and re-asked Gemini per section; NER output fed only RAG and alerts. Plan: persist sections (J14), point Java at them (J3), then delete the summary generator. Not shipped.' },
+  { front: 'Story 8: dashboards that lied', back: 'Dead counters, a renamed histogram, a patient_id label. One dashboard, one row per stage. Lesson: a dashboard is a claim about the system; audit it like code.' },
+  { front: 'Which story for which question', back: 'Challenging: 1 or 2. Performance: 1 or 3. Changed course: 5 or 7. Cross-service debugging: 4. Other teams: 6 or 4. Observability: 8 then 1.' },
+]} />
+
+<ChapterDone id="stories" />

@@ -1,12 +1,19 @@
 ---
 title: "2. Per-Speaker Recording & Consent"
-description: "The normal way to record a call is a room composite: one file with everyone mixed together, later run through a diarization model (pyannote, WhisperX) that guesses \"speaker 1 /…"
+description: "Why the proof of concept records one file per microphone instead of a mixed room, how consent works as a set that must empty, the dual-path signalling bug, and retention."
 project: "telemedicine-poc"
 order: 2
 minutes: 6
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import Reveal from '../../components/Reveal.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
+
+<StatusBadge kind="tested" label="Prototyped in the demo" /> The consent flow and retention described here ran in the demo; they are not a compliance-reviewed implementation.
 
 ## The bet: never mix speakers
 
@@ -43,6 +50,24 @@ activeRecordings.set(room, { session, entries });        // 409 on a second star
 * **File name includes the track SID**, so a participant who re-publishes their mic gets a second file, never an overwrite.
 * `sanitize()` keeps only `[A-Za-z0-9_-]`; combined with `path.basename()` on the session segment, no `../` can escape `recordings/`.
 * **Format** (verified with ffprobe): Ogg container, Opus codec, 48 kHz, 2 channels, VBR. LiveKit writes the packets it already has; nothing is re-encoded.
+
+<AnswerModes id="per-track-egress" q="Why record one file per microphone instead of a mixed room plus diarization?">
+<Fragment slot="short">
+
+Diarization guesses speakers from voice, and it is error-prone on two-person medical calls with similar voices, overlap and phone audio. A wrong label in a clinical note is a safety problem. One TrackEgress per microphone makes labels exact by construction, and Opus pass-through means no transcode.
+
+</Fragment>
+<Fragment slot="medium">
+
+Options were a room composite plus pyannote or WhisperX, or track egress per mic. I chose track egress because the speaker label becomes a join on a manifest instead of a model output. The cost moves to aligning independent files and to half-silent tracks confusing Whisper, and I solved both deterministically (page 3). Trade-off: more files and a manifest to manage.
+
+</Fragment>
+<Fragment slot="deep">
+
+Add the file naming (identity plus track SID so a republished mic never overwrites), the sanitize rule that blocks path traversal, and that the identity string carries the role. The known gap: the role is parsed from a browser-chosen string, so production binds it to an authenticated user. At three or more participants with cross-talk the approach still works with more tracks. <StatusBadge kind="hypothetical" label="At higher scale" />
+
+</Fragment>
+</AnswerModes>
 
 ## Who is who: identity carries the role
 
@@ -101,6 +126,12 @@ Second-order detail: a server-relayed message has the _server_ as `msg.from`, so
     L->>D: consent-accept (possibly twice)
     D->>D: pendingConsents.delete once; second copy ignored`} />
 
+<Reveal q="A patient joins with no mic and no camera. Why does the consent request never reach them, and what is the fix?">
+
+A participant who publishes nothing has no WebRTC publisher peer connection, and data-channel sends from that side time out. The fix is to send every control message both over the data channel and through an HTTP relay that calls sendData, so it arrives on the subscriber connection. Receivers de-duplicate.
+
+</Reveal>
+
 ## Ending the call properly
 
 "Leave" and "End" are different. The doctor's End calls `POST /consult/{room}/end`, which finalises the recording first, then `deleteRoom`. LiveKit disconnects everyone with `DisconnectReason.ROOM_DELETED`; the patient's screen shows "Consultation ended" rather than a stale call with one tile. The doctor is auto-routed to the Consultation notes screen on any disconnect.
@@ -111,6 +142,8 @@ Second-order detail: a server-relayed message has the _server_ as `msg.from`, so
 * After a **failed** transcription, audio is deliberately kept so the job can be retried. The demo folder for a "no speech found" run still holds its two files; the successful run's folder has none.
 * Transcripts, summaries and manifests are kept indefinitely. Production needs a purge policy for these too. Say so.
 
+<StatusBadge kind="unverified" label="Legal fit" /> The text maps this design to the DPDP Act and the Telemedicine Practice Guidelines, but no legal review is mentioned. Say "designed with these principles in mind", not "compliant".
+
 ## Read more
 
 * [LiveKit Track Egress](https://docs.livekit.io/home/egress/track/) vs [Room Composite Egress](https://docs.livekit.io/home/egress/room-composite/).
@@ -120,3 +153,14 @@ Second-order detail: a server-relayed message has the _server_ as `msg.from`, so
 * [India DPDP Act 2023](https://www.meity.gov.in/data-protection-framework) — consent, purpose limitation, and erasure, the three things the consent flow and deletion implement.
 * [Telemedicine Practice Guidelines (India, 2020)](https://telemedicine.gov.in/) — patient consent and record-keeping duties for teleconsultations.
 
+<RevisionCards id="poc-recording-consent" cards={[
+  { front: 'Why per-track egress?', back: 'Exact speaker labels by construction, no diarization model, Opus pass-through. Difficulty moves to alignment and half-silent tracks.' },
+  { front: 'How is a track file named, and why?', back: 'sanitized identity plus the track SID, so a republished mic gets a second file. sanitize keeps only A-Za-z0-9_- to block path escape.' },
+  { front: 'How does identity carry the role?', back: 'Identity is role:name, for example doctor:Asha. The manifest and every transcript segment copy role and name. Gap: the browser asserts it, so production binds role to an authenticated user.' },
+  { front: 'Why does finalise poll the egress?', back: 'Stopping is asynchronous and startedAt appears later. Polling up to 20 x 500 ms avoids a manifest without startedAtNs. Measured skew was 29-74 ms.' },
+  { front: 'Describe the consent state machine.', back: 'REC puts every remote identity in pendingConsents. Accepts remove them, any decline clears the set and aborts, empty set starts recording. Revoke stops recording and tells the doctor who.' },
+  { front: 'Why dual-path signalling?', back: 'A participant with no published tracks has no publisher connection, so data-channel sends time out. HTTP relay via sendData reaches the subscriber side. Receivers de-duplicate.' },
+  { front: 'What is retained and deleted?', back: 'Audio is deleted after successful transcription (KEEP_AUDIO=1 keeps it), kept on failure for retry. Transcripts, summaries and manifests are kept indefinitely, so production needs a purge policy.' },
+]} />
+
+<ChapterDone id="poc-recording-consent" />

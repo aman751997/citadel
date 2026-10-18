@@ -7,6 +7,11 @@ minutes: 5
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import Reveal from '../../components/Reveal.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
 
 **One-line answer.** "Every entity carries the verbatim sentence it came from, its character offsets in the source text, and the PDF page. The model's quote is treated as a claim, not a fact: a resolver has to find it in the real text before it becomes an offset, and if it cannot, the entity says `unlocated` instead of guessing. That is what turns a model output into something a doctor will click on."
 
@@ -36,11 +41,13 @@ Three fixes, two repos: Java preserves page boundaries when it extracts text (a 
 
 Three details interviewers pick on:
 
-1. **Model quotes are not guaranteed substrings.** LLMs "fix" typos, drop double spaces, change case. So the match runs exact → normalised, and only those two — anything fuzzier would let a quote land on the wrong sentence and produce a confident wrong page. Wrong provenance is worse than none.
+1. **Model quotes are not guaranteed substrings.** LLMs "fix" typos, drop double spaces, change case. So the match is tiered and strict: exact, then normalised, then a guarded fuzzy tier (see the repo note below). A loose match would let a quote land on the wrong sentence and produce a confident wrong page. Wrong provenance is worse than none.
 2. **GLiNER offsets are trusted, never re-matched.** GLiNER returns character spans natively. In the cascade it ran on masked text, but the mask is space-for-character, so offsets are identical to the original. They are only _shifted_ if the text was windowed.
 3. **Masking preserves coordinates.** This is the trick that ties pages 3 and 5 together: replacing covered spans with spaces (not deleting them) means every later stage's offsets are already in document coordinates. No offset arithmetic, no off-by-one class of bugs.
 
 Real run: `Span resolution complete … total_entities=49 located=49 pages_assigned=49 match_counts={"exact": 49}`.
+
+<StatusBadge kind="implemented" /> **Repo check, original text disagrees.** The resolver in `app/services/span_resolver.py` has a third, `fuzzy` tier between `normalized` and `unlocated`, which this page originally listed as a next experiment. It only runs for quotes of at least 12 normalised characters, scores candidate regions with `difflib.SequenceMatcher.ratio()` at a 0.85 minimum, and has a numeric guard: every number in the quote must appear in the candidate, because in a clinical record the numbers are the finding (a "152/94" sentence must never be shown as the source of a "118/72" finding). The reasoning in point 1 below still holds: a loose match produces confident wrong provenance, so the guard is strict. The `normalized` tier also strips PDFBox line-break hyphenation. Rehearse the four tiers as exact, normalized, fuzzy (guarded), unlocated, and note that the measured run above resolved everything at `exact`.
 
 ## 4. Pages
 
@@ -72,7 +79,7 @@ Offsets and page numbers are _not_ PHI: they are integers. The verbatim quote _i
 ## 8. What is still missing
 
 * No _relation_ provenance — a drug and its dose are two entities linked by proximity, not an explicit edge. A dosage change on page 3 and a drug name on page 1 will not be linked.
-* `normalized` matches (case/whitespace) are honest but coarse; a Levenshtein-bounded third tier with a strict threshold is the next experiment — measured against the gold set, not eyeballed.
+* `normalized` matches (case/whitespace) are honest but coarse. The repo has since added a guarded fuzzy tier (similarity ratio with a strict threshold and a numeric guard); how good it is still needs measuring against a gold set, not eyeballing.
 * The AlertDetail screen that shows the quotes is not built yet (frontend U4 in the plan). The data is there; the UI is not.
 
 ## 9. Read more
@@ -83,3 +90,70 @@ Offsets and page numbers are _not_ PHI: they are integers. The verbatim quote _i
 * [Apache PDFBox](https://pdfbox.apache.org/) — how Java keeps page boundaries during text extraction
 * [spaCy Span API](https://spacy.io/api/span) — the char-offset conventions (start inclusive, end exclusive) we mirror
 
+## Status
+
+| Piece | Status |
+| --- | --- |
+| Verbatim `span` requested from every model; resolver with exact, normalized, fuzzy tiers, else `unlocated`; page lookup from a page map | <StatusBadge kind="implemented" /> |
+| GLiNER offsets trusted and shifted only if windowed; space-masking keeps coordinates | <StatusBadge kind="implemented" /> |
+| 49 of 49 located, all `exact`, on a measured run | <StatusBadge kind="tested" /> |
+| Java preserving page boundaries (page map next to the text in S3) | <StatusBadge kind="unverified" /> |
+| Relation provenance (drug linked to dose by an explicit edge) | <StatusBadge kind="hypothetical" /> |
+| AlertDetail screen showing quotes (frontend U4) | <StatusBadge kind="planned" /> |
+
+Java page maps: the page claims Java does this, and the Python side consumes the map, but this repo does not contain the Java code. Confirm yourself that you wrote it, or say that a colleague did.
+
+## Production story: raw_text was not raw (J10)
+
+**STAR.** Situation: `raw_text` was documented as the exact span but held the model's canonical name, so "T2DM" was recorded as "Type 2 Diabetes Mellitus"; offsets were computed nowhere and nothing knew about pages. Task: make every entity point at the real sentence. Action: Java preserves page boundaries; prompts ask each model for a verbatim `span` next to the canonical name; a resolver turns quotes into offsets and flags what it cannot find. Result: 49 of 49 spans located with exact matches on the measured run; broader quality is not quantified in source.
+
+## Design decisions, and how to answer them
+
+<AnswerModes id="provenance-hallucination" q="How does a doctor trust it? What about hallucinations?">
+<Fragment slot="short">
+
+Every entity carries the verbatim sentence, its character offsets and the PDF page. The model's quote is a claim: a resolver must find it in the real text, and if it cannot, the entity says `unlocated` instead of guessing.
+
+</Fragment>
+<Fragment slot="medium">
+
+A clinician will not act on "Metformin-renal risk, confidence 0.87" but will act on a quote with a page they can open in three seconds. A fabricated entity has no sentence to point at, so it fails resolution and is flagged and counted (the `span_match` distribution is on the dashboard). Codes come from a vocabulary lookup, not the model, wherever MedCAT covered the span. Sections are deterministic code over entities; the only free-text reasoning is the critical-alerts pass, which returns `related_entities`.
+
+</Fragment>
+<Fragment slot="deep">
+
+Add the mechanics: model quotes are not guaranteed substrings, so the match is tiered and strict, because wrong provenance is worse than none. GLiNER offsets are trusted, never re-matched. Masking by spaces keeps document coordinates, so there is no offset arithmetic. PHI coexistence: offsets and page are integers, so they live in Postgres; the verbatim quote is PHI, so it lives in the S3 entity JSON. Honest gaps: no relation provenance, and the screen that shows the quotes is not built.
+
+</Fragment>
+</AnswerModes>
+
+## Mock interview questions
+
+<Reveal q="Basic: what does an entity carry for provenance?">
+
+`source_span` (the verbatim quote), `char_start`, `char_end`, `page`, and `span_match` (exact, normalized, fuzzy or unlocated).
+
+</Reveal>
+
+<Reveal q="Intermediate: why does masking use spaces instead of deleting the covered text?">
+
+Replacing characters with spaces keeps every later stage's offsets in document coordinates. No offset arithmetic, no off-by-one class of bugs.
+
+</Reveal>
+
+<Reveal q="Advanced: the LLM quotes a sentence that differs slightly from the source. What could go wrong with a loose match?">
+
+A fuzzy match can land on the wrong sentence and show a confident wrong page. In a clinical note near-identical sentences differ only in numbers, so the repo's fuzzy tier requires the quote's numbers to appear in the candidate, and everything else stays `unlocated`.
+
+</Reveal>
+
+<RevisionCards id="ap-provenance" title="Provenance: facts to recite" cards={[
+  { front: 'What is stored per entity?', back: 'source_span, char_start, char_end, page, span_match; the quote itself lives in the S3 entity JSON.' },
+  { front: 'Resolver tiers', back: 'exact, normalized (case, whitespace, hyphenation), fuzzy (at least 12 chars, ratio 0.85, numeric guard), unlocated with null offsets.' },
+  { front: 'What was broken before J10?', back: 'raw_text held the canonical name; no offsets; no pages.' },
+  { front: 'Why are offsets not PHI but quotes are?', back: 'Offsets and pages are integers. The quote is clinical text, so it stays in S3.' },
+  { front: 'Real run', back: 'total_entities=49 located=49 pages_assigned=49 match_counts exact 49.' },
+  { front: 'What is still missing?', back: 'Relation provenance; the AlertDetail screen (U4).' }
+]} />
+
+<ChapterDone id="ap-provenance" />

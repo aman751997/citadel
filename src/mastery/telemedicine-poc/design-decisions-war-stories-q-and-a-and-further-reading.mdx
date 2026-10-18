@@ -1,12 +1,20 @@
 ---
 title: "4. Design Decisions, War Stories, Q&A & Further Reading"
-description: "S. Patient joined audio-only with camera off, sometimes with mic off too. Doctor pressed REC; nothing happened on the phone. T. Find why a reliable data-channel message vanished…"
+description: "Design decisions with trade-offs, seven production-style debugging stories in STAR form, the gap to production, a three-level interview question bank, and further reading."
 project: "telemedicine-poc"
 order: 4
 minutes: 11
 ---
 
+import StatusBadge from '../../components/StatusBadge.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import Reveal from '../../components/Reveal.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
+
 ## Design decisions and trade-offs
+
+<StatusBadge kind="tested" label="Decisions made in the prototype" /> The first four columns describe what was built in the proof of concept. The "Revisit when" column is reasoning about scale, not measured. <StatusBadge kind="hypothetical" label="Revisit when = hypothetical" />
 
 | Decision | Explain it to a friend | Alternatives | Why this | Revisit when |
 | --- | --- | --- | --- | --- |
@@ -21,37 +29,95 @@ minutes: 11
 | **Synchronous delete after success** | "The moment the transcript is written, the audio is gone." | Retention by default | Data minimisation; `KEEP_AUDIO=1` models the 30-day hospital opt-in. Failure path retains for retry. | Per-tenant retention policy in production, with the same default. |
 | **Write-once signed note** | "You can sign once. The original machine transcript is never touched." | Editable note; overwrite transcript | Medico-legal: immutable source, attributable human edits, 409 on re-sign. | Add amendment records (new versions with reasons) rather than allowing edits. |
 
+<AnswerModes id="decision-livekit" q="Why self-host LiveKit instead of a managed video service?">
+<Fragment slot="short">
+
+Data residency, because PHI should stay on our infrastructure, plus per-track egress out of the box, a server SDK for tokens and room control, and no per-minute billing for a proof of concept.
+
+</Fragment>
+<Fragment slot="medium">
+
+Alternatives were Twilio Video, Daily or Agora, or a raw WebRTC mesh. Self-hosted LiveKit gave me recording and webhooks without building them. The trade-off is that I run the SFU, Redis and egress myself, and that cost showed up as the Docker and Redis stories below. If ops cost outweighs managed pricing at production scale, LiveKit Cloud is described as a drop-in. <StatusBadge kind="hypothetical" label="At higher scale" />
+
+</Fragment>
+<Fragment slot="deep">
+
+Mention a mesh does not scale past two or three peers and cannot record server-side, and an SFU forwards streams without mixing, which is why per-track recording was natural. Be clear that no managed service was benchmarked against it.
+
+</Fragment>
+</AnswerModes>
+
+<AnswerModes id="decision-fs-queue" q="You used the filesystem as a database and an in-process promise chain as a queue. Defend that.">
+<Fragment slot="short">
+
+It is a proof of concept. The folder per session is easy to demo and already has the shape of an object-store prefix, and one Whisper job at a time on a single GPU is exactly a promise chain. Production gets Postgres, object storage and a real queue.
+
+</Fragment>
+<Fragment slot="medium">
+
+The cost I accept: activeRecordings is in memory and lost on restart, and nothing survives a crash mid-queue except files on disk. Failed transcriptions keep their audio so they can be retried by hand. The production plan is metadata in Postgres, blobs in object storage with lifecycle rules, and RabbitMQ with a worker pool. <StatusBadge kind="planned" />
+
+</Fragment>
+<Fragment slot="deep">
+
+Name the exact failure modes: restart loses the active map, no automatic retry, no backpressure, no per-tenant isolation. Say these are acceptable only because nothing here is production.
+
+</Fragment>
+</AnswerModes>
+
+<AnswerModes id="decision-consent-set" q="Why model consent as a set that must empty rather than a boolean?">
+<Fragment slot="short">
+
+A boolean says someone agreed. A set of remote identities says everyone present agreed. Late joiners are not covered by an earlier accept, any decline aborts, and a second recording asks again.
+
+</Fragment>
+<Fragment slot="medium">
+
+The doctor's REC puts every remote identity in pendingConsents, accepts remove them, and recording starts only when it is empty. Revoke stops the recording and tells the doctor who withdrew it, distinct from a plain stop. Tighten by persisting consent events with timestamps. <StatusBadge kind="planned" label="Persist consent events" /> Never loosen it.
+
+</Fragment>
+<Fragment slot="deep">
+
+Add the dual-path signalling and de-duplication: only the first copy of the final accept starts recording because of the pendingConsents.size guard. Legal fit with DPDP and the Telemedicine Practice Guidelines is the text's mapping, not a reviewed conclusion. <StatusBadge kind="unverified" label="Legal review" />
+
+</Fragment>
+</AnswerModes>
+
 ## War stories (STAR)
+
+Each story is a real problem from building the proof of concept. The source gives qualitative outcomes only, so each Result is marked "not quantified in source".
 
 ### 1. The consent modal never appeared on the patient's phone
 
-**S.** Patient joined audio-only with camera off, sometimes with mic off too. Doctor pressed REC; nothing happened on the phone. **T.** Find why a reliable data-channel message vanished. **A.** Traced to WebRTC topology: a participant who publishes nothing has no publisher peer connection, and data-channel sends from that side time out. Rather than force everyone to publish, added an HTTP relay through the server's `sendData` and sent every control message both ways, with receiver-side de-duplication so only the first copy of the final accept starts recording. **R.** Consent works for silent participants; double delivery is harmless. **Lesson.** Know the transport's topology before trusting "reliable".
+**Situation.** Patient joined audio-only with camera off, sometimes with mic off too. Doctor pressed REC; nothing happened on the phone. **Task.** Find why a reliable data-channel message vanished. **Action.** Traced to WebRTC topology: a participant who publishes nothing has no publisher peer connection, and data-channel sends from that side time out. Rather than force everyone to publish, added an HTTP relay through the server's `sendData` and sent every control message both ways, with receiver-side de-duplication so only the first copy of the final accept starts recording. **Result (not quantified in source).** Consent works for silent participants; double delivery is harmless. **Lesson.** Know the transport's topology before trusting "reliable".
 
 ### 2. Whisper said "Thank you." to an empty room
 
-**S.** Per-speaker tracks are half silence. Transcripts contained "Thank you.", "Thanks for watching.", and a Russian "to be continued". **T.** Remove hallucinations without dropping real speech. **A.** Disabled `condition_on_previous_text` so one hallucination could not seed the next; stacked Whisper's own three quality signals plus a minimum duration; then added the decisive gate: measure the segment window's peak with `ffmpeg volumedetect` and drop anything below −35 dBFS. **R.** Outro phrases gone from silent windows; real speech untouched. Some short repeated phrases still leak, which I say up front. **Lesson.** When a model's confidence is unreliable, check the physical signal.
+**Situation.** Per-speaker tracks are half silence. Transcripts contained "Thank you.", "Thanks for watching.", and a Russian "to be continued". **Task.** Remove hallucinations without dropping real speech. **Action.** Disabled `condition_on_previous_text` so one hallucination could not seed the next; stacked Whisper's own three quality signals plus a minimum duration; then added the decisive gate: measure the segment window's peak with `ffmpeg volumedetect` and drop anything below −35 dBFS. **Result (not quantified in source).** Outro phrases gone from silent windows; real speech untouched. Some short repeated phrases still leak, which I say up front. **Lesson.** When a model's confidence is unreliable, check the physical signal.
 
 ### 3. Speakers appeared in the wrong order
 
-**S.** Two files, each starting at 0:00. Interleaving by file time put the patient's answer before the doctor's question. **T.** Put both on one clock. **A.** Harvested `startedAt` (ns) from each egress result, added it as a per-track offset, sorted, rebased to the first utterance. Found the result record is written asynchronously, so finalise polls `listEgress` until COMPLETE (≤10 s) before writing the manifest. Added a relative-time fallback when any timestamp is missing. **R.** Measured skew of 29–74 ms is corrected; order is right. **Lesson.** Independent recorders need a shared reference, and the reference arrives late.
+**Situation.** Two files, each starting at 0:00. Interleaving by file time put the patient's answer before the doctor's question. **Task.** Put both on one clock. **Action.** Harvested `startedAt` (ns) from each egress result, added it as a per-track offset, sorted, rebased to the first utterance. Found the result record is written asynchronously, so finalise polls `listEgress` until COMPLETE (≤10 s) before writing the manifest. Added a relative-time fallback when any timestamp is missing. **Result (not quantified in source).** Measured skew of 29–74 ms is corrected; order is right. **Lesson.** Independent recorders need a shared reference, and the reference arrives late.
 
 ### 4. LiveKit kept losing its recorder (Redis latency)
 
-**S.** Egress StartEgress calls timed out; LiveKit logged stale keepalives. **T.** Stabilise coordination between the server binary and the Docker egress. **A.** Root cause was Docker Desktop's host→container port proxy adding latency and stalling. Moved Redis to the host via Homebrew; egress connects through `host.docker.internal`. Also replaced LiveKit `--dev` mode with a config file, since egress needs shared Redis. **R.** Recording start became reliable. **Lesson.** Latency-sensitive coordination should not cross a virtualised network boundary on a laptop.
+**Situation.** Egress StartEgress calls timed out; LiveKit logged stale keepalives. **Task.** Stabilise coordination between the server binary and the Docker egress. **Action.** Root cause was Docker Desktop's host→container port proxy adding latency and stalling. Moved Redis to the host via Homebrew; egress connects through `host.docker.internal`. Also replaced LiveKit `--dev` mode with a config file, since egress needs shared Redis. **Result (not quantified in source).** Recording start became reliable. **Lesson.** Latency-sensitive coordination should not cross a virtualised network boundary on a laptop.
 
 ### 5. Docker wedged before every demo
 
-**S.** Docker Desktop hung intermittently (CLI hangs, port proxy stalls), making egress calls time out. **T.** Make the start script self-healing so a demo never depends on a manual restart. **A.** Probe the daemon with `curl --unix-socket … /_ping --max-time 4`; on failure, quit Docker Desktop via AppleScript, kill the backend, reopen, retry up to 40 × 5 s; then run health checks (Redis PONG, 200s on 7880/3001/5173, compose status). **R.** "Everything must say 200 / PONG / Up" became a one-command pre-demo gate. **Lesson.** Automate the flaky dependency's recovery, and make the health check explicit.
+**Situation.** Docker Desktop hung intermittently (CLI hangs, port proxy stalls), making egress calls time out. **Task.** Make the start script self-healing so a demo never depends on a manual restart. **Action.** Probe the daemon with `curl --unix-socket … /_ping --max-time 4`; on failure, quit Docker Desktop via AppleScript, kill the backend, reopen, retry up to 40 × 5 s; then run health checks (Redis PONG, 200s on 7880/3001/5173, compose status). **Result (not quantified in source).** "Everything must say 200 / PONG / Up" became a one-command pre-demo gate. **Lesson.** Automate the flaky dependency's recovery, and make the health check explicit.
 
 ### 6. The patient's screen kept showing a dead call
 
-**S.** Doctor pressed End and just left; the patient saw one frozen tile. **T.** Make End mean end. **A.** End now finalises the recording first, then `deleteRoom`; clients receive `ROOM_DELETED` and render "Consultation ended"; the doctor is routed to the notes screen. **R.** Clean close for both parties, and the egress stops before the room disappears. **Lesson.** Order of operations at shutdown matters: stop recorders, then tear down the room.
+**Situation.** Doctor pressed End and just left; the patient saw one frozen tile. **Task.** Make End mean end. **Action.** End now finalises the recording first, then `deleteRoom`; clients receive `ROOM_DELETED` and render "Consultation ended"; the doctor is routed to the notes screen. **Result (not quantified in source).** Clean close for both parties, and the egress stops before the room disappears. **Lesson.** Order of operations at shutdown matters: stop recorders, then tear down the room.
 
 ### 7. A browser crash mid-call would have lost the recording
 
-**S.** Finalise only ran when a button was pressed. **T.** Cover the "tab closed" path. **A.** Registered the `room_finished` webhook, verified with the raw body and the LiveKit signature, calling the same idempotent finalise that removes the room from the active map before any await and ignores already-ended egresses. **R.** Three entry points, one outcome. **Lesson.** Every background path needs the same idempotent handler as the happy path.
+**Situation.** Finalise only ran when a button was pressed. **Task.** Cover the "tab closed" path. **Action.** Registered the `room_finished` webhook, verified with the raw body and the LiveKit signature, calling the same idempotent finalise that removes the room from the active map before any await and ignores already-ended egresses. **Result (not quantified in source).** Three entry points, one outcome. **Lesson.** Every background path needs the same idempotent handler as the happy path.
 
 ## What I would change for production (say this unprompted)
+
+<StatusBadge kind="planned" label="Every row is planned, none is built" />
 
 | Gap today | Production change |
 | --- | --- |
@@ -83,6 +149,58 @@ minutes: 11
 | What is an SFU and why not peer-to-peer? | An SFU forwards each participant's streams to the others without mixing; P2P mesh does not scale past two or three and cannot record server-side. LiveKit is an SFU. | WebRTC for the Curious |
 | Why Opus? | WebRTC's mandatory audio codec: low latency, good at speech from 6 to 510 kbps, built-in packet-loss concealment. Recording it as-is avoids a transcode. | RFC 6716 |
 
+### Think first: three levels
+
+Answer out loud before opening each one.
+
+**Basic: explain the architecture**
+
+<Reveal q="Describe the system in 30 seconds without looking at the diagram.">
+
+A React app talks through one HTTPS Vite origin to an Express token server and a LiveKit SFU. The doctor requests recording, consent is collected, and one track egress per microphone writes Opus files. On end, the server writes a manifest, runs Whisper locally, aligns and filters the transcript, asks MedGemma for a five-section draft, and the doctor signs a write-once note. It runs on one Mac plus a phone and is a proof of concept.
+
+</Reveal>
+
+<Reveal q="Which hop carries media and why does it bypass the proxy?">
+
+WebRTC media goes directly between the browser and livekit-server over UDP 50000-50200, encrypted with DTLS-SRTP. The proxy only carries the app, the API and the signalling websocket.
+
+</Reveal>
+
+**Intermediate: defend decisions**
+
+<Reveal q="Why not diarization? What did that choice cost you?">
+
+Exact speaker labels by construction and no GPU diarization pass. The cost is aligning independent files, solved with egress start timestamps, and half-silent tracks causing hallucinations, solved with the five gates.
+
+</Reveal>
+
+<Reveal q="Why is finalise safe to call from three places?">
+
+It removes the room from the in-memory map before any await, so a second caller finds nothing, and it ignores egresses that already ended.
+
+</Reveal>
+
+**Advanced: failures, scaling, alternatives**
+
+<Reveal q="What happens if the egress never reaches COMPLETE within 10 seconds?">
+
+startedAtNs is missing (0), so transcribe.py logs a warning and all tracks fall back to relative time. Order can be off by the egress start gap, which was 29-74 ms in the measured sessions. The fix is to poll longer or use the egress_ended webhook and fail loudly. <StatusBadge kind="hypothetical" label="Improvement" />
+
+</Reveal>
+
+<Reveal q="Your gates still let some phrases through. What is the next layer?">
+
+A real VAD such as Silero in front of Whisper, a repetition filter across segments, and a per-tenant language lock. None is built. <StatusBadge kind="planned" />
+
+</Reveal>
+
+<Reveal q="Move this to production for many hospitals. What breaks first?">
+
+The unauthenticated API and client-chosen roles, the in-memory state and filesystem storage, and laptop-bound transcription. The gap table above lists the fixes: server-derived roles, Postgres and object storage, GPU workers or managed Indic STT behind a queue. No scale numbers exist for this proof of concept. <StatusBadge kind="unverified" label="No load testing" />
+
+</Reveal>
+
 ## Closed-book self-check
 
 1. Draw the process diagram with ports. Which hop carries media, and why does it bypass the proxy?
@@ -109,3 +227,14 @@ minutes: 11
 * \[ \] Question I was asked that is not here:
 * \[ \] Answer I fumbled and the better version:
 
+<RevisionCards id="poc-decisions" cards={[
+  { front: 'Why self-hosted LiveKit?', back: 'Data residency, per-track egress and webhooks out of the box, server SDK, no per-minute billing for a POC. Cost: you run SFU, Redis and egress.' },
+  { front: 'Why Redis on the host?', back: 'Docker Desktop port proxy latency made LiveKit think the recorder died. Host Redis, egress via host.docker.internal.' },
+  { front: 'Why serialise transcription?', back: 'One GPU, so a promise chain is a queue with zero infrastructure. Production: RabbitMQ and workers.' },
+  { front: 'What is the dual-path consent story?', back: 'No publisher connection for a silent participant, so data-channel sends time out. HTTP relay via sendData plus de-duplication.' },
+  { front: 'What is the Whisper silence story?', back: 'Half-silent tracks produce Thank you. Disable conditioning, four Whisper-signal gates, then ffmpeg peak under -35 dBFS. Some short repeats still leak.' },
+  { front: 'Name five production gaps.', back: 'No API auth and client-chosen roles, filesystem and in-memory state, laptop Whisper in-process queue, hallucination leaks, no tests.' },
+  { front: 'Docker wedging fix?', back: 'start-all.sh probes the daemon socket with curl, restarts Docker Desktop via AppleScript, retries up to 40 x 5 s, then runs explicit health checks.' },
+]} />
+
+<ChapterDone id="poc-decisions" />

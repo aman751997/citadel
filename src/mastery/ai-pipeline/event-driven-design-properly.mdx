@@ -7,6 +7,11 @@ minutes: 9
 ---
 
 import Mermaid from '../../components/Mermaid.astro';
+import StatusBadge from '../../components/StatusBadge.astro';
+import AnswerModes from '../../components/AnswerModes.astro';
+import Reveal from '../../components/Reveal.astro';
+import RevisionCards from '../../components/RevisionCards.astro';
+import ChapterDone from '../../components/ChapterDone.astro';
 
 **One-line answer.** "At-least-once delivery from RabbitMQ, made safe by idempotent consumers and idempotency keys on every side effect; a message is acked only after the work is done, rejected without requeue on failure so it lands in a dead-letter queue instead of looping; prefetch bounds what the broker hands us, a semaphore bounds what we run."
 
@@ -53,6 +58,8 @@ Java-internal (never seen by Python):
 Clinical text never enters the broker. The consumer fetches it from S3 itself. Why: the broker is not a PHI store, messages get logged and inspected, and a queue full of 100 KB notes is a different capacity problem. This is the **claim check** pattern; say the name.
 
 Small detail that shows you ran it: the Java side once published `s3://bucket/key` URIs where the contract said raw keys; using a URI as a Key gives a misleading `AccessDenied`. Both sides now normalise (`events.py` strips the scheme). Belt and braces after a real incident.
+
+**STAR: the s3:// URI incident.** <StatusBadge kind="implemented" /> Situation: Java published `s3://bucket/key` URIs where the contract said raw keys. Task: make the consumer fetch the right object. Action: using a URI as a Key gave a misleading `AccessDenied`, so both sides now normalise (`events.py` strips the scheme). Result: not quantified in source.
 
 ## 3. Delivery semantics — the part they actually test
 
@@ -165,3 +172,82 @@ Every stage boundary emits `{patientId, documentId, stage, outcome, seq}` to a s
 * [aio-pika IncomingMessage.process()](https://aio-pika.readthedocs.io/en/latest/apidoc.html#aio_pika.IncomingMessage.process) — the ack/reject context manager we rely on
 * [STOMP 1.2 specification](https://stomp.github.io/stomp-specification-1.2.html) · [RabbitMQ STOMP plugin](https://www.rabbitmq.com/docs/stomp) — the browser relay
 
+## Status of the reliability pieces
+
+| Piece | Status |
+| --- | --- |
+| Ack after work, `requeue=False`, DLQ on reject, prefetch 5, semaphore | <StatusBadge kind="implemented" /> |
+| Idempotency key per `pipeline_run_id`, delete-and-reinsert on redelivery, sequence-numbered progress events | <StatusBadge kind="implemented" /> |
+| Retry on `x-delivery-count`: the check exists but classic queues never set the header, so effectively no retries | <StatusBadge kind="implemented" label="Implemented, ineffective" /> |
+| Per-track outcome column, dead-letter on any track failure, a drained DLQ, a redrive endpoint with a cap | <StatusBadge kind="planned" /> |
+| Full transactional outbox (relay or CDC) | <StatusBadge kind="hypothetical" /> |
+
+The retry-header point was checked against `app/workers/consumer.py`: the code reads `x-delivery-count` and compares it with 3, exactly as described.
+
+## Design decisions, and how to answer them
+
+<AnswerModes id="delivery-semantics" q="What happens if the consumer dies mid-document? Exactly-once?">
+<Fragment slot="short">
+
+At-least-once delivery from RabbitMQ, made safe by idempotent consumers and idempotency keys on every side effect. A message is acked only after the work is done, so a crash means redelivery and a clean redo.
+
+</Fragment>
+<Fragment slot="medium">
+
+`message.process(requeue=False)` acks on normal exit and rejects on exception, and a rejected message goes to the dead-letter exchange instead of looping. If the process dies before the ack, RabbitMQ redelivers, so a document can be processed twice. Entity rows and chunks are deleted and re-inserted; webhooks carry `patient:section:document:pipeline_run_id` and Java does `INSERT ... ON CONFLICT DO NOTHING`.
+
+Exactly-once does not exist across a broker, two databases, S3 and an HTTP call. At-least-once plus idempotent consumers gives effectively-once outcomes.
+
+</Fragment>
+<Fragment slot="deep">
+
+Add the subtle part: `pipeline_run_id` is minted per handler invocation, not per document. A genuine redelivery (work really redone) gets a fresh key so Java refreshes; the notifier's own retry of the same POST reuses the key so Java dedupes. Two kinds of "again", told apart by where the id is created. Then the honest gaps: entity replacement has a total-loss window (page 9, trap 5), and a document can be indexed with no entities and still be acked, because only a double failure of both tracks dead-letters.
+
+</Fragment>
+</AnswerModes>
+
+<AnswerModes id="prefetch-vs-semaphore" q="Prefetch versus semaphore: what is the difference?">
+<Fragment slot="short">
+
+Prefetch is how many unacked messages the broker hands us, a network buffer. The semaphore is how many we actually run at once, a CPU and API-quota budget.
+
+</Fragment>
+<Fragment slot="medium">
+
+Prefetch 5 means the next message is already in memory when a slot frees, without the broker over-committing. The semaphore (`MAX_CONCURRENT_EVENTS`, 1 locally) is 1 because Gemini rate limits and the model containers are memory-bound. Webhooks run outside the semaphore: they are network I/O against another service. Before that change, four webhooks times two attempts times about 6 s against a dead Java burned about 48 s of the only slot.
+
+</Fragment>
+</AnswerModes>
+
+**STAR: the 115 s gap.** Situation: end to end took 131 s. Task: find where the time went. Action: per-stage progress events (J11) showed PROFILE_MERGE taking 115 s between STARTED and COMPLETED. That gap is how the S3 bug was found. Result: after the S3 fan-out fix the demo note takes 55 s end to end (page 1). The root cause itself (S3 entity fetches) is told on page 10.
+
+## Mock interview questions
+
+<Reveal q="Basic: what is a topic exchange and why does it matter here?">
+
+Routing by key pattern. The pipeline binds its own queues; Java publishes and does not know who listens. Adding a consumer never touches the producer. Trap worth saying: queues are consumer-declared, so if the consumer never ran, events published to the exchange are dropped silently.
+
+</Reveal>
+
+<Reveal q="Intermediate: why reject with requeue=False instead of requeueing?">
+
+Without it, a poison message (malformed JSON, say) is redelivered forever, the classic poison-pill loop. With it the message goes to the dead-letter exchange and the queue keeps moving.
+
+</Reveal>
+
+<Reveal q="Advanced: two documents for the same patient finish out of order. Which wins? And how would you replay a dead-lettered one?">
+
+No ordering guarantee across messages, and none is needed: sections are recomputed from all of the patient's entities on every merge, so the final state is the same whichever finishes last. Replay today: shovel from `ai-pipeline.dlq` back to the exchange by hand. Tomorrow <StatusBadge kind="planned" />: a redrive endpoint with a cap, and alerting on the DLQ gauge.
+
+</Reveal>
+
+<RevisionCards id="ap-event-driven" title="Event-driven: facts to recite" cards={[
+  { front: 'The one-line delivery answer', back: 'At-least-once plus idempotent consumers; ack after work; reject without requeue so failures land in the DLQ instead of looping.' },
+  { front: 'Why pointers, not payload?', back: 'The broker is not a PHI store and messages get logged. Claim-check pattern.' },
+  { front: 'How is a repeat made safe?', back: 'Delete-and-reinsert for entities and chunks; webhook idempotency key with pipeline_run_id and ON CONFLICT DO NOTHING; sequence-numbered progress events.' },
+  { front: 'Prefetch vs semaphore', back: 'Prefetch 5: broker buffer. Semaphore (MAX_CONCURRENT_EVENTS, 1 locally): actual parallelism.' },
+  { front: 'What dead-letters a message?', back: 'Only a double failure (NER and indexing both fail). A NER-only failure reports sections FAILED but still acks.' },
+  { front: 'Honest gaps, unprompted', back: 'x-delivery-count is never set on classic queues, so effectively no retries; nothing drains the DLQ; the outbox has no revisit for a crash between commit and publish.' }
+]} />
+
+<ChapterDone id="ap-event-driven" />

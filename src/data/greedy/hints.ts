@@ -61,7 +61,7 @@ export const hints: Record<string, [string, string, string]> = {
     'If hi < 0, return false: even with every * as ( there are too many ). Clamp lo at 0: you never plan to go below zero open. At the end, return lo == 0.',
   ],
   coins: [
-    'Run Nix’s three stones first: on coins {1, 3, 4} and amount 6, what does largest-first give, and what is the true best?',
+    'Hunt for a counterexample first: on coins {1, 3, 4} and amount 6, what does largest-first give, and what is the true best?',
     'The best answer for an amount ends with SOME coin c, and what comes before it is the best answer for amount − c. Remember the best answer for every smaller amount.',
     'best[0] = 0; for a from 1 to amount, best[a] = 1 + min over coins c ≤ a of best[a − c], skipping amounts that cannot be made. Answer −1 if best[amount] was never reached.',
   ],

@@ -1,12 +1,11 @@
 ---
 title: 'Pattern: Realtime & Messaging — Gateways, Delivery, WhatsApp'
-description: 'The night Kestrel’s chat lost messages and showed the rest twice. Server push, the stateful gateway tier, the connection registry, at-least-once with dedup, per-conversation order, receipts, offline sync, presence, groups, E2EE — then WhatsApp, out loud, on the clock.'
+description: 'How realtime and chat systems work: server push, the stateful gateway tier, the connection registry, at-least-once delivery with dedup, per-conversation order, receipts, offline sync, presence, groups and E2EE. Then WhatsApp, step by step, on the interview clock.'
 module: 4
 order: 1
-minutes: 100
+minutes: 120
 ---
 import PatternHub from '../components/PatternHub.astro';
-import Scene from '../components/Scene.astro';
 import Part from '../components/Part.astro';
 import Figure from '../components/Figure.astro';
 import Mermaid from '../components/Mermaid.astro';
@@ -14,6 +13,10 @@ import ArrayStrip from '../components/ArrayStrip.astro';
 import Trace from '../components/Trace.astro';
 import Reveal from '../components/Reveal.astro';
 import Quiz from '../components/Quiz.astro';
+import ChapterDone from '../components/ChapterDone.astro';
+import LessonProgress from '../components/LessonProgress.astro';
+import RevisionCards from '../components/RevisionCards.astro';
+import AnswerModes from '../components/AnswerModes.astro';
 import { transport, routing, reconnect, flow, ordering, presenceDrill, groups, storage, failures, drills } from '../data/sd/pattern-realtime';
 import { BASE } from '../paths';
 
@@ -21,14 +24,7 @@ import { BASE } from '../paths';
   pattern="sd-pattern-realtime"
   start="prologue"
   logline="A chat system is not a WebSocket. It is a promise about every message — it is stored before anyone is told, it reaches every device of every reader, it appears once and in the same order everywhere, and every tick on the screen tells the truth. Push is the fast path. The store is the truth."
-  cast={[
-    { name: 'You', role: 'Two months into Kestrel. You have drawn “WebSocket” on a whiteboard many times. You have never had to explain what happens when one dies.' },
-    { name: 'Mara Quell', role: 'Principal engineer. Draws a phone on each side of the board and asks where the message is, at every instant in between.' },
-    { name: 'Dev Okafor', role: 'SRE. Was holding the pager the night half a million phones reconnected in the same second.' },
-    { name: 'Iris Tan', role: 'Product lead. “Oh, and also — groups.” Then “oh, and also — channels with a hundred thousand people.”' },
-    { name: 'Theo Brandt', role: 'Database whisperer. Wants to know what the partition key is before he will look at anything else.' },
-    { name: 'The Interviewer', role: 'Appears between chapters, and at the end asks you to design WhatsApp in forty-five minutes.' },
-  ]}
+  cast={[]}
   parts={[
     { name: 'Part One · Holding the line', description: 'Pick the pipe, then run the servers that hold it.', links: [['transport', 'Which pipe?'], ['gateway', 'Servers that remember'], ['heartbeats', 'Is anyone there?']] },
     { name: 'Part Two · Getting a message there', description: 'One message end to end, and every promise it carries.', links: [['message-flow', 'One message, end to end'], ['delivery', 'Once, and in order'], ['receipts', 'Two grey ticks'], ['offline', 'The phone in the drawer']] },
@@ -38,26 +34,24 @@ import { BASE } from '../paths';
   ]}
   extras={[['decision-drills', 'Decision drills'], ['interview-script', 'Say it in the room'], ['cheat-sheet', 'Cheat sheet'], ['beyond', 'Beyond this page']]}
   routes={[
-    { href: '#prologue', title: '📖 Read the story', text: 'Incident → idea → numbers → decision → trap' },
+    { href: '#prologue', title: '📖 Read the lesson', text: 'Problem → mechanism → numbers → trade-offs → interview answer' },
     { href: '#decision-drills', title: '🧭 Decision drills', text: 'Transport, routing, ordering, receipts, fan-out — with feedback' },
     { href: '#interview-script', title: '🎤 Say it in the room', text: 'The 90-second answer, five follow-ups, and a full WhatsApp round' },
   ]}
   note="This is a pattern lesson: Parts One to Four teach the machinery; Part Five spends it on WhatsApp and its cousins. Read one part per sitting, and read the walkthrough the night before a mock."
 />
 
-<h2 id="prologue">Prologue · Ticks that lied</h2>
+<LessonProgress />
 
-<Scene chapter="Prologue" title="Ticks that lied" mood="storm">
+<h2 id="prologue">Prologue · Why chat is more than a WebSocket</h2>
 
-Kestrel Messages launched on a Tuesday. On Thursday at 21:00, a routine deploy restarted one gateway server, and Dev narrated what happened next in the incident channel, one line at a time.
+Here is a typical failure in a first chat design. A deploy restarts one gateway server (the server that holds users' WebSocket connections). All 500,000 sockets on it close. In the same second, all 500,000 phones reconnect, and each one asks the message store for everything it missed. The store hits 100% CPU. Afterwards, support reports two bugs: some messages show up twice, and some show two ticks for messages the recipient never received.
 
-*"Gateway 7 restarted. 500,000 sockets closed."* — *"All 500,000 clients reconnected at 21:00:01."* — *"Message store at 100% CPU. Every phone is asking for its history at once."* — *"Support says some messages show up twice. Some show two ticks and were never received."*
+Now draw two phones, Alice on the left and Bob on the right, with an arrow between them. The message is somewhere on that arrow at every instant. Three questions drive the whole lesson:
 
-The next morning Mara draws two phones on the whiteboard, Alice on the left, Bob on the right, and a long arrow between them. She puts the marker on the arrow.
-
-*"A message is somewhere on this line at every instant,"* she says. *"Tell me where it is. Tell me what happens if the box it's in dies right now. And tell me what each tick on Alice's screen is promising."*
-
-</Scene>
+1. Where is the message at each instant?
+2. What happens if the box holding it dies right now?
+3. What is each tick on Alice's screen promising?
 
 **Realtime** is any product where the server has news before the client asks: a new message, a driver who moved, a document someone else edited, a score that changed. Plain HTTP is client-asks-server, so the pattern has three problems stacked on top of each other:
 
@@ -83,7 +77,43 @@ The whole lesson hangs on one sentence. Say it in every realtime design:
     PN -.-> B`} />
 </Figure>
 
-**Why this lesson matters to you.** Chat is the most-asked realtime question, and it is the one where a plausible diagram hides the most hand-waves. Your gap register shows up here in disguise. **Silent skips**: "and then it's delivered" skips five decisions. **Decomposition from scratch**: this lesson is pattern-first, so that Slack, live comments, collaborative cursors and Uber's moving car all fall to the same machinery. **Cache hand-waves**: the connection registry is a cache of where devices are, and it needs the same four promises — key shape, TTL with a reason, invalidation, failure plan — or it will lie to you. **Pacing**: the walkthrough at the end runs on the 9 · 15 · 25 · 38 clock.
+**Common slips this lesson is built to prevent.** Saying "and then it's delivered", which skips five decisions. Treating the connection registry as truth when it is a cache that needs a key shape, a TTL with a reason, invalidation and a failure plan. Drawing one fan-out strategy for every group size. Describing failures only in engineer words, not in what the user sees. The pattern view helps: Slack, live comments, collaborative cursors and a moving car on a map all fall to the same machinery. The walkthrough at the end runs on the 9 · 15 · 25 · 38 clock.
+
+<Quiz id="rt-prologue" title="Check your understanding" questions={[
+ {
+  "kind": "failure",
+  "q": "A first design keeps a message only in the memory of the gateway that holds Bob's socket, and pushes it from there. The gateway restarts. What is the problem?",
+  "options": [
+   "Bob must reconnect, which is a small annoyance",
+   "The message existed only in a socket and a process, so it is gone and nobody knows it was lost",
+   "The gateway should have retried the push forever"
+  ],
+  "answer": 1,
+  "why": "A message that exists only in a socket is broken. Persist first, then push; the store is the truth.",
+  "explain": [
+   "Reconnecting is not the failure. The failure is where the message lived.",
+   "Correct: nothing durable ever held it, and Alice may already have a tick for it.",
+   "Retry from what? The data to resend was in the lost memory."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-prologue" cards={[
+ {
+  "front": "The one sentence for every realtime design",
+  "back": "Push is the fast path. The store is the truth."
+ },
+ {
+  "front": "Three problems stacked in a realtime system",
+  "back": "Server push, connection state (stateful gateways), delivery guarantees (once, in order, honest ticks)."
+ },
+ {
+  "front": "Why is a message that lives only in a socket broken?",
+  "back": "A restart or dead socket loses it silently. It must be persisted before anyone is told."
+ }
+]} />
+
+<ChapterDone id="prologue" />
 
 <Part n="Part One" title="Holding the line">
 
@@ -93,13 +123,7 @@ First the pipe, then the servers that hold the pipes open, then what happens whe
 
 <h2 id="transport">Chapter 1 · Which pipe?</h2>
 
-<Scene chapter="Chapter 1" title="Which pipe?" mood="dawn">
-
-Iris has three requests on one sticky note. Order status should update without a refresh. The match-day score widget should be live. And chat should feel instant, with "typing…" under the name.
-
-You write WEBSOCKET three times. Mara crosses out two of them. *"How often does each one change? Who talks back? How many people are watching?"*
-
-</Scene>
+A product team has three requests. Order status should update without a refresh. A match-day score widget should be live. Chat should feel instant, with a "typing..." indicator. The tempting answer is "WebSocket" three times. It is wrong for two of them. Three questions show why: how often does it change, who talks back, and how many people are watching?
 
 The transport choice is covered in depth in <a href={`${BASE}sd/lessons/networking/#realtime`}>Networking, Chapter 7</a>. Here is the recap you need to make the call fast:
 
@@ -114,24 +138,99 @@ The decision rule you can say verbatim: **"Poll if you can, SSE if the server on
 
 **Three questions pick the pipe:** *How often does it change? Who talks back? How many are watching?* Order status: four changes in forty minutes, nobody talks back → poll every 10–15 seconds. Scores: constant changes, nobody talks back, millions watching → SSE. Chat: frequent, both directions (messages, typing, receipts) → WebSocket.
 
-**Worked numbers.** Kestrel has 20 million phones connected at the evening peak.
+**Worked numbers.** Assume a chat app has 20 million phones connected at the evening peak.
 
 - Polling every 5 s for new messages: `20,000,000 / 5 = 4,000,000` requests per second, nearly all empty, and messages still arrive up to 5 s late.
 - WebSockets: 20 million open connections, near-zero requests when idle, heartbeats every 30 s ≈ `20,000,000 / 30 ≈ 667,000` tiny frames per second — handled at the gateways, never forwarded deeper.
 
 <Trace title="Pick the pipe" steps={transport} takeaway="How often, who talks back, how many watching. Rare: poll. One-way: SSE. Two-way and frequent: WebSocket — and accept the stateful tier." />
 
-**Catch the trap:** "Real-time, so WebSockets." Real-time is a latency requirement, not a transport. Saying *"polling is enough here"* for an order page is a flex, not a cop-out — and it buys you time for the parts that need depth.
+**Catch the trap:** "Real-time, so WebSockets." Real-time is a latency requirement, not a transport. Saying *"polling is enough here"* for an order page is a deliberate choice, not a cop-out, and it buys you time for the parts that need depth.
+
+<Figure caption="How the three questions pick a transport. Start simple and move down only when the requirement forces it.">
+  <Mermaid code={`flowchart TD
+    A["New realtime feature"] --> B{"Does the client also send in real time?"}
+    B -->|"yes, frequently"| WS["WebSocket + gateway tier"]
+    B -->|"no"| C{"Changes more often than about once a minute?"}
+    C -->|"yes"| SSE["SSE: server streams events"]
+    C -->|"no"| POLL["Polling every 10 to 15 s"]`} />
+</Figure>
+
+<Quiz id="rt-transport" title="Check your understanding" questions={[
+ {
+  "kind": "scenario",
+  "q": "A live auction page shows the current bid to 2 million watchers. Bidders place bids with an ordinary HTTPS POST. Which pipe for the watchers?",
+  "options": [
+   "WebSocket, because it is real-time",
+   "SSE for the stream of bids, plain POST for placing a bid",
+   "Polling every 500 ms"
+  ],
+  "answer": 1,
+  "why": "Server pushes, client rarely talks: SSE. Bids are rare writes and can use normal requests.",
+  "explain": [
+   "Real-time is a latency requirement, not a transport. Watchers never send over this pipe.",
+   "Correct: one-way server push needs no duplex, and SSE reconnects and resumes with Last-Event-ID built in.",
+   "2 million watchers at 2 requests a second is 4 million requests a second, mostly empty."
+  ]
+ },
+ {
+  "kind": "predict",
+  "q": "20 million phones poll for new messages every 5 seconds. How many requests per second reach the backend, and what is the downside?",
+  "options": [
+   "About 400,000, a manageable load",
+   "About 4,000,000, almost all empty, and messages still arrive up to 5 s late",
+   "About 667,000, the same as heartbeats"
+  ],
+  "answer": 1,
+  "why": "Polling pays for N-fold wasted requests and still has latency up to the interval.",
+  "explain": [
+   "Off by ten. 20,000,000 / 5 is 4,000,000.",
+   "Correct: 20,000,000 / 5 = 4,000,000 per second.",
+   "That figure is heartbeats every 30 s. Polling every 5 s is six times more often."
+  ]
+ },
+ {
+  "kind": "failure",
+  "q": "A corporate proxy blocks the WebSocket upgrade for some users. What does your design do?",
+  "options": [
+   "Tell those users to change networks",
+   "Fall back to long polling (or SSE plus POST) against the same gateway and sync protocol",
+   "Switch the whole product to polling"
+  ],
+  "answer": 1,
+  "why": "Keep a fallback transport; the delivery protocol above it does not change.",
+  "explain": [
+   "The app has to work where users are.",
+   "Correct: cursors and the sync protocol do not depend on the transport, so a fallback only changes the pipe.",
+   "Over-reaction. Keep WebSocket for everyone it works for."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-transport" cards={[
+ {
+  "front": "Rule for picking the pipe",
+  "back": "Poll if you can, SSE if only the server pushes, WebSocket only when the client also sends in real time."
+ },
+ {
+  "front": "Three questions",
+  "back": "How often does it change? Who talks back? How many are watching?"
+ },
+ {
+  "front": "Polling cost at 20M clients every 5 s",
+  "back": "4,000,000 requests/s, nearly all empty, and up to 5 s late."
+ },
+ {
+  "front": "What does a WebSocket cost you?",
+  "back": "A stateful connection tier: which server holds the user now matters."
+ }
+]} />
+
+<ChapterDone id="transport" />
 
 <h2 id="gateway">Chapter 2 · Servers that remember</h2>
 
-<Scene chapter="Chapter 2" title="Servers that remember">
-
-Theo looks at the architecture diagram and taps the box labelled "API servers (WebSocket)". *"So when you deploy the API,"* he says, *"you disconnect everyone?"*
-
-Nobody had thought of that. Mara draws a line down the middle of the box and writes GATEWAY on one side and CHAT SERVICE on the other. *"One side holds sockets. The other side thinks. Why would you want them apart?"*
-
-</Scene>
+Suppose the API servers also hold the WebSocket connections. Then every API deploy disconnects every user. The fix is to split the tier in two: one side only holds sockets (the gateway), the other side makes decisions (the chat service). The rest of this chapter is about why the split helps and what the gateway tier still has to solve.
 
 A WebSocket or SSE server holds live connections, so unlike your stateless API fleet, **it matters which server a user is connected to.** That makes the connection tier the most fragile thing in the design, and the fix is to make it as dumb as possible.
 
@@ -167,7 +266,7 @@ Either is fine — **choosing one out loud** is what counts. A common senior ans
 **The registry is a cache. Give it the four promises.**
 
 - **Key shape:** `conn:user:{userId}` → a hash of `deviceId → "gw-22:c-81f3"`. One key per user, one field per device, so multi-device (Chapter 10) is free.
-- **TTL and why:** a TTL on every entry, refreshed on every heartbeat, sounds tidy and costs `20,000,000 / 30 ≈ 667,000` Redis writes per second at Kestrel's peak, all to say "still here". Cheaper: entries have no per-heartbeat refresh; instead **each gateway holds one liveness lease** (`gw:22:alive`, TTL ~10 s, renewed every few seconds). A router that finds an entry naming a gateway without a live lease treats it as stale.
+- **TTL and why:** a TTL on every entry, refreshed on every heartbeat, sounds tidy and costs `20,000,000 / 30 ≈ 667,000` Redis writes per second at the example's peak, all to say "still here". Cheaper: entries have no per-heartbeat refresh; instead **each gateway holds one liveness lease** (`gw:22:alive`, TTL ~10 s, renewed every few seconds). A router that finds an entry naming a gateway without a live lease treats it as stale.
 - **Invalidation:** the gateway deletes the entry on disconnect — **conditionally**: only if the field still says *this* gateway and *this* connection id. Otherwise a slow cleanup on the old gateway deletes the fresh entry the reconnected device just wrote on another one.
 - **Failure plan:** the registry is a routing hint, not the truth. If it's down, sends still persist and ack; pushes degrade; devices catch up by sync (Chapter 7) or wake by push notification.
 
@@ -177,7 +276,13 @@ Either is fine — **choosing one out loud** is what counts. A common senior ans
 2. **Fallback transports** that span many HTTP requests (long polling) need sticky sessions so every request of one session reaches the gateway holding its state.
 3. **Conversations stick to an owner** in the chat service, so one instance assigns the order for each conversation (Chapter 5). That is consistent hashing on `conversation_id`, not on users.
 
-**Worked numbers: how many connections per gateway?** Assume roughly **10 KB of memory per idle connection** (kernel socket buffers, TLS state, a little app state — measure it for your stack; it varies several-fold with buffer tuning). A 64 GB gateway giving half its memory to connections could hold `32 GB / 10 KB ≈ 3.2 million`. Memory is rarely the limit. **Blast radius** is: every connection on a gateway reconnects when it dies. So pick a target — say **500,000 per gateway** (5 GB of connection memory) — and Kestrel's 20 million peak connections need `20,000,000 / 500,000 = 40` gateways, plus headroom to lose a zone.
+**Worked numbers: how many connections per gateway?** Assume roughly **10 KB of memory per idle connection** (kernel socket buffers, TLS state, a little app state — measure it for your stack; it varies several-fold with buffer tuning). A 64 GB gateway giving half its memory to connections could hold `32 GB / 10 KB ≈ 3.2 million`. Memory is rarely the limit. **Blast radius** is: every connection on a gateway reconnects when it dies. So pick a target — say **500,000 per gateway** (5 GB of connection memory) — and the example's 20 million peak connections need `20,000,000 / 500,000 = 40` gateways, plus headroom to lose a zone.
+
+**Gateway hygiene that is easy to forget** (recommendations, not hard rules):
+
+- **Slow clients.** A phone on a bad link stops reading. Give each connection a bounded send buffer. When it fills, drop the connection and let the device resync from its cursor, rather than letting one slow socket eat gateway memory.
+- **Token expiry.** The socket is authenticated once at connect time, so a long-lived connection can outlive its token. Close it or require a re-auth message when the token expires.
+- **Rate limits.** Limit sends per user at the gateway (see <a href={`${BASE}sd/lessons/rate-limiter/`}>Rate limiter</a>) and cap message size, so one buggy client cannot flood the chat service.
 
 <Trace title="Find Bob" steps={routing} takeaway="Registry or pub/sub — pick one out loud. Registry entries are deleted conditionally, and liveness comes from a gateway lease, not from every heartbeat." />
 
@@ -189,15 +294,87 @@ Because then every chat-service deploy, crash or autoscale event disconnects use
 
 **Catch the trap:** "The load balancer will route Bob's messages to his server." The load balancer chose a gateway when Bob connected; it doesn't answer "where is user X" for your services. The routing problem is yours to solve — and naming it is the deep dive the interviewer is waiting for.
 
+<Quiz id="rt-gateway" title="Check your understanding" questions={[
+ {
+  "kind": "failure",
+  "q": "Alice reconnects and lands on gateway 22, which writes her registry entry. A moment later gateway 7 finishes cleaning up her old connection with an unconditional delete of her entry. What happens?",
+  "options": [
+   "Nothing, the entry belongs to Alice either way",
+   "Alice looks offline although she is connected, so pushes skip her until she reconnects again",
+   "Gateway 22 notices and rewrites the entry"
+  ],
+  "answer": 1,
+  "why": "Delete the registry field only if it still names this gateway and this connection id.",
+  "explain": [
+   "The entry now points at the new connection. Deleting it removes the live route.",
+   "Correct: that is why cleanup is conditional on the gateway id and connection id still matching.",
+   "Nothing does that automatically. The route stays missing."
+  ]
+ },
+ {
+  "kind": "tradeoff",
+  "q": "A channel has 100,000 members spread over 40 gateways. Registry plus direct send, or a pub/sub topic per channel?",
+  "options": [
+   "Registry: look up 100,000 members and send 100,000 RPCs",
+   "Pub/sub: publish once, each of the 40 gateways gets one copy and pushes to its local members",
+   "Ask the load balancer which gateway holds each member"
+  ],
+  "answer": 1,
+  "why": "Registry for 1:1 and small groups, topics for big rooms. Say which you picked.",
+  "explain": [
+   "Possible, but lookups and sends multiply by the audience size.",
+   "Correct: cost scales with gateways, not members. Pub/sub being at-most-once is fine because the store is the truth.",
+   "The load balancer does not offer that lookup to your services."
+  ]
+ },
+ {
+  "kind": "predict",
+  "q": "Every heartbeat refreshes the user's registry TTL. There are 20 million connections and a 30 s heartbeat. How many Redis writes per second just to say \"still here\"?",
+  "options": [
+   "About 667,000",
+   "About 20,000",
+   "About 6.7 million"
+  ],
+  "answer": 0,
+  "why": "Heartbeats end at the gateway. Liveness comes from one lease per gateway.",
+  "explain": [
+   "Correct: 20,000,000 / 30. A per-gateway lease avoids almost all of it.",
+   "That would need a heartbeat every 1,000 seconds.",
+   "That is the 200M-connection scale. Here it is 20M."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-gateway" cards={[
+ {
+  "front": "Why split gateway from chat service?",
+  "back": "Gateways hold sockets and are rarely deployed. The chat service is stateless and deploys often without dropping sockets."
+ },
+ {
+  "front": "Registry key shape",
+  "back": "conn:user:{userId} is a hash of deviceId to gateway:connection. One field per device."
+ },
+ {
+  "front": "Why a gateway lease instead of per-heartbeat TTLs?",
+  "back": "At 20M connections, per-heartbeat refresh is about 667,000 Redis writes/s. One lease per gateway is a few writes per second."
+ },
+ {
+  "front": "Why size gateways by blast radius?",
+  "back": "Memory allows millions of connections, but every connection reconnects when the gateway dies. Pick a cap such as 500,000."
+ },
+ {
+  "front": "Least connections or round robin?",
+  "back": "Least connections. Connections live for hours, so a restarted gateway needs to refill."
+ }
+]} />
+
+<ChapterDone id="gateway" />
+
 <h2 id="heartbeats">Chapter 3 · Is anyone there?</h2>
 
-<Scene chapter="Chapter 3" title="Is anyone there?" mood="night">
+In the incident from the prologue, every client library had the same reconnect logic: wait one second, try again. So at 21:00:01 half a million phones arrived at once. Each needed a TLS handshake, an auth check, a registry write, and then a read of its missed messages. The store could not keep up.
 
-Dev replays the incident timeline. Gateway 7 restarted at 21:00:00. Every client library had the same reconnect logic: wait one second, try again. *"So at 21:00:01,"* he says, *"half a million phones knocked on the door at once. TLS handshakes, auth, registry writes, and then every one of them asked the message store what it missed. The store said no."*
-
-Mara writes one word on the board: *jitter*. Then a second: *heartbeat*. *"One is for when the line dies loudly. The other is for when it dies quietly."*
-
-</Scene>
+Two mechanisms prevent this. **Jitter** handles a line that dies loudly (the server closes it, everyone notices at once). **Heartbeats** handle a line that dies quietly (nobody tells you).
 
 **Heartbeats: detecting the quiet death.** A phone that walks into a lift doesn't close its TCP connection; it just stops answering. TCP can take a very long time to notice (default keepalive timers on many systems are measured in **hours**), and the gateway keeps "delivering" into a dead socket. Meanwhile mobile carriers and home routers drop idle NAT mappings, often within minutes. So:
 
@@ -226,7 +403,7 @@ Same total work, spread thirty-fold. The message store sees ~16,700 catch-up que
 
 **Planned restarts: drain, don't drop.** A deploy should never look like a crash. Take the gateway out of the load balancer (no new connections), then send each client a "please reconnect" control frame **at a randomised time** over a drain window — say 5 minutes: `500,000 / 300 s ≈ 1,700` reconnects per second, invisible to users. Roll gateways a few at a time.
 
-<Figure caption="A planned drain versus a crash. Both end with every client on another gateway; only one of them pages Dev.">
+<Figure caption="A planned drain versus a crash. Both end with every client on another gateway; only one of them pages the on-call engineer.">
   <Mermaid code={`sequenceDiagram
     participant LB as Load balancer
     participant G7 as Gateway 7
@@ -251,6 +428,78 @@ Jitter spreads the wave, but 20 million reconnects over 30 seconds is still ~667
 
 **Catch the trap:** "Clients just reconnect." That sentence hides the herd. Say *"exponential backoff with full jitter, a cap, and server-side admission control"* — and say what each reconnect costs, because the catch-up read is what actually hurts.
 
+<Quiz id="rt-heartbeats" title="Check your understanding" questions={[
+ {
+  "kind": "predict",
+  "q": "Gateway 7 dies and 500,000 clients reconnect with full jitter spread over 30 s. About how many reconnects per second arrive fleet-wide?",
+  "options": [
+   "500,000, since all of them reconnect",
+   "About 16,700",
+   "About 1,700"
+  ],
+  "answer": 1,
+  "why": "Same total work, spread thirty-fold.",
+  "explain": [
+   "That is the no-jitter spike. Jitter spreads them.",
+   "Correct: 500,000 / 30. Roughly 430 per second on each of 39 surviving gateways.",
+   "That is the drain figure (500,000 / 300 s), a planned restart, not a crash."
+  ]
+ },
+ {
+  "kind": "failure",
+  "q": "A whole region fails and 20 million clients reconnect with jitter. Is jitter enough?",
+  "options": [
+   "Yes, jitter solves thundering herds",
+   "No. Add server-side admission control: cap new connections per second and reject with a retry-after hint that clients honour",
+   "Make clients retry faster so it ends sooner"
+  ],
+  "answer": 1,
+  "why": "Client jitter plus server admission control.",
+  "explain": [
+   "20 million over 30 s is still about 667,000 per second.",
+   "Correct. Also paginate and rate-limit catch-up reads.",
+   "Retrying faster is the opposite of backing off."
+  ]
+ },
+ {
+  "kind": "scenario",
+  "q": "A phone enters a lift. The gateway keeps \"delivering\" into its socket for a long time. Which mechanism notices?",
+  "options": [
+   "TCP keepalive with default settings",
+   "An application-level heartbeat about every 30 s, with two misses closing the socket",
+   "The load balancer"
+  ],
+  "answer": 1,
+  "why": "Heartbeats find quiet deaths; jittered backoff handles loud ones.",
+  "explain": [
+   "Default keepalive timers on many systems are measured in hours.",
+   "Correct: detection is bounded at about a minute, and the registry entry is removed.",
+   "It only picked a gateway at connect time."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-heartbeats" cards={[
+ {
+  "front": "Full-jitter backoff formula",
+  "back": "delay = random(0, min(cap, base x 2^attempt)), for example base 1 s, cap 30 s."
+ },
+ {
+  "front": "Why do heartbeats end at the gateway?",
+  "back": "20M / 30 s is about 667,000 frames/s fleet-wide. Fine at the edge, ruinous if forwarded to Redis."
+ },
+ {
+  "front": "Planned restart: drain, do not drop",
+  "back": "Stop new connections, then tell clients to reconnect at random times over a window, for example 5 minutes."
+ },
+ {
+  "front": "What does each reconnect cost?",
+  "back": "TCP and TLS handshake, auth, a registry write, and a catch-up read from the store. The read hurts most."
+ }
+]} />
+
+<ChapterDone id="heartbeats" />
+
 <Part n="Part Two" title="Getting a message there">
 
 One message, from Alice's thumb to Bob's screen, and every promise it picks up on the way.
@@ -259,13 +508,7 @@ One message, from Alice's thumb to Bob's screen, and every promise it picks up o
 
 <h2 id="message-flow">Chapter 4 · One message, end to end</h2>
 
-<Scene chapter="Chapter 4" title="One message, end to end" mood="dawn">
-
-Mara hands you the marker and points at the two phones. *"Alice types 'see you at 8' and taps send. Walk it across. Every box it enters, tell me if it's safe there. If it isn't, tell me what happens when the box dies."*
-
-You draw the first arrow. She stops you. *"The phone. Is it safe on the phone?"*
-
-</Scene>
+Alice types "see you at 8" and taps send. Walk the message across the system. For every box it enters, ask two questions: is the message safe here, and what happens if the box dies? Start with the phone itself. The message is safe there only if the app stored it locally before sending.
 
 Here is the whole path. Every step has a reason; learn the reasons and you can rebuild it under pressure.
 
@@ -319,15 +562,81 @@ Because then nothing persists or orders the message before it's delivered — Bo
 
 **Catch the trap:** drawing the arrow straight from sender to recipient and saying "then it's delivered". Interviewers mark the missing persist step every time. Say *"persist, then ack, then route"*, out loud, in that order.
 
+<Quiz id="rt-message-flow" title="Check your understanding" questions={[
+ {
+  "kind": "failure",
+  "q": "The chat service acks Alice first, then writes to the store, and crashes between the two. What is true afterwards?",
+  "options": [
+   "The message is queued somewhere and will be delivered",
+   "Alice sees one tick, but the message exists nowhere and will never be delivered",
+   "Alice sees a pending clock that clears after a retry"
+  ],
+  "answer": 1,
+  "why": "Ack after persist, never before.",
+  "explain": [
+   "Nothing durable holds it.",
+   "Correct: the tick lied. This is why you persist, then ack.",
+   "A retry happens only when no ack arrives. Here the ack did arrive."
+  ]
+ },
+ {
+  "kind": "failure",
+  "q": "The chat service persists seq 43, then crashes before acking. The phone retries with the same client message id. What happens?",
+  "options": [
+   "A duplicate row is written with seq 44",
+   "The insert finds the existing row and returns seq 43 again",
+   "The message is dropped as suspicious"
+  ],
+  "answer": 1,
+  "why": "Idempotent send by client message id makes blind retries safe.",
+  "explain": [
+   "That is exactly what the unique (conversation, client_msg_id) constraint prevents.",
+   "Correct: the send is idempotent, so no loss and no duplicate.",
+   "Retries of the same id are the normal case."
+  ]
+ },
+ {
+  "kind": "tradeoff",
+  "q": "Why not let gateway 7 look Bob up and send straight to gateway 22?",
+  "options": [
+   "It is slower",
+   "Nothing would persist or order the message before delivery, so Bob could see something the store never recorded",
+   "Gateways cannot talk to each other"
+  ],
+  "answer": 1,
+  "why": "Typing indicators are the exception because they are ephemeral.",
+  "explain": [
+   "Maybe slightly, but that is not the reason.",
+   "Correct: durability, order and idempotency are made in the chat service.",
+   "They can. The issue is what gets skipped."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-message-flow" cards={[
+ {
+  "front": "Order of events for the first tick",
+  "back": "Compose (stored on the phone as pending), send, order and persist, ack to sender, then route to the recipient."
+ },
+ {
+  "front": "What makes a send idempotent?",
+  "back": "Unique (conversation_id, client_msg_id). A retry returns the same seq."
+ },
+ {
+  "front": "Why does the second tick come later?",
+  "back": "It appears only after Bob's device acks, not when the server writes to a socket."
+ },
+ {
+  "front": "Which boxes can lose a message?",
+  "back": "Gateways, socket buffers and the network. Never trust them; the store is the truth."
+ }
+]} />
+
+<ChapterDone id="message-flow" />
+
 <h2 id="delivery">Chapter 5 · Once, and in order</h2>
 
-<Scene chapter="Chapter 5" title="Once, and in order">
-
-A support ticket with a screenshot. In a group chat, one person's phone shows *"Are you coming?"* above *"Yes!"*. Another person's phone shows them the other way around. Iris prints it and pins it to the board under the words *THIS CANNOT HAPPEN.*
-
-Theo reads the code. *"We sort by the timestamp on the sender's phone,"* he says. *"One of those phones thinks it's four seconds in the future."*
-
-</Scene>
+A real kind of bug report: in a group chat, one person's phone shows "Are you coming?" above "Yes!", and another person's phone shows the opposite order. The cause is usually sorting by the timestamp from the sender's phone, and one phone's clock was four seconds fast. Two promises are needed here, and neither comes free over a network that drops, duplicates and reorders.
 
 Two promises, and neither comes free over a network that drops, duplicates and reorders.
 
@@ -356,11 +665,7 @@ Per-conversation throughput is tiny — even a busy group sends a few messages a
   <ArrayStrip name="conv c-5" values={[40, 41, 42, 43, 44]} indices={false} pointers={[{ at: 2, label: 'applied up to', tone: 'green' }, { at: 4, label: 'just pushed', tone: 'gold' }]} tones={{ 0: 'done', 1: 'done', 2: 'done', 3: 'ghost', 4: 'hot' }} regions={[{ from: 3, to: 3, label: 'gap → sync after 42', tone: 'red' }]} />
 </Figure>
 
-<Scene title="The interview room" mood="night">
-
-The Interviewer leans back. *"Two people in a group send at the same instant. What does everyone see?"* The candidate before you said "it depends on the network". You say: *"The same thing, because order is the sequence number the conversation's owner assigned at persist time. Whichever write landed first is first, for everyone."* The Interviewer writes something down.
-
-</Scene>
+**A likely interview question:** "Two people in a group send at the same instant. What does everyone see?" A weak answer is "it depends on the network". A good answer: everyone sees the same order, because order is the sequence number the conversation's owner assigned at persist time. Whichever write landed first is first, for everyone.
 
 **The sender's own message.** Alice sees her message instantly (optimistic UI) at the bottom, marked pending. When the ack returns with seq 43, her phone moves it into seq order — usually where it already was; occasionally one slot up, if Bob's message got 43 and hers 44. Every device converges.
 
@@ -374,15 +679,85 @@ It's roughly time-ordered, which is great for storage and paging, but two ids ge
 
 **Catch the trap:** "Kafka guarantees ordering." Only within a partition, only if you key by the conversation, and only up to the consumer. And none of it survives into a phone that reconnects through a different gateway. The order users see has to be carried *in the message* (the seq), not inherited from a pipe.
 
+<Quiz id="rt-delivery" title="Check your understanding" questions={[
+ {
+  "kind": "scenario",
+  "q": "Two members of a group send at the same instant. Their phone clocks differ by 4 seconds. How does every device agree on order?",
+  "options": [
+   "Sort by the sender's timestamp",
+   "Sort by the per-conversation sequence number assigned by one owner at persist time",
+   "Sort by the time the first recipient received it"
+  ],
+  "answer": 1,
+  "why": "One authority per conversation hands out dense seqs.",
+  "explain": [
+   "Clocks drift and users change them. A fast clock jumps the queue.",
+   "Correct: whichever write landed first gets the lower seq, for everyone. Timestamps are for display.",
+   "Different recipients receive at different times."
+  ]
+ },
+ {
+  "kind": "predict",
+  "q": "Bob's phone has applied seq up to 42 in c-5 and receives a push for seq 44. What does it do?",
+  "options": [
+   "Shows 44 and ignores the hole",
+   "Detects the gap, fetches \"after 42\" from the store, then applies 43 and 44",
+   "Asks Alice to resend"
+  ],
+  "answer": 1,
+  "why": "A gap means sync from the store.",
+  "explain": [
+   "The hole means 43 is missing and would never appear in order.",
+   "Correct: dense seqs let it tell \"missed one\" from \"there was none\".",
+   "The sender is not the source of truth. The store is."
+  ]
+ },
+ {
+  "kind": "tradeoff",
+  "q": "Why not use a Snowflake-style id as the conversation order?",
+  "options": [
+   "It is too slow to generate",
+   "It is roughly time-ordered but has gaps and cross-machine skew, so it gives no gap detection and may not match persist order",
+   "It cannot be unique"
+  ],
+  "answer": 1,
+  "why": "Many systems use both: a unique message id plus a per-conversation seq.",
+  "explain": [
+   "Not the issue.",
+   "Correct: use it for identity, use the dense seq for order.",
+   "It is unique."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-delivery" cards={[
+ {
+  "front": "Honest delivery semantics",
+  "back": "At-least-once on the wire, dedup at both ends, so exactly-once effect on screen. Not exactly-once delivery."
+ },
+ {
+  "front": "How is order decided?",
+  "back": "A dense per-conversation sequence number from one owner, assigned at persist time. Timestamps are display only."
+ },
+ {
+  "front": "Ways to build the one owner",
+  "back": "Owner per conversation, conditional insert, atomic counter (INCR), partitioned log."
+ },
+ {
+  "front": "What does a device do with a seq it already has?",
+  "back": "Drop it and re-ack so retries stop."
+ },
+ {
+  "front": "Does Kafka ordering give users the right order?",
+  "back": "Only per partition, only if keyed by conversation, and not across a reconnect to a different gateway. Carry the seq in the message."
+ }
+]} />
+
+<ChapterDone id="delivery" />
+
 <h2 id="receipts">Chapter 6 · Two grey ticks</h2>
 
-<Scene chapter="Chapter 6" title="Two grey ticks" mood="dusk">
-
-The worst bug from the incident: messages showing two ticks that Bob never received. Dev found it in an hour. The gateway sent the "delivered" receipt the moment it wrote to Bob's socket — and Bob's socket had been dead for three minutes.
-
-*"A tick is a promise to a human,"* Mara says. *"Who is allowed to make each one?"*
-
-</Scene>
+The worst bug from the prologue incident: messages showing two ticks that the recipient never received. The gateway sent the "delivered" receipt the moment it wrote to Bob's socket, and Bob's socket had been dead for three minutes. A tick is a promise to a human, so each tick needs exactly one party who is allowed to make it.
 
 Each tick is a claim made by exactly one party:
 
@@ -400,15 +775,79 @@ Each tick is a claim made by exactly one party:
 
 **Catch the trap:** the gateway claiming "delivered" when it writes to the socket. A dead socket accepts writes. Only the device can say it has the message.
 
+<Figure caption="Who claims each tick. The server claims the first, the recipient device claims the other two.">
+  <Mermaid code={`sequenceDiagram
+    participant A as Alice
+    participant CS as Chat service
+    participant B as Bob device
+    A->>CS: send m-91
+    CS-->>A: ack seq 43, first tick (persisted)
+    CS->>B: deliver seq 43
+    B-->>CS: ack up to 43, delivered cursor moves
+    CS-->>A: receipt delivered up to 43, two ticks
+    B->>CS: read up to 43, chat was opened
+    CS-->>A: receipt read up to 43, blue ticks`} />
+</Figure>
+
+<Quiz id="rt-receipts" title="Check your understanding" questions={[
+ {
+  "kind": "failure",
+  "q": "Support says some messages show two ticks that the recipient never received. The gateway marks \"delivered\" when it writes to the socket. What is wrong?",
+  "options": [
+   "Nothing. A write to the socket means delivery",
+   "The wrong party made the claim. Only the recipient device can say it stored the message",
+   "The tick should wait for a push notification"
+  ],
+  "answer": 1,
+  "why": "Sent is claimed by the chat service after persist. Delivered and read by the device.",
+  "explain": [
+   "A dead socket accepts writes for minutes.",
+   "Correct: delivered is a device ack of (conversation, seq).",
+   "Notifications are best-effort and are not receipts."
+  ]
+ },
+ {
+  "kind": "predict",
+  "q": "Bob's delivered cursor for c-5 is 40. Events arrive out of order: \"delivered up to 43\", then a late \"delivered up to 41\". What is the final cursor?",
+  "options": [
+   "41, the last one received",
+   "43, because cursors only move forward (take the max)",
+   "Both are rejected as duplicates"
+  ],
+  "answer": 1,
+  "why": "Receipts are cursors, not per-message flags.",
+  "explain": [
+   "That would move the cursor backward.",
+   "Correct: monotonic, idempotent and coalescable.",
+   "Neither is a duplicate. One is simply older."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-receipts" cards={[
+ {
+  "front": "Who may claim each tick?",
+  "back": "Sent: chat service after persist. Delivered: recipient device ack. Read: recipient device, if read receipts are on."
+ },
+ {
+  "front": "Why cursors, not per-message flags?",
+  "back": "\"Up to 43\" covers many messages, is monotonic and idempotent, and coalesces 200 receipts into one."
+ },
+ {
+  "front": "Group \"delivered to everyone\"",
+  "back": "min(delivered cursors) is at least 43."
+ },
+ {
+  "front": "How do group receipts travel?",
+  "back": "To the message sender only, coalesced. The rest is computed on demand."
+ }
+]} />
+
+<ChapterDone id="receipts" />
+
 <h2 id="offline">Chapter 7 · The phone in the drawer</h2>
 
-<Scene chapter="Chapter 7" title="The phone in the drawer" mood="night">
-
-Iris goes camping for a week and turns her phone off. When she comes back, 1,400 messages across 60 conversations are waiting. She opens the app in a taxi with one bar of signal. *"It should just… be there,"* she says. *"Like it was always there."*
-
-Mara asks: *"How does her phone know which 60 conversations to ask about — without asking about all 500 she's in?"*
-
-</Scene>
+A user turns the phone off for a week. When it comes back, 1,400 messages across 60 conversations are waiting, and the user opens the app on one bar of signal. It should just be there. The design question: how does the phone know which 60 of its 500 conversations to ask about, without asking about all 500?
 
 **The cursor is the contract.** Every device remembers, for every conversation, the highest seq it has applied. "Catch up" means: for each conversation with news, fetch messages after my cursor. The store answers from the truth, so it doesn't matter what push did or didn't deliver.
 
@@ -443,6 +882,78 @@ Messages older than the window are gone from the server, so his catch-up returns
 
 **Catch the trap:** "Offline users get the message by push notification." That makes a best-effort wake-up service your delivery guarantee. Say *"it's in the store; the device syncs from its cursor; the notification only wakes it."*
 
+<Quiz id="rt-offline" title="Check your understanding" questions={[
+ {
+  "kind": "failure",
+  "q": "Every APNs/FCM notification for a day is dropped by the platform. What do users lose?",
+  "options": [
+   "All messages from that day",
+   "Only promptness. The next time the app opens it syncs from its cursors and gets everything",
+   "Only the most recent message"
+  ],
+  "answer": 1,
+  "why": "Never make a best-effort wake-up your delivery guarantee.",
+  "explain": [
+   "Messages are in the store regardless of notifications.",
+   "Correct: the notification is a doorbell, not the delivery.",
+   "Sync fetches everything after the cursor."
+  ]
+ },
+ {
+  "kind": "scenario",
+  "q": "A phone reconnects after a week. It is in 500 conversations and 60 have news. How does it avoid asking about all 500?",
+  "options": [
+   "Poll every conversation in parallel",
+   "Read the per-device inbox (conversation to highest seq with news), then fetch each conversation after its own cursor",
+   "Ask the server for the last 7 days of everything"
+  ],
+  "answer": 1,
+  "why": "The inbox says where the news is; cursors say from where to read.",
+  "explain": [
+   "500 requests per reconnect, most empty, multiplied by every device.",
+   "Correct: inbox size is bounded by conversations with news, not by messages.",
+   "Unbounded and wasteful. Paginate by cursor."
+  ]
+ },
+ {
+  "kind": "tradeoff",
+  "q": "Store-and-forward or server-kept history?",
+  "options": [
+   "Always keep everything, storage is cheap",
+   "It is a product decision. Store-and-forward: small storage, history lives on devices. Server-kept: search and new devices are easy, storage grows without bound",
+   "Always delete after delivery"
+  ],
+  "answer": 1,
+  "why": "Say your retention choice out loud.",
+  "explain": [
+   "At this scale it is a real bill (hundreds of TB a year) and a privacy cost.",
+   "Correct: state which you chose and what it means for new devices.",
+   "Then a new device has no history unless you build transfer or backup."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-offline" cards={[
+ {
+  "front": "The cursor is the contract",
+  "back": "Each device keeps, per conversation, the highest seq it applied. Catch-up means fetch after my cursor."
+ },
+ {
+  "front": "What is the per-device inbox?",
+  "back": "conversation_id to highest seq with news. Upserted on fan-out, deleted conditionally when the device acks."
+ },
+ {
+  "front": "Push notification role",
+  "back": "A best-effort wake-up. Small payloads, may be delayed or dropped. The device then syncs."
+ },
+ {
+  "front": "Two retention models",
+  "back": "Store-and-forward (delete after all devices ack) versus server-kept history (search, any device scrolls back)."
+ }
+]} />
+
+<ChapterDone id="offline" />
+
 <Part n="Part Three" title="Everyone else">
 
 One sender and one reader was the easy case. Now the green dot, groups, many devices, and a server that isn't allowed to read anything.
@@ -451,19 +962,13 @@ One sender and one reader was the easy case. Now the green dot, groups, many dev
 
 <h2 id="presence">Chapter 8 · The green dot</h2>
 
-<Scene chapter="Chapter 8" title="The green dot" mood="dawn">
-
-Iris wants a green dot next to everyone who's online, and "last seen 5 minutes ago" for everyone who isn't. Dev puts a number on the board before anyone draws a box: the presence prototype, in staging, generated more traffic than chat itself.
-
-*"Who actually looks at a green dot?"* Mara asks.
-
-</Scene>
+Product wants a green dot next to every online contact and "last seen 5 minutes ago" for the rest. Before drawing any box, look at the traffic. A naive presence prototype can generate more traffic than chat itself. The useful question is who actually looks at a green dot.
 
 **Presence is soft state.** "Online" means *a live connection exists on a live gateway*, which the system already knows: the registry plus the gateway leases (Chapter 2). "Last seen" is one timestamp written when the last device disconnects. Presence needs no extra per-heartbeat writes — the heartbeat's job is to make disconnects happen promptly (two missed beats), and the disconnect is the event.
 
 **The problem is never computing presence. It's telling people.**
 
-**Worked numbers.** Kestrel: 50 million daily users, each going online/offline about **20 times a day**, about **100 contacts** each.
+**Worked numbers.** Assumption for this example: 50 million daily users, each going online/offline about **20 times a day**, about **100 contacts** each.
 
 | Who gets told | Events per day | Per second (÷10⁵) |
 |---|---|---|
@@ -483,15 +988,73 @@ Naive presence costs **fifty times** the traffic of the messages it decorates. T
 
 **Catch the trap:** "Presence: a Redis key per user with a TTL, refreshed on every heartbeat." That works at small scale, and you should say why it stops working: 20 million connections ÷ 30 s ≈ 667,000 writes a second of keepalive. Derive "online" from connections and gateway leases, and spend your effort on who gets told.
 
+<Figure caption="Presence cost control. Fetch once when a screen opens, subscribe while it is visible, and push changes only to subscribers.">
+  <Mermaid code={`flowchart LR
+    S["Screen opens: chat header"] -->|"1 one batched read"| R[("Registry + gateway leases")]
+    S -->|"2 subscribe while visible"| PS["Presence subscriptions"]
+    G["Gateway: no heartbeat, 45 s grace passes"] -->|"3 offline event"| PS
+    PS -->|"4 push only to subscribers"| S`} />
+</Figure>
+
+<Quiz id="rt-presence" title="Check your understanding" questions={[
+ {
+  "kind": "predict",
+  "q": "50M users each change online state 20 times a day, with 100 contacts each, and every change is pushed to every contact. About how many events per second?",
+  "options": [
+   "About 20,000, like the chat messages",
+   "About 1,000,000, fifty times the message traffic",
+   "About 100,000"
+  ],
+  "answer": 1,
+  "why": "Presence is cheap to know and expensive to tell.",
+  "explain": [
+   "That is the message rate, or presence pushed to about 2 viewers.",
+   "Correct: 50M x 20 x 100 = 100 billion a day, divided by 10^5.",
+   "Off by ten. Recompute 100 billion / 100,000 s."
+  ]
+ },
+ {
+  "kind": "failure",
+  "q": "A phone in a tunnel flaps online and offline five times in a minute. 100 contacts have the chat open. What stops 500 pushes?",
+  "options": [
+   "Nothing, that is how presence works",
+   "A grace period (mark offline only after 30 to 60 s without a connection) and pushes only to subscribers who are looking",
+   "Persist each transition and retry delivery"
+  ],
+  "answer": 1,
+  "why": "Lazy fetch, subscribe while visible, debounce, never persist.",
+  "explain": [
+   "Debounce exists for this.",
+   "Correct: every suppressed blink is a fan-out you do not pay for.",
+   "Presence is at-most-once. Retrying makes it worse."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-presence" cards={[
+ {
+  "front": "Where does \"online\" come from?",
+  "back": "Derived from connections: the registry plus gateway leases. No extra heartbeat writes."
+ },
+ {
+  "front": "Three cost cuts",
+  "back": "Lazy fetch on screen open, subscribe only while visible, debounce flaps."
+ },
+ {
+  "front": "Presence and typing semantics",
+  "back": "At-most-once and ephemeral. Never persisted or retried. Typing expires after about 5 s of silence."
+ },
+ {
+  "front": "Cost of naive presence",
+  "back": "About 100 billion events a day for 50M users: fifty times the message traffic."
+ }
+]} />
+
+<ChapterDone id="presence" />
+
 <h2 id="groups">Chapter 9 · The group of two hundred</h2>
 
-<Scene chapter="Chapter 9" title="The group of two hundred">
-
-Iris, on Monday: *"Group chats. Up to 256 people."* Iris, on Thursday: *"Oh, and also — community channels. Some will have a hundred thousand members."*
-
-Mara draws one message, then two hundred arrows out of it. Then she tries to draw a hundred thousand and gives up. *"Same feature,"* she says. *"Different architecture. Where's the line?"*
-
-</Scene>
+Monday's requirement: group chats up to 256 people. Thursday's: community channels with 100,000 members. It is the same feature with a different architecture. One message to 200 people is easy to draw as 200 arrows. One message to 100,000 is not. The question is where the line is, and what changes on the far side of it.
 
 The question is the same one as in <a href={`${BASE}sd/lessons/pattern-fanout/`}>the fan-out pattern</a>: **do the work when the message is written, or when it is read?**
 
@@ -533,13 +1096,81 @@ With end-to-end encryption, the naive way is yes — once per member device, pai
 
 **Catch the trap:** one fan-out strategy for every group size. Name the threshold, say why (inbox writes per message), and say what changes above it.
 
+<Quiz id="rt-groups" title="Check your understanding" questions={[
+ {
+  "kind": "predict",
+  "q": "A 100,000-member channel gets 10 messages/s. Fan-out on write to member inboxes costs how many inbox writes per second?",
+  "options": [
+   "10",
+   "1,000,000",
+   "100,000"
+  ],
+  "answer": 1,
+  "why": "Above a few hundred members, switch to fan-out on read.",
+  "explain": [
+   "That is the append rate, not the fan-out.",
+   "Correct: 100,000 x 10 for a single channel.",
+   "That is one message. At 10 per second, multiply."
+  ]
+ },
+ {
+  "kind": "tradeoff",
+  "q": "In fan-out on read, how does the unread badge work?",
+  "options": [
+   "An inbox entry per member exists, so count them",
+   "It is computed: latest channel seq minus the member's read cursor",
+   "Ask each gateway"
+  ],
+  "answer": 1,
+  "why": "Store once, cursors per member, one publish per gateway.",
+  "explain": [
+   "That is fan-out on write.",
+   "Correct: no per-member write per message.",
+   "Gateways hold connections, not unread state."
+  ]
+ },
+ {
+  "kind": "scenario",
+  "q": "A message goes to a 256-member group with E2EE. Do you encrypt it 256 times?",
+  "options": [
+   "Yes, always pairwise",
+   "A common optimisation is sender keys: share a key once per member, then encrypt each message once. Look up membership-change handling before going deep",
+   "No, groups cannot be E2EE"
+  ],
+  "answer": 1,
+  "why": "Know that sender keys exist; do not improvise internals.",
+  "explain": [
+   "That is the naive way and it is costly for the sender.",
+   "Correct: the high-level idea is enough in an interview.",
+   "They can."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-groups" cards={[
+ {
+  "front": "Small groups",
+  "back": "Fan-out on write: store once, write an inbox pointer per member device, push to the online ones."
+ },
+ {
+  "front": "Large channels",
+  "back": "Fan-out on read: store once, per-member cursors, gateways subscribe to the channel topic, one publish per gateway."
+ },
+ {
+  "front": "Where is the threshold?",
+  "back": "Where inbox writes per message become the bottleneck. A few hundred members is the usual line."
+ },
+ {
+  "front": "Slack and Discord shape",
+  "back": "Channel-first: topic subscriptions at gateways, selective delivery for viewed channels, per-channel cursors."
+ }
+]} />
+
+<ChapterDone id="groups" />
+
 <h2 id="multi-device">Chapter 10 · Phone, laptop, tablet</h2>
 
-<Scene chapter="Chapter 10" title="Phone, laptop, tablet" mood="dusk">
-
-Theo sends a message from his laptop, then picks up his phone. The conversation on the phone doesn't show what he just said. *"I'm talking to myself,"* he says, *"and only half of me is listening."*
-
-</Scene>
+A user sends a message from the laptop, then picks up the phone. The phone's copy of the conversation does not show what they just sent. The lesson: every device is its own reader, including the sender's other devices.
 
 **Every device is its own reader.** The registry holds one entry per device; the inbox and cursors are per device. Delivering a message means:
 
@@ -559,15 +1190,70 @@ Theo sends a message from his laptop, then picks up his phone. The conversation 
 
 **Catch the trap:** a registry keyed `user → gateway`. The moment a user has two devices, one overwrites the other and half their messages stop arriving in real time. Key it `user → device → gateway` from the start.
 
+<Figure caption="One send, four destinations. The device that sent it is not pushed back to, but every other device of the sender is.">
+  <Mermaid code={`flowchart LR
+    L["Alice laptop\nsent it"] --> CS["Chat service\nseq 43"]
+    CS --> P["Alice phone\nsender's other device"]
+    CS --> B1["Bob phone"]
+    CS --> B2["Bob laptop"]
+    CS -.->|"not pushed back"| L`} />
+</Figure>
+
+<Quiz id="rt-multi-device" title="Check your understanding" questions={[
+ {
+  "kind": "failure",
+  "q": "The registry is keyed user to gateway. A user opens the laptop while the phone is connected. What goes wrong?",
+  "options": [
+   "Nothing, the newer connection wins everywhere",
+   "One device overwrites the other, so one stops getting real-time delivery",
+   "Messages are delivered twice"
+  ],
+  "answer": 1,
+  "why": "One registry field per device.",
+  "explain": [
+   "The older device silently stops receiving real-time pushes.",
+   "Correct: key it user to device to gateway from the start.",
+   "Duplicates are a different problem."
+  ]
+ },
+ {
+  "kind": "scenario",
+  "q": "Which of these should be per user rather than per device?",
+  "options": [
+   "Delivered cursor",
+   "Read cursor",
+   "Inbox entries"
+  ],
+  "answer": 1,
+  "why": "Read is per user. Delivered and inbox are per device.",
+  "explain": [
+   "Each device must catch up independently.",
+   "Correct: reading on the laptop should clear the badge on the phone.",
+   "Each device has its own backlog."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-multi-device" cards={[
+ {
+  "front": "Who receives a message?",
+  "back": "Every device of every recipient, and every other device of the sender."
+ },
+ {
+  "front": "Per device versus per user",
+  "back": "Delivered cursor and inbox: per device. Read cursor: per user."
+ },
+ {
+  "front": "History on a new device",
+  "back": "Server-kept: page back from the store. Store-and-forward or E2EE: device transfer or encrypted backup."
+ }
+]} />
+
+<ChapterDone id="multi-device" />
+
 <h2 id="e2ee">Chapter 11 · The server that can’t read</h2>
 
-<Scene chapter="Chapter 11" title="The server that can’t read" mood="night">
-
-Legal asks for end-to-end encryption. Iris asks whether search still works. Theo asks whether the database schema changes. Dev asks whether he can still debug anything.
-
-Mara draws a padlock on Alice's phone and another on Bob's, and leaves every box in the middle exactly where it is. *"Most of the system,"* she says, *"doesn't notice. Find the parts that do."*
-
-</Scene>
+Suppose the product now requires end-to-end encryption. Does search still work? Does the schema change? Can anyone debug production? Most of the system does not notice. The job is to find the parts that do.
 
 **End-to-end encryption (E2EE)** means only the endpoints can read message content. At the level an interview needs:
 
@@ -590,6 +1276,70 @@ Mara draws a padlock on Alice's phone and another on Bob's, and leaves every box
 
 **Catch the trap:** "With E2EE the server knows nothing." It knows the social graph and the timing. Say so — interviewers who ask about E2EE are usually testing whether you know the difference between content and metadata.
 
+<Figure caption="With end-to-end encryption the server still routes, orders and stores. It just handles ciphertext.">
+  <Mermaid code={`flowchart LR
+    A["Alice device\nencrypts"] -->|"ciphertext + routing metadata"| S["Server\nroutes, orders, stores"]
+    S -->|"ciphertext"| B["Bob device\ndecrypts"]
+    B -.->|"uploads public keys"| K[("Public-key directory")]
+    K -.->|"Bob's public key"| A`} />
+</Figure>
+
+<Quiz id="rt-e2ee" title="Check your understanding" questions={[
+ {
+  "kind": "tradeoff",
+  "q": "With E2EE enabled, which part of the design changes?",
+  "options": [
+   "Ordering and receipts",
+   "Search, notification previews and abuse scanning move to the device",
+   "The gateway tier"
+  ],
+  "answer": 1,
+  "why": "Routing, ordering, receipts and presence are unchanged.",
+  "explain": [
+   "They use metadata only, so they are unchanged.",
+   "Correct: anything that needs plaintext on the server has to move.",
+   "Gateways were already content-blind."
+  ]
+ },
+ {
+  "kind": "scenario",
+  "q": "\"With E2EE the server knows nothing.\" Right or wrong?",
+  "options": [
+   "Right",
+   "Wrong: it still sees metadata (the social graph and timing) even though content is hidden",
+   "Wrong: it sees plaintext after TLS terminates"
+  ],
+  "answer": 1,
+  "why": "Content versus metadata.",
+  "explain": [
+   "It still sees who talks to whom, when, how often, and message sizes.",
+   "Correct.",
+   "TLS is hop-by-hop, but E2EE ciphertext stays opaque end to end."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-e2ee" cards={[
+ {
+  "front": "Where do keys live?",
+  "back": "On devices. The server runs a public-key directory."
+ },
+ {
+  "front": "What does the server still see?",
+  "back": "Metadata: who, when, how often, and sizes."
+ },
+ {
+  "front": "What moves to the device?",
+  "back": "Search, previews, link previews and abuse scanning."
+ },
+ {
+  "front": "What is a safety number?",
+  "back": "A fingerprint users compare to detect a server handing out a wrong public key."
+ }
+]} />
+
+<ChapterDone id="e2ee" />
+
 <Part n="Part Four" title="Keeping it running">
 
 Where billions of messages a day live, how big the fleet is, and what each failure looks like from a user's phone.
@@ -598,13 +1348,7 @@ Where billions of messages a day live, how big the fleet is, and what each failu
 
 <h2 id="storage">Chapter 12 · Billions a day</h2>
 
-<Scene chapter="Chapter 12" title="Billions a day">
-
-Theo refuses to look at the architecture diagram. *"Tell me the three queries,"* he says. *"Then tell me the partition key. Then I'll look."*
-
-You write: *the latest 50 messages of a conversation; everything in a conversation after seq N; one message by id.* He nods. *"Then there is exactly one right answer for the key."*
-
-</Scene>
+Before choosing a database, write down the three queries the product runs: the latest 50 messages of a conversation, everything in a conversation after sequence number N, and one message by id. These queries decide the partition key, and the partition key decides which stores are a fit.
 
 **The access pattern decides the store.** Messages are append-only, almost never updated, read by conversation in seq order, and written at hundreds of thousands per second at scale. No joins. That is the textbook fit for a **wide-column / key-value store** (Cassandra, ScyllaDB, HBase, DynamoDB-style): writes spread across nodes, and each conversation's messages sit together, sorted.
 
@@ -636,21 +1380,78 @@ conversations / members     -- Conversation ↔ User is many-to-many: a membersh
 | Sharded relational | Unique constraints, transactions per shard, familiar | You run the sharding (or a layer like Vitess); cross-shard queries |
 | Redis alone | Fast | Not the truth. Memory-priced; use it for registry, presence, recent hot pages |
 
-**Worked numbers (Kestrel today).** 50M daily users × 40 messages = **2 billion messages a day**. At ~200 bytes stored per text message (body plus ids, seq, timestamps, overhead): `2 × 10⁹ × 200 B = 400 GB` a day, × 3 replicas = **1.2 TB/day** of raw disk — about **440 TB a year** if history is kept forever. With store-and-forward, the server holds only undelivered messages: a few days of backlog for offline devices, a small fraction of that.
+**Worked numbers (illustrative assumption: a mid-size app).** 50M daily users × 40 messages = **2 billion messages a day**. At ~200 bytes stored per text message (body plus ids, seq, timestamps, overhead): `2 × 10⁹ × 200 B = 400 GB` a day, × 3 replicas = **1.2 TB/day** of raw disk — about **440 TB a year** if history is kept forever. With store-and-forward, the server holds only undelivered messages: a few days of backlog for offline devices, a small fraction of that.
 
 <Trace title="Where messages live" steps={storage} takeaway="Partition by conversation, cluster by seq, bucket the giants. Then multiply by replicas and decide retention on purpose." />
 
-**Catch the trap:** "Store messages in Postgres" or "store them in Cassandra" with no key. Theo's three questions — the reads, the key, the size — are the answer. The product name is the least interesting word in the sentence.
+**Catch the trap:** "Store messages in Postgres" or "store them in Cassandra" with no key. The three questions (the reads, the key, the size) are the answer. The product name is the least interesting word in the sentence.
+
+<Figure caption="All three queries land on one sorted partition. A message id that embeds the conversation id avoids a separate lookup table for query 3.">
+  <Mermaid code={`flowchart LR
+    Q1["Latest 50 of c-5"] --> P["Partition (c-5, bucket)\nsorted by seq DESC"]
+    Q2["After seq 42 in c-5"] --> P
+    Q3["One message by id"] --> P`} />
+</Figure>
+
+<Quiz id="rt-storage" title="Check your understanding" questions={[
+ {
+  "kind": "scenario",
+  "q": "Pick the partition key for the messages table.",
+  "options": [
+   "sender_id",
+   "(conversation_id, bucket), clustered by seq DESC",
+   "message_id"
+  ],
+  "answer": 1,
+  "why": "The access pattern decides the key.",
+  "explain": [
+   "A sender's messages scatter across conversations, so conversation reads fan out.",
+   "Correct: latest page and after-seq-N are single-partition sorted reads, and the bucket caps giant conversations.",
+   "Random keys spread writes but make every conversation read a scatter-gather."
+  ]
+ },
+ {
+  "kind": "predict",
+  "q": "2 billion messages a day at 200 bytes each, replicated 3 times. Raw disk per day?",
+  "options": [
+   "About 400 GB",
+   "About 1.2 TB",
+   "About 12 TB"
+  ],
+  "answer": 1,
+  "why": "Multiply by replicas, then decide retention.",
+  "explain": [
+   "That is logical, before replication.",
+   "Correct: 400 GB x 3.",
+   "That is the 20B messages a day scale."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-storage" cards={[
+ {
+  "front": "The three queries",
+  "back": "Latest N of a conversation, after seq N, one message by id."
+ },
+ {
+  "front": "Why wide-column fits",
+  "back": "Append-only, read by conversation in seq order, high write rate, no joins."
+ },
+ {
+  "front": "Why buckets?",
+  "back": "They stop one giant conversation from growing an unbounded partition."
+ },
+ {
+  "front": "Dedup without unique constraints",
+  "back": "A (conversation_id, client_msg_id) to seq lookup with a TTL of a few days."
+ }
+]} />
+
+<ChapterDone id="storage" />
 
 <h2 id="scale">Chapter 13 · The numbers</h2>
 
-<Scene chapter="Chapter 13" title="The numbers" mood="dawn">
-
-Iris has a board deck with a slide that says *500 million daily users*. *"Ten times bigger,"* she says. *"What breaks?"*
-
-Mara writes the assumptions down the left side of the whiteboard before any arithmetic. *"Numbers without assumptions,"* she says, *"are just confident noise."*
-
-</Scene>
+Assume the product grows tenfold, to 500 million daily users. What breaks? Write the assumptions down before any arithmetic. Numbers without assumptions are confident noise.
 
 These are the numbers the walkthrough uses. Assumptions first, arithmetic shown, every number ending in a decision.
 
@@ -677,13 +1478,72 @@ These are the numbers the walkthrough uses. Assumptions first, arithmetic shown,
 
 **Catch the trap:** "We'll need a lot of servers." How many, sized by what? *"Four hundred gateways at half a million connections each — sized by blast radius, not memory"* is a sentence an interviewer remembers.
 
+<Figure caption="How the assumptions chain into the capacity numbers.">
+  <Mermaid code={`flowchart LR
+    U["500M daily users"] --> M["20B messages/day\n600K/s at peak"] --> D["1.8M pushes/s"]
+    U --> C["200M connections"] --> G["400 gateways"]
+    M --> S["4 TB/day logical\n12 TB raw"]`} />
+</Figure>
+
+<Quiz id="rt-scale" title="Check your understanding" questions={[
+ {
+  "kind": "scenario",
+  "q": "At 10x scale, what breaks first?",
+  "options": [
+   "Memory per connection",
+   "Operational load: reconnect waves, presence fan-out, the storage bill, hot channels",
+   "Network bandwidth for text"
+  ],
+  "answer": 1,
+  "why": "Size gateways by blast radius.",
+  "explain": [
+   "Connection memory stays comfortable.",
+   "Correct: none of them is raw bandwidth or memory.",
+   "About 2.9 Gbps fleet-wide is a non-issue."
+  ]
+ },
+ {
+  "kind": "predict",
+  "q": "200 million concurrent connections at 500,000 per gateway. How many gateways before zone headroom?",
+  "options": [
+   "40",
+   "400",
+   "4,000"
+  ],
+  "answer": 1,
+  "why": "Blast radius sets the size, not memory.",
+  "explain": [
+   "That is for 20 million connections.",
+   "Correct: 200M / 500K. Roughly 600 with zone headroom.",
+   "That would be 50,000 per gateway."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-scale" cards={[
+ {
+  "front": "Messages per second",
+  "back": "500M x 40 = 20B/day; 200K/s average; 600K/s peak."
+ },
+ {
+  "front": "Gateways",
+  "back": "200M connections / 500K per gateway = 400, about 600 with headroom."
+ },
+ {
+  "front": "Heartbeats",
+  "back": "200M / 30 s = 6.7M/s fleet-wide, 16.7K/s per gateway."
+ },
+ {
+  "front": "Storage",
+  "back": "4 TB/day logical, 12 TB raw. Retention is a product decision."
+ }
+]} />
+
+<ChapterDone id="scale" />
+
 <h2 id="failures">Chapter 14 · What breaks, and what users see</h2>
 
-<Scene chapter="Chapter 14" title="What breaks, and what users see" mood="storm">
-
-Dev's version of the post-mortem has one column the others don't: *What did the user see?* *"Engineers write 'gateway restarted',"* he says. *"Users write 'my message vanished'. Write both."*
-
-</Scene>
+A post-mortem written by engineers says "gateway restarted". A support ticket written by a user says "my message vanished". Every failure below is written both ways: what the user sees, and why the data is still safe.
 
 | Failure | What users see | Why nothing is lost | What you add |
 |---|---|---|---|
@@ -707,6 +1567,77 @@ Say what you'd promise. A common answer: each conversation has a **home region**
 
 **Catch the trap:** describing failures in engineer words only. For each one, say what the user sees, and why the data is safe anyway.
 
+<Figure caption="The failure row that surprises people: the chat service dies after persisting but before acking. The retry finds the stored row.">
+  <Mermaid code={`sequenceDiagram
+    participant A as Alice phone
+    participant CS as Chat service
+    participant DB as Message store
+    A->>CS: send m-91
+    CS->>DB: insert conv c-5 seq 43
+    DB-->>CS: ok
+    Note over CS: crashes before acking
+    A->>CS: retry m-91 after timeout
+    CS->>DB: insert if m-91 is new
+    DB-->>CS: already exists as seq 43
+    CS-->>A: ack seq 43, one tick`} />
+</Figure>
+
+<Quiz id="rt-failures" title="Check your understanding" questions={[
+ {
+  "kind": "failure",
+  "q": "A message-store partition is unavailable. What do users of those conversations see, and why is nothing lost?",
+  "options": [
+   "Messages vanish",
+   "Sends fail and stay pending on the phone, which retries. Nothing acked is lost",
+   "Messages go through and are fixed up later"
+  ],
+  "answer": 1,
+  "why": "Connection-tier failures cost latency, not messages.",
+  "explain": [
+   "Nothing was acked, so nothing was promised.",
+   "Correct.",
+   "Persisting is required before ack."
+  ]
+ },
+ {
+  "kind": "failure",
+  "q": "Users report ticks that lie. How do you debug it in production?",
+  "options": [
+   "Add more heartbeats",
+   "Trace who emitted the delivered receipt. It must come from a device ack, not a gateway socket write",
+   "Restart the gateways"
+  ],
+  "answer": 1,
+  "why": "Find out who claimed the tick.",
+  "explain": [
+   "Heartbeats do not make ticks honest.",
+   "Correct: compare the event order with the device cursor.",
+   "That hides the bug without finding it."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-failures" cards={[
+ {
+  "front": "Gateway crash",
+  "back": "Users see \"connecting\". Messages are in the store. Jittered backoff and admission control."
+ },
+ {
+  "front": "Crash after persist, before ack",
+  "back": "The phone retries, and the unique client id returns the original seq."
+ },
+ {
+  "front": "Registry down",
+  "back": "The persist path is unaffected. Pushes degrade. Devices sync or wake by push."
+ },
+ {
+  "front": "Owner failover",
+  "back": "The new owner reads the last persisted seq. Insert-if-absent fences the old one."
+ }
+]} />
+
+<ChapterDone id="failures" />
+
 <Part n="Part Five" title="The pattern at work">
 
 Everything above, spent on one forty-five-minute round — then the same machinery wearing other costumes.
@@ -715,43 +1646,37 @@ Everything above, spent on one forty-five-minute round — then the same machine
 
 <h2 id="walkthrough">Chapter 15 · WhatsApp, out loud</h2>
 
-<Scene chapter="Chapter 15" title="WhatsApp, out loud" mood="night">
-
-Final Friday. Mara puts her phone face-down on the table. *"Design WhatsApp,"* she says. *"I'll play the interviewer. Show me the clock."*
-
-You write four numbers in the corner of the board — 9 · 15 · 25 · 38 — and pick up the marker.
-
-</Scene>
+**Mock interview: "Design WhatsApp", 45 minutes.** Write four numbers in the corner of the board before you start: 9 · 15 · 25 · 38. They are the minute marks from the delivery-framework clock where requirements finish, the high-level design starts, the deep dives start, and wrap-up starts. What follows is one full spoken run, with timestamps.
 
 A 45-minute round on the <a href={`${BASE}sd/lessons/delivery-framework/`}>delivery framework</a> clock: intros to 0:03, requirements 0:03–0:09, entities 0:09–0:11, API 0:11–0:15, high-level 0:15–0:25, deep dives 0:25–0:38, wrap-up 0:38–0:41, your questions to 0:45. Read the lines aloud once.
 
 **0:03 · Roadmap and requirements**
 
-> **You:** "Here's how I'd like to use our time: about six minutes on requirements and scale, a couple on entities and the API, a simple design that works end to end, then two or three deep dives on the hard parts — I expect the connection tier and delivery guarantees — and a short wrap-up. Estimates up front, or as they become relevant?"
+> **Candidate:** "Here's how I'd like to use our time: about six minutes on requirements and scale, a couple on entities and the API, a simple design that works end to end, then two or three deep dives on the hard parts — I expect the connection tier and delivery guarantees — and a short wrap-up. Estimates up front, or as they become relevant?"
 >
 > **Interviewer:** "As relevant."
 >
-> **You:** "Functional: one, users send and receive messages one-to-one and in groups up to 256. Two, a user who was offline gets everything when they come back, on every device. Three, sent, delivered and read receipts. Online and last-seen presence as a fourth if we have time. Out of scope: voice and video calls, stories, payments, search. Media I'll handle as a pointer to object storage. And end-to-end encryption — is that in scope?"
+> **Candidate:** "Functional: one, users send and receive messages one-to-one and in groups up to 256. Two, a user who was offline gets everything when they come back, on every device. Three, sent, delivered and read receipts. Online and last-seen presence as a fourth if we have time. Out of scope: voice and video calls, stories, payments, search. Media I'll handle as a pointer to object storage. And end-to-end encryption — is that in scope?"
 >
 > **Interviewer:** "Mention it at the end."
 
 **0:05 · Non-functionals with numbers**
 
-> **You:** "Scale: 500 million daily users, 40 messages each — 20 billion a day, about 200 thousand a second on average, 600 thousand at a 3× peak. If 40% are connected at peak, that's 200 million concurrent connections. Latency: when both people are online, delivery in well under a second — say p99 500 milliseconds. Durability: an acknowledged message is never lost. Ordering: everyone in a conversation sees the same order. And no visible duplicates. Availability matters more than anything global: a regional blip should delay messages, never lose them."
+> **Candidate:** "Scale: 500 million daily users, 40 messages each — 20 billion a day, about 200 thousand a second on average, 600 thousand at a 3× peak. If 40% are connected at peak, that's 200 million concurrent connections. Latency: when both people are online, delivery in well under a second — say p99 500 milliseconds. Durability: an acknowledged message is never lost. Ordering: everyone in a conversation sees the same order. And no visible duplicates. Availability matters more than anything global: a regional blip should delay messages, never lose them."
 
 **0:08 · The bridge**
 
-> **You:** "So: one-to-one and group messaging, offline catch-up, receipts — 600K messages a second at peak over 200 million live connections, durable once acked, ordered per conversation. The numbers say the hard parts are holding connections and the delivery guarantees, not raw storage. Does that match?"
+> **Candidate:** "So: one-to-one and group messaging, offline catch-up, receipts — 600K messages a second at peak over 200 million live connections, durable once acked, ordered per conversation. The numbers say the hard parts are holding connections and the delivery guarantees, not raw storage. Does that match?"
 >
 > **Interviewer:** "Yes."
 
 **0:09 · Core entities**
 
-> **You:** "User, Device — a user has many devices. Conversation, which is one-to-one or a group. User to Conversation is many-to-many, so there's a **Membership** join table — indexed both ways, by conversation for fan-out and by user for their chat list. Message belongs to a conversation and carries a per-conversation sequence number. And Cursor — per conversation and user, or device: delivered-up-to and read-up-to. Receipts are cursor values, not per-message rows."
+> **Candidate:** "User, Device — a user has many devices. Conversation, which is one-to-one or a group. User to Conversation is many-to-many, so there's a **Membership** join table — indexed both ways, by conversation for fan-out and by user for their chat list. Message belongs to a conversation and carries a per-conversation sequence number. And Cursor — per conversation and user, or device: delivered-up-to and read-up-to. Receipts are cursor values, not per-message rows."
 
 **0:11 · API**
 
-> **You:** "Realtime traffic rides one WebSocket per device; history and sync are plain HTTPS, so they're cacheable and paginate cleanly."
+> **Candidate:** "Realtime traffic rides one WebSocket per device; history and sync are plain HTTPS, so they're cacheable and paginate cleanly."
 
 ```text
 WS   wss://chat.example/connect                (auth token in the handshake)
@@ -767,11 +1692,11 @@ GET  /conversations/{id}/messages?afterSeq=&limit= → { messages[], nextAfterSe
 POST /conversations   { memberIds[] }             → 201 { convId }
 ```
 
-> **You:** "Sends are idempotent by clientMsgId, so the client can retry blindly. Pagination is by seq, never offset. Why a WebSocket rather than SSE: the client sends constantly too — messages, acks, typing."
+> **Candidate:** "Sends are idempotent by clientMsgId, so the client can retry blindly. Pagination is by seq, never offset. Why a WebSocket rather than SSE: the client sends constantly too — messages, acks, typing."
 
 **0:15 · High-level design, one requirement at a time**
 
-> **You:** "Sending, both online. Alice's phone holds a WebSocket to a gateway behind a layer-4 load balancer. Gateways only hold connections. The gateway forwards the send to a stateless chat service, which assigns the next sequence number for the conversation, writes the message to the message store, and only then acks Alice — one tick. Then it looks Bob up in a connection registry in Redis, user to device to gateway, and sends the message to his gateway, which pushes it. Bob's phone acks; that ack becomes a delivered cursor and a two-tick receipt back to Alice."
+> **Candidate:** "Sending, both online. Alice's phone holds a WebSocket to a gateway behind a layer-4 load balancer. Gateways only hold connections. The gateway forwards the send to a stateless chat service, which assigns the next sequence number for the conversation, writes the message to the message store, and only then acks Alice — one tick. Then it looks Bob up in a connection registry in Redis, user to device to gateway, and sends the message to his gateway, which pushes it. Bob's phone acks; that ack becomes a delivered cursor and a two-tick receipt back to Alice."
 >
 > "Offline. If Bob has no live connection, the message is already stored; I upsert an entry in each of his devices' inboxes — conversation and latest seq — and send a push notification through APNs or FCM as a wake-up only. When his phone connects, it reads its inbox and fetches each conversation after its own cursor."
 >
@@ -795,23 +1720,23 @@ POST /conversations   { memberIds[] }             → 201 { convId }
 
 **0:25 · Deep dive 1 — the connection tier**
 
-> **You:** "Two hundred million connections. At about 10 KB each that's 2 TB of memory fleet-wide — memory isn't the limit; blast radius is. I'll cap a gateway at 500 thousand connections, so 400 gateways, around 600 with zone headroom. Heartbeats every 30 seconds — 16,700 a second per gateway — and they stop at the gateway; two missed beats close the socket. The registry entry is written on connect and deleted on disconnect only if it still names this gateway and connection, so a slow cleanup can't erase a fresh reconnect. Liveness comes from one lease per gateway, not a TTL refresh per heartbeat, which would be 6.7 million Redis writes a second."
+> **Candidate:** "Two hundred million connections. At about 10 KB each that's 2 TB of memory fleet-wide — memory isn't the limit; blast radius is. I'll cap a gateway at 500 thousand connections, so 400 gateways, around 600 with zone headroom. Heartbeats every 30 seconds — 16,700 a second per gateway — and they stop at the gateway; two missed beats close the socket. The registry entry is written on connect and deleted on disconnect only if it still names this gateway and connection, so a slow cleanup can't erase a fresh reconnect. Liveness comes from one lease per gateway, not a TTL refresh per heartbeat, which would be 6.7 million Redis writes a second."
 >
 > "When a gateway dies, its 500 thousand clients reconnect with exponential backoff and full jitter over about 30 seconds — 16,700 a second instead of half a million at once — and the gateways cap new connections per second as a backstop. Deploys drain: stop new connections, then ask clients to reconnect at random times over five minutes. Nothing a gateway does can lose a message, because nothing is acked before it's stored."
 
 **0:31 · Deep dive 2 — once, in order, and offline**
 
-> **You:** "Ordering: I won't trust device clocks. Each conversation is owned by one chat-service instance through consistent hashing on conversation id; it hands out a dense sequence number and only advances after a successful write, and the insert is if-absent on conversation and seq so a stale owner after failover can't overwrite. Per-conversation traffic is tiny, so one owner is never a bottleneck. Delivery is at-least-once with dedup at both ends: the client message id makes sender retries return the original seq, and devices drop seqs they've already applied. Because seqs are dense, a device that sees 44 after 42 knows to fetch from the store. And push notifications are wake-ups — if every one were lost, the device would still get everything on next open."
+> **Candidate:** "Ordering: I won't trust device clocks. Each conversation is owned by one chat-service instance through consistent hashing on conversation id; it hands out a dense sequence number and only advances after a successful write, and the insert is if-absent on conversation and seq so a stale owner after failover can't overwrite. Per-conversation traffic is tiny, so one owner is never a bottleneck. Delivery is at-least-once with dedup at both ends: the client message id makes sender retries return the original seq, and devices drop seqs they've already applied. Because seqs are dense, a device that sees 44 after 42 knows to fetch from the store. And push notifications are wake-ups — if every one were lost, the device would still get everything on next open."
 
 **0:35 · Deep dive 3 — storage and big groups**
 
-> **You:** "Storage: wide-column, partitioned by conversation id plus a bucket, clustered by seq descending — the latest page and 'after seq N' are single-partition reads. At 4 TB a day logical, 12 raw, retention decides the bill. I'll do store-and-forward: keep messages until every recipient device acks, with a 30-day cap, and devices keep history — which also fits end-to-end encryption. Groups are capped at 256, so fan-out on write is 256 pointer writes; if we added large channels I'd switch them to fan-out on read — one log, per-member cursors, gateways subscribed to the channel topic so each message is published once per gateway, not once per member."
+> **Candidate:** "Storage: wide-column, partitioned by conversation id plus a bucket, clustered by seq descending — the latest page and 'after seq N' are single-partition reads. At 4 TB a day logical, 12 raw, retention decides the bill. I'll do store-and-forward: keep messages until every recipient device acks, with a 30-day cap, and devices keep history — which also fits end-to-end encryption. Groups are capped at 256, so fan-out on write is 256 pointer writes; if we added large channels I'd switch them to fan-out on read — one log, per-member cursors, gateways subscribed to the channel topic so each message is published once per gateway, not once per member."
 
 **0:38 · Wrap-up**
 
-> **You:** "To recap: send, offline delivery and receipts are all served; durability from ack-after-persist; order from per-conversation seqs; no visible duplicates from idempotent sends and client dedup. At 10×, the first pressure is operational — reconnect waves and deploys across thousands of gateways — then presence fan-out, which I'd keep lazy and subscription-based, only for screens that show it. If a store partition fails, sends to those conversations fail and stay pending on the phone; nothing acked is lost. I'd monitor p99 send-to-deliver latency, ack timeouts, reconnect rate per gateway, inbox backlog, and push-notification failure rates. On end-to-end encryption: keys stay on devices, the server routes ciphertext and keeps only metadata, and the design above doesn't change except search and previews move on device."
+> **Candidate:** "To recap: send, offline delivery and receipts are all served; durability from ack-after-persist; order from per-conversation seqs; no visible duplicates from idempotent sends and client dedup. At 10×, the first pressure is operational — reconnect waves and deploys across thousands of gateways — then presence fan-out, which I'd keep lazy and subscription-based, only for screens that show it. If a store partition fails, sends to those conversations fail and stay pending on the phone; nothing acked is lost. I'd monitor p99 send-to-deliver latency, ack timeouts, reconnect rate per gateway, inbox backlog, and push-notification failure rates. On end-to-end encryption: keys stay on devices, the server routes ciphertext and keeps only metadata, and the design above doesn't change except search and previews move on device."
 
-**0:41.** Mara turns the phone over. Four minutes to spare for questions.
+**0:41.** Wrap-up is done with four minutes to spare for your questions.
 
 **Check the numbers yourself:** 500M × 40 = 2 × 10¹⁰ messages/day; ÷ 10⁵ = 200K/s, × 3 = 600K/s. 500M × 0.4 = 200M connections; ÷ 500K = 400 gateways; × 10 KB = 2 TB. 200M ÷ 30 ≈ 6.7M heartbeats/s; 500K ÷ 30 ≈ 16.7K per gateway. 2 × 10¹⁰ × 200 B = 4 × 10¹² B = 4 TB/day; × 3 = 12 TB. Reconnect wave 500K ÷ 30 ≈ 16.7K/s; drain 500K ÷ 300 s ≈ 1.7K/s.
 
@@ -823,15 +1748,65 @@ For most people it's *"and only then acks Alice"* in the high-level design. With
 
 </Reveal>
 
+<Quiz id="rt-walkthrough" title="Check your understanding" questions={[
+ {
+  "kind": "scenario",
+  "q": "You chose store-and-forward with a 30-day cap. Bob's phone was offline for 40 days. What does Alice see?",
+  "options": [
+   "Two ticks, since the server delivered",
+   "One tick. Messages past the window expired, and the product decides whether to tell her",
+   "Her messages are re-sent"
+  ],
+  "answer": 1,
+  "why": "Say the retention consequences.",
+  "explain": [
+   "It was never delivered.",
+   "Correct: state this consequence out loud.",
+   "Nothing re-sends from expired storage."
+  ]
+ },
+ {
+  "kind": "tradeoff",
+  "q": "The interviewer asks you to mention E2EE at the end. What do you say?",
+  "options": [
+   "Keys stay on devices, the server routes ciphertext and keeps metadata, and the design is unchanged except search and previews move on device",
+   "The server decrypts and re-encrypts for each recipient",
+   "Ordering and receipts have to move to the clients"
+  ],
+  "answer": 0,
+  "why": "Content versus metadata.",
+  "explain": [
+   "Correct.",
+   "That defeats E2EE.",
+   "They use metadata and stay server-side."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-walkthrough" cards={[
+ {
+  "front": "The clock",
+  "back": "9 · 15 · 25 · 38: requirements, high-level design, deep dives, wrap-up."
+ },
+ {
+  "front": "Three deep dives",
+  "back": "Connection tier; once, in order and offline; storage and big groups."
+ },
+ {
+  "front": "The sentence people skip",
+  "back": "\"...and only then acks Alice.\""
+ },
+ {
+  "front": "Key numbers",
+  "back": "20B messages/day, 600K/s peak, 200M connections, 400 gateways, 4 TB/day."
+ }
+]} />
+
+<ChapterDone id="walkthrough" />
+
 <h2 id="family">Chapter 16 · One pattern, many disguises</h2>
 
-<Scene chapter="Chapter 16" title="One pattern, many disguises" mood="dawn">
-
-A week later Iris brings five feature requests at once: a live comment stream for a launch event, cursors in the shared listing editor, a notification bell, a live map of the courier, and video calls for buyers and sellers.
-
-You don't reach for five designs. You reach for one, and ask the same three questions — how often, who talks back, how many watching — and then: *what must be durable, and what can be lost?*
-
-</Scene>
+A team brings five feature requests at once: a live comment stream for a launch event, cursors in a shared editor, a notification bell, a live courier map, and video calls. Do not design five systems. Ask the same three questions (how often, who talks back, how many watching), then a fourth: what must be durable, and what can be lost?
 
 The four knobs that turn the chat design into every other realtime design:
 
@@ -863,70 +1838,177 @@ The four knobs that turn the chat design into every other realtime design:
 
 **Catch the trap:** treating every realtime feature as chat. Cursors, locations and presence are latest-value and lossy; persisting and acking them is wasted work. Messages and notifications are durable; dropping them is a bug. Say which kind each event is.
 
+<Figure caption="The durability question that separates chat-like events from cursor-like events.">
+  <Mermaid code={`flowchart TD
+    E["A realtime event"] --> D{"Must every event survive?"}
+    D -->|"yes: messages, notifications"| P["Persist, assign seq, catch up from a cursor"]
+    D -->|"no: cursors, presence, location"| L["Latest value only\nthrottle, no persistence, no retry"]`} />
+</Figure>
+
+<Quiz id="rt-family" title="Check your understanding" questions={[
+ {
+  "kind": "scenario",
+  "q": "A live courier map: the driver sends a location every few seconds. Persist and ack each update?",
+  "options": [
+   "Yes, every point must survive",
+   "No. Latest value only, drop stale updates, no retry",
+   "Persist it, but do not ack"
+  ],
+  "answer": 1,
+  "why": "Ask: durable or latest-value?",
+  "explain": [
+   "Only the latest is needed for display.",
+   "Correct: location is ephemeral and lossy.",
+   "A half measure with the cost of both."
+  ]
+ },
+ {
+  "kind": "scenario",
+  "q": "A collaborative editor has cursors and edits. Same treatment for both?",
+  "options": [
+   "Yes, treat them the same",
+   "No. Cursors are throttled, lossy, unpersisted. Edits are durable and ordered (OT or CRDT)",
+   "Persist the cursors too"
+  ],
+  "answer": 1,
+  "why": "Say which kind each event is.",
+  "explain": [
+   "They have different durability.",
+   "Correct.",
+   "That is wasted work."
+  ]
+ }
+]} />
+
+<RevisionCards id="realtime-family" cards={[
+ {
+  "front": "Four knobs",
+  "back": "Transport, durability, fan-out shape, order and dedup."
+ },
+ {
+  "front": "Live comments",
+  "back": "SSE, broadcast via gateway topics, sample or rank for the viewer."
+ },
+ {
+  "front": "Video calls",
+  "back": "WebSocket signaling, WebRTC media through an SFU, simulcast, STUN/TURN/ICE."
+ }
+]} />
+
+<ChapterDone id="family" />
+
 <h2 id="decision-drills">Decision drills · Make the calls</h2>
 
 Close the lesson and answer from memory. Each wrong choice tells you what it would break.
 
 <Trace title="The realtime review" steps={drills} takeaway="Pick the pipe from how often, who talks back, how many watch. Persist, then ack, then route. At-least-once with dedup at both ends; order by per-conversation seq; push is a doorbell; the store is the truth." />
 
-<Quiz questions={[
-  {
-    q: 'Live sports scores to 5M viewers — pick the mechanism and reason:',
-    options: [
-      'WebSockets — real-time means WebSockets',
-      'SSE — pure server→client push, no upstream traffic to justify duplex; simpler infra, same instant delivery',
-      'Polling every 500ms — simplest',
-      'Kafka consumers on each phone'
-    ],
-    answer: 1,
-    why: 'One-way push = SSE\'s exact home. WebSockets work but buy duplex nobody uses; 500ms polling at 5M viewers = 10M wasted QPS. (Clients consuming Kafka directly is never the answer.)'
-  },
-  {
-    q: 'Message for Bob arrives; you run 50 WebSocket servers. How does it reach him?',
-    options: [
-      'Broadcast to all 50 servers — whoever has Bob delivers',
-      'A connection registry (Redis: user→server, maintained on connect/disconnect) routes it to server 7 directly — or pub/sub on user channels; pick one and say it',
-      'Bob\'s next poll picks it up',
-      'The load balancer remembers Bob\'s server'
-    ],
-    answer: 1,
-    why: 'The routing problem IS this pattern\'s core deep dive. Naive broadcast (option 1) is actually pub/sub done crudely — fine to evolve from, but say the registry/pub-sub tradeoff explicitly.'
-  },
-  {
-    q: 'A WS server dies; 500K clients reconnect. Two things your design must have — which pair?',
-    options: [
-      'Bigger servers and TCP keepalive',
-      'Reconnect with jittered backoff (no synchronized stampede) + last-seen-ID catch-up from persistent storage (no lost messages while disconnected)',
-      'Sticky sessions and session replication',
-      'A standby server with the same IP'
-    ],
-    answer: 1,
-    why: 'The two failure consequences: the reconnect wave (stampede math) and the gap in delivery (socket ≠ source of truth). Both fixes are client-protocol design, not server hardware.'
-  },
-  {
-    q: 'When may the sender’s phone show the first tick (“sent”)?',
-    options: [
-      'When the frame leaves the phone',
-      'When the gateway receives it',
-      'When the server has durably persisted it and acked with a sequence number',
-      'When the recipient’s phone receives it'
-    ],
-    answer: 2,
-    why: 'Ack after persist. Anything earlier can be lost by a crash and the tick would lie; “recipient received it” is the second tick.'
-  }
+<Quiz id="rt-final" title="Realtime review" questions={[
+ {
+  "kind": "scenario",
+  "q": "Live sports scores to 5 million viewers. Pick the mechanism and the reason:",
+  "options": [
+   "WebSockets, because real-time means WebSockets",
+   "SSE: pure server-to-client push with no upstream traffic, simpler infra, same instant delivery",
+   "Polling every 500 ms",
+   "Kafka consumers on each phone"
+  ],
+  "answer": 1,
+  "why": "One-way push means SSE. Duplex is unused cost.",
+  "explain": [
+   "Works, but you pay for duplex nobody uses and lose the built-in resume.",
+   "Correct: one-way push is SSE's home.",
+   "5 million viewers at 2 requests a second is 10 million wasted requests a second.",
+   "Clients never consume from the broker directly."
+  ]
+ },
+ {
+  "kind": "scenario",
+  "q": "A message for Bob arrives and you run 50 WebSocket servers. How does it reach him?",
+  "options": [
+   "Broadcast to all 50 servers and let whoever has Bob deliver",
+   "A connection registry (Redis, user to device to gateway, maintained on connect and disconnect) routes it to the right gateway, or pub/sub on user channels. Pick one and say it",
+   "Bob's next poll picks it up",
+   "The load balancer remembers Bob's server"
+  ],
+  "answer": 1,
+  "why": "Name the registry or pub/sub, and its trade-off.",
+  "explain": [
+   "This is pub/sub done crudely. Fine to evolve from, but say the trade-off.",
+   "Correct: this routing problem is the pattern's core deep dive.",
+   "That abandons the live pipe you just built.",
+   "It chose a gateway at connect time and offers no lookup."
+  ]
+ },
+ {
+  "kind": "failure",
+  "q": "A WebSocket server dies and 500K clients reconnect. Which pair must your design have?",
+  "options": [
+   "Bigger servers and TCP keepalive",
+   "Jittered backoff (no synchronised stampede) plus catch-up from persistent storage by cursor",
+   "Sticky sessions and session replication",
+   "A standby server with the same IP"
+  ],
+  "answer": 1,
+  "why": "Both fixes are client protocol design, not server hardware.",
+  "explain": [
+   "Neither addresses the herd or the gap.",
+   "Correct: it handles the reconnect wave and the delivery gap.",
+   "Replicating socket state is the wrong fix. The store is the truth.",
+   "Does not solve the herd or lost in-flight messages."
+  ]
+ },
+ {
+  "kind": "failure",
+  "q": "When may the sender's phone show the first tick?",
+  "options": [
+   "When the frame leaves the phone",
+   "When the gateway receives it",
+   "When the server has durably persisted it and acked with a sequence number",
+   "When the recipient's phone receives it"
+  ],
+  "answer": 2,
+  "why": "Ack after persist. Anything earlier can be lost and the tick would lie.",
+  "explain": [
+   "A crash or network loss would make the tick lie.",
+   "The gateway is disposable and holds no durable state.",
+   "Correct: ack after persist.",
+   "That is the second tick."
+  ]
+ }
 ]} />
 
 <h2 id="interview-script">Say it in the room</h2>
 
-<Scene title="The interview room" mood="night">
+**The interviewer reads:** "Design a chat app." A weak answer draws a phone, an arrow labelled WEBSOCKET, and a database. A strong answer puts the marker on the line between two phones and says where the message is at every instant.
 
-The Interviewer reads from a card: *"Design a chat app."* Two months ago you'd have drawn a phone, an arrow labelled WEBSOCKET, and a database. Today you draw two phones and put the marker on the line between them.
+**The main answer, three lengths** (adapt the nouns; say it aloud before opening the model answer):
 
-</Scene>
+<AnswerModes id="rt-chat-answer" q="Design a chat app: how does a message reach the other person reliably?">
+  <Fragment slot="short">
 
-**The 90-second answer** (adapt the nouns):
+Each device holds a WebSocket to a gateway that only holds connections. The chat service gives each message a per-conversation sequence number, persists it, and only then acks the sender (first tick). It pushes to the recipient's devices through a connection registry. Delivery is at-least-once with dedup at both ends. Offline devices sync from their own cursor, and APNs or FCM only wakes them. Push is the fast path, the store is the truth.
 
-> "Messages flow both ways constantly — messages, acks, typing — so each device holds a **WebSocket** to a fleet of **gateways** that only hold connections; the logic lives in a stateless **chat service** behind them. A send carries a client message id; the chat service gives it the next **per-conversation sequence number**, **persists it, and only then acks** — that's the first tick. It finds the recipient's devices in a **connection registry** — Redis, user to device to gateway — and pushes through that gateway; the device's ack becomes the delivered tick, and opening the chat sends a read cursor. Delivery is **at-least-once with dedup at both ends**: retried sends return the same seq, devices drop seqs they have, and a gap in seqs means fetch from the store. **Offline devices** sync from their own cursor using a small per-device inbox; APNs or FCM is only a **wake-up**. **Push is the fast path; the store is the truth.** Gateways heartbeat every 30 seconds and clients reconnect with **jittered exponential backoff**, so a dead gateway costs seconds, never messages. Messages live in a wide-column store partitioned by conversation and clustered by seq. Groups fan out on write to member inboxes up to a few hundred; big channels fan out on read with gateway-level subscriptions. Presence is lazy and subscription-based, because naive presence costs fifty times the message traffic."
+  </Fragment>
+  <Fragment slot="medium">
+
+Messages flow both ways constantly — messages, acks, typing — so each device holds a **WebSocket** to a fleet of **gateways** that only hold connections; the logic lives in a stateless **chat service** behind them. A send carries a client message id; the chat service gives it the next **per-conversation sequence number**, **persists it, and only then acks** — that's the first tick. It finds the recipient's devices in a **connection registry** — Redis, user to device to gateway — and pushes through that gateway; the device's ack becomes the delivered tick, and opening the chat sends a read cursor. Delivery is **at-least-once with dedup at both ends**: retried sends return the same seq, devices drop seqs they have, and a gap in seqs means fetch from the store. **Offline devices** sync from their own cursor using a small per-device inbox; APNs or FCM is only a **wake-up**. **Push is the fast path; the store is the truth.** Gateways heartbeat every 30 seconds and clients reconnect with **jittered exponential backoff**, so a dead gateway costs seconds, never messages. Messages live in a wide-column store partitioned by conversation and clustered by seq. Groups fan out on write to member inboxes up to a few hundred; big channels fan out on read with gateway-level subscriptions. Presence is lazy and subscription-based, because naive presence costs fifty times the message traffic.
+
+  </Fragment>
+  <Fragment slot="deep">
+
+Start with the three promises: durable once acked, the same order for everyone in a conversation, and no visible duplicates.
+
+**Happy path.** Client message id, send over the socket, the owner of the conversation assigns the next seq, insert is idempotent on (conversation, client message id), ack, then route through the registry and push. The device acks and the delivered cursor moves.
+
+**Failure story.** Gateway dies: clients reconnect with full jitter and sync from cursors, and admission control protects the fleet. Chat service dies after persist: the retry returns the same seq. Registry down: persistence is unaffected and pushes degrade to sync or wake-up. Store partition down: sends fail unacked and stay pending on the phone.
+
+**Scale.** At 200M connections and 500K per gateway, about 400 gateways, sized by blast radius. Heartbeats stop at the gateway. Presence is lazy and subscription based. Big channels fan out on read.
+
+**Trade-offs to name.** Store-and-forward versus server-kept history, registry versus pub/sub, and E2EE moving search and previews to the device.
+
+  </Fragment>
+</AnswerModes>
 
 **Five follow-ups you will get:**
 
@@ -986,6 +2068,17 @@ Fan-out on write would be 100,000 inbox writes per message. Switch to fan-out on
 | Storage | Wide-column, partition (conversation, bucket), cluster by seq; retention is a product decision |
 | Video calls | WS signaling; WebRTC media via SFU; simulcast; STUN/TURN/ICE |
 
+**Easy-to-confuse pairs**
+
+| Pair | The difference |
+|---|---|
+| Push notification vs WebSocket push | The notification is a best-effort OS wake-up. The WebSocket is your own live pipe. Neither is the source of truth. |
+| Sent vs delivered vs read | Sent: the server persisted it. Delivered: the recipient device stored it. Read: the user saw it. Three different claimants. |
+| At-least-once vs exactly-once effect | The wire may repeat. Dedup by id and seq makes the screen show it once. |
+| Heartbeat vs gateway lease | The heartbeat tells a gateway a client is alive. The lease tells routers a gateway is alive. |
+| Per-device vs per-user state | Delivered cursor and inbox are per device. Read cursor is per user. |
+| Presence vs liveness | Presence is derived from connections for display. It is soft and lossy. |
+
 ## Five mistakes to leave behind
 
 1. **"Then it's delivered."** Say persist → ack → route → device ack → receipt, in that order.
@@ -994,13 +2087,7 @@ Fan-out on write would be 100,000 inbox writes per message. Switch to fan-out on
 4. **"Clients just reconnect."** Without jitter, that's a self-inflicted stampede. Backoff, jitter, cap, admission control.
 5. **Naive presence and naive big-group fan-out.** Both multiply by audience size. Lazy and subscribed for presence; fan-out on read for big rooms.
 
-<Scene title="Mara’s last word" mood="dusk">
-
-The next deploy restarts every gateway, one at a time, over an hour. Dev watches the reconnect graph: a low, wide hill instead of a cliff. No pages. No tickets. Not a single message shows two ticks it hasn't earned.
-
-Mara walks past the whiteboard where the two phones are still drawn. She adds one thing — a small box in the middle of the arrow, labelled STORE — and underlines it twice. *"That's where the message is,"* she says. *"Every instant. Everything else is just how fast it gets there."*
-
-</Scene>
+**The one sentence to keep:** the message is in the store at every instant that matters, and everything else is how fast it gets there.
 
 **Keep it warm:** with the buddy, run the **mechanism speed round** — 8 features named fast (typing indicator, stock ticker, food-delivery map, turn-based game, code editor sharing, flash-sale stock counter, notification bell, live auction bids): you call poll/SSE/WS plus one-line reason each, *and* whether each event is durable or latest-value. Then the mock: **WhatsApp** on the 45-minute clock, with 9 · 15 · 25 · 38 written in the corner before you start. Log where the clock went, and which of the five follow-ups you were asked.
 

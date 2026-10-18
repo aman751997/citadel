@@ -19,7 +19,7 @@ export const transport = [
 ];
 
 export const routing = [
-  step('A message for Bob reaches the chat service. Kestrel runs 40 gateway servers; Bob\'s phone is connected to one of them. What finds it?', [], 1, [
+  step('A message for Bob reaches the chat service. the system runs 40 gateway servers; Bob\'s phone is connected to one of them. What finds it?', [], 1, [
     ['Send it to all 40 gateways; whoever holds Bob delivers', 'That is pub/sub done crudely: 40 messages to deliver 1. Fine to evolve from, but at 60,000 messages a second it is 2.4 million internal sends a second.'],
     ['Look up Bob in a connection registry (user → device → gateway) and send it to that gateway', 'Right. One lookup, one send. The registry is written on connect and removed on disconnect. Pub/sub on a per-user channel is the other good answer — pick one and say it.'],
     ['The load balancer remembers which gateway Bob is on', 'The load balancer chose a gateway when Bob connected; it does not offer a "where is user X" lookup to your services. You need your own registry.'],
@@ -31,7 +31,7 @@ export const routing = [
     ['Bob gets duplicate messages', 'Duplicates come from retries. This bug causes the opposite: messages that do not get pushed at all.'],
     ['Bob\'s new entry is deleted; he looks offline and pushes stop until he reconnects', 'Right. Cleanup must be conditional: delete only if the entry still names this gateway and this connection id (compare-and-delete, a small Lua script in Redis).'],
   ]),
-  step('Clients send a heartbeat every 30 s. Someone proposes refreshing each user\'s registry TTL on every heartbeat. Kestrel has 20 million connections at peak. What does that cost, and what is cheaper?', [], 0, [
+  step('Clients send a heartbeat every 30 s. Someone proposes refreshing each user\'s registry TTL on every heartbeat. the app has 20 million connections at peak. What does that cost, and what is cheaper?', [], 0, [
     ['About 667,000 Redis writes a second; instead give each gateway a liveness lease and treat entries that name a dead gateway as stale', 'Right. 20,000,000 ÷ 30 ≈ 666,667 writes/s just to say "still here". Heartbeats should end at the gateway. One lease per gateway (refreshed every few seconds) tells routers which entries to trust.'],
     ['Nothing much — Redis is fast', 'Fast is not free: two-thirds of a million writes a second is several Redis nodes of pure keepalive traffic, all to repeat what the gateway already knows.'],
     ['About 20 million writes a second', '20 million connections ÷ 30 seconds per heartbeat is about 667 thousand per second, not 20 million.'],
@@ -99,9 +99,9 @@ export const flow = [
 ];
 
 export const presenceDrill = [
-  step('Kestrel has 50 million daily users, each going online or offline about 20 times a day, with about 100 contacts each. If every change is pushed to every contact, how many presence events is that a day?', [], 2, [
+  step('An app has 50 million daily users, each going online or offline about 20 times a day, with about 100 contacts each. If every change is pushed to every contact, how many presence events is that a day?', [], 2, [
     ['About 1 billion', 'That is 50M × 20 — the changes themselves, before fan-out to 100 contacts each.'],
-    ['About 2 billion', 'That is roughly the number of chat messages Kestrel sends a day. Presence naive fan-out is far bigger.'],
+    ['About 2 billion', 'That is roughly the number of chat messages the app sends a day. Presence naive fan-out is far bigger.'],
     ['About 100 billion — roughly 1 million a second, fifty times the message traffic', 'Right. 50,000,000 × 20 × 100 = 10¹¹ a day, ÷10⁵ ≈ 1,000,000 a second. Presence would cost fifty times more than the messages it decorates.'],
   ]),
   step('What cuts presence fan-out the most without breaking the feature users see?', [], 1, [
@@ -123,8 +123,8 @@ export const groups = [
     ['200 copies of the full message — too expensive, use fan-out on read', 'Fan-out on write copies pointers, not bodies. For a few hundred members it is the simpler design.'],
   ]),
   step('A public channel has 100,000 members and receives 10 messages a second. What changes?', [], 2, [
-    ['Nothing; keep fanning out to inboxes', '100,000 × 10 = 1,000,000 inbox writes a second for one channel — more than all the rest of Kestrel\'s messages combined.'],
-    ['Cap channels at 256 members', 'That deletes the product Iris asked for. The architecture has to change instead.'],
+    ['Nothing; keep fanning out to inboxes', '100,000 × 10 = 1,000,000 inbox writes a second for one channel — more than all the rest of the app\'s messages combined.'],
+    ['Cap channels at 256 members', 'That deletes the product requirement. The architecture has to change instead.'],
     ['Fan out on read: store once in the channel log, members sync per-channel cursors, and only gateways with subscribed online members get a push', 'Right. Gateways subscribe to the channel topic; each gets one copy and pushes it to its local members. With 40 gateways that is at most 40 internal sends per message, not 100,000.'],
   ]),
 ];
@@ -135,7 +135,7 @@ export const storage = [
     ['conversation_id (with a time or seq bucket for very busy conversations), clustered by seq', 'Right. The dominant reads — latest page, messages after seq N — hit one partition and come back sorted. Buckets stop a giant channel from growing one unbounded partition.'],
     ['sender_id', 'Reading a conversation means merging every participant\'s partitions and re-sorting. Nobody reads "all messages Alice ever sent".'],
   ]),
-  step('Kestrel sends 2 billion messages a day at about 200 bytes stored each, replicated 3 times. How much new raw storage per day?', [], 1, [
+  step('An app sends 2 billion messages a day at about 200 bytes stored each, replicated 3 times. How much new raw storage per day?', [], 1, [
     ['400 GB', 'That is one copy. Replication factor 3 triples it.'],
     ['1.2 TB', 'Right. 2 × 10⁹ × 200 B = 400 GB of logical data, × 3 replicas = 1.2 TB a day — about 440 TB a year if history is kept forever. This is why retention is a product decision.'],
     ['12 TB', 'That is ten times too much — check the powers of ten: 2 × 10⁹ × 200 = 4 × 10¹¹ bytes.'],

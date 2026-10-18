@@ -1708,7 +1708,7 @@ How to read it:
 - Load the script once and call it by its hash with `EVALSHA`. Redis 7 also offers named Functions for the same purpose.
 - Calling `TIME` inside a script that then writes is allowed on Redis 5 and later, which replicate a script's effects rather than re-running it.
 
-This script was run for this lesson in a Lua VM against a mock Redis and an independent model of the bucket, over 3,000 random sequences including clock steps backwards, and matched on every decision, remaining count and retry time. It has not been run against a live Redis. Treat it as the starting point for your own integration test.
+This script was run for this lesson in a Lua VM against a mock Redis and an independent model of the bucket, over 3,000 random sequences including clock steps backwards, and matched on every decision, remaining count and retry time. It was also run against a live Redis 7.4 and behaved the same (a full bucket of 5 admitted 5 calls, then refused with a retry time). Treat it as the starting point for your own integration test.
 
 Calling it from Python with `redis-py`:
 
@@ -1729,7 +1729,7 @@ def check(identity: str, capacity: int, period_ms: int, cost: int = 1):
     }
 ```
 
-`register_script` returns a callable that uses `EVALSHA` and falls back to `EVAL` if the server has not seen the script yet.
+`register_script` returns a callable that sends `EVALSHA`. If the server answers `NOSCRIPT` (it has not seen the script yet, for example after a restart), the client loads the script with `SCRIPT LOAD` and retries `EVALSHA`.
 
 From the result, the gateway builds the response:
 
@@ -1840,7 +1840,7 @@ rl:{ip:203.0.113.7}:anon              per-IP bucket for unauthenticated traffic
 rl:{k_8f3a}:all:m:29437891            fixed window: minute number = floor(unix seconds / 60)
 ```
 
-A design doc might write the pattern as `rl:{tenant}:{user}:{window}`, with braces meaning "fill this in". **In Redis Cluster, braces are not decoration.** The text inside the first non-empty pair of `{...}` is the **hash tag**. Only that part is hashed (CRC16, modulo 16,384 slots). So:
+A design doc might write the pattern as `rl:{tenant}:{user}:{window}`, with braces meaning "fill this in". **In Redis Cluster, braces are not decoration.** The text inside the first `{...}` is the **hash tag**, as long as it is not empty (with `{}` the whole key is hashed). Only that part is hashed (CRC16, modulo 16,384 slots). So:
 
 - `rl:{k_8f3a}:all` and `rl:{k_8f3a}:ep:search` share a slot. That is what lets one atomic script check both. Cluster rejects a script whose keys live in different slots.
 - `rl:{tenant42}:{user7}:...` hashes only `tenant42`. Every user of that tenant lands in **one slot** (slot 14,826), and a big tenant becomes a hot shard. Put the tag on exactly what must be co-located (one key's or one user's limits) so different keys still spread across the cluster.
@@ -1899,7 +1899,7 @@ If each gateway computes the refill with its own clock, the elapsed time between
         'Both tags combined, so users spread evenly',
       ],
       answer: 0,
-      why: 'Only the first non-empty brace pair is hashed. Tag exactly what must be co-located, such as rl:{t42:u7}:min.',
+      why: 'Only the first brace pair is hashed. Tag exactly what must be co-located, such as rl:{t42:u7}:min.',
       explain: [
         'Correct: the second brace pair is ordinary key text. Co-locate only what a single script must touch.',
         'Braces are not decoration in Redis Cluster. They mark the hash tag.',
@@ -2071,7 +2071,7 @@ The gateway spends the grant locally and asks again when it runs out. If a gatew
   cards={[
     { front: 'Why is Redis "atomic" not enough as an answer?', back: 'Single commands are atomic, GET then SET is not. Say: the check, refill and spend run as one Lua script.' },
     { front: 'What must be atomic about INCR + EXPIRE?', back: 'If the process dies between them the key has no TTL. Use MULTI/EXEC, a tiny script, or EXPIRE NX (Redis 7+), and put the window number in the key.' },
-    { front: 'What does a hash tag do?', back: 'Only the text in the first non-empty {} is hashed, so keys sharing a tag share a slot. Needed for one script touching several keys. Too broad a tag makes a hot shard.' },
+    { front: 'What does a hash tag do?', back: 'Only the text in the first {} (if not empty) is hashed, so keys sharing a tag share a slot. Needed for one script touching several keys. Too broad a tag makes a hot shard.' },
     { front: 'Whose clock, and why?', back: 'Redis TIME inside the script. Gateway skew would be counted as free tokens. One key lives on one primary, so one clock.' },
     { front: 'TTL of a token bucket key?', back: 'Time to refill completely plus slack. A missing key reads as full, so expiring a full bucket loses nothing.' },
     { front: 'Hot key: lease vs sync?', back: 'Lease takes tokens first and errs toward under-admission. Sync counts after the fact and can over-admit by one interval of traffic.' },

@@ -5,7 +5,7 @@ import { row, step } from '../../lib/trace.ts';
 // (mod-N movement, ring add/remove, vnode spread, version vectors, Merkle comparisons) or by plain arithmetic.
 
 export const modN = [
-  step('Kestrel’s cache runs on 10 nodes with node = hash(key) mod 10. You add an 11th node and switch to mod 11. Roughly what fraction of keys now map to a different node?', [], 2, [
+  step('A cache runs on 10 nodes with node = hash(key) mod 10. You add an 11th node and switch to mod 11. Roughly what fraction of keys now map to a different node?', [], 2, [
     ['About 1/11 — the new node’s fair share', 'That is what you WANT to move. Mod N does not respect it: a key stays only if h mod 10 equals h mod 11.'],
     ['About half', 'Half is what doubling (10 → 20) costs. Adding one node is worse.'],
     ['About 91% (10/11)', 'Right. In every block of 110 consecutive hash values only 10 (h = 0…9) keep their remainder, so 100/110 move. For a cache that is a near-total cold start.'],

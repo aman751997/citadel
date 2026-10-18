@@ -13,14 +13,14 @@ export const layers = [
   step('Same tenant, two users. The Interviewer asks: "How do you stop Asha from reading Ben’s invoice?" Which layer answers it?', [
     row('Auth layers', ['Identity', 'Tenant', 'Role', 'Resource'], { 3: 'THIS ONE' }, { tones: { 3: 'hot' } }),
   ], 2, [
-    ['Tenant isolation: every query is scoped by tenant_id', 'That stops tenant X reading tenant Y. Asha and Ben are in the same tenant, so this answers a different layer — the exact miss in your mock logs.'],
+    ['Tenant isolation: every query is scoped by tenant_id', 'That stops tenant X reading tenant Y. Asha and Ben are in the same tenant, so this answers a different layer.'],
     ['Authentication: validate the JWT', 'That proves who Asha is. It says nothing about which invoices she may read.'],
     ['Resource-level authorization: check the invoice’s owner or ACL against the caller on every read', 'Right. Identity says who, tenant says which company, role says what kind of user, resource says which object. The question named an object.'],
   ]),
 ];
 
 export const scaling = [
-  step('Kestrel’s API runs on one server at 85% CPU at peak. Traffic will double this quarter. Sessions live in an in-memory map on that server. What comes first?', [], 1, [
+  step('An API runs on one server at 85% CPU at peak. Traffic will double this quarter. Sessions live in an in-memory map on that server. What comes first?', [], 1, [
     ['Add three more servers behind a load balancer', 'A user who logged in on server 1 lands on server 3 and is logged out. Sticky sessions paper over it until a server dies and takes its users’ sessions with it.'],
     ['Move sessions out (a shared store or signed tokens), then add servers behind a load balancer', 'Right. Once any server can handle any request, adding servers adds capacity, and losing one loses nothing.'],
     ['Buy a server with twice the cores and stop there', 'Vertical scaling is a fair way to buy time. But it leaves one machine as a single point of failure, and the in-memory sessions still vanish on every deploy and crash.'],
@@ -137,7 +137,7 @@ export const cap = [
     ['"We keep accepting bookings on both sides and merge later."', 'Two sides can sell the same seat. There is no "merge" for one seat sold twice — only a refund and an apology.'],
     ['"This is a CP choice — the minority side refuses bookings; a failed request beats a double-sold seat."', 'Right. Seat inventory is the canonical CP case: a wrong answer is worse than no answer. The majority side keeps selling.'],
     ['"We use a database that handles partitions automatically."', 'Every database makes this choice for you, quietly. The Interviewer wants to hear that you know which choice it made, and why it fits.'],
-    ['"Partitions are rare enough to ignore."', 'Dodging instead of reasoning aloud is the habit your logs say to kill. Rare is not never — and the question is literally about the rare case.'],
+    ['"Partitions are rare enough to ignore."', 'Dodging instead of reasoning aloud is a common slip. Rare is not never — and the question is literally about the rare case.'],
   ]),
   step('A like counter, during a partition between two regions. CP or AP, and how does it heal?', [], 0, [
     ['AP: both regions keep counting locally and the counts are merged when the link returns', 'Right. Keep a count per region (a counter CRDT does exactly this) and sum them. Nobody is harmed by a like count that is briefly off.'],
@@ -154,7 +154,7 @@ export const cap = [
 export const consistency = [
   step('A user edits their profile and refreshes — they must see the change. Their followers can see it 5 seconds later. Cheapest sufficient consistency?', [], 2, [
     ['Linearizable reads for every profile view', 'Paying for coordination on every follower’s read, when followers don’t need it.'],
-    ['Eventual consistency for everyone', 'The editor refreshes, hits a lagging replica, and their edit "vanishes". That is the bug Iris filed.'],
+    ['Eventual consistency for everyone', 'The editor refreshes, hits a lagging replica, and their edit "vanishes". That is the "my edit disappeared" bug.'],
     ['Read-your-writes for the editor, eventual for everyone else', 'Right. Per data, per reader. Route the editor to the leader for a short window after their write (or carry their last-write position in the session).'],
     ['Quorum reads for everyone', 'Expensive for every reader, and still more than followers need.'],
   ]),
@@ -170,7 +170,7 @@ export const consistency = [
     ['Linearizable', 'It forbids it, but it is far from the weakest. You would pay global coordination to fix an ordering bug.'],
     ['Causal', 'Right. The reply was written after reading the question, so it causally depends on it. Causal consistency shows causes before effects to everyone, while unrelated posts may still arrive in any order.'],
   ]),
-  step('Two people try to claim the username "kestrel" at the same moment, on different replicas. What do you need?', [], 0, [
+  step('Two people try to claim the username "alice" at the same moment, on different replicas. What do you need?', [], 0, [
     ['Linearizability for that check: one leader (or consensus) decides, and everyone sees the same winner', 'Right. Uniqueness needs one agreed order in real time. Read-from-replica-then-write cannot enforce it; a unique constraint on a single leader, or a compare-and-set in a consensus store, can.'],
     ['Causal consistency', 'The two claims are concurrent — neither caused the other — so causal consistency lets each side believe it won.'],
     ['Eventual consistency, then delete the loser', 'One user has already been told "it’s yours". Taking it back later is the bug.'],
@@ -286,7 +286,7 @@ export const drills = [
     ['CA is fine as long as you also add retries', 'Retries do not choose what happens on each side of a partition.'],
     ['Networks partition whether you chose to or not; "CA" just means you haven’t decided what happens when they do', 'Right. The real choice is C or A, during a partition. Say which, per piece of data.'],
   ]),
-  step('Which retry policy would Dev sign off on?', [], 0, [
+  step('Which retry policy is safest?', [], 0, [
     ['Retry idempotent calls only, at one layer, up to 3 attempts, with exponential backoff and full jitter, inside a retry budget', 'Right. Safe operations, one layer, bounded attempts, spread out in time, capped in total.'],
     ['Retry everything 5 times, immediately, at every layer', 'Non-idempotent operations get duplicated, immediate retries hammer a sick server, and every layer multiplies the others.'],
     ['Never retry; surface every error to the user', 'Most transient failures vanish in milliseconds. A careful retry turns them into nothing.'],

@@ -1,0 +1,105 @@
+---
+import SimShell from '../SimShell.astro';
+// Props (all optional): starting choices. Shapes and GPU size are illustrative assumptions, not vendor specs.
+interface Props { model?: 'small' | 'large' | 'mha'; contextExp?: number; batch?: number; weightBytes?: number; kvBytes?: number; gpus?: number }
+const { model = 'large', contextExp = 12, batch = 32, weightBytes = 2, kvBytes = 2, gpus = 4 } = Astro.props;
+const fallback = `With no JavaScript, here is one worked run. An illustrative 70B-class model (80 layers, 8 KV heads, head_dim 128) in BF16 on 4 GPUs of 80 GB. Weights: 70 billion x 2 bytes = 140 GB. Reserve 10% of 320 GB = 32 GB. KV budget: 320 - 140 - 32 = 148 GB. KV per token: 2 x 80 x 8 x 128 x 2 bytes = 327,680 bytes. One 4,096-token conversation: about 1.34 GB, so about 110 fit at once. At 32,768 tokens each it is 10.7 GB and about 13 fit. Without grouped-query attention (64 KV heads) the per-token cost is 8 times larger.`;
+---
+<SimShell title="KV cache calculator: how many conversations fit on a replica" fallback={fallback}>
+  <div class="kvc" data-kvc>
+    <p class="kvc-note">Weights = parameters x bytes per parameter. KV per token = 2 x layers x KV heads x head_dim x bytes. Budget = total memory - weights - reserve. Change one control at a time and watch which number moves.</p>
+    <div class="sim-row">
+      <label>Model shape
+        <select data-in="model">
+          <option value="small" selected={model === 'small'}>8B-class, 32 layers, 8 KV heads</option>
+          <option value="large" selected={model === 'large'}>70B-class, 80 layers, 8 KV heads</option>
+          <option value="mha" selected={model === 'mha'}>70B-class, 80 layers, 64 KV heads (no GQA)</option>
+        </select></label>
+      <label>Weight precision
+        <select data-in="weightBytes">
+          <option value="2" selected={weightBytes === 2}>BF16 (2 bytes)</option>
+          <option value="1" selected={weightBytes === 1}>INT8 / FP8 (1 byte)</option>
+          <option value="0.5" selected={weightBytes === 0.5}>INT4 (0.5 byte)</option>
+        </select></label>
+      <label>KV cache precision
+        <select data-in="kvBytes">
+          <option value="2" selected={kvBytes === 2}>BF16 (2 bytes)</option>
+          <option value="1" selected={kvBytes === 1}>FP8 (1 byte)</option>
+        </select></label>
+      <label>GPUs in the replica (80 GB each)
+        <select data-in="gpus">
+          {[1, 2, 4, 8].map((g) => <option value={g} selected={gpus === g}>{g}</option>)}
+        </select></label>
+    </div>
+    <div class="sim-row">
+      <label>Context per conversation <output data-o="context"></output>
+        <input type="range" min="9" max="17" step="1" value={contextExp} data-in="contextExp" /></label>
+      <label>Conversations in flight (batch) <output data-o="batch"></output>
+        <input type="range" min="1" max="512" step="1" value={batch} data-in="batch" /></label>
+    </div>
+    <div class="sim-row kvc-stats">
+      <div class="sim-stat"><b data-s="weights"></b><small>weights</small></div>
+      <div class="sim-stat"><b data-s="budget"></b><small>KV budget (after 10% reserve)</small></div>
+      <div class="sim-stat"><b data-s="perToken"></b><small>KV per token</small></div>
+      <div class="sim-stat"><b data-s="perSeq"></b><small>KV per conversation</small></div>
+    </div>
+    <div class="sim-row kvc-stats">
+      <div class="sim-stat"><b data-s="maxSeqs"></b><small>conversations that fit</small></div>
+      <div class="sim-stat"><b data-s="needed"></b><small>KV the chosen batch needs</small></div>
+      <div class="sim-stat"><b data-s="maxTokens"></b><small>tokens of KV across all requests</small></div>
+    </div>
+    <div class="kvc-bar" role="img" aria-label="Memory split" data-bar><i data-seg="w"></i><i data-seg="r"></i><i data-seg="k"></i></div>
+    <p class="sim-live" role="status" aria-live="polite" aria-atomic="true" data-caption></p>
+  </div>
+</SimShell>
+
+<style is:global>
+  .kvc label { flex: 1 1 12rem; }
+  .kvc select { width: 100%; }
+  .kvc input[type="range"] { margin: 0; }
+  .kvc-note { color: var(--text-dim); font-size: .78rem; margin: .2rem 0 0; }
+  .kvc-stats .sim-stat { flex: 1 1 7rem; }
+  .kvc-bar { display: flex; height: 18px; border-radius: 6px; overflow: hidden; margin-top: .9rem; background: var(--bg); border: 1px solid var(--border); }
+  .kvc-bar i { display: block; height: 100%; }
+  .kvc-bar i[data-seg="w"] { background: #4a5a75; }
+  .kvc-bar i[data-seg="r"] { background: #3a3f4a; }
+  .kvc-bar i[data-seg="k"] { background: #c99a3e; }
+</style>
+
+<script>
+  import { analyse, humanBytes, humanTokens, MODELS } from '../../lib/sim/kv-cache.ts';
+
+  document.querySelectorAll<HTMLElement>('[data-kvc]').forEach((el) => {
+    const q = <T extends HTMLElement>(s: string) => el.querySelector<T>(s)!;
+    const field = (k: string) => q<HTMLInputElement | HTMLSelectElement>(`[data-in=${k}]`);
+    const render = () => {
+      const context = 2 ** Number(field('contextExp').value);
+      const batch = Number(field('batch').value);
+      const r = analyse({
+        model: MODELS[field('model').value], weightBytes: Number(field('weightBytes').value), kvBytes: Number(field('kvBytes').value),
+        gpus: Number(field('gpus').value), gpuGB: 80, reservePct: 10, contextTokens: context, batch,
+      });
+      q('[data-o=context]').textContent = `${humanTokens(context)} tokens`;
+      q('[data-o=batch]').textContent = String(batch);
+      const set = (k: string, t: string) => { q(`[data-s=${k}]`).textContent = t; };
+      set('weights', humanBytes(r.weightsBytes));
+      set('budget', humanBytes(r.kvBudgetBytes));
+      set('perToken', humanBytes(r.kvPerTokenBytes));
+      set('perSeq', humanBytes(r.kvPerSeqBytes));
+      set('maxSeqs', r.weightsFit ? String(r.maxSeqs) : '0');
+      set('needed', humanBytes(r.kvNeededBytes));
+      set('maxTokens', r.weightsFit ? humanTokens(r.maxTokens) : '0');
+      const pct = (n: number) => `${Math.min(100, (n / r.totalBytes) * 100)}%`;
+      (q('[data-seg=w]')).style.width = pct(r.weightsBytes);
+      (q('[data-seg=r]')).style.width = pct(r.reserveBytes);
+      (q('[data-seg=k]')).style.width = pct(Math.min(r.kvNeededBytes, r.kvBudgetBytes));
+      q('[data-caption]').textContent = !r.weightsFit
+        ? 'The weights alone do not fit in this replica. Add GPUs or quantise before anything else.'
+        : r.batchFits
+          ? `This batch uses ${humanBytes(r.kvNeededBytes)} of a ${humanBytes(r.kvBudgetBytes)} KV budget. At most ${r.maxSeqs} conversations of this length fit.`
+          : `This batch needs ${humanBytes(r.kvNeededBytes)} of KV but the budget is ${humanBytes(r.kvBudgetBytes)}. Only ${r.maxSeqs} conversations fit, so the rest queue or are preempted.`;
+    };
+    el.querySelectorAll('[data-in]').forEach((n) => n.addEventListener('input', render));
+    render();
+  });
+</script>

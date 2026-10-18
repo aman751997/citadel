@@ -98,7 +98,7 @@ export const batching = [
 ];
 
 export const prefix = [
-  step('Every Kestrel Assist request starts with the same 1,000-token system prompt plus tool definitions. What does prefix caching save?', [], 0, [
+  step('Every request to a chat product starts with the same 1,000-token system prompt plus tool definitions. What does prefix caching save?', [], 0, [
     ['The prefill compute and KV memory for those 1,000 tokens on every request that hits the cache — lower TTFT and fewer GPU-seconds', 'Right. Their KV blocks are computed once, kept, and shared read-only. Prefill only runs on the new suffix.'],
     ['Decode time for the answer', 'Decode still produces each output token one step at a time. Prefix caching shortens prefill.'],
     ['Nothing, because each user\'s answer is different', 'The answers differ; the prefix is byte-identical. KV for identical prefix tokens is identical.'],

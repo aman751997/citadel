@@ -2,26 +2,26 @@ import { row, step } from '../../lib/trace.ts';
 
 // Chapter 1 · Pick the store from the access pattern.
 export const chooseStore = [
-  step('Kestrel Market stores orders and payments. The order row, the payment and the stock decrement must succeed or fail together, and finance will ask new questions of this data every quarter. Peak is about 120 orders a second. Which store?', [], 0, [
-    ['A relational database such as Postgres', 'Right. Multi-row transactions, constraints, joins and ad-hoc queries are exactly what this data needs, and 120 writes a second is light work for one primary.'],
+  step('A marketplace app stores orders and payments. The order row, the payment and the stock decrement must succeed or fail together, and finance will ask new questions of this data every quarter. Peak is about 120 orders a second. Which store?', [], 0, [
+    ['A relational database such as MySQL', 'Right. Multi-row transactions, constraints, joins and ad-hoc queries are exactly what this data needs, and 120 writes a second is light work for one primary.'],
     ['A wide-column store partitioned by order_id', 'It would absorb write volume you do not have. Finance’s next unplanned question would need a new table or a full scan, and you would hand-build the order-plus-payment atomicity.'],
     ['A document store, one document per order', 'An order does embed nicely, but the stock decrement and the payment live in other documents. Document stores now offer multi-document transactions, yet you give up the joins and constraints this data leans on, and gain nothing on the access pattern.'],
   ]),
   step('Chat messages: about 35,000 writes a second at peak, always read as "the latest 50 messages in conversation X", almost never updated. Which store fits that access pattern?', [], 1, [
-    ['Postgres with one big messages table', 'At about 280 GB a day it outgrows one node within a month. You would end up hand-sharding Postgres to get what a partitioned store gives you natively.'],
+    ['MySQL with one big messages table', 'At about 280 GB a day it outgrows one node within a month. You would end up hand-sharding MySQL to get what a partitioned store gives you natively.'],
     ['A wide-column store: partition by conversation_id, cluster by message time', 'Right. Each conversation is one partition kept in time order, so the hot read is one sequential slice, and the LSM storage underneath soaks up append-heavy writes.'],
     ['A graph database, messages as edges between users', 'Nothing here walks relationships. You read one conversation in time order, which a graph engine does no better and scales worse.'],
     ['A search engine as the primary store', 'Search indexes are derived copies built for text queries and refreshed in near real time. They are not where the only copy of a message should live.'],
   ]),
   step('Trust & Safety, mid-investigation: "Show every account within three hops of this flagged seller that shares a card, a device or an address." They ask it interactively, many times a day. What fits best?', [], 2, [
-    ['Postgres with recursive self-joins', 'It can be written (WITH RECURSIVE), but each hop multiplies the rows joined, and three hops over a dense graph gets slow and hard to bound. Fine for a one-off, painful as the daily tool.'],
+    ['MySQL with recursive self-joins', 'It can be written (WITH RECURSIVE in MySQL 8), but each hop multiplies the rows joined, and three hops over a dense graph gets slow and hard to bound. Fine for a one-off, painful as the daily tool.'],
     ['A key-value store keyed by account id', 'Each hop becomes many round trips from the application, and you rebuild graph traversal by hand.'],
     ['A graph database', 'Right. Multi-hop traversal over typed edges (shares-card, shares-device) is the one access pattern graph engines are built for. Feed it from the source of truth; it does not replace it.'],
   ]),
   step('Buyers search listings by free text — "vintage fender strat" — with typos, filters on price, and results ranked by relevance. Where does that query run?', [], 1, [
-    ['Postgres with LIKE \'%fender%\'', 'A leading wildcard cannot use a B-tree index, so it scans every listing, with no typo tolerance and no relevance ranking.'],
-    ['A search index (Elasticsearch or OpenSearch) fed from Postgres by change-data-capture', 'Right. The inverted index answers text, fuzziness and ranking; Postgres stays the source of truth, and the index is a derived copy that can be rebuilt.'],
-    ['Move listings into the search engine and drop them from Postgres', 'Then listing edits, stock and orders lose their transactional home. Search engines are near-real-time derived stores, not systems of record.'],
+    ['MySQL with LIKE \'%fender%\'', 'A leading wildcard cannot use a B-tree index, so it scans every listing, with no typo tolerance and no relevance ranking.'],
+    ['A search index (Elasticsearch or OpenSearch) fed from MySQL by change-data-capture', 'Right. The inverted index answers text, fuzziness and ranking; MySQL stays the source of truth, and the index is a derived copy that can be rebuilt.'],
+    ['Move listings into the search engine and drop them from MySQL', 'Then listing edits, stock and orders lose their transactional home. Search engines are near-real-time derived stores, not systems of record.'],
   ]),
 ];
 
@@ -46,7 +46,7 @@ export const modeling = [
 
 // Chapter 3 · Many-to-many.
 export const manyToMany = [
-  step('Kestrel Events: a user attends many events; an event has many attendees. Where does "who attends what" live?', [], 2, [
+  step('Events feature: a user attends many events; an event has many attendees. Where does "who attends what" live?', [], 2, [
     ['An attendee_ids array column on events', '"Which events is user 42 attending?" must now look inside every event row, nothing keeps the ids valid, and every RSVP rewrites a growing row that thousands of people update at once.'],
     ['An event_ids array column on users', 'The mirror image: "who is attending event 9?" must look inside every user row. Keeping both arrays means two writes that can disagree.'],
     ['A join table event_attendees(event_id, user_id), one row per pair', 'Right. Each relationship is its own row: cheap to insert or delete, protected by foreign keys and a primary key that forbids duplicates, and indexable from both directions.'],
@@ -58,7 +58,7 @@ export const manyToMany = [
     ['An index is sorted by its leading column; add a second index on (user_id, …)', 'Right. The primary key serves one direction, a reverse index serves the other. Almost every join table needs both.'],
     ['Change the primary key to (user_id, event_id)', 'Then "who is coming to event 9?" becomes the full scan. You need both orders, not a different single one.'],
   ]),
-  step('Iris: "Oh, and also — attendees can RSVP yes, no or maybe, and we want to know who invited them." Where do those fields go?', [], 0, [
+  step('Product asks: "Oh, and also — attendees can RSVP yes, no or maybe, and we want to know who invited them." Where do those fields go?', [], 0, [
     ['On the event_attendees row', 'Right. They describe the relationship, not the user and not the event. This is the moment a join table becomes an entity of its own — an attendance — with its own columns.'],
     ['On the users table', 'A user has a different RSVP for every event, so one column on users cannot hold it.'],
     ['On the events table', 'An event has a different RSVP from every attendee, so one column on events cannot hold it either.'],
@@ -72,7 +72,7 @@ export const storage = [
     ['3 levels', '400³ = 64 million keys. Still short.'],
     ['4 levels', 'Right. 400⁴ = 25.6 billion, comfortably above 1 billion. The upper levels stay in memory, so a lookup costs about one or two disk reads.'],
   ]),
-  step('Kestrel ingests 50,000 device events a second. Rows are never updated; reads are "this device, last hour". Which storage-engine family fits best?', [], 1, [
+  step('A service ingests 50,000 device events a second. Rows are never updated; reads are "this device, last hour". Which storage-engine family fits best?', [], 1, [
     ['B-tree, because its reads are steadier', 'Reads are steady, but each insert must read and rewrite the leaf page for its device — tens of thousands of scattered page writes a second.'],
     ['LSM-tree', 'Right. Writes become sequential appends (a log plus an in-memory table flushed as sorted files), and "this device, recent range" is a sorted read within each file.'],
     ['Neither — buy a bigger disk', 'Capacity is not the bottleneck. How each write turns into disk I/O is.'],
@@ -97,10 +97,10 @@ export const indexes = [
     ['(created_at, seller_id, status)', 'A range/sort column first scatters one seller’s rows across time. The engine walks recent listings from every seller, filtering as it goes.'],
     ['(seller_id, status, created_at)', 'Right. Equality columns first, then the sort column: one seek lands on this seller’s active listings already in time order. Read 20 entries, stop.'],
     ['(seller_id, created_at, status)', 'It works — seek to the seller, walk by time, skip rows that are not active — but if most of the seller’s listings are sold, it reads many entries to find 20.'],
-    ['Three single-column indexes', 'Engines can combine single-column indexes (Postgres can AND bitmaps together), but the result still has to be sorted. One composite index in the right order beats three.'],
+    ['Three single-column indexes', 'Engines can combine single-column indexes (MySQL can sometimes merge indexes, but rarely as well as one composite), but the result still has to be sorted. One composite index in the right order beats three.'],
   ]),
   step('The tag page needs only photo_id and created_at: WHERE tag_id = ? ORDER BY created_at DESC LIMIT 30. With an index on (tag_id, created_at, photo_id), what does the database read?', [], 0, [
-    ['Only the index — it covers the query', 'Right. Every column the query touches is in the index, so it answers without visiting table rows (an index-only scan; Postgres also consults its visibility map).'],
+    ['Only the index — it covers the query', 'Right. Every column the query touches is in the index, so it answers without visiting table rows (EXPLAIN shows Using index).'],
     ['The index, then 30 table rows', 'That happens when the query needs a column outside the index. This one does not.'],
     ['The whole table, because ORDER BY ignores indexes', 'ORDER BY can use an index whose order matches. This one matches exactly.'],
   ]),
@@ -129,12 +129,12 @@ export const anomalies = [
     ['150', 'T1 wrote 150, but T2 wrote after it.'],
     ['80', 'Right: a lost update. T1’s deposit vanished, overwritten by a value computed from an old read. Read Committed allows it, and so does MySQL’s Repeatable Read for this read-then-write shape. Postgres Repeatable Read would abort T2 with a serialization error to retry.'],
   ]),
-  step('Rule: at least one engineer is on call. Dev and Priya are both on call. At the same moment each runs: count on-call engineers; if 2 or more, take myself off call. Both see 2; both commit. Which anomaly, and what prevents it?', [
-    row('Timeline', ['Dev: count = 2', 'Priya: count = 2', 'Dev: off call', 'Priya: off call'], { 3: '0 left' }, { tones: { 3: 'hot' } }),
+  step('Rule: at least one engineer is on call. Engineer A and engineer B are both on call. At the same moment each runs: count on-call engineers; if 2 or more, take myself off call. Both see 2; both commit. Which anomaly, and what prevents it?', [
+    row('Timeline', ['A: count = 2', 'B: count = 2', 'A: off call', 'B: off call'], { 3: '0 left' }, { tones: { 3: 'hot' } }),
   ], 1, [
     ['A dirty read; Read Committed prevents it', 'Neither read uncommitted data. Each saw a correct, committed count of 2.'],
     ['Write skew; Serializable prevents it, or lock the rows you checked with SELECT … FOR UPDATE', 'Right. They updated different rows, so there was no write–write conflict to detect. The invariant spanned both rows; only Serializable, or explicitly locking what you read, catches it.'],
-    ['A lost update; Repeatable Read prevents it', 'No row was overwritten: Dev changed his row and Priya hers. Snapshot-style Repeatable Read lets both commit.'],
+    ['A lost update; Repeatable Read prevents it', 'No row was overwritten: A changed one row and B changed another. Snapshot-style Repeatable Read lets both commit.'],
   ]),
   step('Inside one transaction a report counts open orders twice and gets 1,204, then 1,207, because new orders committed in between. What is this called?', [], 0, [
     ['A phantom read', 'Right. New rows appeared in the set the query matched. Snapshot-based Repeatable Read (Postgres, and plain SELECTs in MySQL) shows the same snapshot both times.'],
@@ -174,8 +174,8 @@ export const replicationLag = [
     ['Read-your-own-writes: route the seller’s reads of what she just changed to the primary for a short window, or wait until a replica has replayed her write’s log position', 'Right. Only the author needs the guarantee, and only briefly. Everyone else can keep reading slightly stale replicas.'],
     ['Put a cache in front of the replicas', 'A cache adds a second place to be stale. The problem is which copy the author reads, not how fast it is.'],
   ]),
-  step('Theo reads a friend’s new comment, refreshes, and it is gone; refreshes again, and it is back. Reads are load-balanced across three replicas with different lag. Which guarantee is missing?', [], 2, [
-    ['Read-your-own-writes', 'The comment is someone else’s write. Theo is seeing time move backwards across his reads, which is a different guarantee.'],
+  step('A user reads a friend’s new comment, refreshes, and it is gone; refreshes again, and it is back. Reads are load-balanced across three replicas with different lag. Which guarantee is missing?', [], 2, [
+    ['Read-your-own-writes', 'The comment is someone else’s write. The user is seeing time move backwards across his reads, which is a different guarantee.'],
     ['Durability', 'The comment was never lost; one replica simply had not replayed it yet.'],
     ['Monotonic reads: pin each user to one replica (for example by hashing the user id)', 'Right. Once you have seen a value you should never see an older one. Reading from the same replica each time guarantees it, until that replica fails.'],
   ]),
@@ -222,7 +222,7 @@ export const capacity = [
 
 // Chapter 12 · Sharding.
 export const sharding = [
-  step('Kestrel’s link shortener shards its links table by creator user_id. The hot path is GET /{code}, a redirect, at 100 reads per write. What breaks?', [], 1, [
+  step('A link shortener shards its links table by creator user_id. The hot path is GET /{code}, a redirect, at 100 reads per write. What breaks?', [], 1, [
     ['Nothing — user_id is always a safe shard key', 'The redirect request carries only the short code. With no user_id, the router cannot tell which shard holds it.'],
     ['Every redirect must ask every shard, because the code alone does not say where the row lives. Shard by the short code instead', 'Right. The dominant query must carry the shard key. A scatter-gather on the hottest path is a failed design.'],
     ['Short codes collide across shards', 'Collisions come from code generation, not from the shard key. The real damage is on the read path.'],
@@ -270,10 +270,10 @@ export const ids = [
 
 // Chapter 14 · Connection pooling.
 export const pooling = [
-  step('40 app pods each keep a pool of 10 connections to a Postgres primary with max_connections = 500. A rolling deploy briefly runs 80 pods. What happens?', [], 1, [
+  step('40 app pods each keep a pool of 10 connections to a MySQL primary with max_connections = 500. A rolling deploy briefly runs 80 pods. What happens?', [], 1, [
     ['Nothing — 80 × 10 = 800 is close enough', 'The server refuses connections beyond max_connections. New pods fail health checks right in the middle of the deploy.'],
-    ['Connection errors; put a pooler such as PgBouncer between the pods and Postgres, and size pools from the work, not the pod count', 'Right. Postgres runs a process per connection, so the number of server connections should track what the database can execute in parallel, not how many pods you have.'],
-    ['Postgres queues the extra connections until old pods stop', 'It rejects them. Queueing is what a pooler adds.'],
+    ['Connection errors; put a pooler such as ProxySQL between the pods and MySQL, and size pools from the work, not the pod count', 'Right. MySQL runs a thread per connection, and each costs memory, so the number of server connections should track what the database can execute in parallel, not how many pods you have.'],
+    ['MySQL queues the extra connections until old pods stop', 'It rejects them. Queueing is what a pooler adds.'],
   ]),
   step('Peak is 5,000 queries a second and each holds a connection for 4 ms on average. How many connections are busy at once, on average?', [], 0, [
     ['About 20', 'Right. Little’s law: 5,000 per second × 0.004 s = 20. Size the pool for that plus headroom for bursts — tens, not thousands.'],
@@ -301,16 +301,16 @@ export const drills = [
   step('A product catalogue: guitars have pickups and scale length, cameras have sensor sizes, and every product page loads one product whole, by id. Which model fits?', [], 2, [
     ['Strict relational: one column per attribute across every category', 'Hundreds of mostly-empty columns, and a migration every time a new category appears.'],
     ['A graph database', 'There is nothing to traverse. Each read is one entity by id.'],
-    ['A document model — a document store, or a jsonb column in Postgres beside the relational fields', 'Right. Variable, nested attributes read whole by id are what documents are for. Postgres jsonb gives you the same shape while keeping transactions and joins for the rest.'],
+    ['A document model — a document store, or a JSON column in MySQL beside the relational fields', 'Right. Variable, nested attributes read whole by id are what documents are for. A MySQL JSON column gives you the same shape while keeping transactions and joins for the rest.'],
   ]),
-  step('The Interviewer asks: "Why not just index every column?" Best answer?', [], 1, [
+  step('Interview question: "Why not just index every column?" Best answer?', [], 1, [
     ['"Indexes take disk space."', 'True but minor. The cost that matters is on the write path.'],
     ['"Each index is another structure every insert, delete and update to its columns must maintain — write amplification — so I index the queries I serve, in the right column order."', 'Right. Six indexes means seven structures touched per insert. Indexes are bought with write throughput.'],
     ['"The optimiser gets confused."', 'Optimisers handle many indexes fine. The cost is on writes.'],
   ]),
   step('Ad metrics: 200,000 data points a second, queried as "this campaign, last 24 hours, one-minute buckets", with old data rolled up to hourly and deleted after 13 months. Which store?', [], 0, [
     ['A time-series database', 'Right. Append-only writes, time-range scans, downsampling and retention are its native operations.'],
-    ['Postgres with one row per point and no partitioning', 'About 17 billion rows a day in one table, with deletes as the retention policy. Postgres can do time-series work with time-based partitioning or an extension, but plain tables fight this workload.'],
+    ['MySQL with one row per point and no partitioning', 'About 17 billion rows a day in one table, with deletes as the retention policy. MySQL can do time-series work with time-based partitioning, but plain tables fight this workload.'],
     ['A graph database', 'There are no relationships to walk. The access pattern is a time range per series.'],
   ]),
   step('Follows: PRIMARY KEY (follower_id, followee_id). The notification fan-out asks "who follows user 42?" Without another index, what happens?', [], 2, [

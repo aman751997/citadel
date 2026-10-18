@@ -3,7 +3,7 @@ import type { Challenge, PracticeSet } from '../../lib/practice.ts';
 
 export const strategies = {
   structure: 'Restore order in an array-stored tree (every parent ≤ its children)',
-  gate: 'Keep only the best k; the weakest of them guards the door',
+  gate: 'Keep only the best k; the weakest of them sits on top',
   halves: 'Split the values into a lower half and an upper half',
   frontier: 'Repeatedly take the smallest of the current fronts of sorted sources',
   greedy: 'Repeatedly take the best choice currently available',
@@ -70,7 +70,7 @@ export function challengeFor(id: ConceptId, variant = 0): Challenge {
         prompt: `In ${arr(list)}, which 2 values appear most often? The answer is unique. Do better than sorting all the values by count when there are many distinct values.`,
         question: 'Enter the two values in ascending order.', answer,
         hints: ['First turn the list into counts.', 'Now you want the 2 best by count, not by value.', 'Keep 2 values ordered by count; the least frequent of them is the one a newcomer must beat.'],
-        rubric: ['Count with a hash map in O(n).', 'Order candidates by COUNT; the kept set’s least frequent member guards the door.', 'Trim to k after each offer: O(u log k) for u distinct values.'],
+        rubric: ['Count with a hash map in O(n).', 'Order candidates by COUNT; the kept set’s least frequent member sits on top.', 'Trim to k after each offer: O(u log k) for u distinct values.'],
         explanation: `Counts: ${values.map((v, i) => `${v} → ${counts[i]}`).join(', ')}. The two largest counts belong to ${answer.join(' and ')}.` };
     }
     case 'closest': {
@@ -86,7 +86,7 @@ export function challengeFor(id: ConceptId, variant = 0): Challenge {
       return { ...base, topic: 'Closest k by a custom key', section: 'k-closest', strategy: 'gate',
         prompt: `Points: ${pts.map(([x, y]) => `(${x}, ${y})`).join(', ')}. Which ${k} are nearest to (0, 0)? Use memory proportional to ${k}, not to the number of points.`,
         question: 'Enter their zero-based positions in ascending order.', answer,
-        hints: ['Compare x² + y²; no square roots needed.', `You keep the ${k} SMALLEST distances. Which kept point is in danger?`, 'The farthest kept point guards the door. A closer newcomer replaces it.'],
+        hints: ['Compare x² + y²; no square roots needed.', `You keep the ${k} SMALLEST distances. Which kept point is in danger?`, 'The farthest kept point sits on top. A closer newcomer replaces it.'],
         rubric: ['Squared distance preserves the order of true distance.', 'Keep the k smallest with the LARGEST of them on top (the flipped guard).', 'Trim to k after each offer: O(n log k) time, O(k) space; use long for big coordinates.'],
         explanation: `Squared distances: ${d.join(', ')}. The ${k} smallest are at positions ${answer.join(', ')}.` };
     }
@@ -141,7 +141,7 @@ export function challengeFor(id: ConceptId, variant = 0): Challenge {
       return { ...base, topic: 'Kth largest, asked after every arrival', section: 'kth-in-a-stream', strategy: 'gate',
         prompt: `k = ${k}. You start with ${arr(start)}. Then ${arr(adds)} arrive one at a time. After each arrival, report the ${nth(k)} largest value so far (repeats count separately), using O(log k) per arrival.`,
         question: 'Enter the four reports in order.', answer,
-        hints: ['This is a gate that never closes.', `Keep the ${k} largest so far. The answer after each arrival is the weakest of them.`, 'Offer the arrival; if more than k are kept, drop the weakest; report the weakest.'],
+        hints: ['This is a size-k heap that stays alive between calls.', `Keep the ${k} largest so far. The answer after each arrival is the weakest of them.`, 'Offer the arrival; if more than k are kept, drop the weakest; report the weakest.'],
         rubric: [`Only the best ${k} values matter for every future answer.`, 'The weakest of them is both the answer and the eviction candidate.', 'Each arrival costs O(log k); memory stays O(k).'],
         explanation: `Reports: ${answer.join(', ')}.` };
     }

@@ -2,10 +2,10 @@
 import { row, step, type TraceStep } from '../../lib/trace.ts';
 
 export const pyramid: TraceStep[] = [
-  step('The pyramid [1, 3, 2, 7, 4, 5, 8] is stored row by row. Who sits directly below index 1 (value 3)?',
+  step('The heap [1, 3, 2, 7, 4, 5, 8] is stored row by row. Who sits directly below index 1 (value 3)?',
     [row('Array', [1, 3, 2, 7, 4, 5, 8], { 1: 'i = 1' }, { tones: { 1: 'hot' } })], 1, [
       ['Indexes 2 and 3 (values 2 and 7)', 'Those are i + 1 and i + 2: neighbours in the array, not children. Index 2 is 3’s sibling on the same row.'],
-      ['Indexes 3 and 4 (values 7 and 4)', 'Yes. Children of i are 2i + 1 = 3 and 2i + 2 = 4. Both hold values ≥ 3, so this corner of the pyramid is in order.'],
+      ['Indexes 3 and 4 (values 7 and 4)', 'Yes. Children of i are 2i + 1 = 3 and 2i + 2 = 4. Both hold values ≥ 3, so this part of the tree is in order.'],
       ['Index 0 (value 1)', 'Index 0 is above it, not below: the parent of 1 is (1 − 1) / 2 = 0.'],
     ]),
   step('You push 0. It takes the next free seat, index 7. Its parent is (7 − 1) / 2 = 3, holding 7. What happens next?',
@@ -23,7 +23,7 @@ export const pyramid: TraceStep[] = [
 ];
 
 export const kthLargest: TraceStep[] = [
-  step('k = 2. Inside the gate: {2, 3}; the guard (root of the min-heap) is 2. Next arrival: 1. What happens?',
+  step('k = 2. Inside the heap: {2, 3}; the guard (root of the min-heap) is 2. Next arrival: 1. What happens?',
     [row('Arrivals', [3, 2, 1, 5, 6, 4], { 2: 'NEXT' }, { tones: { 0: 'done', 1: 'done', 2: 'hot' } }), row('Inside · min-heap', [2, 3], { 0: 'GUARD' }, { tones: { 0: 'hot' } })], 1, [
       ['1 evicts the guard', 'Eviction is for arrivals that beat the guard. 1 < 2, so 1 would make the group weaker.'],
       ['Turn 1 away; nothing changes', 'Yes. Two values inside are already bigger than 1, so 1 can never be among the 2 largest. (The code offers it and polls it straight back out: the same thing.)'],
@@ -33,11 +33,11 @@ export const kthLargest: TraceStep[] = [
     [row('Arrivals', [3, 2, 1, 5, 6, 4], { 3: 'NEXT' }, { tones: { 0: 'done', 1: 'done', 2: 'out', 3: 'hot' } }), row('Inside · min-heap', [2, 3], { 0: 'GUARD' }, { tones: { 0: 'hot' } })], 2, [
       ['Turn 5 away', '5 beats both people inside. Turning it away loses the eventual answer.'],
       ['5 evicts 3, the strongest inside', 'The strongest is the last one who should leave. Evict the weakest, the guard.'],
-      ['5 evicts the guard 2; inside becomes {3, 5}', 'Yes. The weakest leaves, and the new guard is 3. After 6 arrives (guard 3 leaves) and 4 is turned away, the gate holds {5, 6}.'],
+      ['5 evicts the guard 2; inside becomes {3, 5}', 'Yes. The weakest leaves, and the new guard is 3. After 6 arrives (guard 3 leaves) and 4 is turned away, the heap holds {5, 6}.'],
     ]),
-  step('The queue is empty and the gate holds {5, 6} with guard 5. What is the 2nd largest of [3, 2, 1, 5, 6, 4]?',
+  step('The queue is empty and the heap holds {5, 6} with guard 5. What is the 2nd largest of [3, 2, 1, 5, 6, 4]?',
     [row('Inside · min-heap', [5, 6], { 0: 'GUARD' }, { tones: { 0: 'hot' } })], 0, [
-      ['5, the guard', 'Yes. The gate holds the 2 largest; the weakest of them is the 2nd largest. peek() gives it in O(1).'],
+      ['5, the guard', 'Yes. The heap holds the 2 largest; the weakest of them is the 2nd largest. peek() gives it in O(1).'],
       ['6, the biggest inside', 'That is the 1st largest. You want the weakest of the best k.'],
       ['11, the sum inside', 'The question asks for one value: the kth largest.'],
     ]),
@@ -59,7 +59,7 @@ export const topK: TraceStep[] = [
 ];
 
 export const closest: TraceStep[] = [
-  step('Keep the k = 2 points CLOSEST to the origin. Which heap guards the door?',
+  step('Keep the k = 2 points CLOSEST to the origin. Which heap do you keep?',
     [row('Point', ['(3, 3)', '(5, −1)', '(−2, 4)'], {}, {}), row('x² + y²', [18, 26, 20])], 1, [
       ['A min-heap by distance', 'A trimmed min-heap evicts the closest point every time it overflows, so it ends up holding the FARTHEST k.'],
       ['A max-heap by distance', 'Yes. You keep the smallest k, so the guard is the largest of them: the farthest point still inside.'],
@@ -164,7 +164,7 @@ export const scheduler: TraceStep[] = [
 export const mixedReview: TraceStep[] = [
   step('Kth largest from a stream of millions of numbers. Why a MIN-heap of size k?', [], 1, [
     ['Min-heaps are faster than max-heaps', 'They cost exactly the same: O(log n) per offer and poll.'],
-    ['It holds the k largest seen; its root is the smallest of those, the door guard. Newcomers beat the guard or bounce. O(k) memory survives an endless stream', 'Yes. A max-heap of everything is O(n) memory and dies on a stream. The guard model derives the choice instead of memorising it.'],
+    ['It holds the k largest seen; its root is the smallest of those, the guard. Newcomers beat the guard or bounce. O(k) memory survives an endless stream', 'Yes. A max-heap of everything is O(n) memory and dies on a stream. The guard model derives the choice instead of memorising it.'],
     ['Max-heaps cannot be size-limited', 'Any heap can be trimmed. A trimmed max-heap just keeps the wrong end: the k smallest.'],
     ['To return results in ascending order', 'Order of output is not the point; the guard at the root is.'],
   ]),
@@ -201,7 +201,7 @@ export const mixedReview: TraceStep[] = [
   ]),
   step('You need the largest value of a fixed array, once. Which tool?', [], 2, [
     ['Build a max-heap, then peek', 'Correct answer, wasted work. Building is O(n) and so is a plain scan, but the scan needs no extra memory.'],
-    ['A size-1 min-heap gate', 'It works, but it is a heap pretending to be one variable.'],
+    ['A size-1 min-heap', 'It works, but it is a heap pretending to be one variable.'],
     ['One linear scan keeping the best so far', 'Yes. A heap pays off when the collection keeps changing and you need the best again and again.'],
   ]),
   step('Kth largest of a fixed array that you are allowed to reorder, and you want the best expected time.', [], 1, [

@@ -1,5 +1,5 @@
-// Playground for the heaps lesson: the door guard (top-k), sinking a value (sift-down),
-// and the two-stand median dance. Every heap here is a real array heap, so the board shows
+// Playground for the heaps lesson: keeping the best k (top-k), sinking a value (sift-down),
+// and the two-heap median routine. Every heap here is a real array heap, so the board shows
 // exactly the array layout the lesson teaches.
 import { makeLab, type LabBase, type LabRow } from '../lab.ts';
 
@@ -89,7 +89,7 @@ const streamRow = (stream: number[], idx: number, label = 'NEXT'): LabRow => ({
 });
 const median = (low: number[], high: number[]) => low.length > high.length ? low[0] : (low[0] + high[0]) / 2;
 
-// ---------- Mode 1: the door guard keeps the best k ----------
+// ---------- Mode 1: keep the best k with a size-k heap ----------
 function guardExpected(s: S): string {
   if (s.idx >= s.stream.length) return 'done';
   if (s.heap.length < s.k) return 'admit';
@@ -121,7 +121,7 @@ function medianExpected(s: S): string {
 
 export const lab = makeLab<S>({
   guard: {
-    name: 'The door guard · keep the best k',
+    name: 'Keep the best k · top-k with a size-k heap',
     cases: guardCases.length,
     actions: [
       { action: 'admit', label: 'Admit: there is still room' },
@@ -144,11 +144,11 @@ export const lab = makeLab<S>({
       const x = s.stream[s.idx], guard = s.heap[0], full = s.heap.length >= s.k;
       if (action === 'done') return `${s.stream.length - s.idx} arrival(s) still wait in the queue, starting with ${x}. Any of them might beat the guard.`;
       if (s.idx >= s.stream.length) return 'The queue is empty. Nobody is left to admit or turn away; read the answer from the guard.';
-      if (action === 'admit') return `The gate already holds k = ${s.k}. Letting ${x} in without an eviction makes ${s.k + 1} inside, and the root would no longer be the ${nth(s.k)} largest.`;
+      if (action === 'admit') return `The heap already holds k = ${s.k}. Letting ${x} in without an eviction makes ${s.k + 1} inside, and the root would no longer be the ${nth(s.k)} largest.`;
       if (action === 'replace') return full ? `${x} is not bigger than the guard ${guard}. Evicting ${guard} for ${x} would make the group weaker, and ${guard} beats ${x}.` : `There is still room (${s.heap.length} of ${s.k}). Evicting now would throw away a value that may belong in the best ${s.k}.`;
-      return full ? `${x} beats the guard ${guard}. Turning it away loses a value bigger than one already inside.` : `There is room for ${s.k - s.heap.length} more. Until the gate is full, every arrival is among the best ${s.k} seen so far.`;
+      return full ? `${x} beats the guard ${guard}. Turning it away loses a value bigger than one already inside.` : `There is room for ${s.k - s.heap.length} more. Until the heap is full, every arrival is among the best ${s.k} seen so far.`;
     },
-    view: s => [streamRow(s.stream, s.idx), heapRow('Inside the gate · min-heap array', s.heap, 'GUARD', 'hot')],
+    view: s => [streamRow(s.stream, s.idx), heapRow('Inside the heap · min-heap array', s.heap, 'GUARD', 'hot')],
     describe: s => s.idx < s.stream.length
       ? `k = ${s.k}. Next arrival: ${s.stream[s.idx]}. Inside: ${s.heap.length} of ${s.k}${s.heap.length ? `, guard ${s.heap[0]}` : ''}.`
       : `k = ${s.k}. Queue empty. Inside: [${s.heap.join(', ')}].`,
@@ -199,7 +199,7 @@ export const lab = makeLab<S>({
     },
   },
   median: {
-    name: 'Two stands · the running median',
+    name: 'Two heaps · the running median',
     cases: medianCases.length,
     actions: [
       { action: 'offer', label: '1 · Offer the arrival to Low' },

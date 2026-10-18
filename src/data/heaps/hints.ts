@@ -7,7 +7,7 @@ export const hints: Record<string, [string, string, string]> = {
   ],
   kthLargest: [
     'You only ever need the best k values seen so far. Who among them is in danger of being replaced?',
-    'A min-heap holds the k largest so far. Its root is the weakest of them: the guard at the door.',
+    'A min-heap holds the k largest so far. Its root is the weakest of them: the guard.',
     'Offer every value; whenever the size passes k, poll once. After the loop the root is the kth largest.',
   ],
   topK: [
@@ -41,7 +41,7 @@ export const hints: Record<string, [string, string, string]> = {
     'Each unit: time++; if the heap is not empty, poll, decrement, and queue it to rest through time + n if copies remain. Then move the queue’s front back into the heap if its rest ends at this time. Stop when both are empty.',
   ],
   streamKth: [
-    'Chapter 2’s gate, but the gate stays open and someone asks for the answer after every arrival.',
+    'Chapter 2’s size-k heap, kept alive between calls: someone asks for the answer after every arrival.',
     'A field: a min-heap that never holds more than k values. The constructor feeds it the starting numbers through add.',
     'add: offer; if the size passes k, poll; return the root.',
   ],

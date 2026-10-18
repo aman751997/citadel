@@ -36,7 +36,7 @@ export const hints: Record<string, [string, string, string]> = {
     'If both children return non-null, p and q are split here: return the node. Otherwise return whichever child is non-null (or null).',
   ],
   pathSum: [
-    'The answer is a set of root-to-leaf paths. What must the Climber carry down to know, at a leaf, whether this path works?',
+    'The answer is a set of root-to-leaf paths. What must each call be given, as parameters, to know, at a leaf, whether this path works?',
     'Carry the remaining sum and one shared path list. Add the node on the way down; remove it on the way back up.',
     'At a leaf (both children null) with remaining == 0, add new ArrayList<>(path) to the result. Recurse left, then right, then path.remove(path.size() − 1).',
   ],

@@ -1,5 +1,5 @@
-// Trees (DFS) playground: be the Messenger who reports a height up and writes the bend on the gate board
-// (diameter); be the Climber who carries a (low, high) window down (validate a BST); and work the Basket
+// Trees (DFS) playground: return a height upward and record the bend in a shared best field
+// (diameter); pass a (low, high) window down (validate a BST); and work the explicit stack
 // by hand (iterative in-order walk, stopping at the k-th value).
 import { makeLab, type LabBase, type LabRow } from '../lab.ts';
 import { parseLevel, treeRows, type Level, type TNode } from '../../data/trees-dfs/traces.ts';
@@ -100,9 +100,9 @@ function rootFacts(s: TreeLabState) {
 function reportReject(s: TreeLabState, action: string) {
   if (s.phase === 'answer') {
     const { report, through } = rootFacts(s);
-    if (action === 'answer-root') return `The root reported ${report}: its height, the longest single arm. ${report === s.best ? 'That equals Best here only by coincidence. ' : ''}The diameter is the longest bend anywhere, and it is on the board: Best = ${s.best}.`;
-    if (action === 'answer-through') return `Left + right at the root is ${through}: it covers only paths that pass through the root. ${through === s.best ? 'Here the longest path does pass through the root, but only the board can tell you that. ' : 'The longest path bends lower down. '}Best = ${s.best}.`;
-    return `Every node has reported and every bend is on the board. Read the answer: Best = ${s.best}.`;
+    if (action === 'answer-root') return `The root reported ${report}: its height, the longest single arm. ${report === s.best ? 'That equals best here only by coincidence. ' : ''}The diameter is the longest bend anywhere, and it is recorded in best: best = ${s.best}.`;
+    if (action === 'answer-through') return `Left + right at the root is ${through}: it covers only paths that pass through the root. ${through === s.best ? 'Here the longest path does pass through the root, but only best can tell you that. ' : 'The longest path bends lower down. '}best = ${s.best}.`;
+    return `Every node has reported and every bend is recorded. Read the answer: best = ${s.best}.`;
   }
   const { n, L, R } = arms(s);
   const v = fmt(n.val), parent = n.parent === -1 ? 'its caller' : `its parent ${val(s, n.parent)}`;
@@ -113,16 +113,16 @@ function reportReject(s: TreeLabState, action: string) {
       if (h === L + R) return `Both give ${h} here only because one arm is exactly 1 deep. 1 + max(L, R) counts the nodes on ONE arm; the path that bends at ${v} uses both arms and is measured in edges: L + R. With arms of 2 and 2 they differ: 3 versus 4.`;
       return `1 + max(${L}, ${R}) = ${h} counts the nodes on one arm. The path that bends at ${v} uses both arms: ${L} + ${R} = ${L + R} edges.`;
     }
-    return `Check the bend first. Once ${v} reports, its call is over, and the path through it — ${L} + ${R} = ${L + R} edges — never reaches the board.`;
+    return `Check the bend first. Once ${v} reports, its call is over, and the path through it — ${L} + ${R} = ${L + R} edges — is never recorded in best.`;
   }
   // phase === 'report'
   if (action === 'report-path') return `${L} + ${R} = ${L + R} is a path that bends at ${v}. ${parent[0].toUpperCase()}${parent.slice(1)} can extend only one arm through ${v}; joining a bent path makes a fork, not a path. Report the longer arm: 1 + max(${L}, ${R}) = ${1 + Math.max(L, R)}.`;
-  return `${v} has already written its bend on the board (Best = ${s.best}). Its last job is to report its height to ${parent}.`;
+  return `${v} has already recorded its bend in best (best = ${s.best}). Its last job is to report its height to ${parent}.`;
 }
 function reportApply(s: TreeLabState, action: string) {
   if (s.phase === 'answer') {
     s.done = true;
-    s.message = s.nodes.length ? `Diameter = ${s.best} edge(s). The root’s report was a height; the board held the answer.` : 'An empty tree has no path at all: diameter 0.';
+    s.message = s.nodes.length ? `Diameter = ${s.best} edge(s). The root’s report was a height; best held the answer.` : 'An empty tree has no path at all: diameter 0.';
     return;
   }
   const { n, L, R } = arms(s);
@@ -130,7 +130,7 @@ function reportApply(s: TreeLabState, action: string) {
     const before = s.best;
     s.best = Math.max(s.best, L + R);
     s.phase = 'report';
-    s.message = `The path that bends at ${fmt(n.val)} has ${L} + ${R} = ${L + R} edge(s). ${s.best > before ? `New Best: ${s.best}.` : `Best stays ${s.best}.`}`;
+    s.message = `The path that bends at ${fmt(n.val)} has ${L} + ${R} = ${L + R} edge(s). ${s.best > before ? `New best: ${s.best}.` : `best stays ${s.best}.`}`;
   } else {
     const h = 1 + Math.max(L, R);
     s.reports[String(n.key)] = h;
@@ -144,13 +144,13 @@ function reportView(s: TreeLabState): LabRow[] {
   for (const [k, h] of Object.entries(s.reports)) { labels[Number(k)] = `h ${h}`; tones[Number(k)] = 'done'; }
   if (s.phase !== 'answer') { const key = s.order[s.at]; labels[key] = 'HERE'; tones[key] = 'hot'; }
   const rows: LabRow[] = s.nodes.length ? treeRows(s.level, labels, tones) : [{ name: 'Tree', cells: [], empty: 'Empty tree' }];
-  return [...rows, { name: 'Gate board', cells: [{ value: String(s.best), label: 'Best (edges)', tone: s.done ? 'done' : undefined }] }];
+  return [...rows, { name: 'Shared field', cells: [{ value: String(s.best), label: 'best (edges)', tone: s.done ? 'done' : undefined }] }];
 }
 function reportDescribe(s: TreeLabState) {
   if (s.done) return `Done. Diameter = ${s.best}.`;
-  if (s.phase === 'answer') return s.nodes.length ? `The root has reported ${rootFacts(s).report}. Best = ${s.best}. What is the diameter?` : 'The tree is empty. Nothing will ever report. What is the diameter?';
+  if (s.phase === 'answer') return s.nodes.length ? `The root has reported ${rootFacts(s).report}. best = ${s.best}. What is the diameter?` : 'The tree is empty. Nothing will ever report. What is the diameter?';
   const { n, L, R } = arms(s);
-  return `Node ${fmt(n.val)}: left reported ${L}, right reported ${R}. Best = ${s.best}. ${s.phase === 'bend' ? 'First the board, then the report.' : 'Now the report.'}`;
+  return `Node ${fmt(n.val)}: left reported ${L}, right reported ${R}. best = ${s.best}. ${s.phase === 'bend' ? 'First record the bend, then report the height.' : 'Now the report.'}`;
 }
 
 // ---------- bounds (validate BST) ----------
@@ -259,11 +259,11 @@ function basketReject(s: TreeLabState, action: string) {
   const top = s.basket.length ? val(s, s.basket[s.basket.length - 1]) : null;
   if (s.visited.length === s.k) return `That was visit #${s.k}: ${val(s, s.visited[s.k - 1])} is the answer. Stop walking.`;
   if (action === 'answer') return `Only ${s.visited.length} value(s) visited so far; you need the ${s.k}${s.k === 1 ? 'st' : s.k === 2 ? 'nd' : s.k === 3 ? 'rd' : 'th'}.`;
-  if (action === 'push') return `cur is an empty spot: there is nothing to push. The top of the basket, ${top}, is the smallest value not yet visited. Pop it.`;
+  if (action === 'push') return `cur is an empty spot: there is nothing to push. The top of the stack, ${top}, is the smallest value not yet visited. Pop it.`;
   if (action === 'pop') return s.basket.length
-    ? `cur = ${val(s, s.cur)} hasn’t been explored. Its subtree holds ${fmt(smallestIn(s, s.cur))}, smaller than the basket’s top ${top}, so popping now would visit out of order. Push cur and keep going left.`
-    : `The basket is empty. cur = ${val(s, s.cur)} still has to be pushed before anything can be popped.`;
-  if (s.cur === -1) return `cur is an empty spot: there is nothing to visit. The top of the basket, ${top}, is the smallest value not yet visited. Pop it.`;
+    ? `cur = ${val(s, s.cur)} hasn’t been explored. Its subtree holds ${fmt(smallestIn(s, s.cur))}, smaller than the stack’s top ${top}, so popping now would visit out of order. Push cur and keep going left.`
+    : `The stack is empty. cur = ${val(s, s.cur)} still has to be pushed before anything can be popped.`;
+  if (s.cur === -1) return `cur is an empty spot: there is nothing to visit. The top of the stack, ${top}, is the smallest value not yet visited. Pop it.`;
   // visit with a left side
   return `Visiting ${val(s, s.cur)} now puts it before its left side, which holds the smaller ${fmt(smallestIn(s, s.cur))}. That is root-first order, not sorted order. Push it and go left.`;
 }
@@ -294,25 +294,25 @@ function basketView(s: TreeLabState): LabRow[] {
   const rows: LabRow[] = s.nodes.length ? treeRows(s.level, labels, tones) : [{ name: 'Tree', cells: [], empty: 'Empty tree' }];
   return [
     ...rows,
-    { name: 'Basket (top on the right)', empty: 'Basket is empty', cells: s.basket.map((k, i) => ({ value: val(s, k), label: i === s.basket.length - 1 ? 'top' : undefined })) },
+    { name: 'Stack (top on the right)', empty: 'Stack is empty', cells: s.basket.map((k, i) => ({ value: val(s, k), label: i === s.basket.length - 1 ? 'top' : undefined })) },
     { name: 'Visited, in order', empty: 'Nothing visited yet', cells: s.visited.map((k, i) => ({ value: val(s, k), label: `#${i + 1}`, tone: 'done' as const })) },
   ];
 }
 function basketDescribe(s: TreeLabState) {
   if (s.done) return `Done: the ${s.k}-th smallest is ${val(s, s.visited[s.k - 1])}.`;
-  return `k = ${s.k} · visited ${s.visited.length} · cur = ${s.cur === -1 ? 'empty spot' : val(s, s.cur)} · basket top = ${s.basket.length ? val(s, s.basket[s.basket.length - 1]) : 'none'}`;
+  return `k = ${s.k} · visited ${s.visited.length} · cur = ${s.cur === -1 ? 'empty spot' : val(s, s.cur)} · stack top = ${s.basket.length ? val(s, s.basket[s.basket.length - 1]) : 'none'}`;
 }
 
 export const lab = makeLab<TreeLabState>({
   report: {
-    name: 'The Messenger: report a height, record the bend (diameter)',
+    name: 'Report a height, record the bend (diameter)',
     cases: reportCases.length,
     actions: [
-      { action: 'bend', label: 'Best ← max(Best, L + R)' },
-      { action: 'bend-height', label: 'Best ← max(Best, 1 + max(L, R))' },
+      { action: 'bend', label: 'best ← max(best, L + R)' },
+      { action: 'bend-height', label: 'best ← max(best, 1 + max(L, R))' },
       { action: 'report', label: 'Report 1 + max(L, R) up' },
       { action: 'report-path', label: 'Report L + R up' },
-      { action: 'answer', label: 'Root is done: answer = Best' },
+      { action: 'answer', label: 'Root is done: answer = best' },
       { action: 'answer-root', label: 'Root is done: answer = the root’s report' },
       { action: 'answer-through', label: 'Root is done: answer = L + R at the root' },
     ],
@@ -324,7 +324,7 @@ export const lab = makeLab<TreeLabState>({
     describe: reportDescribe,
   },
   bounds: {
-    name: 'The Climber: carry a window down (validate a BST)',
+    name: 'Carry a window down (validate a BST)',
     cases: boundsCases.length,
     actions: [
       { action: 'left', label: 'Left child: floor stays, ceiling = parent' },
@@ -344,10 +344,10 @@ export const lab = makeLab<TreeLabState>({
     describe: boundsDescribe,
   },
   basket: {
-    name: 'The Basket: walk in order, stop at the k-th',
+    name: 'Explicit stack: walk in order, stop at the k-th',
     cases: basketCases.length,
     actions: [
-      { action: 'push', label: 'Push cur into the basket, step left' },
+      { action: 'push', label: 'Push cur onto the stack, step left' },
       { action: 'pop', label: 'Pop the top, visit it, step right' },
       { action: 'visit', label: 'Visit cur now, before its left side' },
       { action: 'answer', label: 'Answer with the k-th visit' },

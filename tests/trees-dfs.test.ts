@@ -233,7 +233,7 @@ test('chapter trace numbers match independent computations', () => {
   const bendBelow = (n: T | null): number => (n ? Math.max(h(n.left) + h(n.right), bendBelow(n.left), bendBelow(n.right)) : 0);
   assert.equal(bendBelow(two.left), 1); assert.equal(bendBelow(two.right), 1);          // Best before node 2
   assert.equal(h(tr.left) + h(tr.right), 3); assert.equal(h(tr), 4); assert.equal(bruteDiameter(tr), 4);
-  assert.match(correct(diameter[2]), /Best/);
+  assert.match(correct(diameter[2]), /best/);
   // max path
   assert.equal(bruteMaxPath(mk([2, -1])), 2);
   assert.equal(-10 + 9 + 35, 34); assert.equal(-10 + 35, 25);
@@ -371,7 +371,7 @@ test('the lab names the classic mistakes with the numbers on the board', () => {
   while (s.phase !== 'answer') s = lab.move(s, lab.expected(s)).state;
   assert.equal(s.best, 4);
   assert.match(lab.move(s, 'answer-through').state.message, /Left \+ right at the root is 3/);
-  assert.match(lab.move(s, 'answer-root').state.message, /reported 4.*coincidence.*Best = 4/);
+  assert.match(lab.move(s, 'answer-root').state.message, /reported 4.*coincidence.*best = 4/);
   // bounds, case 1: [5, 4, 6, null, null, 3, 7] — the deep violation
   let b = lab.create('bounds', 1);
   while (!(b.phase === 'window' && b.order[b.at] === 5)) b = lab.move(b, lab.expected(b)).state;
@@ -388,10 +388,10 @@ test('the lab names the classic mistakes with the numbers on the board', () => {
   // basket, case 0: k = 3
   let k = lab.create('basket', 0);
   assert.match(lab.move(k, 'visit').state.message, /Visiting 5 now puts it before its left side, which holds the smaller 1/);
-  assert.match(lab.move(k, 'pop').state.message, /basket is empty/);
+  assert.match(lab.move(k, 'pop').state.message, /stack is empty/);
   for (let i = 0; i < 4; i++) k = lab.move(k, 'push').state;
   assert.deepEqual(k.basket.map(x => byKey(mk(k.level)).get(x)!.val), [5, 3, 2, 1]);
-  assert.match(lab.move(k, 'push').state.message, /top of the basket, 1/);
+  assert.match(lab.move(k, 'push').state.message, /top of the stack, 1/);
 });
 
 // ---------- practice ----------

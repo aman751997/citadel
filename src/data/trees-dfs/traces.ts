@@ -140,7 +140,7 @@ export const invert = [
       ['Hang the mirrored 7-subtree on its left and the mirrored 2-subtree on its right, then return itself', 'Yes. Two pointer assignments, and the whole tree is [4, 7, 2, 9, 6, 3, 1]. Node 4 returns itself so its own caller can hang it.'],
       ['Call invertTree(4) once more, to be safe', 'Mirroring twice gives back the original. Each call does its one swap exactly once.'],
     ]),
-  step('The Climber reaches the empty spot below leaf 1. What does invertTree(null) return?', [], 2, [
+  step('The recursion reaches the empty spot below leaf 1. What does invertTree(null) return?', [], 2, [
     ['A new node with value 0, so the parent has something to swap', 'That invents leaves: every real leaf would grow two zero children.'],
     ['It throws: callers should never pass null', 'Then every node must check both children before each call, which doubles the code. Making null the base case is what keeps the function a few lines long.'],
     ['null: an empty tree is already its own mirror', 'Yes. The base case is the smallest tree there is, and its answer needs no work at all.'],
@@ -178,9 +178,9 @@ export const depth = [
       ['2: max(1, 2)', 'That forgets the root itself. Every level adds its own node: 1 + max(left, right).'],
       ['3: 1 + max(1, 2)', 'Yes. The longest root-to-leaf path is 3 → 20 → 15 (or 7): three nodes.'],
     ]),
-  step('Top-down instead: the Climber carries the depth of the node he stands on. At 3 he carries 1. What does he carry into 20?',
+  step('Top-down instead: each call receives its depth as a parameter. The call at 3 has depth 1. What depth does it pass into 20?',
     treeRows(figures.depth.level, { 0: 'depth 1', 2: 'NEXT' }, { 2: 'hot' }), 0, [
-      ['2: one more than his own', 'Yes. State that flows down is a parameter: visit(child, depth + 1). He updates the best depth he has seen at every node.'],
+      ['2: one more than its own', 'Yes. State that flows down is a parameter: visit(child, depth + 1). Every call also updates the deepest depth seen so far.'],
       ['1: depth only changes at leaves', 'Every step down is one level deeper, leaf or not.'],
       ['The 2 that 20 will report back', 'That is the bottom-up answer, which only exists after 20 returns. Top-down state goes into the call before anything below is known.'],
     ]),
@@ -213,25 +213,25 @@ export const diameter = [
       ['3: 1 + max(2, 2), the longest single arm it can offer', 'Yes. The report is a height: the longest straight path down from node 2, counted in nodes.'],
       ['5: 1 + 2 + 2', 'That counts the nodes of a bent path. It is neither a height nor a path length in edges.'],
     ]),
-  step('Before reporting, node 2 looks at the gate board. Best holds 1 (from nodes 3 and 4). What does it write?',
+  step('Before reporting, node 2 looks at the shared field best. It holds 1 (from nodes 3 and 4). What does it write?',
     diamRows({ 1: 'HERE', 3: 'said 2', 4: 'said 2' }, { 1: 'hot', 3: 'done', 4: 'done' }), 0, [
-      ['Best = max(1, 2 + 2) = 4: the path 5–3–2–4–6 bends here and has 4 edges', 'Yes. Left arm 2 edges, right arm 2 edges. The return value and the board record two different things.'],
-      ['Best = max(1, 3): its height', 'The height is one arm. The longest path through node 2 uses both arms: 2 edges down the left plus 2 down the right.'],
-      ['Nothing: only the root writes on the board', 'Then the 4-edge path, which never touches the root, is lost. Every node is a possible bend.'],
+      ['best = max(1, 2 + 2) = 4: the path 5–3–2–4–6 bends here and has 4 edges', 'Yes. Left arm 2 edges, right arm 2 edges. The return value and the field best record two different things.'],
+      ['best = max(1, 3): its height', 'The height is one arm. The longest path through node 2 uses both arms: 2 edges down the left plus 2 down the right.'],
+      ['Nothing: only the root updates best', 'Then the 4-edge path, which never touches the root, is lost. Every node is a possible bend.'],
     ]),
-  step('The root receives left = 3 and right = 0. Its own bend is 3, so Best stays 4, and it returns 1 + max(3, 0) = 4. The root’s call is over. What is the diameter?',
+  step('The root receives left = 3 and right = 0. Its own bend is 3, so best stays 4, and it returns 1 + max(3, 0) = 4. The root’s call is over. What is the diameter?',
     diamRows({ 0: 'returns 4', 1: 'said 3' }, { 0: 'hot', 1: 'done' }), 2, [
       ['3: left + right at the root', 'That is only the longest path that passes through the root. The longest path bends at node 2.'],
-      ['Whatever the root returns: 4', 'The root returns its height. It equals Best here by coincidence; on the eight-node tree in the figure the root returns 5 while the diameter is 6. Read the board, not the return value.'],
-      ['Whatever Best holds: 4', 'Yes. When the recursion ends, the return value is a height and the board is the answer. Say both out loud before you write the code.'],
+      ['Whatever the root returns: 4', 'The root returns its height. It equals best here by coincidence; on the eight-node tree in the figure the root returns 5 while the diameter is 6. Read best, not the return value.'],
+      ['Whatever best holds: 4', 'Yes. When the recursion ends, the return value is a height and best is the answer. Say both out loud before you write the code.'],
     ]),
 ];
 
 export const maxPath = [
-  step('gain(15) = 15 and gain(7) = 7. At node 20, what goes on the gate board?',
+  step('gain(15) = 15 and gain(7) = 7. At node 20, what is recorded in best?',
     treeRows(figures.maxPath.level, { 2: 'HERE', 5: 'gain 15', 6: 'gain 7' }, { 2: 'hot', 5: 'done', 6: 'done' }), 1, [
-      ['20 + 15 = 35', 'That is what 20 reports up: one arm. The board takes the bend, which may use both arms.'],
-      ['20 + 15 + 7 = 42: the path 15–20–7 bends here', 'Yes. Best becomes 42.'],
+      ['20 + 15 = 35', 'That is what 20 reports up: one arm. The field best takes the bend, which may use both arms.'],
+      ['20 + 15 + 7 = 42: the path 15–20–7 bends here', 'Yes. best becomes 42.'],
       ['−10 + 20 + 15 + 7 = 32', 'A path through −10 and both of 20’s children would meet 20 from three directions: a fork, not a path.'],
     ]),
   step('Now a tiny tree, [2, −1]. gain(−1) returns −1. What does node 2 use for its left arm?',
@@ -240,11 +240,11 @@ export const maxPath = [
       ['−1: every child must be included', 'A path may stop anywhere. Dragging a negative arm along only lowers the sum.'],
       ['Skip node 2 instead', 'Node 2 is positive; it is the arm that loses. Clamp the arm, not the node.'],
     ]),
-  step('Back to [−10, 9, 20, null, null, 15, 7]. At −10: left gain 9, right gain 35, so its bend is −10 + 9 + 35 = 34. The board holds 42. The root returns −10 + 35 = 25. Answer?',
+  step('Back to [−10, 9, 20, null, null, 15, 7]. At −10: left gain 9, right gain 35, so its bend is −10 + 9 + 35 = 34. best holds 42. The root returns −10 + 35 = 25. Answer?',
     treeRows(figures.maxPath.level, { 0: 'returns 25', 1: 'gain 9', 2: 'gain 35' }, { 0: 'hot' }), 2, [
       ['34: the bend at the root', 'The root’s bend is just one candidate. 42, written at node 20, is bigger.'],
-      ['25: what the root returns', 'The return value is a gain: the best path that starts at the root and goes down one side. The answer is on the board.'],
-      ['42: the board', 'Yes. The path 15–20–7 never touches the root.'],
+      ['25: what the root returns', 'The return value is a gain: the best path that starts at the root and goes down one side. The answer is in best.'],
+      ['42: best', 'Yes. The path 15–20–7 never touches the root.'],
     ]),
 ];
 
@@ -269,18 +269,18 @@ export const lca = [
 ];
 
 export const pathSum = [
-  step('Target 22. The Climber stands on 11 with path [5, 4, 11] and 22 − 5 − 4 − 11 = 2 still to find. He steps right onto leaf 2. What does he record?',
+  step('Target 22. The call is at 11 with path [5, 4, 11] and 22 − 5 − 4 − 11 = 2 still to find. It steps right onto leaf 2. What does it record?',
     treeRows(figures.pathSum.level, { 3: 'left 2', 8: 'HERE' }, { 0: 'done', 1: 'done', 3: 'done', 8: 'hot' }), 1, [
-      ['The path list itself', 'That list keeps changing as he climbs up and down other branches; when the walk ends it is empty, and so is every “answer” that points to it. Store a copy.'],
+      ['The path list itself', 'That list keeps changing as the walk goes up and down other branches; when the walk ends it is empty, and so is every “answer” that points to it. Store a copy.'],
       ['A copy of [5, 4, 11, 2]: nothing is left to find, and 2 is a leaf', 'Yes. new ArrayList<>(path). The second answer, [5, 8, 4, 5], turns up later on the right.'],
-      ['Nothing yet: wait until the whole tree is walked', 'The path exists only now. Once he steps back up, the 2 is removed.'],
+      ['Nothing yet: wait until the whole tree is walked', 'The path exists only now. Once the call returns, the 2 is removed.'],
     ]),
-  step('He finishes 11’s subtree and climbs back to 4. What must happen to the path?',
+  step('The walk finishes 11’s subtree and returns to 4. What must happen to the path?',
     treeRows(figures.pathSum.level, { 1: 'back here' }, { 1: 'hot', 3: 'done' }), 0, [
       ['11 comes off the end, so the path is [5, 4] again', 'Yes. Every add on the way down has exactly one remove on the way up: path.remove(path.size() − 1) as the call ends.'],
       ['Nothing: the path will be overwritten', 'It is never overwritten, only appended to. Without the removal, the right side of the tree would see [5, 4, 11, 8, …]: nodes from a branch it is not on.'],
     ]),
-  step('A shortcut: check “nothing left to find” when the Climber steps onto an EMPTY spot instead of at a leaf. Tree [1, 2], target 1. What goes wrong?',
+  step('A shortcut: check “nothing left to find” when the walk steps onto an EMPTY spot instead of at a leaf. Tree [1, 2], target 1. What goes wrong?',
     treeRows([1, 2], { 0: 'left 0' }, { 0: 'hot' }), 2, [
       ['Nothing: empty spots are where paths end', 'They are where branches end, not where root-to-leaf paths end. Node 1 is not a leaf.'],
       ['It records [1, 2]', '[1, 2] sums to 3, so nothing at node 2 matches.'],
@@ -309,14 +309,14 @@ export const validate = [
 ];
 
 export const kth = [
-  step('k = 3. The Basket is empty and cur = 5. What is the first move?',
+  step('k = 3. The stack is empty and cur = 5. What is the first move?',
     treeRows(figures.kth.level, { 0: 'cur' }, { 0: 'hot' }), 1, [
       ['Visit 5 and count it', 'Visiting before the left subtree is root-first order. 5 is the 5th smallest, not the 1st.'],
-      ['Push 5 and step left, and keep pushing: 5, 3, 2, 1. Then pop 1, the smallest', 'Yes. The smallest value is at the end of the left chain, and every node on the way waits in the basket until its left side is done.'],
-      ['Pop', 'The basket is empty. You pop only when cur has run off the bottom of a left chain.'],
+      ['Push 5 and step left, and keep pushing: 5, 3, 2, 1. Then pop 1, the smallest', 'Yes. The smallest value is at the end of the left chain, and every node on the way waits on the stack until its left side is done.'],
+      ['Pop', 'The stack is empty. You pop only when cur has run off the bottom of a left chain.'],
     ]),
-  step('You popped 1 (visit #1), then 2 (visit #2). The basket holds 5 and 3 (3 on top), and cur is 2’s right child: null. Next?',
-    treeRows(figures.kth.level, { 7: '#1', 3: '#2', 1: 'top', 0: 'basket' }, { 7: 'done', 3: 'done', 1: 'hot' }), 0, [
+  step('You popped 1 (visit #1), then 2 (visit #2). The stack holds 5 and 3 (3 on top), and cur is 2’s right child: null. Next?',
+    treeRows(figures.kth.level, { 7: '#1', 3: '#2', 1: 'top', 0: 'stack' }, { 7: 'done', 3: 'done', 1: 'hot' }), 0, [
       ['Pop 3: visit #3, so the answer is 3', 'Yes. Popping always gives the smallest value not yet visited. Stop the moment the count reaches k.'],
       ['Push 4', 'cur is null. 4 is 3’s right child; you step there only after visiting 3.'],
       ['Answer 4', '4 is the 4th smallest. 3 has not been visited yet, and it is smaller.'],
@@ -324,7 +324,7 @@ export const kth = [
   step('How much work did k = 3 cost on this tree?', [], 2, [
     ['O(n): an in-order walk always visits every node', 'Only if you never stop. Stopping at the k-th visit leaves 4, 5 and 6 untouched here.'],
     ['O(log n), always', 'Only on a balanced tree, and only for small k. On a vine the left chain alone is n nodes long.'],
-    ['O(h + k): the left chain down to the minimum, then k pops', 'Yes. 4 pushes (5, 3, 2, 1) and 3 pops. Space is O(h) for the basket.'],
+    ['O(h + k): the left chain down to the minimum, then k pops', 'Yes. 4 pushes (5, 3, 2, 1) and 3 pops. Space is O(h) for the stack.'],
   ]),
 ];
 
@@ -382,7 +382,7 @@ export const mixedReview = [
   step('“All root-to-leaf paths whose values sum to target.” Which shape fits?', [], 0, [
     ['Carry the remaining sum and the path down; record a copy at a leaf; remove the node on the way back up', 'Yes. State flows down as parameters, and the shared path list is undone on the way up.'],
     ['Return the sum of each subtree and compare at the root', 'Subtree sums mix many paths together. The question is about one path at a time, from the root.'],
-    ['Return the height and update a global', 'That is the shape for “longest path anywhere”. This question is about root-to-leaf paths, which the Climber carries down.'],
+    ['Return the height and update a global', 'That is the shape for “longest path anywhere”. This question is about root-to-leaf paths, which are passed down as parameters.'],
   ]),
   step('“The k-th smallest value in a binary search tree.” The move?', [], 1, [
     ['Collect every value into a heap and pop k times', 'Correct but wasteful: O(n log n) or O(n + k log n). The tree already knows the sorted order.'],

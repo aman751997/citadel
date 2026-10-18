@@ -216,7 +216,7 @@ export const mixedReview = [
   step('"Return the smallest divisor d such that the sum of ceil(nums[i] / d) is at most threshold." First move?', [], 2, [
     ['Sort nums and use two pointers', 'Nothing pairs up here. The unknown is a single number, d.'],
     ['Try every d from 1 upward', 'Correct, but up to max(nums) checks of O(n) each. Halving the d range costs O(n log max).'],
-    ['Search d on [1, max(nums)] with a checker that sums the ceilings', 'Yes. A bigger divisor never raises the sum, so "sum ≤ threshold" is FFFF|TTTT. It is Koko with a new costume.'],
+    ['Search d on [1, max(nums)] with a checker that sums the ceilings', 'Yes. A bigger divisor never raises the sum, so "sum ≤ threshold" is FFFF|TTTT. It is the Koko problem with new labels.'],
   ]),
   step('Unsorted array, one query: "is 42 in it?" Which tool?', [], 2, [
     ['Binary search the indexes', 'Unsorted values give no FFFF|TTTT question: "nums[i] ≥ 42" can flip many times.'],

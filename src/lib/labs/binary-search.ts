@@ -1,8 +1,8 @@
-// Binary Search playground: you play Mid, ask the Oracle, and move Lo or Hi yourself.
+// Binary Search playground: you play mid, answer the yes/no question, and move lo or hi yourself.
 // Three modes share the ONE template (while lo < hi; yes → hi = mid; no → lo = mid + 1):
 //   boundary: first index with nums[i] >= target (hi starts at n, the "nowhere" slot)
 //   rotated:  minimum of a rotated sorted array (compare nums[mid] with nums[hi])
-//   answer:   Koko's slowest safe eating speed (search the speeds, not the piles)
+//   answer:   the slowest eating speed that finishes in time (search the speeds, not the piles)
 import { makeLab, type LabBase, type LabRow } from '../lab.ts';
 
 export type Mode = 'boundary' | 'rotated' | 'answer';
@@ -46,7 +46,7 @@ export function fromInput(mode: Mode, input: { a: number[]; target: number }): O
   return { a, target: input.target, lo: 1, hi: Math.max(...a) };
 }
 
-// The Oracle's answer at mid, in each mode: true means "keep mid, hi = mid".
+// The yes/no answer at mid, in each mode: true means "keep mid, hi = mid".
 function oracle(s: S, mid: number): boolean {
   if (s.mode === 'boundary') return s.a[mid] >= s.target;
   if (s.mode === 'rotated') return s.a[mid] <= s.a[s.hi];
@@ -164,5 +164,5 @@ function mode(m: Mode, name: string, labels: [string, string, string]) {
 export const lab = makeLab<S>({
   boundary: mode('boundary', 'Boundary: first nums[i] ≥ target', ['true → hi = mid', 'false → lo = mid + 1', 'lo == hi: answer']),
   rotated: mode('rotated', 'Rotated: find the minimum', ['nums[mid] ≤ nums[hi] → hi = mid', 'nums[mid] > nums[hi] → lo = mid + 1', 'lo == hi: minimum found']),
-  answer: mode('answer', 'Search the answer: Koko’s speed', ['finishes in time → hi = mid', 'too slow → lo = mid + 1', 'lo == hi: slowest safe speed']),
-}, 'Gold = Mid, asking the Oracle · green = proven yes (from Hi up) · faded = proven no (below Lo)');
+  answer: mode('answer', 'Search the answer: eating speed', ['finishes in time → hi = mid', 'too slow → lo = mid + 1', 'lo == hi: slowest safe speed']),
+}, 'Gold = mid, the index being asked about · green = proven yes (from Hi up) · faded = proven no (below Lo)');

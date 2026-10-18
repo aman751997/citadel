@@ -225,10 +225,10 @@ public class Check {
 
         // Friday lunch
         B_splitwise.Ledger lunch = s.new Ledger();
-        lunch.add(new B_splitwise.Expense("Oona", 90000, new B_splitwise.EqualSplit(List.of("Oona", "Wren", "Bram"))));
-        lunch.add(new B_splitwise.Expense("Wren", 60000, new B_splitwise.ExactSplit(Map.of("Wren", 10000L, "Bram", 50000L))));
-        eq(m("Bram", -80000, "Oona", 60000, "Wren", 20000), lunch.balances(), "lunch balances");
-        eq(List.of(new B_splitwise.Transfer("Bram", "Oona", 60000), new B_splitwise.Transfer("Bram", "Wren", 20000)), lunch.simplify(), "lunch settles in two");
+        lunch.add(new B_splitwise.Expense("Neha", 90000, new B_splitwise.EqualSplit(List.of("Neha", "Zane", "Anil"))));
+        lunch.add(new B_splitwise.Expense("Zane", 60000, new B_splitwise.ExactSplit(Map.of("Zane", 10000L, "Anil", 50000L))));
+        eq(m("Anil", -80000, "Neha", 60000, "Zane", 20000), lunch.balances(), "lunch balances");
+        eq(List.of(new B_splitwise.Transfer("Anil", "Neha", 60000), new B_splitwise.Transfer("Anil", "Zane", 20000)), lunch.simplify(), "lunch settles in two");
         B_splitwise.Ledger bad = s.new Ledger();
         throwsOn(IllegalArgumentException.class, () -> bad.add(new B_splitwise.Expense("A", 100, new B_splitwise.ExactSplit(Map.of("A", 50L, "B", 49L)))), "exact split must sum");
         throwsOn(IllegalArgumentException.class, () -> bad.add(new B_splitwise.Expense("A", 0, new B_splitwise.EqualSplit(List.of("A")))), "zero expense");
@@ -243,17 +243,17 @@ public class Check {
 
         // greedy vs optimal counterexample
         B_splitwise.Ledger five = s.new Ledger();
-        five.add(new B_splitwise.Expense("Oona", 50000, new B_splitwise.ExactSplit(Map.of("Kofi", 50000L))));
-        five.add(new B_splitwise.Expense("Wren", 40000, new B_splitwise.ExactSplit(Map.of("Bram", 40000L))));
-        five.add(new B_splitwise.Expense("Ines", 30000, new B_splitwise.ExactSplit(Map.of("Bram", 30000L))));
-        eq(m("Bram", -70000, "Ines", 30000, "Kofi", -50000, "Oona", 50000, "Wren", 40000), five.balances(), "five balances");
-        eq(List.of(new B_splitwise.Transfer("Bram", "Oona", 50000), new B_splitwise.Transfer("Kofi", "Wren", 40000),
-                   new B_splitwise.Transfer("Bram", "Ines", 20000), new B_splitwise.Transfer("Kofi", "Ines", 10000)), five.simplify(), "greedy: 4 transfers");
+        five.add(new B_splitwise.Expense("Neha", 50000, new B_splitwise.ExactSplit(Map.of("Kofi", 50000L))));
+        five.add(new B_splitwise.Expense("Zane", 40000, new B_splitwise.ExactSplit(Map.of("Anil", 40000L))));
+        five.add(new B_splitwise.Expense("Ines", 30000, new B_splitwise.ExactSplit(Map.of("Anil", 30000L))));
+        eq(m("Anil", -70000, "Ines", 30000, "Kofi", -50000, "Neha", 50000, "Zane", 40000), five.balances(), "five balances");
+        eq(List.of(new B_splitwise.Transfer("Anil", "Neha", 50000), new B_splitwise.Transfer("Kofi", "Zane", 40000),
+                   new B_splitwise.Transfer("Anil", "Ines", 20000), new B_splitwise.Transfer("Kofi", "Ines", 10000)), five.simplify(), "greedy: 4 transfers");
         eq(3, optimalTransfers(five.balances()), "optimum: 3");
 
         // percent and share splits
         eq(Map.of("A", 3334L, "B", 3333L, "C", 3333L), new B_splitwise.ShareSplit(Map.of("A", 1, "B", 1, "C", 1)).shares(10000), "share 1:1:1 = equal");
-        eq(Map.of("Bram", 50000L, "Intern-A", 25000L, "Intern-B", 25000L), new B_splitwise.ShareSplit(Map.of("Bram", 2, "Intern-A", 1, "Intern-B", 1)).shares(100000), "share 2:1:1");
+        eq(Map.of("Anil", 50000L, "Intern-A", 25000L, "Intern-B", 25000L), new B_splitwise.ShareSplit(Map.of("Anil", 2, "Intern-A", 1, "Intern-B", 1)).shares(100000), "share 2:1:1");
         eq(Map.of("A", 341L, "B", 330L, "C", 330L), new B_splitwise.PercentSplit(Map.of("C", 33, "B", 33, "A", 34)).shares(1001), "percent rounding: leftover paisa by name");
         eq(Map.of("A", 1L, "B", 0L), new B_splitwise.PercentSplit(Map.of("A", 50, "B", 50)).shares(1), "1 paisa 50/50 goes by name");
         eq(Map.of("A", 1L, "Z", 0L), new B_splitwise.PercentSplit(Map.of("A", 100, "Z", 0)).shares(1), "zero percent gets no leftover");
@@ -392,7 +392,7 @@ public class Check {
 
         B_vending.VendingMachine m = loadedMachine(v);
         eq("Idle", m.stateName(), "loaded and in service");
-        throwsOn(IllegalStateException.class, () -> m.select("A2"), "Fennick bug 1: select with no money");
+        throwsOn(IllegalStateException.class, () -> m.select("A2"), "vending bug 1: select with no money");
         throwsOn(IllegalStateException.class, m::cancel, "cancel while idle");
         throwsOn(IllegalStateException.class, () -> m.restock("A1", 1), "no restock while in service");
         throwsOn(IllegalArgumentException.class, () -> m.insert(3), "rejected coin");
@@ -422,7 +422,7 @@ public class Check {
         List<Integer> refund = m.cancel();
         eq(15, refund.stream().mapToInt(Integer::intValue).sum(), "refund equals credit");
         eq(List.of(10, 5), refund, "fewest coins refund");
-        throwsOn(IllegalStateException.class, m::cancel, "Fennick bug 2: second cancel throws");
+        throwsOn(IllegalStateException.class, m::cancel, "vending bug 2: second cancel throws");
 
         // sold out and exact change only
         m.insert(20);
@@ -832,16 +832,16 @@ public class Check {
         B_logger.PatternLayout layout = lg.new PatternLayout();
         B_logger.MemoryAppender root = lg.new MemoryAppender(layout), lift = lg.new MemoryAppender(layout);
         mgr.root().addAppender(root);
-        B_logger.Logger liftLogger = mgr.get("gearhouse.lift");
+        B_logger.Logger liftLogger = mgr.get("app.lift");
         liftLogger.setLevel(B_logger.Level.DEBUG);
         liftLogger.addAppender(lift);
-        B_logger.Logger door = mgr.get("gearhouse.lift.door");
-        yes(door == mgr.get("gearhouse.lift.door"), "same instance");
+        B_logger.Logger door = mgr.get("app.lift.door");
+        yes(door == mgr.get("app.lift.door"), "same instance");
         eq(B_logger.Level.DEBUG, door.effectiveLevel(), "door inherits DEBUG");
         door.debug("still closed");
-        eq(List.of("2026-03-13T09:00:00Z DEBUG [gearhouse.lift.door] still closed"), lift.lines, "lift appender");
-        eq(List.of("2026-03-13T09:00:00Z DEBUG [gearhouse.lift.door] still closed"), root.lines, "root appender too");
-        B_logger.Logger cinema = mgr.get("gearhouse.cinema");
+        eq(List.of("2026-03-13T09:00:00Z DEBUG [app.lift.door] still closed"), lift.lines, "lift appender");
+        eq(List.of("2026-03-13T09:00:00Z DEBUG [app.lift.door] still closed"), root.lines, "root appender too");
+        B_logger.Logger cinema = mgr.get("app.cinema");
         eq(B_logger.Level.INFO, cinema.effectiveLevel(), "cinema inherits INFO");
         cinema.debug("seat map");
         eq(1, root.lines.size(), "cinema debug dropped");
@@ -853,7 +853,7 @@ public class Check {
         door.debug("still closed");
         eq(2, lift.lines.size(), "non-additive: lift gets it");
         eq(2, root.lines.size(), "...root doesn't");
-        eq(B_logger.Level.INFO, mgr.get("gearhouse").effectiveLevel(), "gearhouse inherits root");
+        eq(B_logger.Level.INFO, mgr.get("app").effectiveLevel(), "app inherits root");
 
         // random hierarchies vs an oracle
         Random rnd = new Random(9);

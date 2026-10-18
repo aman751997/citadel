@@ -46,6 +46,52 @@ export const hints: Record<string, [string, string, string]> = {
   ],
 };
 
+export const identifyLabels: [string, string, string, string] = ['A small nudge', 'Candidate classes', 'Who owns which rule', 'Compare with the answer'];
+
+// Progressive hints for "find the classes before the diagram" in each problem chapter.
+export const identify: Record<string, [string, string, string]> = {
+  parking: [
+    'Underline the nouns in the brief. Which of them have a rule of their own, such as “cannot be used twice” or “closes once”?',
+    'Candidates: ParkingLot, Floor, Spot, Vehicle, Ticket, plus a fee rule and an allocation rule. Which two will change from customer to customer?',
+    'Spot owns “one vehicle at a time”, Ticket owns “closes once”, ParkingLot only coordinates, and fees and allocation are the two interfaces.',
+  ],
+  splitwise: [
+    'After any expense, what must be true about everyone’s numbers? Which class can guarantee it?',
+    'Candidates: Ledger, Expense, Split, Transfer. Is a Person class needed for this cut?',
+    'Ledger owns the zero-sum invariant and rejects bad splits. Split is the seam that computes shares. A person is just a name.',
+  ],
+  vending: [
+    'Do not list flags. Ask what the machine is doing right now, and list the modes.',
+    'Three modes: idle, collecting, out of service. Each button means something different in each.',
+    'A base State that throws for every action; each state overrides only what is legal. A refused sale is not an illegal action.',
+  ],
+  lru: [
+    'One structure finds a key fast. A different one reorders fast. Which is which?',
+    'HashMap from key to node, doubly linked list of nodes, sentinel head and tail.',
+    'The node carries its key so eviction from the list tail can delete from the map. Thread safety goes in a wrapper.',
+  ],
+  booking: [
+    'Which object do two competing users have in common? That object is your unit of locking.',
+    'Candidates: Show, Seat status, Hold, Booking, a price rule, a clock. Where does payment sit?',
+    'Show owns seats and holds. Hold carries an expiry. Payment is a port outside Show, called between hold and confirm.',
+  ],
+  elevator: [
+    'What decides the next floor, and what is simply remembered state?',
+    'Candidates: Elevator, Scheduler, Direction, a set of pending stops. What will change if a second car arrives?',
+    'Elevator owns floor, direction and stops. Scheduler is the strategy. Choosing among cars is a different class, added later.',
+  ],
+  logger: [
+    'Two questions: who decides whether a line prints, and where does it go?',
+    'Candidates: Logger, LogManager, LogEvent, Level, Appender, Layout. How does a logger know the level of its parent?',
+    'Logger holds name, optional level, parent, additive flag and appenders. LogManager hands out one instance per name. Appender and Layout are strategies.',
+  ],
+  limiter: [
+    'What is the single question the caller asks, and what hidden state answers it?',
+    'Candidates: RateLimiter, TokenBucketLimiter, TokenBucket, Clock.',
+    'RateLimiter is the seam. TokenBucket owns arithmetic and its lock. The limiter keeps one bucket per key. Clock is injected.',
+  ],
+};
+
 export const skeleton = [
   step('Which of these is the “claim” in the parking lot — the step that must be one atomic operation?', [], 2, [
     ['The allocator’s search for a free spot', 'The search can be racy on purpose: two threads may both be offered M-1-1. It is only a hint.'],
@@ -53,7 +99,7 @@ export const skeleton = [
     ['Spot.tryAssign: check the spot is free and take it, in one step', 'Right. Check-and-take under the spot’s lock is the decision; a thread that loses simply picks again.'],
     ['Creating the ticket id', 'An AtomicLong makes ids unique, but two cars in one spot is the invariant that matters.'],
   ]),
-  step('In BookMyShow, the Interviewer asks how you will test that a hold expires after ten minutes. Which move from the skeleton answers it?', [], 3, [
+  step('In BookMyShow, the interviewer asks how you will test that a hold expires after ten minutes. Which move from the skeleton answers it?', [], 3, [
     ['Seam — put expiry behind a strategy', 'Expiry is not a varying policy here; the problem is that the test cannot control time.'],
     ['Claim — make expiry atomic', 'The hold is atomic already. The question is how to reach minute ten in a test.'],
     ['Sleep for ten minutes in the test', 'A ten-minute test is a test nobody runs, and it is still flaky at the boundary.'],
@@ -67,7 +113,7 @@ export const skeleton = [
 ];
 
 export const parking = [
-  step('Copperline: M-0-1 and M-0-2 are taken. A car arrives. SmallestFitLowestFloor tries sizes small to large, floors low to high. Which bay?', [
+  step('Sample garage: M-0-1 and M-0-2 are taken. A car arrives. SmallestFitLowestFloor tries sizes small to large, floors low to high. Which bay?', [
     row('Floor 0', ['S-0-1', 'M-0-1', 'M-0-2', 'L-0-1'], {}, { tones: { 1: 'out', 2: 'out' } }),
     row('Floor 1', ['S-1-1', 'M-1-1', 'L-1-1']),
   ], 2, [
@@ -94,30 +140,30 @@ export const splitwise = [
   step('₹100.00 is split equally among A, B and C. In paise, what are the shares?', [
     row('Amount', ['10000 paise']),
   ], 1, [
-    ['3333, 3333, 3333', 'They sum to 9999. One paisa vanished — Oona’s spreadsheet bug.'],
+    ['3333, 3333, 3333', 'They sum to 9999. One paisa vanished — the lunch-spreadsheet bug.'],
     ['3334, 3333, 3333', 'Right. 10000 / 3 = 3333 remainder 1; the first person in the list takes the extra paisa, so the shares sum to the amount.'],
     ['33.33 rupees each, as doubles', '0.1 has no exact binary form, and three 33.33s still sum to 99.99.'],
   ]),
-  step('Oona pays ₹900 split equally among Oona, Wren and Bram; Wren pays ₹600: ₹100 hers, ₹500 Bram’s. What does simplify() return?', [
-    row('Balance (₹)', ['+600', '+200', '−800'], { 0: 'Oona', 1: 'Wren', 2: 'Bram' }),
+  step('Neha pays ₹900 split equally among Neha, Zane and Anil; Zane pays ₹600: ₹100 hers, ₹500 Anil’s. What does simplify() return?', [
+    row('Balance (₹)', ['+600', '+200', '−800'], { 0: 'Neha', 1: 'Zane', 2: 'Anil' }),
   ], 0, [
-    ['Bram → Oona 600, Bram → Wren 200', 'Right. Biggest debtor to biggest creditor: min(800, 600) = 600, then Bram’s remaining 200 to Wren. Two transfers.'],
-    ['Bram → Oona 300, Bram → Wren 500, Wren → Oona 300', 'That replays the expenses as IOUs. Only the net balances matter.'],
-    ['Bram → Oona 800, Oona → Wren 200', 'Valid, but it routes money through Oona; greedy pays each creditor directly, and the count is the same.'],
-    ['Bram → Wren 800, Wren → Oona 600', 'Also settles, but greedy matches the biggest debtor with the biggest creditor first.'],
+    ['Anil → Neha 600, Anil → Zane 200', 'Right. Biggest debtor to biggest creditor: min(800, 600) = 600, then Anil’s remaining 200 to Zane. Two transfers.'],
+    ['Anil → Neha 300, Anil → Zane 500, Zane → Neha 300', 'That replays the expenses as IOUs. Only the net balances matter.'],
+    ['Anil → Neha 800, Neha → Zane 200', 'Valid, but it routes money through Neha; greedy pays each creditor directly, and the count is the same.'],
+    ['Anil → Zane 800, Zane → Neha 600', 'Also settles, but greedy matches the biggest debtor with the biggest creditor first.'],
   ]),
-  step('Balances: Oona +500, Wren +400, Ines +300, Bram −700, Kofi −500. Greedy makes 4 transfers. What is the minimum?', [
-    row('Balance', ['+500', '+400', '+300', '−700', '−500'], { 0: 'Oona', 1: 'Wren', 2: 'Ines', 3: 'Bram', 4: 'Kofi' }),
+  step('Balances: Neha +500, Zane +400, Ines +300, Anil −700, Kofi −500. Greedy makes 4 transfers. What is the minimum?', [
+    row('Balance', ['+500', '+400', '+300', '−700', '−500'], { 0: 'Neha', 1: 'Zane', 2: 'Ines', 3: 'Anil', 4: 'Kofi' }),
   ], 1, [
     ['4 — greedy is optimal', 'Not always. Look for groups whose balances sum to zero on their own.'],
-    ['3 — Kofi → Oona 500; Bram → Wren 400 and Bram → Ines 300', 'Right. The people split into two zero-sum groups, so one fewer transfer. Finding the most such groups is NP-hard in general, which is why greedy’s n − 1 bound is the interview answer.'],
+    ['3 — Kofi → Neha 500; Anil → Zane 400 and Anil → Ines 300', 'Right. The people split into two zero-sum groups, so one fewer transfer. Finding the most such groups is NP-hard in general, which is why greedy’s n − 1 bound is the interview answer.'],
     ['2', 'Each transfer zeroes at most two people only when amounts match exactly; five nonzero people in two zero-sum groups need 5 − 2 = 3.'],
   ]),
 ];
 
 export const vending = [
   step('The machine is Idle. A customer presses Select. What should happen?', [], 2, [
-    ['Vend, and charge the next customer', 'That was Fennick’s bug. Idle has no credit to vend against.'],
+    ['Vend, and charge the next customer', 'That is the classic bug. Idle has no credit to vend against.'],
     ['Refused: “insert 20 more”, keep the state', 'Refused is for a legal request that can’t be served. Select without money isn’t legal in Idle at all.'],
     ['IllegalStateException, and nothing changes', 'Right. Idle doesn’t override select, so the base class throws. The illegal transition is the default.'],
   ]),
@@ -201,17 +247,17 @@ export const elevator = [
 ];
 
 export const logger = [
-  step('Root is INFO. gearhouse.lift is DEBUG. gearhouse.lift.door has no level and logs DEBUG. Does it print?', [
-    row('Chain', ['root: INFO', 'gearhouse', 'gearhouse.lift: DEBUG', 'gearhouse.lift.door'], {}, { join: '←' }),
+  step('Root is INFO. app.lift is DEBUG. app.lift.door has no level and logs DEBUG. Does it print?', [
+    row('Chain', ['root: INFO', 'app', 'app.lift: DEBUG', 'app.lift.door'], {}, { join: '←' }),
   ], 0, [
-    ['Yes — its effective level is DEBUG, inherited from the nearest ancestor with a level', 'Right. The search walks up and stops at gearhouse.lift.'],
+    ['Yes — its effective level is DEBUG, inherited from the nearest ancestor with a level', 'Right. The search walks up and stops at app.lift.'],
     ['No — the root is INFO', 'The root’s level only applies when no closer ancestor has one.'],
     ['Only to the lift’s appender, because the root would filter it', 'Ancestors don’t re-filter. The level check happens once, at the source.'],
   ]),
   step('The same DEBUG event: which appenders receive it, with additivity on everywhere?', [], 2, [
-    ['Only gearhouse.lift’s appender', 'Additivity passes the event up the chain to every ancestor’s appenders.'],
+    ['Only app.lift’s appender', 'Additivity passes the event up the chain to every ancestor’s appenders.'],
     ['Only the root’s appender', 'Every logger on the way up contributes its appenders, starting with the source.'],
-    ['gearhouse.lift’s and the root’s', 'Right. The door has none, gearhouse has none; lift and root each get it once. Set lift non-additive and only lift gets it.'],
+    ['app.lift’s and the root’s', 'Right. The door has none, app has none; lift and root each get it once. Set lift non-additive and only lift gets it.'],
   ]),
   step('LogManager.get creates parent loggers. Why not create the parent inside computeIfAbsent’s mapping function?', [], 1, [
     ['It would be slower', 'Speed is not the issue; correctness is.'],
@@ -249,7 +295,7 @@ export const drills = [
     ['Union-find on participants', 'Grouping who knows whom doesn’t compute who pays how much.'],
   ]),
   step('BookMyShow: two users pick seat F7 in the same 100 ms. Your in-memory design guards this how?', [], 1, [
-    ['First come wins at payment time', 'Both may pay, which is how the F7 photograph happened.'],
+    ['First come wins at payment time', 'Both may pay, which is how a seat gets double-booked.'],
     ['An atomic hold with a TTL under the show’s lock; payment then confirm, or the hold expires and releases', 'Right. The parking lot’s tryAssign shape, plus time.'],
     ['A global lock on the show while anyone browses', 'Browsing would block every other customer for minutes.'],
     ['Let both book; refund one later', 'Overselling is the bug, not a strategy.'],

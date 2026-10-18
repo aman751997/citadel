@@ -2,19 +2,19 @@
 import { row, step } from '../../lib/trace.ts';
 
 export const rangeSum = [
-  step('The ledger for [3, 1, 4, 1, 5] is written. The auditor asks for positions 1 through 3, inclusive. Which subtraction answers it?',
+  step('The prefix array for [3, 1, 4, 1, 5] is written. The question asks for positions 1 through 3, inclusive. Which subtraction answers it?',
     [row('Values', [3, 1, 4, 1, 5], { 1: 'L', 3: 'R' }, { tones: { 1: 'hot', 2: 'hot', 3: 'hot' } }),
-      row('Ledger', [0, 3, 4, 8, 9, 14], { 1: 'prefix[1]', 4: 'prefix[4]' })], 0, [
+      row('Prefix', [0, 3, 4, 8, 9, 14], { 1: 'prefix[1]', 4: 'prefix[4]' })], 0, [
       ['prefix[4] − prefix[1] = 9 − 3 = 6', 'Yes. prefix[4] covers positions 0..3 and prefix[1] covers position 0. The shared 3 cancels, leaving 1 + 4 + 1 = 6.'],
       ['prefix[3] − prefix[1] = 8 − 3 = 5', 'prefix[3] stops before position 3, so this is 1 + 4 only. It drops the last value you were asked for, the 1 at position 3.'],
       ['prefix[4] − prefix[2] = 9 − 4 = 5', 'prefix[2] already includes position 1, so subtracting it removes the 1 you were asked to keep. This is 4 + 1.'],
     ]),
-  step('Now the auditor asks for positions 0 through 2. You take prefix[3] = 8. Which line do you subtract?',
+  step('Now the question asks for positions 0 through 2. You take prefix[3] = 8. Which entry do you subtract?',
     [row('Values', [3, 1, 4, 1, 5], { 0: 'L', 2: 'R' }, { tones: { 0: 'hot', 1: 'hot', 2: 'hot' } }),
-      row('Ledger', [0, 3, 4, 8, 9, 14], { 0: 'prefix[0]', 3: 'prefix[3]' })], 1, [
+      row('Prefix', [0, 3, 4, 8, 9, 14], { 0: 'prefix[0]', 3: 'prefix[3]' })], 1, [
       ['prefix[1] = 3', 'prefix[1] holds the 3 at position 0, which is inside the range. 8 − 3 = 5 would lose it.'],
       ['prefix[0] = 0, the blank line above everything', 'Exactly. 8 − 0 = 8 = 3 + 1 + 4. The extra zero line means a range from 0 has the same shape as every other range.'],
-      ['There is no line before 0, so add the values one by one', 'That is the O(n)-per-question work the ledger exists to avoid. The zero line is the line before 0.'],
+      ['There is no line before 0, so add the values one by one', 'That is the O(n)-per-question work the prefix array exists to avoid. The zero entry is the one before 0.'],
     ]),
 ];
 
@@ -54,23 +54,23 @@ export const product = [
 ];
 
 export const countK = [
-  step('Values [3, 4, 7, −2, 2], k = 7. Before reading any value, what goes into the vault?',
-    [row('Values', [3, 4, 7, -2, 2]), row('Vault', [])], 1, [
+  step('Values [3, 4, 7, −2, 2], k = 7. Before reading any value, what goes into the map?',
+    [row('Values', [3, 4, 7, -2, 2]), row('Map', [])], 1, [
       ['Nothing yet', 'Then the run [3, 4], which starts at the very first value, has no earlier total 0 to match and is never counted.'],
       ['Total 0, seen once', 'Yes: the empty prefix, the line above the first value. Every run that starts at index 0 matches it.'],
-      ['Total 7, the target', 'The vault records totals that actually happened. A fake 7 would let a running total of 14 match a start that never existed.'],
+      ['Total 7, the target', 'The map records totals that actually happened. A fake 7 would let a running total of 14 match a start that never existed.'],
     ]),
-  step('You have read 3, 4, 7. Running total 14. The vault holds 0, 3 and 7, once each. How many runs end at index 2?',
-    [row('Values', [3, 4, 7, -2, 2], { 2: 'HERE' }, { tones: { 0: 'done', 1: 'done' } }), row('Vault (total ×times)', ['0 ×1', '3 ×1', '7 ×1'], {}, { tones: { 2: 'hot' } })], 0, [
+  step('You have read 3, 4, 7. Running total 14. The map holds 0, 3 and 7, once each. How many runs end at index 2?',
+    [row('Values', [3, 4, 7, -2, 2], { 2: 'HERE' }, { tones: { 0: 'done', 1: 'done' } }), row('Map (total ×times)', ['0 ×1', '3 ×1', '7 ×1'], {}, { tones: { 2: 'hot' } })], 0, [
       ['1: look up 14 − 7 = 7, found once', 'Yes. Total 7 was written after index 1, so the run is index 2 alone: [7]. With [3, 4], found at index 1, that makes 2 runs so far.'],
-      ['0: 14 is not in the vault', 'You look up running − k, not the running total itself. The question is about where the run began.'],
-      ['2: both 7 and 0 are in the vault', 'Total 0 would mean a run from the start: 3 + 4 + 7 = 14, not 7. Only the line holding 14 − 7 = 7 marks a start.'],
+      ['0: 14 is not in the map', 'You look up running − k, not the running total itself. The question is about where the run began.'],
+      ['2: both 7 and 0 are in the map', 'Total 0 would mean a run from the start: 3 + 4 + 7 = 14, not 7. Only the line holding 14 − 7 = 7 marks a start.'],
     ]),
-  step('Now k = 0 and the values are [1]. Running total 1. You record 1 in the vault FIRST, then count. What happens?',
-    [row('Values', [1], { 0: 'HERE' }), row('Vault (total ×times)', ['0 ×1', '1 ×1'], {}, { tones: { 1: 'hot' } })], 1, [
+  step('Now k = 0 and the values are [1]. Running total 1. You record 1 in the map FIRST, then count. What happens?',
+    [row('Values', [1], { 0: 'HERE' }), row('Map (total ×times)', ['0 ×1', '1 ×1'], {}, { tones: { 1: 'hot' } })], 1, [
       ['Count = 1, correctly: [1] sums to 0', '[1] sums to 1. The match is the total you just recorded, which describes a run of length zero.'],
       ['Count = 1, but it is a phantom: count first, then record', 'Yes. Recording first lets the current total match itself. With k = 0 that counts an empty run. The correct answer is 0.'],
-      ['Count = 0 either way', 'Only when k ≠ 0. With k = 0, running − k is the running total itself, which you just put in the vault.'],
+      ['Count = 0 either way', 'Only when k ≠ 0. With k = 0, running − k is the running total itself, which you just put in the map.'],
     ]),
 ];
 
@@ -108,12 +108,12 @@ export const mixedReview = [
     ['Nested loops with early exit', 'That is O(n²). The two running products give O(n).'],
   ]),
   step('Every value is positive. Find the SHORTEST run with sum at least target, using O(1) extra space.', [], 1, [
-    ['Running totals + a vault of earlier totals', 'The vault matches exact totals and costs O(n) space. “At least” with positive values has a cheaper, monotone tool.'],
+    ['Running totals + a map of earlier totals', 'The map matches exact totals and costs O(n) space. “At least” with positive values has a cheaper, monotone tool.'],
     ['Sliding window: grow right; while the sum is ≥ target, record and shrink left', 'Yes. With positives, shrinking always lowers the sum, so the window’s moves are provably safe. O(n) time, O(1) space.'],
-    ['A notice board of range updates', 'There are no updates here, only one question about runs.'],
+    ['A difference array of range updates', 'There are no updates here, only one question about runs.'],
   ]),
   step('A 0/1 array: find the LONGEST stretch with equally many 0s and 1s.', [], 2, [
-    ['Count 0s and 1s for every stretch', 'Correct but O(n²). The ledger turns it into one pass.'],
+    ['Count 0s and 1s for every stretch', 'Correct but O(n²). The prefix array turns it into one pass.'],
     ['Map 0 → −1, then a tally map seeded 0 → 1', 'Tallies answer “how many”. “Longest” needs positions.'],
     ['Map 0 → −1, then balance → FIRST index, seeded 0 → −1', 'Yes. Equal balances bracket a balanced stretch; the earliest index gives the longest one.'],
   ]),
@@ -123,16 +123,16 @@ export const mixedReview = [
     ['Skip negative totals', 'Then every run that starts after a negative total is lost.'],
   ]),
   step('20,000 bookings each add seats to a range of flights. You read every flight’s total once, at the end.', [], 0, [
-    ['Notice board: +v at the start, −v just after the end, then one sweep', 'Yes. Two writes per booking plus one O(n) sweep, instead of touching every flight in every range.'],
+    ['Difference array: +v at the start, −v just after the end, then one sweep', 'Yes. Two writes per booking plus one O(n) sweep, instead of touching every flight in every range.'],
     ['Add v to every flight in each range', 'Correct but O(n × bookings): up to 400 million writes at 20,000 × 20,000.'],
-    ['A prefix ledger of the flights, rebuilt after each booking', 'Rebuilding is O(n) per booking: the same O(n × bookings), with extra steps.'],
+    ['A prefix array of the flights, rebuilt after each booking', 'Rebuilding is O(n) per booking: the same O(n × bookings), with extra steps.'],
   ]),
   step('Values change between questions: “set position i to x” interleaved with “total of l..r”, 100,000 of each.', [], 2, [
-    ['A prefix ledger, answered by subtraction', 'Each update invalidates every line below it, so a single update costs O(n). Interleaved, that is O(n) per operation.'],
-    ['The vault of earlier totals', 'The vault counts runs in one pass over fixed data. It doesn’t answer arbitrary ranges after updates.'],
-    ['A Fenwick tree or segment tree: O(log n) per update and per question', 'Yes. The ledger’s promise was that the past never changes. When it does, use a structure built for updates.'],
+    ['A prefix array, answered by subtraction', 'Each update invalidates every entry after it, so a single update costs O(n). Interleaved, that is O(n) per operation.'],
+    ['The map of earlier totals', 'The map counts runs in one pass over fixed data. It doesn’t answer arbitrary ranges after updates.'],
+    ['A Fenwick tree or segment tree: O(log n) per update and per question', 'Yes. The prefix array’s promise was that the past never changes. When it does, use a structure built for updates.'],
   ]),
-  step('A fixed array gets many “maximum of l..r” questions. Can a prefix-max ledger answer them by subtraction?', [], 0, [
+  step('A fixed array gets many “maximum of l..r” questions. Can a prefix-max array answer them by subtraction?', [], 0, [
     ['No: max has no inverse, so a prefix max only answers ranges that start at 0', 'Yes. Subtraction and XOR undo a shared beginning; max cannot. Use a sparse table or a segment tree.'],
     ['Yes: prefixMax[r + 1] − prefixMax[l]', 'Try [5, 1, 2] with l = 1, r = 2: the prefix maxima are 5, 5, 5, so the formula says 0, but the answer is 2.'],
   ]),

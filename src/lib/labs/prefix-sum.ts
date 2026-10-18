@@ -1,4 +1,4 @@
-// Prefix Sum playground: write the ledger and answer range questions; run the vault (seed, add, count,
+// Prefix Sum playground: write the prefix array and answer range questions; run the map (seed, add, count,
 // record) in the only safe order; and post range updates on a notice board, then sweep once.
 import { makeLab, type LabBase, type LabRow } from '../lab.ts';
 
@@ -78,13 +78,13 @@ function ledgerExpected(s: PrefixState) {
 }
 function ledgerReject(s: PrefixState, action: string) {
   const built = ledgerBuilt(s), next = s.prefix.length - 1;
-  if (action === 'write') return `Every value is already on the ledger: line ${s.a.length} holds the grand total ${fmt(s.prefix[s.a.length])}. Nothing is left to write.`;
+  if (action === 'write') return `Every value is already on the prefix array: line ${s.a.length} holds the grand total ${fmt(s.prefix[s.a.length])}. Nothing is left to write.`;
   if (action === 'finish') {
-    if (!built) return `The ledger is unfinished: ${s.a.length - next} line(s) still unwritten, and the auditor has ${s.queries.length} question(s).`;
-    return `The auditor still has ${s.queries.length - s.qi} question(s) waiting.`;
+    if (!built) return `The prefix array is unfinished: ${s.a.length - next} line(s) still unwritten, and there are ${s.queries.length} question(s).`;
+    return `There are ${s.queries.length - s.qi} question(s) waiting.`;
   }
-  if (!built) return `Build first, answer later. The questions can reach any line, and line ${s.a.length} isn’t written yet. Finishing the ledger costs one pass; after that every answer is one subtraction.`;
-  if (s.qi >= s.queries.length) return 'No questions are left. Close the ledger.';
+  if (!built) return `Build first, answer later. The questions can reach any line, and line ${s.a.length} isn’t written yet. Finishing the prefix array costs one pass; after that every answer is one subtraction.`;
+  if (s.qi >= s.queries.length) return 'No questions are left. Close the prefix array.';
   const [l, r] = s.queries[s.qi];
   if (action === 'short') {
     const covers = r > l ? `positions ${l}..${r - 1}` : 'no positions at all';
@@ -105,7 +105,7 @@ function ledgerApply(s: PrefixState, action: string) {
     s.message = `sum(${l}..${r}) = prefix[${r + 1}] − prefix[${l}] = ${sub(s.prefix[r + 1], s.prefix[l])} = ${fmt(value)}. The shared beginning cancels.` + (s.qi === s.queries.length ? ' No questions left.' : '');
   } else {
     s.done = true;
-    s.message = s.queries.length ? `Answers: ${s.answers.map(fmt).join(', ')}. One pass to build, one subtraction per question.` : 'A ledger with no values is just the zero line. Nothing to answer.';
+    s.message = s.queries.length ? `Answers: ${s.answers.map(fmt).join(', ')}. One pass to build, one subtraction per question.` : 'A prefix array with no values is just the zero line. Nothing to answer.';
   }
 }
 function ledgerView(s: PrefixState): LabRow[] {
@@ -118,7 +118,7 @@ function ledgerView(s: PrefixState): LabRow[] {
     }),
   };
   const lines: LabRow = {
-    name: 'Ledger prefix (n + 1 lines)',
+    name: 'Prefix array (n + 1 entries)',
     cells: Array.from({ length: s.a.length + 1 }, (_, i) => {
       const written = i < s.prefix.length;
       let label: string | undefined;
@@ -131,10 +131,10 @@ function ledgerView(s: PrefixState): LabRow[] {
   return [values, lines, answers];
 }
 function ledgerDescribe(s: PrefixState) {
-  if (s.done) return `Ledger closed. Answers: [${s.answers.join(', ')}].`;
+  if (s.done) return `Prefix array closed. Answers: [${s.answers.join(', ')}].`;
   if (!ledgerBuilt(s)) {
     const i = s.prefix.length - 1;
-    return `Building the ledger: ${i} of ${s.a.length} values absorbed. Next: line ${i + 1} = line ${i} + a[${i}].`;
+    return `Building the prefix array: ${i} of ${s.a.length} values absorbed. Next: line ${i + 1} = line ${i} + a[${i}].`;
   }
   if (s.qi < s.queries.length) {
     const [l, r] = s.queries[s.qi];
@@ -156,24 +156,24 @@ function lostFromStart(s: PrefixState) {
 }
 function vaultReject(s: PrefixState, action: string) {
   if (!s.seeded) {
-    if (action === 'seed') return 'Seed the vault.';
+    if (action === 'seed') return 'Seed the map.';
     const j = lostFromStart(s);
-    if (j >= 0) return `Seed first. Without total 0 in the vault, a run that starts at the very first value can never be matched — and here a[0..${j}] sums to ${fmt(s.k)}. That run would be lost.`;
-    return `Seed first. Without total 0 in the vault, runs that start at the very first value can never be matched. No such run exists in this case, so you would get lucky — but the bug is still there.`;
+    if (j >= 0) return `Seed first. Without total 0 in the map, a run that starts at the very first value can never be matched — and here a[0..${j}] sums to ${fmt(s.k)}. That run would be lost.`;
+    return `Seed first. Without total 0 in the map, runs that start at the very first value can never be matched. No such run exists in this case, so you would get lucky — but the bug is still there.`;
   }
-  if (action === 'seed') return 'The vault already holds total 0 once. Seeding again would count every run from the start twice.';
+  if (action === 'seed') return 'The map already holds total 0 once. Seeding again would count every run from the start twice.';
   const unread = s.a.length - s.i;
   if (s.phase === 'add' && unread === 0) return `Every value has been read and every total recorded. Report the count: ${s.count}.`;
   if (s.phase === 'add') {
     if (action === 'count') return `a[${s.i}] = ${fmt(s.a[s.i])} isn’t in the running total yet. The count must describe runs that END at index ${s.i}, so add it first.`;
-    if (action === 'record') return `The running total ${fmt(s.running)} is already in the vault. Recording it again would double its tally.`;
+    if (action === 'record') return `The running total ${fmt(s.running)} is already in the map. Recording it again would double its tally.`;
     if (action === 'finish') return `${unread} value(s) are still unread.`;
   }
   if (s.phase === 'count') {
     if (action === 'add') return `Runs ending at index ${s.i} haven’t been counted. Moving on would lose them for good.`;
     if (action === 'record') {
       if (s.k === 0) return `Record first and the total ${fmt(s.running)} matches itself: running − k = running when k = 0. That counts an empty run as a sum-0 subarray. Count first, then record.`;
-      return `Record first and the current total sits in the vault while you count. With k = ${fmt(s.k)} it can’t match itself, so this answer would survive — but the same habit counts phantom empty runs when k = 0. Count first, then record.`;
+      return `Record first and the current total sits in the map while you count. With k = ${fmt(s.k)} it can’t match itself, so this answer would survive — but the same habit counts phantom empty runs when k = 0. Count first, then record.`;
     }
     if (action === 'finish') return `a[${s.i}] has been added, but the runs ending there haven’t been counted.`;
   }
@@ -195,7 +195,7 @@ function vaultApply(s: PrefixState, action: string) {
     const found = vaultGet(s, s.running - s.k);
     s.count += found;
     s.phase = 'record';
-    s.message = found ? `The vault has total ${fmt(s.running - s.k)} ×${found}: ${found} run(s) end at index ${s.i}. Count = ${s.count}.` : `No earlier total ${fmt(s.running - s.k)}: no run ends at index ${s.i}. Count stays ${s.count}.`;
+    s.message = found ? `The map has total ${fmt(s.running - s.k)} ×${found}: ${found} run(s) end at index ${s.i}. Count = ${s.count}.` : `No earlier total ${fmt(s.running - s.k)}: no run ends at index ${s.i}. Count stays ${s.count}.`;
   } else if (action === 'record') {
     const entry = s.vault.find(([t]) => t === s.running);
     if (entry) entry[1]++; else s.vault.push([s.running, 1]);
@@ -204,7 +204,7 @@ function vaultApply(s: PrefixState, action: string) {
     s.phase = 'add';
   } else {
     s.done = true;
-    s.message = `${s.count} run(s) sum to exactly ${fmt(s.k)}. One pass; each value added, counted against the vault, then recorded.`;
+    s.message = `${s.count} run(s) sum to exactly ${fmt(s.k)}. One pass; each value added, counted against the map, then recorded.`;
   }
 }
 function vaultView(s: PrefixState): LabRow[] {
@@ -215,14 +215,14 @@ function vaultView(s: PrefixState): LabRow[] {
       cells: s.a.map((v, i) => ({ value: String(v), label: i === s.i && !s.done ? (s.phase === 'add' ? 'NEXT' : 'HERE') : undefined, tone: i < s.i || (i === s.i && s.phase !== 'add') ? 'done' : undefined })),
     },
     {
-      name: 'Vault (total ×times)', empty: 'Vault is empty',
+      name: 'Map (total ×times)', empty: 'Map is empty',
       cells: s.vault.map(([t, c]) => ({ value: String(t), label: `×${c}`, tone: target !== null && t === target ? 'hot' : undefined })),
     },
   ];
 }
 function vaultDescribe(s: PrefixState) {
   const look = s.phase === 'count' ? ` · look for ${sub(s.running, s.k)} = ${fmt(s.running - s.k)}` : '';
-  return `k = ${fmt(s.k)} · running total = ${fmt(s.running)}${look} · count = ${s.count}${s.seeded ? '' : ' · vault not seeded'}`;
+  return `k = ${fmt(s.k)} · running total = ${fmt(s.running)}${look} · count = ${s.count}${s.seeded ? '' : ' · map not seeded'}`;
 }
 
 // ---------- notice board ----------
@@ -265,7 +265,7 @@ function boardApply(s: PrefixState, action: string) {
 function boardView(s: PrefixState): LabRow[] {
   return [
     {
-      name: 'Notice board diff (n + 1 slots)',
+      name: 'Difference array (n + 1 slots)',
       cells: s.diff.map((v, i) => ({ value: String(v), label: i === s.n ? 'spare' : i === s.out.length && s.ui === s.updates.length && !s.done ? 'SWEEP' : undefined, tone: i === s.n ? 'ghost' : i < s.out.length ? 'done' : undefined })),
     },
     {
@@ -285,14 +285,14 @@ function boardDescribe(s: PrefixState) {
 
 export const lab = makeLab<PrefixState>({
   ledger: {
-    name: 'Ledger and questions',
+    name: 'Prefix array and questions',
     cases: ledgerCases.length,
     actions: [
-      { action: 'write', label: 'Write the next ledger line' },
+      { action: 'write', label: 'Write the next prefix entry' },
       { action: 'exact', label: 'Answer prefix[r + 1] − prefix[l]' },
       { action: 'short', label: 'Answer prefix[r] − prefix[l]' },
       { action: 'shifted', label: 'Answer prefix[r + 1] − prefix[l + 1]' },
-      { action: 'finish', label: 'Close the ledger' },
+      { action: 'finish', label: 'Close the prefix array' },
     ],
     create: v => fromInput({ mode: 'ledger', ...ledgerCases[v] }),
     expected: ledgerExpected,
@@ -302,13 +302,13 @@ export const lab = makeLab<PrefixState>({
     describe: ledgerDescribe,
   },
   vault: {
-    name: 'The vault: count runs summing to k',
+    name: 'The map: count runs summing to k',
     cases: vaultCases.length,
     actions: [
-      { action: 'seed', label: 'Seed the vault: total 0, once' },
+      { action: 'seed', label: 'Seed the map: total 0, once' },
       { action: 'add', label: 'Add the next value to the running total' },
-      { action: 'count', label: 'Count vault entries equal to running − k' },
-      { action: 'record', label: 'Record the running total in the vault' },
+      { action: 'count', label: 'Count map entries equal to running − k' },
+      { action: 'record', label: 'Record the running total in the map' },
       { action: 'finish', label: 'No values left: report the count' },
     ],
     create: v => fromInput({ mode: 'vault', ...vaultCases[v] }),
@@ -319,7 +319,7 @@ export const lab = makeLab<PrefixState>({
     describe: vaultDescribe,
   },
   board: {
-    name: 'The notice board: range updates',
+    name: 'Difference array: range updates',
     cases: boardCases.length,
     actions: [
       { action: 'mark', label: 'Pin +v at l and −v at r + 1' },

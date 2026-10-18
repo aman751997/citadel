@@ -6,7 +6,8 @@ Written 2026-10-19 when the rewrite was pushed. Nothing here blocks the site; it
 - [ ] **Click through the interactive parts by hand.** Dry runs (Next/Back/Predict), quizzes (wrong answer, Try again, score), simulations, mock interviews, `/review/`, and the tick boxes on all four wings. Agents only loaded them in headless Chrome and read the DOM.
 - [ ] **Test with JavaScript off and with browser storage blocked.** The fallbacks were written but never exercised.
 - [ ] **Keyboard-only and screen-reader pass** on quizzes, dry runs, mock interviews and tick boxes.
-- [ ] **Check the deploy** after the push: the GitHub Actions run, the live site, and a tick-box sync with "link git sync".
+- [x] Deploy checked 2026-10-19: Actions run succeeded and the live site returns 200 on the key pages.
+- [ ] **Try the live site once**, including a tick-box sync with "link git sync" (the sync path was not tested).
 - [ ] **Trim over-length lessons.** Word growth vs original: caching 2.69× (its original was short), contention 1.75×, async-jobs 1.69×, partitioning 1.67×, databases 1.57×, blob-cdn 1.53×, rate-limiter 1.52×, fan-out 1.52×, core-concepts 1.49×, search 1.48×, llm-gateway 1.47×, url-shortener 1.43×. Most of the growth is quizzes and revision cards; cut second quiz questions and extra cards first.
 
 ## Verification gaps

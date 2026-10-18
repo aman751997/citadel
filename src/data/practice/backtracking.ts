@@ -357,11 +357,11 @@ function make(id: ConceptId, variant: number): Omit<Challenge, 'id'> {
       const answer = equalShares(a, k);
       return {
         topic: 'Equal buckets', section: 'k-partition', strategy: 'constraint',
-        prompt: `Can the coins ${arr(a)} be split among ${k} heirs so that every heir gets the same total? Every coin must go to someone.`,
+        prompt: `Can the coins ${arr(a)} be split into ${k} groups so that every group gets the same total? Every coin must go to someone.`,
         question: 'Enter yes or no.', answer,
-        hints: ['Each heir must get exactly the grand total divided by the number of heirs.', 'Give out the biggest coins first; an heir may not go over the share.', 'If a coin fails with an heir who has nothing yet, it will fail with every other heir who has nothing.'],
+        hints: ['Each group must get exactly the grand total divided by the number of groups.', 'Give out the biggest coins first; a group may not go over the share.', 'If a coin fails with a group that has nothing yet, it will fail with every other group that has nothing.'],
         rubric: ['Quick no: the total must divide evenly, and no coin may exceed one share.', 'Coins go into buckets that never overflow; when every coin is placed, every bucket is full.', 'Biggest-first and the empty-bucket rule cut the search sharply.'],
-        explanation: answer ? 'Yes: the coins can be split into equal shares.' : 'No: no assignment gives every heir the same total.',
+        explanation: answer ? 'Yes: the coins can be split into equal shares.' : 'No: no assignment gives every group the same total.',
       };
     }
     case 'count-ways': {

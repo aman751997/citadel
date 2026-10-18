@@ -2,20 +2,20 @@
 import { row, step } from '../../lib/trace.ts';
 
 export const subsets = [
-  step('Subsets of [1, 2, 3], loop-from-start shape. You have just returned from the corridor [1, 2, 3], so the thread holds [1, 2, 3]. The junction at [1, 2] has no doors left; you return to the junction at [1], whose next door is 3. What must have happened to the thread on the way?',
+  step('Subsets of [1, 2, 3], loop-from-start shape. You have just returned from the branch [1, 2, 3], so the path holds [1, 2, 3]. The call at [1, 2] has no options left; you return to the call at [1], whose next option is 3. What must have happened to the path on the way?',
     [row('Items', [1, 2, 3], { 0: 'on', 1: 'on', 2: 'on' }, { tones: { 0: 'hot', 1: 'hot', 2: 'hot' } }),
-      row('Thread', [1, 2, 3])], 1, [
-      ['Nothing: the next loop iteration overwrites the last item', 'path.add appends; it never overwrites. Without removals the thread keeps growing, and the fifth page reads [1, 2, 3, 3] where [1, 3] belongs.'],
-      ['Two un-chooses: 3 is removed when its call returns, then 2, so the thread is [1] again', 'Yes. Each call removes exactly what it added. Back at [1] the thread is [1], and the next door writes [1, 3].'],
-      ['Clear the whole thread and rebuild it from the entrance', 'That throws away the 1 you still need, and rebuilding costs time at every junction. Un-choose is one removal per return.'],
+      row('Path', [1, 2, 3])], 1, [
+      ['Nothing: the next loop iteration overwrites the last item', 'path.add appends; it never overwrites. Without removals the path keeps growing, and the fifth result reads [1, 2, 3, 3] where [1, 3] belongs.'],
+      ['Two un-chooses: 3 is removed when its call returns, then 2, so the path is [1] again', 'Yes. Each call removes exactly what it added. Back at [1] the path is [1], and the next option writes [1, 3].'],
+      ['Clear the whole path and rebuild it from the entrance', 'That throws away the 1 you still need, and rebuilding costs time at every call. Un-choose is one removal per return.'],
     ]),
-  step('A junior Scribe records with result.add(path), pinning the thread itself. The search on [1, 2, 3] finishes. What does the book hold?',
-    [row('Book (8 entries)', ['?', '?', '?', '?', '?', '?', '?', '?'])], 2, [
+  step('A careless solution records with result.add(path), pinning the path itself. The search on [1, 2, 3] finishes. What does the result list hold?',
+    [row('Results (8 entries)', ['?', '?', '?', '?', '?', '?', '?', '?'])], 2, [
       ['The 8 subsets, as usual', 'Each entry is a reference to the same list object, not a snapshot. Later moves change what every entry shows.'],
-      ['8 copies of [1, 2, 3], the biggest thread', 'The thread does reach [1, 2, 3], but it keeps changing after that. The entries show the thread’s final state, not any earlier one.'],
-      ['8 empty lists: every entry is the one shared thread, and the search ends with it wound back to empty', 'Yes. The fix is result.add(new ArrayList<>(path)) — a snapshot that later moves cannot touch.'],
+      ['8 copies of [1, 2, 3], the biggest path', 'The path does reach [1, 2, 3], but it keeps changing after that. The entries show the path’s final state, not any earlier one.'],
+      ['8 empty lists: every entry is the one shared path, and the search ends with it undone to empty', 'Yes. The fix is result.add(new ArrayList<>(path)) — a snapshot that later moves cannot touch.'],
     ]),
-  step('In the loop-from-start shape, how many pages does [1, 2, 3] produce, and where are they written?',
+  step('In the loop-from-start shape, how many results does [1, 2, 3] produce, and where are they written?',
     [row('Items', [1, 2, 3])], 0, [
       ['8, one on arrival at every node, including the empty root', 'Yes. Every node of this tree is a subset: [ ], [1], [1, 2], [1, 2, 3], [1, 3], [2], [2, 3], [3]. That is 2³.'],
       ['4, only at the leaves', 'That is the leaf count of this tree: [1, 2, 3], [1, 3], [2, 3], [3]. Recording only there loses [ ], [1], [1, 2] and [2]. Leaves-only recording belongs to the in-or-out shape, whose leaves are all the subsets.'],
@@ -24,71 +24,71 @@ export const subsets = [
 ];
 
 export const subsetsDup = [
-  step('Sorted [1, 2, 2]. At the entrance (start = 0) the doors 1 and 2 (index 1) have been walked. Now i = 2 and nums[2] = 2 = nums[1]. Walk this door?',
-    [row('Items (sorted)', [1, 2, 2], { 0: 'start', 2: 'i' }, { tones: { 2: 'hot' } }), row('Thread', [])], 1, [
+  step('Sorted [1, 2, 2]. At the entrance (start = 0) the options 1 and 2 (index 1) have been walked. Now i = 2 and nums[2] = 2 = nums[1]. Walk this option?',
+    [row('Items (sorted)', [1, 2, 2], { 0: 'start', 2: 'i' }, { tones: { 2: 'hot' } }), row('Path', [])], 1, [
       ['Yes: it is a different index, so a different key', 'Equal values give identical subtrees. Walking it writes [2] and [2, 2] a second time.'],
-      ['No: i > start and it equals its left twin, which already opened this exact corridor at this junction', 'Yes. Same value, same junction, same subtree. Skip it.'],
+      ['No: i > start and it equals its left twin, which already opened this exact branch at this level', 'Yes. Same value, same call, same subtree. Skip it.'],
       ['Yes, but only record the subsets that are new', 'That still walks the whole duplicate subtree and needs a set to filter it. The skip rule never walks it at all.'],
     ]),
-  step('Now the thread is [1, 2] (the 2 at index 1) and start = 2. The only door is i = 2, and nums[2] == nums[1]. Walk it?',
-    [row('Items (sorted)', [1, 2, 2], { 2: 'start = i' }, { tones: { 0: 'done', 1: 'done', 2: 'hot' } }), row('Thread', [1, 2])], 0, [
-      ['Yes: i == start, so it is the first door at this junction; [1, 2, 2] has never been written', 'Yes. Its twin to the left is on the thread, not a sibling. The rule is i > start, not i > 0.'],
-      ['No: it is a twin of nums[1]', 'That is the i > 0 bug. It skips the first door of a junction, and the book ends with 4 pages instead of 6: [1, 2, 2] and [2, 2] are lost.'],
+  step('Now the path is [1, 2] (the 2 at index 1) and start = 2. The only option is i = 2, and nums[2] == nums[1]. Walk it?',
+    [row('Items (sorted)', [1, 2, 2], { 2: 'start = i' }, { tones: { 0: 'done', 1: 'done', 2: 'hot' } }), row('Path', [1, 2])], 0, [
+      ['Yes: i == start, so it is the first option at this level; [1, 2, 2] has never been written', 'Yes. Its twin to the left is on the path, not a sibling. The rule is i > start, not i > 0.'],
+      ['No: it is a twin of nums[1]', 'That is the i > 0 bug. It skips the first option of a call, and the result list ends with 4 results instead of 6: [1, 2, 2] and [2, 2] are lost.'],
     ]),
   step('Why must the array be sorted before the twin rule works?',
     [row('Unsorted', [2, 1, 2])], 2, [
       ['Sorting makes the output come out in order, which LeetCode requires', 'LeetCode accepts any order. Sorting matters for correctness, not presentation.'],
       ['Sorting is only for speed', 'Without it the answer is wrong, not slow: on [2, 1, 2] the rule never fires and [2] is written twice.'],
-      ['The rule compares nums[i] with nums[i − 1]; only sorting puts twins next to each other', 'Yes. On unsorted [2, 1, 2] no two neighbours are equal, the rule never fires, and the book gets 8 pages with [2] twice — and [2, 1] beside [1, 2].'],
+      ['The rule compares nums[i] with nums[i − 1]; only sorting puts twins next to each other', 'Yes. On unsorted [2, 1, 2] no two neighbours are equal, the rule never fires, and the result list gets 8 results with [2] twice — and [2, 1] beside [1, 2].'],
     ]),
 ];
 
 export const combinations = [
-  step('n = 4, k = 2. At the entrance the thread is empty and needs 2 numbers. What is the last door worth walking?',
-    [row('Numbers', [1, 2, 3, 4], {}, { tones: { 3: 'out' } }), row('Thread', [])], 1, [
-      ['4: every number may start a hand', 'A hand starting at 4 needs a second number bigger than 4. There is none, so that corridor is a dead end.'],
+  step('n = 4, k = 2. At the entrance the path is empty and needs 2 numbers. What is the last option worth walking?',
+    [row('Numbers', [1, 2, 3, 4], {}, { tones: { 3: 'out' } }), row('Path', [])], 1, [
+      ['4: every number may start a hand', 'A hand starting at 4 needs a second number bigger than 4. There is none, so that branch is a dead end.'],
       ['3 = n − need + 1: after it there must still be room for one more number', 'Yes. With need items left to pick, the first can be at most n − need + 1 = 4 − 2 + 1 = 3.'],
       ['2: half of n', 'Then [3, 4] is never written. The bound depends on how many numbers are still needed, not on n alone.'],
     ]),
-  step('The thread is [1, 3], k = 2. What now?',
-    [row('Numbers', [1, 2, 3, 4], { 0: 'on', 2: 'on' }, { tones: { 0: 'done', 2: 'done' } }), row('Thread', [1, 3])], 0, [
+  step('The path is [1, 3], k = 2. What now?',
+    [row('Numbers', [1, 2, 3, 4], { 0: 'on', 2: 'on' }, { tones: { 0: 'done', 2: 'done' } }), row('Path', [1, 3])], 0, [
       ['Record a copy and return: the hand is full', 'Yes. Going deeper can only make hands of 3. Record when path.size() == k, then return.'],
       ['Try 4 as well, then record', 'That records [1, 3, 4], a hand of 3.'],
-      ['Record, then keep looping from 4', 'Any door walked from here makes the hand too big. Return right after recording.'],
+      ['Record, then keep looping from 4', 'Any option walked from here makes the hand too big. Return right after recording.'],
     ]),
-  step('Someone writes the bound as i <= n − need instead of n − need + 1. On n = 4, k = 2, how many pages does the book get?',
+  step('Someone writes the bound as i <= n − need instead of n − need + 1. On n = 4, k = 2, how many results does the result list get?',
     [row('Numbers', [1, 2, 3, 4])], 2, [
-      ['6, the bound only affects speed', 'It cuts a door that still has a hand behind it, so it changes the answer.'],
+      ['6, the bound only affects speed', 'It cuts an option that still has a hand behind it, so it changes the answer.'],
       ['5: only [3, 4] is lost', 'The bound is wrong at every depth. One level down, need = 1 and the loop stops at 3, so [1, 4] and [2, 4] go too.'],
-      ['3: [1, 2], [1, 3], [2, 3] — every hand containing 4 is lost', 'Yes. The last door is cut at every junction, and 4 is always the last door. C(4, 2) = 6 hands exist.'],
+      ['3: [1, 2], [1, 3], [2, 3] — every hand containing 4 is lost', 'Yes. The last option is cut at every call, and 4 is always the last option. C(4, 2) = 6 hands exist.'],
     ]),
 ];
 
 export const comboSum = [
   step('Coins [2, 3, 6, 7], target 7. You add a 2 at index 0; 5 is still owed. Where does the child’s loop start?',
-    [row('Coins (sorted)', [2, 3, 6, 7], { 0: 'i' }, { tones: { 0: 'hot' } }), row('Thread', [2])], 1, [
-      ['At i + 1 = 1: each coin is used once', 'That forbids a second 2, and [2, 2, 3] is lost: the book holds only [7].'],
+    [row('Coins (sorted)', [2, 3, 6, 7], { 0: 'i' }, { tones: { 0: 'hot' } }), row('Path', [2])], 1, [
+      ['At i + 1 = 1: each coin is used once', 'That forbids a second 2, and [2, 2, 3] is lost: the result list holds only [7].'],
       ['At i = 0: the same coin may be paid again, but no coin to its left', 'Yes. Equal neighbours are allowed; going left is not. [2, 2, 3] is built once, in non-decreasing order.'],
       ['At 0 always, so every coin is available', 'Here 0 happens to equal i. But the rule “start from 0” lets [3] be followed by a 2, so [2, 2, 3] is also written as [2, 3, 2] and [3, 2, 2].'],
     ]),
-  step('Thread [2, 2, 2]; 1 is still owed; the loop starts at index 0 with coin 2. What do the Shears say?',
-    [row('Coins (sorted)', [2, 3, 6, 7], { 0: 'i' }, { tones: { 0: 'hot' } }), row('Thread', [2, 2, 2])], 0, [
-      ['break: 2 > 1, and every later coin is at least 2', 'Yes. Sorted coins make one overshoot end the whole loop. Wind back and try 3 at [2, 2].'],
+  step('Path [2, 2, 2]; 1 is still owed; the loop starts at index 0 with coin 2. What does the prune rule say?',
+    [row('Coins (sorted)', [2, 3, 6, 7], { 0: 'i' }, { tones: { 0: 'hot' } }), row('Path', [2, 2, 2])], 0, [
+      ['break: 2 > 1, and every later coin is at least 2', 'Yes. Sorted coins make one overshoot end the whole loop. Undo and try 3 at [2, 2].'],
       ['continue: maybe 3 fits', 'Correct but wasted: 3, 6 and 7 are all bigger than 2, which already overshoots. With sorted coins, break.'],
       ['Record [2, 2, 2]: it is close enough', 'It sums to 6, not 7. Only owe 0 is recorded.'],
     ]),
-  step('Thread [3]; 4 is owed; the loop starts at index 1. Which coins may this corridor offer?',
-    [row('Coins (sorted)', [2, 3, 6, 7], { 1: 'start' }, { tones: { 0: 'out' } }), row('Thread', [3])], 1, [
-      ['2, 3, 6 and 7', 'A 2 after a 3 rebuilds a handful already found under the 2 corridor: [3, 2, 2] is [2, 2, 3] again.'],
-      ['3, 6 and 7 — never 2', 'Yes. Every handful that contains a 2 was written under the 2 corridor. Here 3 fits (owe 1, then a dead end), and 6 > 4 cuts the rest.'],
+  step('Path [3]; 4 is owed; the loop starts at index 1. Which coins may this branch offer?',
+    [row('Coins (sorted)', [2, 3, 6, 7], { 1: 'start' }, { tones: { 0: 'out' } }), row('Path', [3])], 1, [
+      ['2, 3, 6 and 7', 'A 2 after a 3 rebuilds a handful already found under the 2 branch: [3, 2, 2] is [2, 2, 3] again.'],
+      ['3, 6 and 7 — never 2', 'Yes. Every handful that contains a 2 was written under the 2 branch. Here 3 fits (owe 1, then a dead end), and 6 > 4 cuts the rest.'],
       ['Only 6 and 7', 'That forbids a second 3; with reuse allowed, [3, 3] must be walked (it dead-ends at owe 1, but it must be tried).'],
     ]),
 ];
 
 export const letters = [
   step('digits = "23". How deep is the tree, and how many words does it record?',
-    [row('Dial 2', ['a', 'b', 'c'], {}, {}), row('Dial 3', ['d', 'e', 'f'])], 2, [
-      ['Depth 6, one level per letter; 6 words', 'The levels are the digits, not the letters. Each level picks one letter from that digit’s menu.'],
+    [row('Digit 2', ['a', 'b', 'c'], {}, {}), row('Digit 3', ['d', 'e', 'f'])], 2, [
+      ['Depth 6, one level per letter; 6 words', 'The levels are the digits, not the letters. Each level picks one letter from that digit’s letters.'],
       ['Depth 2; 6 words (3 + 3)', 'Choices multiply along a path: 3 first letters, each followed by 3 second letters.'],
       ['Depth 2, one level per digit; 3 × 3 = 9 words', 'Yes: ad, ae, af, bd, be, bf, cd, ce, cf.'],
     ]),
@@ -98,25 +98,25 @@ export const letters = [
       ['A list holding the empty string', 'That is what the bare recursion produces: at depth 0, pos == length, so it records "". The problem wants [].'],
     ]),
   step('In the order the tree is walked, what is the 4th word recorded for "23"?',
-    [row('Dial 2', ['a', 'b', 'c']), row('Dial 3', ['d', 'e', 'f'])], 1, [
+    [row('Digit 2', ['a', 'b', 'c']), row('Digit 3', ['d', 'e', 'f'])], 1, [
       ['ae', 'That is the 2nd: ad, ae, af all come first.'],
-      ['bd', 'Yes. The a-corridor records ad, ae, af; then the b-corridor starts with bd.'],
+      ['bd', 'Yes. The a-branch records ad, ae, af; then the b-branch starts with bd.'],
       ['cd', 'That is the 7th: ad, ae, af, bd, be, bf come first.'],
     ]),
 ];
 
 export const permutations = [
-  step('Orderings of [1, 2, 3]. The thread is [2]; its bell rings. Which doors are open at this junction?',
-    [row('Items', [1, 2, 3], { 1: 'used' }, { tones: { 1: 'done' } }), row('Thread', [2])], 1, [
-      ['Only 3: doors to the right of the last item', 'That is the combination rule. [2, 1, 3] would never be written, and the book would hold only [1, 2, 3].'],
-      ['1 and 3: every item whose bell is silent', 'Yes. In an ordering, a smaller item may come later. The loop runs from 0 and skips only rung bells.'],
-      ['1, 2 and 3', '2 is already on the thread. Placing it again makes [2, 2], which is not an ordering of [1, 2, 3].'],
+  step('Orderings of [1, 2, 3]. The path is [2]; used[1] is true. Which options are open at this level?',
+    [row('Items', [1, 2, 3], { 1: 'used' }, { tones: { 1: 'done' } }), row('Path', [2])], 1, [
+      ['Only 3: options to the right of the last item', 'That is the combination rule. [2, 1, 3] would never be written, and the result list would hold only [1, 2, 3].'],
+      ['1 and 3: every item whose used flag is false', 'Yes. In an ordering, a smaller item may come later. The loop runs from 0 and skips only items already used.'],
+      ['1, 2 and 3', '2 is already on the path. Placing it again makes [2, 2], which is not an ordering of [1, 2, 3].'],
     ]),
-  step('Someone forgets used[i] = false in the un-choose. What does the book hold for [1, 2, 3]?',
-    [row('Bells after the first walk', ['ring', 'ring', 'ring'])], 0, [
-      ['One page, [1, 2, 3]: after the first walk every bell rings forever', 'Yes. The thread is wound back, but the bells are not, so every later door looks occupied.'],
-      ['All 6 pages, because the thread is still wound back', 'The loop checks the bells, not the thread. With every bell ringing, no later door opens.'],
-      ['6 pages, with duplicates', 'Nothing is placed twice; nothing new is placed at all after the first walk.'],
+  step('Someone forgets used[i] = false in the un-choose. What does the result list hold for [1, 2, 3]?',
+    [row('used[] after the first walk', ['true', 'true', 'true'])], 0, [
+      ['One result, [1, 2, 3]: after the first walk every flag stays true forever', 'Yes. The path is undone, but the flags are not, so every later option looks occupied.'],
+      ['All 6 results, because the path is still undone', 'The loop checks the flags, not the path. With every flag true, no later option opens.'],
+      ['6 results, with duplicates', 'Nothing is placed twice; nothing new is placed at all after the first walk.'],
     ]),
   step('How many nodes does the full tree for [1, 2, 3] have, counting the root?',
     [row('Items', [1, 2, 3])], 2, [
@@ -129,7 +129,7 @@ export const permutations = [
 export const wordSearch = [
   step('Board [[A, B], [A, A]], word AAB. You matched A at (0, 0) and stepped down to the A at (1, 0). Its right neighbour (1, 1) holds A, not B. Can you step back up to (0, 0)?',
     [row('row 0', ['#', 'B'], { 0: 'on path' }, { tones: { 0: 'done' } }), row('row 1', ['#', 'A'], { 0: 'HERE' }, { tones: { 0: 'hot' } })], 1, [
-      ['Yes: it holds an A', 'It held an A. It is marked #: it is already on this path, and a tile can’t be stood on twice. Besides, the next letter needed is B.'],
+      ['Yes: it holds an A', 'It held an A. It is marked #: it is already on this path, and a cell can’t be used twice. Besides, the next letter needed is B.'],
       ['No: (0, 0) is marked as on the path; this walk is a dead end', 'Yes. Every neighbour fails, so this call returns false — and on the way back it must restore (1, 0), then (0, 0).'],
     ]),
   step('Both walks from (0, 0) failed. As you leave (0, 0), do you restore its A?',
@@ -140,23 +140,23 @@ export const wordSearch = [
   step('Board [[A, B]], word ABA. A version that never marks cells returns what?',
     [row('row 0', ['A', 'B'])], 1, [
       ['false, correctly', 'Without marks, nothing stops the walk from returning to (0, 0).'],
-      ['true, wrongly: A → B → the same A again', 'Yes. The word needs two different A tiles and the board has one. Marking is what forbids reuse.'],
+      ['true, wrongly: A → B → the same A again', 'Yes. The word needs two different A cells and the board has one. Marking is what forbids reuse.'],
     ]),
 ];
 
 export const palindrome = [
-  step('s = "aab". At position 0, which first pieces are doors you actually walk?',
+  step('s = "aab". At position 0, which first pieces are options you actually walk?',
     [row('s', ['a', 'a', 'b'], { 0: 'start' }, { tones: { 0: 'hot' } })], 1, [
-      ['a, aa and aab', 'aab reversed is baa. The Shears cut it before it is walked.'],
+      ['a, aa and aab', 'aab reversed is baa. The prune cut it before it is walked.'],
       ['a and aa', 'Yes. Both read the same backwards; aab does not.'],
       ['Only a: pieces are one letter long', 'Pieces can be any length, as long as they are palindromes. aa is a valid first piece.'],
     ]),
-  step('The thread is [aa], so start = 2. The only piece left is b. After walking it, start = 3. What now?',
-    [row('s', ['a', 'a', 'b'], { 2: 'start' }, { tones: { 0: 'done', 1: 'done', 2: 'hot' } }), row('Thread', ['aa'])], 0, [
-      ['start == length: the ribbon is fully cut; record [aa, b]', 'Yes. Recording happens only when every letter belongs to a piece.'],
+  step('The path is [aa], so start = 2. The only piece left is b. After walking it, start = 3. What now?',
+    [row('s', ['a', 'a', 'b'], { 2: 'start' }, { tones: { 0: 'done', 1: 'done', 2: 'hot' } }), row('Path', ['aa'])], 0, [
+      ['start == length: the whole string is cut; record [aa, b]', 'Yes. Recording happens only when every letter belongs to a piece.'],
       ['Keep looping from 3', 'There are no letters at position 3 or later. The loop would not run; the record must happen first.'],
     ]),
-  step('How many pages does "aab" produce?',
+  step('How many results does "aab" produce?',
     [row('s', ['a', 'a', 'b'])], 1, [
       ['1', 'There are two ways: [a, a, b] and [aa, b].'],
       ['2', 'Yes: [a, a, b] and [aa, b].'],
@@ -180,43 +180,43 @@ export const queens = [
   step('Queens at (0, 0) and (1, 2). Row 2: column 0 is taken; (2, 1) shares r + c = 3 with (1, 2); column 2 is taken; (2, 3) shares r − c = −1 with (1, 2). Next move?',
     [row('row 0', ['Q', '·', '·', '·'], {}, { tones: { 0: 'done' } }), row('row 1', ['·', '·', 'Q', '·'], {}, { tones: { 2: 'done' } }), row('row 2', ['×', '×', '×', '×'], {}, { tones: { 0: 'out', 1: 'out', 2: 'out', 3: 'out' } })], 1, [
       ['Skip row 2 and try row 3', 'Every row needs exactly one queen. A board with an empty row has 3 queens, not 4.'],
-      ['Backtrack: lift the row-1 queen, clear its column and diagonals, and try (1, 3)', 'Yes. Row 2 has no door, so this corridor is dead. Wind back to row 1 and try its next column.'],
+      ['Backtrack: lift the row-1 queen, clear its column and diagonals, and try (1, 3)', 'Yes. Row 2 has no option, so this branch is dead. Undo to row 1 and try its next column.'],
       ['Restart from an empty board', 'The queen at (0, 0) may still lead somewhere through (1, 3). Backtracking undoes one choice, not all of them.'],
     ]),
 ];
 
 export const permDup = [
-  step('Sorted [1, 1, 2], copies named 1a (index 0) and 1b (index 1). The thread is empty; 1a was just tried at position 0 and un-chosen. Now i = 1 (1b): used[0] is false. Walk it?',
-    [row('Items', ['1a', '1b', '2'], { 1: 'i' }, { tones: { 1: 'hot' } }), row('Thread', [])], 1, [
+  step('Sorted [1, 1, 2], copies named 1a (index 0) and 1b (index 1). The path is empty; 1a was just tried at position 0 and un-chosen. Now i = 1 (1b): used[0] is false. Walk it?',
+    [row('Items', ['1a', '1b', '2'], { 1: 'i' }, { tones: { 1: 'hot' } }), row('Path', [])], 1, [
       ['Yes: 1b is a different index', 'A 1 at position 0 was just explored with 1a. 1b would grow an identical subtree: [1, 1, 2] and [1, 2, 1] again.'],
-      ['No: its left twin 1a is not on the thread, so 1b would go before it — out of order', 'Yes. !used[i − 1] catches exactly this: equal values must be placed left copy first.'],
+      ['No: its left twin 1a is not on the path, so 1b would go before it — out of order', 'Yes. !used[i − 1] catches exactly this: equal values must be placed left copy first.'],
     ]),
-  step('The thread is [1a]. Now i = 1 (1b): used[0] is true. Walk it?',
-    [row('Items', ['1a', '1b', '2'], { 0: 'on', 1: 'i' }, { tones: { 0: 'done', 1: 'hot' } }), row('Thread', ['1a'])], 0, [
-      ['Yes: 1a is already on the thread, so the copies are going in order', 'Yes. This is the only branch that builds [1, 1, 2] — 1a, then 1b, then 2.'],
-      ['No: it is a twin of nums[0]', 'Skipping twins regardless of the bells means 1b can never be placed, and the book ends empty: no ordering uses both 1s.'],
+  step('The path is [1a]. Now i = 1 (1b): used[0] is true. Walk it?',
+    [row('Items', ['1a', '1b', '2'], { 0: 'on', 1: 'i' }, { tones: { 0: 'done', 1: 'hot' } }), row('Path', ['1a'])], 0, [
+      ['Yes: 1a is already on the path, so the copies are going in order', 'Yes. This is the only branch that builds [1, 1, 2] — 1a, then 1b, then 2.'],
+      ['No: it is a twin of nums[0]', 'Skipping twins regardless of the used flags means 1b can never be placed, and the result list ends empty: no ordering uses both 1s.'],
     ]),
   step('Replace !used[i − 1] with used[i − 1]. On [1, 1, 1, 1], what happens?',
     [row('Items', [1, 1, 1, 1])], 2, [
       ['Wrong answer: duplicates appear', 'Each distinct ordering still has exactly one branch: the copies are forced into reverse index order instead.'],
-      ['Wrong answer: the book is empty', 'That happens when the bell check is dropped entirely. used[i − 1] still allows the right-most copy first.'],
-      ['Same single page, but 23 calls instead of 5: dead branches are found later', 'Yes. Both rules are correct; !used[i − 1] prunes earlier. Starting with the wrong copy only dies deeper in the tree.'],
+      ['Wrong answer: the result list is empty', 'That happens when the used check is dropped entirely. used[i − 1] still allows the right-most copy first.'],
+      ['Same single result, but 23 calls instead of 5: dead branches are found later', 'Yes. Both rules are correct; !used[i − 1] prunes earlier. Starting with the wrong copy only dies deeper in the tree.'],
     ]),
 ];
 
 export const mixedReview = [
   step('“Return all possible subsets. The input may contain duplicates; the answer must not.”', [], 1, [
     ['Generate all subsets, then remove duplicates with a HashSet of lists', 'It works only if every subset is sorted first, and it walks every duplicate subtree before discarding it.'],
-    ['Sort; loop from start; skip nums[i] when i > start and it equals nums[i − 1]', 'Yes. Siblings at a junction carry distinct values, so no subtree is walked twice.'],
-    ['Sort; skip nums[i] when i > 0 and it equals nums[i − 1]', 'i > 0 also skips the first door of a junction, so subsets with repeated values like [2, 2] are lost.'],
+    ['Sort; loop from start; skip nums[i] when i > start and it equals nums[i − 1]', 'Yes. Siblings at a call carry distinct values, so no subtree is walked twice.'],
+    ['Sort; skip nums[i] when i > 0 and it equals nums[i − 1]', 'i > 0 also skips the first option of a call, so subsets with repeated values like [2, 2] are lost.'],
   ]),
   step('“How many different ways can you climb 40 stairs taking 1 or 2 steps at a time?”', [], 2, [
-    ['Backtracking: walk every way and count the pages', 'There are 165,580,141 ways. Walking each one is hopeless; the count needs no pages at all.'],
-    ['Permutations of a list of 1s and 2s', 'Still one page per way: 165,580,141 of them.'],
+    ['Backtracking: walk every way and count the results', 'There are 165,580,141 ways. Walking each one is hopeless; the count needs no results at all.'],
+    ['Permutations of a list of 1s and 2s', 'Still one result per way: 165,580,141 of them.'],
     ['DP: ways(n) = ways(n − 1) + ways(n − 2)', 'Yes. Only the count is asked. About 40 additions give 165,580,141.'],
   ]),
   step('“Return every ordering of these distinct numbers.”', [], 0, [
-    ['Loop from 0 at every depth, skip items whose used[i] is true; record at full length', 'Yes. Order matters, so every unused item is a door at every depth. O(n · n!).'],
+    ['Loop from 0 at every depth, skip items whose used[i] is true; record at full length', 'Yes. Order matters, so every unused item is an option at every depth. O(n · n!).'],
     ['Loop from start, child at i + 1', 'That builds each GROUP once, in increasing order. It returns one ordering, not n!.'],
     ['Sort, then reverse repeatedly', 'Reversing gives at most two orders. To get all of them you need every choice at every position.'],
   ]),
@@ -225,8 +225,8 @@ export const mixedReview = [
     ['Sort; skip twins with i > start; child at i + 1; break when a candidate exceeds what is left', 'Yes. Combination Sum II: no reuse is i + 1, duplicates are the Subsets II skip, and sorted input allows the break.'],
     ['Child at 0, record into a set', 'Child at 0 writes each handful once per order, then the set throws them away. Exponentially more work for the same answer.'],
   ]),
-  step('You record with result.add(path) and every page comes out empty. Why?', [], 0, [
-    ['Every entry is a reference to the one shared thread, which ends empty; record new ArrayList<>(path)', 'Yes. A snapshot copy is the only thing later moves cannot change.'],
+  step('You record with result.add(path) and every result comes out empty. Why?', [], 0, [
+    ['Every entry is a reference to the one shared path, which ends empty; record new ArrayList<>(path)', 'Yes. A snapshot copy is the only thing later moves cannot change.'],
     ['The recursion never reaches the base case', 'Then there would be no entries. There are the right number of entries; they all show the same final state.'],
     ['ArrayList is not thread-safe', 'There is one thread of execution here. The problem is aliasing, not concurrency.'],
   ]),
@@ -236,9 +236,9 @@ export const mixedReview = [
     ['Lifting the mark is an optimisation', 'It is a correctness requirement: without it, [[A, B], [A, A]] with AAB returns false.'],
   ]),
   step('What is the time for listing every subset of n distinct items?', [], 2, [
-    ['O(2ⁿ)', 'There are 2ⁿ subsets, but each costs up to n to copy onto its page.'],
+    ['O(2ⁿ)', 'There are 2ⁿ subsets, but each costs up to n to copy into the results.'],
     ['O(n²)', 'The output alone has 2ⁿ entries. Nothing polynomial can write it.'],
-    ['O(n · 2ⁿ): 2ⁿ pages, each copied in up to n steps', 'Yes. The output is that big, so this is optimal. Extra space is O(n) besides the output.'],
+    ['O(n · 2ⁿ): 2ⁿ results, each copied in up to n steps', 'Yes. The output is that big, so this is optimal. Extra space is O(n) besides the output.'],
   ]),
   step('“Is there any subset of these 200 numbers (each between 1 and 100) that sums to exactly T?”', [], 1, [
     ['Backtracking with sorted pruning', '2²⁰⁰ subsets. Pruning helps, but nothing bounds the worst case.'],
@@ -246,9 +246,9 @@ export const mixedReview = [
     ['Greedy: take the largest numbers first', 'Greedy can overshoot and never come back. With 6, 5, 5 and T = 10, taking 6 first fails although 5 + 5 works.'],
   ]),
   step('In Java, path.remove(nums[i]) is used to un-choose. What happens on [1, 2, 3]?', [], 0, [
-    ['It removes by position, not by value: winding back from [1, 2, 3] it tries index 3 and throws', 'Yes. An int argument picks remove(int index). Write path.remove(path.size() − 1).'],
+    ['It removes by position, not by value: undoing from [1, 2, 3] it tries index 3 and throws', 'Yes. An int argument picks remove(int index). Write path.remove(path.size() − 1).'],
     ['It removes the value nums[i], which is correct', 'That is remove(Object), which needs an Integer. An int argument picks the index version.'],
-    ['It removes the first item of the thread', 'It removes whatever is at position nums[i], and here that position does not exist.'],
+    ['It removes the first item of the path', 'It removes whatever is at position nums[i], and here that position does not exist.'],
   ]),
   step('“Find the minimum number of moves for a knight to reach a square.”', [], 2, [
     ['Backtracking over every knight path, keeping the shortest', 'Every path, of every length, before you can be sure of the shortest. Far too many.'],

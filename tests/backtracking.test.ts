@@ -139,7 +139,7 @@ test('every trace step has a valid answer and real feedback for each choice', ()
 test('chapter 1-3 trace numbers', () => {
   const noUndo = subsetsRun([1, 2, 3], { unchoose: false }).book;
   assert.deepEqual(noUndo[4], [1, 2, 3, 3]);
-  assert.match(subsets[0].choices[0].feedback, /fifth page reads \[1, 2, 3, 3\] where \[1, 3\] belongs/);
+  assert.match(subsets[0].choices[0].feedback, /fifth result reads \[1, 2, 3, 3\] where \[1, 3\] belongs/);
   assert.deepEqual(subsetsRun([1, 2, 3]).book[4], [1, 3]);
   const aliased = subsetsRun([1, 2, 3], { alias: true }).book;
   assert.equal(aliased.length, 8);
@@ -155,11 +155,11 @@ test('chapter 1-3 trace numbers', () => {
   // Subsets II
   assert.deepEqual(subsetsRun([1, 2, 2], { skip: 'start', sort: true }).book, [[], [1], [1, 2], [1, 2, 2], [2], [2, 2]]);
   assert.equal(subsetsRun([1, 2, 2], { skip: 'zero', sort: true }).book.length, 4);
-  assert.match(subsetsDup[1].choices[1].feedback, /4 pages instead of 6/);
+  assert.match(subsetsDup[1].choices[1].feedback, /4 results instead of 6/);
   const unsorted = subsetsRun([2, 1, 2], { skip: 'start' }).book;
   assert.equal(unsorted.length, 8);
   assert.equal(unsorted.filter(p => p.join() === '2').length, 2);
-  assert.match(subsetsDup[2].choices[2].feedback, /8 pages with \[2\] twice/);
+  assert.match(subsetsDup[2].choices[2].feedback, /8 results with \[2\] twice/);
   assert.equal(subsetsRun(Array(10).fill(7)).calls, 1024);
   assert.equal(subsetsRun(Array(10).fill(7), { skip: 'start' }).calls, 11);
   // Combinations
@@ -193,7 +193,7 @@ test('chapter 4-6 trace numbers', () => {
   assert.deepEqual(cs(c, 7, i => i), [[2, 2, 3], [7]]);
   assert.deepEqual(new Set(cs(c, 7, i => i).map(keyOf)), new Set(odometer(c, 7)));
   assert.deepEqual(cs(c, 7, i => i + 1), [[7]]);
-  assert.match(comboSum[0].choices[0].feedback, /the book holds only \[7\]/);
+  assert.match(comboSum[0].choices[0].feedback, /the result list holds only \[7\]/);
   assert.deepEqual(cs(c, 7, () => 0), [[2, 2, 3], [2, 3, 2], [3, 2, 2], [7]]);
   assert.equal(7 - 2 - 2 - 2, 1);
   assert.equal(7 - 3, 4); assert.equal(4 - 3, 1);
@@ -282,7 +282,7 @@ test('every hint ladder referenced by the lesson exists with three hints, and ev
 // ---------- lab ----------
 function bookKeys(book: number[][], sortInside: boolean) {
   const keys = book.map(p => (sortInside ? keyOf(p) : p.join(',')));
-  assert.equal(new Set(keys).size, keys.length, `duplicate page in ${JSON.stringify(book)}`);
+  assert.equal(new Set(keys).size, keys.length, `duplicate result in ${JSON.stringify(book)}`);
   return new Set(keys);
 }
 type Oracle = (start: BacktrackState, final: BacktrackState) => void;
@@ -296,7 +296,7 @@ function runCase(start: BacktrackState) {
   assert.equal(final.done, true, `${start.mode} must terminate`);
   assert.equal(wrongMovesChangedBoard, false, `${start.mode}: a wrong move changed the board`);
   oracles[start.mode](start, final);
-  if (start.mode !== 'queens') assert.deepEqual(final.path, [], 'the thread ends wound back');
+  if (start.mode !== 'queens') assert.deepEqual(final.path, [], 'the path ends undone');
   return final;
 }
 
@@ -351,10 +351,10 @@ test('the lab catches the classic bugs with the board’s numbers', () => {
   // subsets: skipping the record, then the forgotten un-choose, then pinning the thread
   let s = lab.create('subsets', 0);                            // [1, 2, 3]
   assert.match(lab.move(s, 'choose').state.message, /haven’t recorded it/);
-  assert.match(lab.move(s, 'alias').state.message, /every page would read \[ \]/);
+  assert.match(lab.move(s, 'alias').state.message, /every entry would read \[ \]/);
   for (const a of ['record', 'choose', 'record', 'choose', 'record', 'choose', 'record']) s = lab.move(s, a).state;
   assert.deepEqual(s.path, [1, 2, 3]);
-  assert.match(lab.move(s, 'choose').state.message, /No doors are left at this junction\. Wind the thread back first: remove 3/);
+  assert.match(lab.move(s, 'choose').state.message, /No options are left at this level\. Undo the last choice first: remove 3/);
   s = lab.move(s, 'unchoose').state;                             // back at [1, 2]; its loop is exhausted, [1] still has door 3
   const forgot = lab.move(s, 'choose');
   assert.equal(forgot.accepted, false);
@@ -469,7 +469,7 @@ test('every practice answer matches an independent computation from the prompt',
           break;
         }
         case 'k-partition': {
-          const k = num(c.prompt, /among (\d+) heirs/);
+          const k = num(c.prompt, /into (\d+) groups/);
           let found = false;
           for (let code = 0; code < k ** a.length && !found; code++) {
             const sums = Array(k).fill(0); let x = code;

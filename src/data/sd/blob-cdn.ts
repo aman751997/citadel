@@ -2,7 +2,7 @@ import { row, step } from '../../lib/trace.ts';
 
 // Chapter 1 · The metadata/blob split
 export const split = [
-  step('Kestrel stores 20 million avatars of about 200 KB each inside the users table, next to about 1 KB of profile columns per user. Roughly what share of the table’s bytes are avatar bytes?', [], 2, [
+  step('An app stores 20 million avatars of about 200 KB each inside the users table, next to about 1 KB of profile columns per user. Roughly what share of the table’s bytes are avatar bytes?', [], 2, [
     ['About half', 'The profile columns total 20M × 1 KB = 20 GB. The avatars total 20M × 200 KB = 4 TB. That is nowhere near half.'],
     ['About 90%', 'Closer, but do the division: 4 TB of avatars against 20 GB of everything else.'],
     ['About 99.5%', 'Right. 4 TB ÷ (4 TB + 20 GB) ≈ 99.5%. Backups, replica rebuilds and replication traffic are now almost entirely moving pictures, not data.'],
@@ -35,7 +35,7 @@ export const objectModel = [
 
 // Chapter 3 · Durability versus availability
 export const durability = [
-  step('A store is "designed for 99.999999999% durability and 99.99% availability". Kestrel keeps 10 million objects in it. What does the 11 nines promise?', [], 1, [
+  step('A store is "designed for 99.999999999% durability and 99.99% availability". An app keeps 10 million objects in it. What does the 11 nines promise?', [], 1, [
     ['The store is reachable 99.999999999% of the time', 'That is availability, and it is the smaller number: 99.99%, about 53 minutes a year when requests may fail.'],
     ['On average, about one object lost every 10,000 years', 'Right. 10⁷ objects × 10⁻¹¹ annual loss rate = 10⁻⁴ objects a year, one per 10,000 years. Durability is about not losing bytes, not about answering requests.'],
     ['A deleted object can always be recovered', 'Durability faithfully keeps whatever you told it to keep — including your delete. Recovering from your own mistakes needs versioning or backups.'],
@@ -132,7 +132,7 @@ export const dedup = [
 
 // Chapter 8 · Storage classes and lifecycle
 export const tiers = [
-  step('Kestrel Moments adds 15 TB of photos a day. Policy: Standard for 30 days, infrequent-access until one year, then an instant-retrieval archive tier. Relative prices ≈ 1 : ½ : ⅙. After three years, what is the monthly storage bill versus keeping everything in Standard?', [
+  step('A photo-sharing app adds 15 TB of photos a day. Policy: Standard for 30 days, infrequent-access until one year, then an instant-retrieval archive tier. Relative prices ≈ 1 : ½ : ⅙. After three years, what is the monthly storage bill versus keeping everything in Standard?', [
     row('Tier (TB)', ['Std 450', 'IA 5,025', 'Archive 10,950'], {}, { tones: { 0: 'hot' } }),
   ], 1, [
     ['About the same — most data is recent', 'Most data is old. After three years, 10,950 of 16,425 TB is older than a year.'],
@@ -148,7 +148,7 @@ export const tiers = [
 
 // Chapter 9 · The CDN and the origin
 export const offload = [
-  step('Moments serves 30 GB/s of images at peak. The CDN hit ratio improves from 95% to 99%. What happens to origin egress?', [], 1, [
+  step('The photo app serves 30 GB/s of images at peak. The CDN hit ratio improves from 95% to 99%. What happens to origin egress?', [], 1, [
     ['It drops by 4%', 'The hit ratio rose 4 points; the miss ratio fell from 5% to 1%.'],
     ['It drops 5×, from 1.5 GB/s to 0.3 GB/s', 'Right. Origin = (1 − h) × total: 0.05 × 30 = 1.5 GB/s, 0.01 × 30 = 0.3 GB/s. The origin feels misses, not hits.'],
     ['It doesn’t change — the CDN still fetches every object', 'The CDN fetches each object once per cache lifetime, per location. Hits never reach the origin.'],
@@ -273,14 +273,14 @@ export const images = [
 
 // Chapter 17 · Worked numbers
 export const sweep = [
-  step('Kestrel Snippets (a pastebin): 1 million pastes a day, 10 KB average, read 10 times each. What is peak read egress at a 3× peak factor?', [
+  step('A pastebin: 1 million pastes a day, 10 KB average, read 10 times each. What is peak read egress at a 3× peak factor?', [
     row('Chain', ['10M reads/day', '× 10 KB', '÷ 10⁵ s', '× 3']),
   ], 0, [
     ['About 3 MB/s (≈ 24 Mbps) — bandwidth is not why a pastebin needs blob storage', 'Right. 10M × 10 KB = 100 GB/day ÷ 10⁵ ≈ 1 MB/s average, 3 MB/s peak. The split is justified by the size tail (pastes up to 10 MB), a lean database and cacheable reads — not by bandwidth.'],
     ['About 3 GB/s — CDN territory', 'Check the units: 100 GB a day is about 1 MB a second, not 1 GB.'],
     ['About 30 MB/s', 'Off by 10×. 10M reads × 10 KB = 100 GB/day; ÷ 10⁵ s = 1 MB/s; × 3 = 3 MB/s.'],
   ]),
-  step('Snippets keeps pastes for one year. Logical storage per year, and raw storage if you ran your own store with three replicas?', [], 2, [
+  step('The pastebin keeps pastes for one year. Logical storage per year, and raw storage if you ran your own store with three replicas?', [], 2, [
     ['365 GB logical, 1.1 TB raw', '1M × 10 KB is 10 GB a day, not 1 GB.'],
     ['36.5 TB logical, 110 TB raw', 'That is ten times too much. 10 GB/day × 365 = 3.65 TB.'],
     ['3.65 TB logical, about 11 TB raw — a managed object store bills the logical bytes and handles redundancy itself', 'Right. 1M × 10 KB = 10 GB/day × 365 = 3.65 TB; × 3 = 10.95 TB raw if the replicas are yours to pay for.'],

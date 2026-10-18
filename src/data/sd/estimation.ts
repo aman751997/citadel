@@ -1,13 +1,13 @@
 import { row, step } from '../../lib/trace.ts';
 
-// Every number below is recomputed in the lesson author’s verification script; prose, tables and
+// Every number below was recomputed by hand and in a script; prose, tables and
 // figures in src/lessons/estimation.mdx use the same values.
 
 export const units = [
-  step('Kestrel Moments stores 5 million new posts a day, about 1 KB of metadata each. How much is that per day?', [
+  step('A photo-feed app stores 5 million new posts a day, about 1 KB of metadata each. How much is that per day?', [
     row('Ladder', ['B', 'KB', 'MB', 'GB', 'TB'], { 3: 'HERE' }, { tones: { 3: 'hot' }, join: '→' }),
   ], 1, [
-    ['5 TB', 'One rung too high: 5 × 10⁶ × 10³ B = 5 × 10⁹ B, which is GB. This is the 1000× slip — exactly the one your own reps caught.'],
+    ['5 TB', 'One rung too high: 5 × 10⁶ × 10³ B = 5 × 10⁹ B, which is GB. This is the 1000× slip.'],
     ['5 GB', 'Right. 5 × 10⁶ posts × 10³ B = 5 × 10⁹ B = 5 GB. Add the exponents (6 + 3 = 9), then name the rung: 10⁹ is giga.'],
     ['500 MB', 'You lost a factor of ten somewhere: 5 × 10⁶ × 10³ is 5 × 10⁹, not 5 × 10⁸.'],
     ['50 GB', 'One zero too many. Write it as 5 × 10⁶ × 1 × 10³ and multiply the mantissas (5 × 1) separately from the exponents.'],
@@ -31,14 +31,14 @@ export const traffic = [
     ['50,000', 'One zero too many: you divided by 10⁴. A day is about 10⁵ seconds.'],
     ['5,787, because you must use the exact 86,400', 'Not wrong arithmetic, but it costs interview seconds for precision your DAU guess never had. Say "about 5K, call it 6K" and move on.'],
   ]),
-  step('Moments averages 5,000 feed requests per second and you assume peak is 3× average. Which number do you size the fleet for?', [
+  step('A feed averages 5,000 feed requests per second and you assume peak is 3× average. Which number do you size the fleet for?', [
     row('Feed req/s', ['5,000', '15,000'], { 0: 'AVERAGE', 1: 'PEAK' }, { tones: { 1: 'hot' } }),
   ], 1, [
     ['5,000, the average', 'A fleet sized for the average falls over every evening at peak. Averages are for storage and cost; capacity is sized for peak.'],
     ['15,000, the peak', 'Right. 5,000 × 3 = 15,000 req/s. Say the assumption out loud: "assuming peak is about 3× average."'],
     ['About 1,700', 'You divided by the peak factor instead of multiplying: 5,000 ÷ 3. Peak is higher than average, never lower.'],
   ]),
-  step('Moments: 50M DAU, each opens the feed 10 times a day; 10% of them post one photo a day. What is the read:write ratio?', [], 0, [
+  step('Photo feed: 50M DAU, each opens the feed 10 times a day; 10% of them post one photo a day. What is the read:write ratio?', [], 0, [
     ['About 100:1', 'Right. Reads: 50M × 10 = 500M a day. Writes: 50M × 0.10 = 5M a day. 500M ÷ 5M = 100. That ratio alone justifies a cache and read replicas.'],
     ['About 10:1', 'That assumes every DAU posts once a day (50M writes). Only 10% post, so writes are 5M a day.'],
     ['About 1:1', 'Feed opens and photo posts are different actions with very different rates. Count each one separately.'],
@@ -63,7 +63,7 @@ export const latency = [
 ];
 
 export const storage = [
-  step('Kestrel comments: 20M a day, 500 B each (including index overhead), kept 3 years, replicated 3 times. How much raw disk?', [
+  step('A comments table: 20M a day, 500 B each (including index overhead), kept 3 years, replicated 3 times. How much raw disk?', [
     row('Chain', ['10 GB/day', '3.65 TB/yr', '~11 TB', '~33 TB'], { 0: '×365', 1: '×3 yrs', 2: '×3 copies' }, { join: '→' }),
   ], 0, [
     ['About 33 TB', 'Right. 20M × 500 B = 10 GB/day; × 365 = 3.65 TB/yr; × 3 years ≈ 11 TB; × 3 replicas ≈ 33 TB.'],
@@ -71,7 +71,7 @@ export const storage = [
     ['About 33 GB', 'Same digits, wrong rung: 3.65 TB per year is already past 33 GB. Climb KB → MB → GB → TB one step at a time.'],
     ['About 3.7 TB', 'That is one year, one copy. The question asks for three years and three replicas.'],
   ]),
-  step('Moments photos come to about 5.5 PB a year. They go into a managed object store. Do you multiply by 3 for replication?', [], 1, [
+  step('Feed photos come to about 5.5 PB a year. They go into a managed object store. Do you multiply by 3 for replication?', [], 1, [
     ['Yes, always multiply by 3', 'Only when you run the copies yourself. A managed object store keeps its own redundancy and bills you for the bytes you stored.'],
     ['No: the store handles redundancy; if you ran it yourself, erasure coding would cost about 1.2–1.5×, not 3×', 'Right. Say which world you are in. Self-run triple replication is 3×; an erasure code such as Reed–Solomon (10, 4) stores 14 blocks per 10 of data, 1.4×.'],
     ['No, because photos are never lost', 'Durability is exactly why redundancy exists. The point is who pays for it, and how much.'],
@@ -95,7 +95,7 @@ export const bandwidth = [
 ];
 
 export const memory = [
-  step('Kestrel has 50M profiles of about 2 KB each, and about 10% are read on a given day. How big is the cache working set?', [], 1, [
+  step('An app has 50M profiles of about 2 KB each, and about 10% are read on a given day. How big is the cache working set?', [], 1, [
     ['100 GB', 'That is the whole dataset. Cache the data that is actually read, not everything you own.'],
     ['10 GB', 'Right. 50M × 2 KB = 100 GB total; 10% active = 10 GB. It fits on one cache node.'],
     ['1 GB', 'You took 10% twice. 10% of 100 GB is 10 GB.'],
@@ -107,10 +107,10 @@ export const memory = [
     ['Bandwidth: splitting network load', 'Possible at extreme request rates, but nothing here says the network is the limit. The ordinary reason is surviving failure.'],
     ['You would never run 3 nodes for 4 GB', 'You would, whenever the cache is load-bearing. Losing it would push every read onto the database.'],
   ]),
-  step('Moments post cache: the hot set is 15 GB (fits one node). At peak the feed needs 300,000 post lookups per second, and you assume one node serves about 100,000 simple operations per second. How many primaries?', [], 2, [
-    ['1: the data fits', 'Capacity fits in one node; throughput does not. 300,000 ÷ 100,000 = 3.'],
-    ['2', '300,000 ÷ 100,000 = 3, and that is already at 100% of the assumed per-node rate.'],
-    ['3, plus a replica each', 'Right. Throughput drives the count here, capacity does not. Then add replicas for availability. Benchmark the per-node number; do not trust anyone’s rule of thumb, including this one.'],
+  step('Post cache: the hot set is 15 GB (fits one node). At peak the feed needs 300,000 post lookups per second, and you assume one node serves about 100,000 simple operations per second, planned at 60% utilisation. How many primaries?', [], 2, [
+    ['1: the data fits', 'Capacity fits in one node; throughput does not. 300,000 ÷ 100,000 = 3 even at 100% utilisation.'],
+    ['3, plus a replica each', '300,000 ÷ 100,000 = 3 only if every node runs at 100% at peak. At the 60% plan the count is higher.'],
+    ['5, plus a replica each', 'Right. 300,000 ÷ (100,000 × 0.6) = 5. Throughput drives the count here, capacity does not. Then add replicas for availability. Benchmark the per-node number; do not trust anyone’s rule of thumb, including this one.'],
   ]),
 ];
 
@@ -154,7 +154,7 @@ export const availability = [
 ];
 
 export const sharding = [
-  step('Kestrel order history holds 30 TB today and grows 10 TB a year. You plan two years ahead at about 2 TB per shard. How many shards?', [], 1, [
+  step('An order-history table holds 30 TB today and grows 10 TB a year. You plan two years ahead at about 2 TB per shard. How many shards?', [], 1, [
     ['15', 'That fits today’s 30 TB and fills up within months. Plan for where the data will be: 30 + 2 × 10 = 50 TB.'],
     ['25', 'Right. (30 + 20) TB ÷ 2 TB = 25 shards, each with its own replicas.'],
     ['75', 'That counts each of the 3 replicas as a shard. Shards split the data; replicas copy it. 25 shards × 3 copies = 75 machines.'],
@@ -167,7 +167,7 @@ export const sharding = [
 ];
 
 export const chat = [
-  step('Kestrel Chat stores 1B messages a day at about 200 B each, replicated 3 times. Raw disk per year?', [
+  step('A chat app stores 1B messages a day at about 200 B each, replicated 3 times. Raw disk per year?', [
     row('Chain', ['200 GB/day', '73 TB/yr', '219 TB/yr'], { 1: '×365', 2: '×3' }, { join: '→', tones: { 2: 'hot' } }),
   ], 0, [
     ['About 219 TB', 'Right. 10⁹ × 200 B = 200 GB/day; × 365 = 73 TB/yr logical; × 3 replicas = 219 TB raw.'],
@@ -183,7 +183,7 @@ export const chat = [
 ];
 
 export const shortener = [
-  step('Kestrel Links: 1M new links a day for 5 years, so about 1.8 billion links. Are 6 base-62 characters enough?', [], 0, [
+  step('A link shortener: 1M new links a day for 5 years, so about 1.8 billion links. Are 6 base-62 characters enough?', [], 0, [
     ['Yes: 62⁶ ≈ 57 billion, about 31× headroom', 'Right. 62⁶ ≈ 5.7 × 10¹⁰ against 1.825 × 10⁹. Seven characters (62⁷ ≈ 3.5 × 10¹²) buys room for 100× growth.'],
     ['No: you need at least 10 characters', 'Count it: 62⁶ is already about 57 billion. Ten characters is about 8 × 10¹⁷, far beyond any need.'],
     ['Only if links expire', 'Expiry helps, but the arithmetic says 6 characters already cover five years with room to spare.'],
@@ -209,7 +209,7 @@ export const metrics = [
 ];
 
 export const video = [
-  step('Kestrel Clips: 1M uploads a day, 50 MB each, peak 3× average. Peak ingress in Gbps?', [], 0, [
+  step('A short-video app: 1M uploads a day, 50 MB each, peak 3× average. Peak ingress in Gbps?', [], 0, [
     ['About 12 Gbps', 'Right. 50 TB/day ÷ 10⁵ s = 500 MB/s average; × 3 = 1.5 GB/s; × 8 = 12 Gbps. Uploads go straight to object storage with presigned URLs, not through app servers.'],
     ['About 1.5 Gbps', 'That is 1.5 GB/s written as Gbps. Bytes to bits is × 8.'],
     ['About 4 Gbps', 'That is the average (500 MB/s × 8). Size the ingest path for peak.'],
@@ -228,7 +228,7 @@ export const video = [
 ];
 
 export const sanity = [
-  step('A candidate says Kestrel Chat needs 73 PB of storage a year (1B messages a day). Where is the slip most likely?', [], 0, [
+  step('A candidate says a chat app needs 73 PB of storage a year (1B messages a day). Where is the slip most likely?', [], 0, [
     ['They used about 200 KB per message instead of about 200 B', 'Right. 10⁹ × 200 KB × 365 = 73 PB. With 200 B per message it is 73 TB. A thousandfold error is almost always a unit, not a rate.'],
     ['They forgot replication', 'Replication would make it bigger, and only 3×. A 1000× gap points at a unit.'],
     ['Nothing: chat is huge', 'Normalise it: 73 PB ÷ 20M users ÷ 365 ≈ 10 MB of text per user per day. Nobody types that much.'],
@@ -248,7 +248,7 @@ export const skip = [
   ]),
   step('An internal admin tool for 200 employees. The interviewer seems keen to get to the data model. What do you say about estimation?', [], 0, [
     ['"At 200 users, load is trivial: one small instance and one database. I’ll skip detailed numbers unless something surprises us."', 'Right. Skip it out loud, with the reason. Silent skips read as "forgot"; a stated skip reads as judgment.'],
-    ['Nothing. Move straight to the data model', 'Silent skips are on your own gap list. Say the one sentence that shows you checked.'],
+    ['Nothing. Move straight to the data model', 'A silent skip is a common slip. Say the one sentence that shows you checked.'],
     ['Compute QPS, storage, bandwidth and memory anyway', 'Every number would end in "this is tiny". That is five minutes for a conclusion you could state in one sentence.'],
   ]),
 ];
@@ -256,7 +256,7 @@ export const skip = [
 export const drills = [
   step('Mid-estimation you catch yourself writing "0.5 TB/day" for 1M × 500 B. Which killer is this?', [], 1, [
     ['The stale-numbers killer', 'Stale numbers means reusing an earlier axis’s inputs. Here the inputs are right; the unit is wrong.'],
-    ['The unit-slip killer: it is 500 MB/day, one rung skipped and 1000× too high', 'Right. 1M × 500 B = 5 × 10⁸ B = 500 MB. The GB↔TB class of slip, exactly the one your live reps caught. Climb one rung at a time, out loud.'],
+    ['The unit-slip killer: it is 500 MB/day, one rung skipped and 1000× too high', 'Right. 1M × 500 B = 5 × 10⁸ B = 500 MB. The GB↔TB class of slip. Climb one rung at a time, out loud.'],
     ['No killer: 0.5 TB is right', '10⁶ × 5 × 10² = 5 × 10⁸ bytes, which is 500 MB, not 500 GB.'],
     ['The peak-factor killer', 'Peak factors are about QPS. This is a units problem.'],
   ]),
@@ -284,6 +284,6 @@ export const drills = [
   step('Ten minutes in, requirements ran long and the interviewer looks at the clock. How do you handle estimation?', [], 1, [
     ['Do the full five-minute sweep anyway; it is in the framework', 'The framework serves the interview, not the other way round. You would burn time you no longer have.'],
     ['Say the one or two numbers that drive the design in under a minute, and offer to size the rest in the deep dive', 'Right. "Reads dominate at about 100:1 and roughly 15K peak QPS, so: cache plus replicas. I’ll size storage when we pick the database." Lazy estimation, said out loud.'],
-    ['Skip it silently and draw boxes', 'A silent skip is on your gap list. One sentence turns it into judgment.'],
+    ['Skip it silently and draw boxes', 'A silent skip reads as forgetting. One sentence turns it into judgment.'],
   ]),
 ];

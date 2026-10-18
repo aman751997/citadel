@@ -251,7 +251,7 @@ export const lifecycle = [
     ['EXPIRED immediately, inside confirm', 'confirm doesn’t perform a different transition from the one it’s named for. It refuses, and the schedule’s sweep moves the booking to EXPIRED.'],
     ['IllegalStateException (“hold on BK-3 expired at …”); the booking stays HELD until the schedule sweeps it', 'Right. The demo prints exactly this refusal. The next hold() on that bay sweeps BK-3 to EXPIRED, which frees the slot.'],
   ]),
-  step('Bram wants CONFIRMED bookings to send reminders and CHECKED_IN ones to start a job timer. Keep the enum table?', [], 1, [
+  step('The workshop wants CONFIRMED bookings to send reminders and CHECKED_IN ones to start a job timer. Keep the enum table?', [], 1, [
     ['Yes: add if (status == …) branches wherever behaviour differs', 'That spreads one switch across the code: the repeated ladder the SOLID lesson warns about.'],
     ['When states behave differently, promote to one class per state (the State pattern) and keep the table as the guard', 'Right. Edges vary → enum table. Behaviour varies → State classes. Both → State classes with the table guarding transitions. It’s War Room Drill 3.'],
     ['No: delete the enum and use strings', 'Strings throw away the compiler’s help and the closed set of states.'],

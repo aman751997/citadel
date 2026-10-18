@@ -1,0 +1,120 @@
+---
+// <LruLfuSim /> : LRU and LFU caches side by side on the same accesses, stepped one access at a time.
+// Props: capacity (2-8, default 4), preset ('scan'|'hotscan'|'skew'|'stale'|'custom', default 'hotscan'), title, fallback.
+// Click a key in the palette to append your own access (switches to the custom sequence).
+import SimShell from '../SimShell.astro';
+import { PRESETS } from '../../lib/sim/cache.ts';
+interface Props { capacity?: number; preset?: string; title?: string; fallback?: string }
+const { capacity = 4, preset = 'hotscan', title = 'LRU vs LFU on the same accesses',
+  fallback = 'LRU evicts the entry untouched for the longest time; LFU evicts the entry used the fewest times (ties go to the least recently used). A one-time scan of new keys flushes a hot set out of an LRU cache, because each scanned key looks "recent", but an LFU cache keeps the hot keys since the scanned keys have a count of 1. The flip side: LFU can hold on to a key that was very popular once and is never used again, because its high count protects it.' } = Astro.props;
+const keys = 'ABCDEFGHIJKL'.split('');
+---
+<SimShell title={title} fallback={fallback} stepper>
+  <div class="lrusim" data-lru-sim data-capacity={capacity} data-preset={preset} data-presets={JSON.stringify(PRESETS)}>
+    <div class="sim-row">
+      <label>Access sequence
+        <select data-preset-sel aria-label="Access sequence preset">
+          {Object.entries(PRESETS).map(([k, v]) => <option value={k}>{v.label}</option>)}
+          <option value="custom">Custom (click keys below)</option>
+        </select>
+      </label>
+      <label>Cache capacity: <output data-o-cap></output><input type="range" min="2" max="8" data-cap aria-label="Cache capacity" /></label>
+    </div>
+    <div class="sim-row" role="group" aria-label="Access a key">
+      <span style="font-size:.85rem;color:var(--text-dim)">Access:</span>
+      {keys.map((k) => <button type="button" data-key={k} aria-label={`Access key ${k}`}>{k}</button>)}
+      <button type="button" data-clear>Clear</button>
+    </div>
+    <div class="lrusim-seq" data-seq aria-label="Access sequence"></div>
+    <div class="lrusim-panels">
+      <section data-panel="lru" aria-label="LRU cache"></section>
+      <section data-panel="lfu" aria-label="LFU cache"></section>
+    </div>
+  </div>
+</SimShell>
+
+<style is:global>
+  .lrusim-seq { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .8rem; min-height: 2.6rem; }
+  .lrusim-seq .tok { display: flex; flex-direction: column; align-items: center; font-family: var(--mono); font-size: .75rem; padding: .1rem .3rem; border: 1px solid var(--border); border-radius: 5px; color: var(--text-dim); }
+  .lrusim-seq .tok.cur { border-color: var(--accent); color: var(--text); }
+  .lrusim-seq .tok.future { opacity: .45; }
+  .lrusim-seq .dots { font-size: .6rem; letter-spacing: .1em; }
+  .lrusim-seq .y { color: var(--green); } .lrusim-seq .n { color: var(--red); }
+  .lrusim-panels { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; margin-top: .8rem; }
+  .lrusim-panels section { border: 1px solid var(--border); border-radius: 8px; padding: .6rem; background: var(--bg); min-width: 0; }
+  .lrusim-panels h4 { margin: 0 0 .1rem; font-size: .95rem; color: var(--blue); }
+  .lrusim-panels small { color: var(--text-dim); font-size: .7rem; display: block; margin-bottom: .4rem; }
+  .lrusim .slots { display: flex; flex-wrap: wrap; gap: .3rem; }
+  .lrusim .slot { min-width: 2.4rem; text-align: center; padding: .3rem .35rem; border: 1px dashed var(--border); border-radius: 6px; font-family: var(--mono); font-size: .85rem; }
+  .lrusim .slot.full { border-style: solid; background: #58a6ff20; border-color: var(--blue); }
+  .lrusim .slot.cur.hit { background: #3fb95030; border-color: var(--green); }
+  .lrusim .slot.cur.miss { background: #e3b34130; border-color: var(--accent); }
+  .lrusim .slot sub { font-size: .65rem; color: var(--text-dim); margin-left: .15rem; }
+  .lrusim .res { margin: .5rem 0 .2rem; font-size: .8rem; min-height: 1.3em; }
+  .lrusim .res .hit { color: var(--green); font-weight: 700; } .lrusim .res .miss { color: var(--red); font-weight: 700; }
+  .lrusim .ratio { font-family: var(--mono); font-size: .8rem; color: var(--text-dim); }
+  .lrusim .ratio b { color: var(--text); font-size: 1.05rem; }
+  @media (max-width: 480px) { .lrusim-panels { grid-template-columns: 1fr; } }
+</style>
+
+<script>
+  import { mountStepper } from '../../lib/sim.ts';
+  import { buildSteps, parseSeq, type CacheStep, type PolicyStep } from '../../lib/sim/cache.ts';
+
+  document.querySelectorAll<HTMLElement>('[data-lru-sim]').forEach((el) => {
+    const root = el.closest<HTMLElement>('[data-sim-root]')!;
+    const q = <T extends HTMLElement>(s: string) => el.querySelector<T>(s)!;
+    const presets: Record<string, { label: string; seq: string }> = JSON.parse(el.dataset.presets!);
+    let capacity = Math.min(8, Math.max(2, Number(el.dataset.capacity) || 4));
+    let preset = el.dataset.preset! in presets ? el.dataset.preset! : 'custom';
+    let seq: string[] = preset === 'custom' ? [] : parseSeq(presets[preset].seq);
+    const steps: CacheStep[] = buildSteps(seq, capacity);
+
+    const panel = (kind: 'lru' | 'lfu', s: PolicyStep, key: string | undefined, step: number) => {
+      const slots = Array.from({ length: capacity }, (_, i) => {
+        const e = s.contents[i];
+        if (!e) return `<span class="slot">·</span>`;
+        const cur = e.key === key && step > 0 ? ` cur ${s.hit ? 'hit' : 'miss'}` : '';
+        return `<span class="slot full${cur}">${e.key}${kind === 'lfu' ? `<sub>×${e.freq}</sub>` : ''}</span>`;
+      }).join('');
+      const res = step === 0 ? '&nbsp;' : `<span class="${s.hit ? 'hit' : 'miss'}">${s.hit ? 'HIT' : 'MISS'}</span>${s.evicted ? ` · evicted <b>${s.evicted.key}</b>` : ''}`;
+      const total = s.hits + s.misses;
+      return `<h4>${kind.toUpperCase()}</h4><small>${kind === 'lru' ? 'most recent → least recent' : 'highest count → lowest (ties: most recent first)'}</small><div class="slots">${slots}</div><div class="res">${res}</div><div class="ratio">hit ratio <b>${total ? Math.round(s.hitRatio * 100) : 0}%</b> (${s.hits} hits, ${s.misses} misses)</div>`;
+    };
+
+    const render = (st: CacheStep, i: number) => {
+      q('[data-panel="lru"]').innerHTML = panel('lru', st.lru, st.key, i);
+      q('[data-panel="lfu"]').innerHTML = panel('lfu', st.lfu, st.key, i);
+      q('[data-seq]').innerHTML = seq.map((k, j) => {
+        const s = steps[j + 1];
+        const cls = j + 1 === i ? 'cur' : j + 1 > i ? 'future' : '';
+        const dots = j + 1 <= i ? `<span class="dots"><span class="${s.lru.hit ? 'y' : 'n'}">●</span><span class="${s.lfu.hit ? 'y' : 'n'}">●</span></span>` : '<span class="dots">··</span>';
+        return `<span class="tok ${cls}">${k}${dots}</span>`;
+      }).join('') + (seq.length ? '' : '<span style="color:var(--text-dim);font-size:.8rem">No accesses yet.</span>');
+      q('[data-o-cap]').textContent = String(capacity);
+      q<HTMLInputElement>('[data-cap]').value = String(capacity);
+      q<HTMLSelectElement>('[data-preset-sel]').value = preset;
+    };
+
+    mountStepper(root, { steps, render, intervalMs: 1400 });
+
+    const resetBtn = root.querySelector<HTMLButtonElement>('[data-sim-reset]')!;
+    const nextBtn = root.querySelector<HTMLButtonElement>('[data-sim-next]')!;
+    const rebuild = (jumpToEnd: boolean) => {
+      steps.splice(0, steps.length, ...buildSteps(seq, capacity));
+      resetBtn.click();
+      if (jumpToEnd) for (let n = 1; n < steps.length; n++) nextBtn.click();
+    };
+
+    q('[data-preset-sel]').addEventListener('change', (e) => {
+      preset = (e.target as HTMLSelectElement).value;
+      seq = preset === 'custom' ? [] : parseSeq(presets[preset].seq);
+      rebuild(false);
+    });
+    q('[data-cap]').addEventListener('input', (e) => { capacity = Number((e.target as HTMLInputElement).value); rebuild(false); });
+    el.querySelectorAll<HTMLButtonElement>('[data-key]').forEach((b) => b.addEventListener('click', () => {
+      preset = 'custom'; seq = [...seq, b.dataset.key!]; rebuild(true);
+    }));
+    q('[data-clear]').addEventListener('click', () => { preset = 'custom'; seq = []; rebuild(false); });
+  });
+</script>

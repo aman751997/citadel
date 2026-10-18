@@ -1,0 +1,153 @@
+---
+import SimShell from '../SimShell.astro';
+// Props (all optional): defaultSoftTtl, defaultHardTtl (seconds), defaultOriginMs, defaultRps (requests/sec while playing).
+interface Props { defaultSoftTtl?: number; defaultHardTtl?: number; defaultOriginMs?: number; defaultRps?: number }
+const { defaultSoftTtl = 5, defaultHardTtl = 15, defaultOriginMs = 800, defaultRps = 2 } = Astro.props;
+const fallback = `Stale-while-revalidate keeps a value fresh until the soft TTL (${defaultSoftTtl} s) and usable-but-stale until the hard TTL (${defaultHardTtl} s). (1) Requests before ${defaultSoftTtl} s are FRESH hits, about 1 ms. (2) The first request after ${defaultSoftTtl} s gets the stale value instantly and triggers exactly one background refresh to the origin, which takes ${defaultOriginMs} ms. (3) Requests arriving during that refresh are also served stale and do not start another refresh. (4) When the refresh lands the entry is fresh again. (5) Only if nothing refreshed it before ${defaultHardTtl} s does a request MISS and wait for the origin. With a single TTL, every request after expiry blocks for the full ${defaultOriginMs} ms and each calls the origin itself, so p50 and worst latency are much higher during the expiry moment.`;
+---
+<SimShell title="Stale-while-revalidate vs a single TTL" fallback={fallback}>
+  <div class="swr" data-swr data-soft={defaultSoftTtl} data-hard={defaultHardTtl} data-origin={defaultOriginMs} data-rps={defaultRps}>
+    <div class="sim-row">
+      <label>Soft TTL: fresh until <output data-o="soft"></output><input type="range" min="1" max="30" step="1" data-in="soft" /></label>
+      <label>Hard TTL: stale usable until <output data-o="hard"></output><input type="range" min="1" max="60" step="1" data-in="hard" /></label>
+      <label>Origin latency <output data-o="origin"></output><input type="range" min="50" max="5000" step="50" data-in="origin" /></label>
+      <label>Request rate (when playing) <output data-o="rps"></output><input type="range" min="0.5" max="20" step="0.5" data-in="rps" /></label>
+    </div>
+    <div class="sim-controls" role="group" aria-label="Request controls">
+      <label class="swr-now">Current time <output data-o="now"></output><input type="range" min="0" max="60000" step="100" data-in="now" /></label>
+      <button type="button" data-add>+ Add request now</button>
+      <button type="button" data-play aria-pressed="false">▶ Play</button>
+      <button type="button" data-end>Run to end</button>
+      <button type="button" data-reset>Reset</button>
+      <span class="sim-count" data-clock></span>
+    </div>
+    <p class="swr-legend"><i class="ok"></i> FRESH hit <i class="warn"></i> STALE hit (served instantly) <i class="bad"></i> MISS (waits for origin)</p>
+    <div data-lanes></div>
+    <p class="sim-live" role="status" aria-live="polite" aria-atomic="true" data-caption></p>
+    <h4 class="swr-h">Latest requests</h4>
+    <div class="swr-tablewrap"><table class="swr-table"><thead><tr><th>Time</th><th>Stale-while-revalidate</th><th>Single TTL</th></tr></thead><tbody data-log></tbody></table></div>
+    <p class="swr-assume">Model: the cache starts freshly filled at 0 s. A hit costs 1 ms. With stale-while-revalidate, many requests share one refresh and a request after the hard TTL joins any refresh already running. With a single TTL (the soft TTL value), every request after expiry calls the origin itself, and the first call to finish refills the cache.</p>
+  </div>
+</SimShell>
+
+<style is:global>
+  .swr input[type="range"] { margin: 0; }
+  .swr-legend { font-size: .78rem; color: var(--text-dim); margin: .8rem 0 .3rem; }
+  .swr-legend i { display: inline-block; width: .8rem; height: .8rem; border-radius: 3px; margin: 0 .25rem 0 .7rem; vertical-align: -1px; border: 1px solid; }
+  .swr-legend i:first-child { margin-left: 0; }
+  .swr-legend i.ok { background: #3fb95040; border-color: var(--green); }
+  .swr-legend i.warn { background: #e3b34140; border-color: var(--accent); }
+  .swr-legend i.bad { background: #f8514940; border-color: var(--red); }
+  .swr-mode { margin: .9rem 0 .2rem; font-size: .85rem; color: var(--blue); font-weight: 700; }
+  .swr .sim-chip { padding: 0; }
+  .swr .sim-chip.zone { opacity: 1; top: 0; bottom: 0; border-radius: 0; border-width: 0; }
+  .swr .sim-chip.tick { width: 4px; border-radius: 2px; }
+  .swr .sim-chip.playhead { width: 2px; background: var(--text); border: 0; top: 0; bottom: 0; border-radius: 0; }
+  .swr .sim-chip.refresh { background: #58a6ff50; min-width: 3px; }
+  .swr-axis { position: relative; height: 1.1rem; font-family: var(--mono); font-size: .68rem; color: var(--text-dim); margin-left: 7rem; }
+  .swr-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+  .swr-axis span:first-child { transform: none; }
+  .swr-axis span:last-child { transform: translateX(-100%); }
+  .swr-h { margin: 1rem 0 .3rem; font-size: .9rem; color: var(--blue); }
+  .swr-tablewrap { overflow-x: auto; }
+  .swr-table { border-collapse: collapse; font-size: .78rem; font-family: var(--mono); width: 100%; }
+  .swr-table th, .swr-table td { text-align: left; padding: .2rem .5rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .swr-assume { color: var(--text-dim); font-size: .78rem; margin: .8rem 0 0; }
+  @media (max-width: 480px) { .swr-axis { margin-left: 4.5rem; } }
+</style>
+
+<script>
+  import { clamp, fmt } from '../../lib/sim.ts';
+  import { simulate, stats, zones, type Config, type Kind, type Run } from '../../lib/sim/swr.ts';
+
+  const cls: Record<Kind, string> = { fresh: 'ok', stale: 'warn', miss: 'bad' };
+  const label: Record<Kind, string> = { fresh: 'FRESH', stale: 'STALE', miss: 'MISS' };
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  document.querySelectorAll<HTMLElement>('[data-swr]').forEach((el) => {
+    const q = <T extends HTMLElement>(s: string) => el.querySelector<T>(s)!;
+    const inp = (k: string) => q<HTMLInputElement>(`[data-in=${k}]`);
+    inp('soft').value = el.dataset.soft!; inp('hard').value = el.dataset.hard!;
+    inp('origin').value = el.dataset.origin!; inp('rps').value = el.dataset.rps!;
+    let requests: number[] = [];
+    let now = 0;
+    let nextAt = 0;
+    let timer: number | undefined;
+    const play = q<HTMLButtonElement>('[data-play]');
+
+    const cfg = (): { swr: Config; single: Config; horizon: number; rps: number } => {
+      const soft = Number(inp('soft').value) * 1000;
+      const hard = Math.max(Number(inp('hard').value) * 1000, soft);
+      const originMs = Number(inp('origin').value);
+      return { swr: { softMs: soft, hardMs: hard, originMs, swr: true }, single: { softMs: soft, hardMs: soft, originMs, swr: false },
+        horizon: Math.round(hard * 2), rps: Number(inp('rps').value) };
+    };
+    const pos = (t: number, h: number) => `${clamp((t / h) * 100, 0, 100)}%`;
+    const lanes = (run: Run, c: Config, h: number, title: string) => {
+      const zs = zones(run, c, h).map((z) => `<div class="sim-chip zone ${cls[z.state]}" style="left:${pos(z.from, h)};width:${(clamp(z.to, 0, h) - z.from) / h * 100}%"></div>`).join('');
+      const ticks = run.events.map((e) => `<div class="sim-chip tick ${cls[e.kind]}" style="left:${pos(e.t, h)}" title="${label[e.kind]} at ${(e.t / 1000).toFixed(1)} s, ${fmt(e.latency)} ms"></div>`).join('');
+      const refr = run.refreshes.map((r) => `<div class="sim-chip refresh" style="left:${pos(r.start, h)};width:${(r.end - r.start) / h * 100}%" title="origin call ${fmt(r.end - r.start)} ms"></div>`).join('');
+      const head = `<div class="sim-chip playhead" style="left:${pos(now, h)}"></div>`;
+      return `<div class="swr-mode">${title}</div>
+        <div class="sim-lane"><span>cache state</span><div class="sim-track">${zs}${head}</div></div>
+        <div class="sim-lane"><span>requests</span><div class="sim-track">${ticks}${head}</div></div>
+        <div class="sim-lane"><span>origin calls</span><div class="sim-track">${refr}${head}</div></div>
+        <div class="swr-axis" aria-hidden="true"><span style="left:0">0 s</span><span style="left:${pos(c.softMs, h)}">soft ${c.softMs / 1000} s</span>${c.swr ? `<span style="left:${pos(c.hardMs, h)}">hard ${c.hardMs / 1000} s</span>` : ''}<span style="left:100%">${h / 1000} s</span></div>`;
+    };
+    const statsHtml = (run: Run) => {
+      const s = stats(run);
+      return `<div class="sim-row"><div class="sim-stat"><b>${fmt(s.p50)} ms</b><small>p50 latency</small></div><div class="sim-stat"><b>${fmt(s.worst)} ms</b><small>worst latency</small></div><div class="sim-stat"><b>${s.originCalls}</b><small>origin calls</small></div><div class="sim-stat"><b>${s.blocked}</b><small>requests that waited</small></div></div>`;
+    };
+
+    const render = () => {
+      const c = cfg();
+      const h = c.horizon;
+      now = Math.min(now, h);
+      const a = simulate(requests, c.swr);
+      const b = simulate(requests, c.single);
+      q('[data-o=soft]').textContent = `${c.swr.softMs / 1000} s`;
+      q('[data-o=hard]').textContent = `${c.swr.hardMs / 1000} s${c.swr.hardMs === c.swr.softMs ? ' (raised to soft TTL)' : ''}`;
+      q('[data-o=origin]').textContent = `${fmt(c.swr.originMs)} ms`;
+      q('[data-o=rps]').textContent = `${c.rps}/s`;
+      const nowIn = inp('now'); nowIn.max = String(h); nowIn.value = String(now);
+      q('[data-o=now]').textContent = `${(now / 1000).toFixed(1)} s`;
+      q('[data-clock]').textContent = `${(now / 1000).toFixed(1)} s of ${h / 1000} s · ${requests.length} requests`;
+      q('[data-lanes]').innerHTML =
+        lanes(a, c.swr, h, 'Stale-while-revalidate') + statsHtml(a) + lanes(b, c.single, h, 'Single TTL') + statsHtml(b);
+      const sa = stats(a), sb = stats(b);
+      q('[data-caption]').textContent = requests.length
+        ? `Same ${requests.length} requests. Stale-while-revalidate: ${sa.originCalls} origin call${sa.originCalls === 1 ? '' : 's'}, worst latency ${fmt(sa.worst)} ms, p50 ${fmt(sa.p50)} ms. Single TTL: ${sb.originCalls} origin calls, worst ${fmt(sb.worst)} ms, p50 ${fmt(sb.p50)} ms.`
+        : 'No requests yet. Add a request, or press Play, and watch what happens after the soft TTL.';
+      q('[data-log]').innerHTML = a.events.slice(-8).reverse().map((e, n) => {
+        const o = b.events[b.events.length - 1 - n];
+        const desc = (x: typeof e) => `${label[x.kind]} ${fmt(x.latency)} ms${x.triggered ? ' (calls origin)' : ''}`;
+        return `<tr><td>${(e.t / 1000).toFixed(1)} s</td><td>${desc(e)}</td><td>${desc(o)}</td></tr>`;
+      }).join('');
+    };
+
+    const stop = () => { if (timer !== undefined) { clearInterval(timer); timer = undefined; } play.setAttribute('aria-pressed', 'false'); play.textContent = '▶ Play'; };
+    const advance = (to: number, generate = true) => {
+      const c = cfg();
+      const gap = 1000 / c.rps;
+      to = Math.min(to, c.horizon);
+      while (generate && nextAt <= to) { requests.push(nextAt); nextAt += gap; }
+      now = to;
+      if (now >= c.horizon) stop();
+    };
+    const runToEnd = () => { stop(); advance(cfg().horizon); render(); };
+    q('[data-add]').addEventListener('click', () => { requests.push(now); render(); });
+    q('[data-end]').addEventListener('click', runToEnd);
+    q('[data-reset]').addEventListener('click', () => { stop(); requests = []; now = 0; nextAt = 0; render(); });
+    play.addEventListener('click', () => {
+      if (timer !== undefined) return stop();
+      nextAt = Math.max(nextAt, now);
+      if (reduced) return runToEnd();
+      if (now >= cfg().horizon) { requests = []; now = 0; nextAt = 0; }
+      play.setAttribute('aria-pressed', 'true'); play.textContent = '⏸ Pause';
+      timer = window.setInterval(() => { advance(now + 250); render(); }, 50);
+    });
+    inp('now').addEventListener('input', () => { now = Number(inp('now').value); stop(); render(); });
+    el.querySelectorAll('[data-in]').forEach((n) => n.addEventListener('input', render));
+    render();
+  });
+</script>

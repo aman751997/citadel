@@ -1,0 +1,85 @@
+---
+import SimShell from '../SimShell.astro';
+// Props: initialValue (row quantity, default 10), initialVersion (default 1), mode (starting mode).
+interface Props { initialValue?: number; initialVersion?: number; mode?: 'optimistic' | 'none' | 'pessimistic' }
+const { initialValue = 10, initialVersion = 1, mode = 'optimistic' } = Astro.props;
+const fallback = `Two writers A and B both want to sell one item from a row with qty = ${initialValue}. (1) A reads the row. (2) B reads the same row. (3) A runs UPDATE ... SET qty = ${initialValue - 1}, version = ${initialVersion + 1} WHERE id = 1 AND version = ${initialVersion}; one row is affected. (4) B runs the identical UPDATE; the version is now ${initialVersion + 1}, so zero rows are affected and B knows it lost the race. (5) B re-reads qty = ${initialValue - 1} and retries. (6) The retry succeeds and the final qty is ${initialValue - 2}. Without the version check, B's UPDATE would silently overwrite A's and the final qty would be ${initialValue - 1}, a lost update. With SELECT ... FOR UPDATE, B would simply wait until A commits.`;
+---
+<SimShell title="Two writers, one row" stepper fallback={fallback}>
+  <div class="ols" data-optlock data-value={initialValue} data-version={initialVersion} data-mode={mode}>
+    <fieldset class="ols-modes">
+      <legend>Concurrency control</legend>
+      <label><input type="radio" value="optimistic" /> Version check (optimistic)</label>
+      <label><input type="radio" value="none" /> No version check (lost update)</label>
+      <label><input type="radio" value="pessimistic" /> Pessimistic: SELECT ... FOR UPDATE</label>
+    </fieldset>
+    <div class="ols-grid">
+      <div class="ols-box" data-w="A"><h4>Writer A</h4><p data-local></p><p class="ols-status" data-status></p></div>
+      <div class="ols-box ols-row" data-rowbox><h4>Database row <small>stock id=1</small></h4><p data-row></p><p class="ols-status" data-lock></p></div>
+      <div class="ols-box" data-w="B"><h4>Writer B</h4><p data-local></p><p class="ols-status" data-status></p></div>
+    </div>
+    <pre class="ols-sql" data-sql tabindex="0" aria-label="SQL at this step"></pre>
+    <details class="ols-log"><summary>All SQL so far</summary><pre data-log></pre></details>
+  </div>
+</SimShell>
+
+<style is:global>
+  .ols fieldset { border: 1px solid var(--border); border-radius: 8px; display: flex; flex-wrap: wrap; gap: .3rem 1rem; padding: .4rem .7rem .6rem; margin: 0 0 .8rem; }
+  .ols legend { font-size: .75rem; color: var(--text-dim); padding: 0 .3rem; }
+  .sim .ols fieldset label { flex-direction: row; align-items: center; gap: .4rem; min-width: 0; flex: 0 1 auto; color: var(--text); }
+  .ols-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .6rem; }
+  .ols-box { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: .5rem .7rem; min-width: 0; font-size: .85rem; }
+  .ols-box h4 { margin: 0 0 .3rem; font-size: .85rem; color: var(--blue); }
+  .ols-box h4 small { color: var(--text-dim); font-weight: 400; }
+  .ols-box p { margin: .15rem 0; font-family: var(--mono); font-size: .8rem; overflow-wrap: anywhere; }
+  .ols-box.active { border-color: var(--blue); }
+  .ols-box.bad { border-color: var(--red); }
+  .ols-box.ok { border-color: var(--green); }
+  .ols-status { color: var(--text-dim); }
+  .ols-sql, .ols-log pre { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: .6rem .8rem; margin: .7rem 0 0; font-family: var(--mono); font-size: .78rem; white-space: pre-wrap; overflow-wrap: anywhere; min-height: 3.6em; }
+  .ols-log { margin-top: .5rem; font-size: .8rem; color: var(--text-dim); }
+  @media (max-width: 560px) { .ols-grid { grid-template-columns: 1fr; } }
+</style>
+
+<script>
+  import { mountStepper } from '../../lib/sim.ts';
+  import { buildSteps, type Mode, type Step } from '../../lib/sim/optimistic-lock.ts';
+
+  document.querySelectorAll<HTMLElement>("[data-optlock]").forEach((el, n) => {
+    const root = el.closest<HTMLElement>('[data-sim-root]')!;
+    const init = { value: Number(el.dataset.value), version: Number(el.dataset.version) };
+    const q = <T extends HTMLElement>(s: string) => el.querySelector<T>(s)!;
+    let mode = el.dataset.mode as Mode;
+    const radios = [...el.querySelectorAll<HTMLInputElement>('input[type=radio]')];
+    radios.forEach((r) => { r.name = `ols-mode-${n}`; r.checked = r.value === mode; });
+    const steps: (Step)[] = buildSteps(mode, init);
+    const showLocal = (s: Step, w: 'A' | 'B') => {
+      const l = s.local[w];
+      return l ? `local copy: qty ${l.value}${mode === 'optimistic' ? `, version ${l.version}` : ''}` : 'local copy: (nothing read yet)';
+    };
+    mountStepper(root, {
+      steps,
+      render(s, i) {
+        const versioned = mode === 'optimistic';
+        q('[data-row]').textContent = `qty = ${s.row.value}${versioned ? `, version = ${s.row.version}` : ''}`;
+        q('[data-lock]').textContent = s.lockedBy ? `row locked by ${s.lockedBy}` : mode === 'pessimistic' ? 'row not locked' : '';
+        (['A', 'B'] as const).forEach((w) => {
+          const box = q(`[data-w=${w}]`);
+          box.querySelector('[data-local]')!.textContent = showLocal(s, w);
+          box.querySelector('[data-status]')!.textContent = s.status[w];
+          box.classList.toggle('active', s.actor === w);
+          box.classList.toggle('bad', /CONFLICT|BLOCKED|overwrote/.test(s.status[w]));
+          box.classList.toggle('ok', s.status[w].startsWith('committed') && !/overwrote/.test(s.status[w]));
+        });
+        const sql = s.sql ? `-- Writer ${s.actor}\n${s.sql}${s.rows !== null ? `\n-- rows affected: ${s.rows}` : ''}` : '-- press Next step';
+        q('[data-sql]').textContent = sql;
+        q('[data-log]').textContent = steps.slice(0, i + 1).filter((x) => x.sql).map((x) => `-- ${x.actor}\n${x.sql}${x.rows !== null ? `   -- ${x.rows} row(s)` : ''}`).join('\n\n');
+      },
+    });
+    radios.forEach((r) => r.addEventListener('change', () => {
+      mode = r.value as Mode;
+      steps.splice(0, steps.length, ...buildSteps(mode, init));
+      root.querySelector<HTMLButtonElement>('[data-sim-reset]')!.click();
+    }));
+  });
+</script>

@@ -1,0 +1,159 @@
+---
+// <TokenBucketSim /> : token bucket vs fixed-window counter vs sliding-window log on the same traffic, in simulated time.
+// Props: capacity (burst, default 10), refill (tokens/sec, 5), rate (steady req/sec, 3), burst (button size, 15),
+//        mode ('bucket'|'fixed'|'sliding'|'compare', default 'bucket'), speed (0.25-4, default 1), title, fallback.
+// The window limiters allow `refill` requests per 1-second window, so all three share the same long-run rate.
+import SimShell from '../SimShell.astro';
+interface Props { capacity?: number; refill?: number; rate?: number; burst?: number; mode?: 'bucket' | 'fixed' | 'sliding' | 'compare'; speed?: number; title?: string; fallback?: string }
+const { capacity = 10, refill = 5, rate = 3, burst = 15, mode = 'bucket', speed = 1, title = 'Rate limiting: who gets a 429?',
+  fallback = 'A token bucket holds up to `capacity` tokens and refills at a steady rate; each request spends one token, so idle clients can burst up to capacity and then are held to the refill rate. A fixed-window counter resets at each window edge, so a client can send the full limit just before the edge and the full limit again just after it: 2x the limit in a very short span. A sliding-window log remembers every request time and never lets more than the limit into any window, at the cost of storing the timestamps.' } = Astro.props;
+---
+<SimShell title={title} fallback={fallback}>
+  <div class="rlsim" data-rl-sim data-capacity={capacity} data-refill={refill} data-rate={rate} data-burst={burst} data-mode={mode} data-speed={speed}>
+    <div class="sim-row">
+      <label>Algorithm
+        <select data-mode aria-label="Algorithm to show">
+          <option value="bucket">Token bucket</option>
+          <option value="fixed">Fixed-window counter</option>
+          <option value="sliding">Sliding-window log</option>
+          <option value="compare">Compare all three</option>
+        </select>
+      </label>
+      <label>Capacity (burst): <output data-o-cap></output><input type="range" min="1" max="30" data-cap aria-label="Bucket capacity" /></label>
+      <label>Refill / limit per second: <output data-o-refill></output><input type="range" min="0.5" max="20" step="0.5" data-refill aria-label="Refill rate in tokens per second" /></label>
+      <label>Steady requests/sec: <output data-o-rate></output><input type="range" min="0" max="30" step="1" data-rate aria-label="Steady request rate per second" /></label>
+      <label>Speed: <output data-o-speed></output><input type="range" min="0.25" max="4" step="0.25" data-speed aria-label="Simulation speed" /></label>
+    </div>
+    <div class="sim-row">
+      <button type="button" data-play aria-pressed="false">▶ Play</button>
+      <button type="button" data-step>Step +0.5s</button>
+      <button type="button" data-burst>Send a burst of <span data-burst-n></span></button>
+      <button type="button" data-edge>Window-edge demo</button>
+      <button type="button" data-reset>Reset</button>
+      <span class="sim-count" data-clock></span>
+    </div>
+    <div data-lanes></div>
+    <p class="sim-live" data-msg role="status" aria-live="polite" aria-atomic="true"></p>
+  </div>
+</SimShell>
+
+<style is:global>
+  .rlsim .rl-head { display: flex; flex-wrap: wrap; gap: .4rem .8rem; align-items: baseline; margin-top: .9rem; font-size: .85rem; }
+  .rlsim .rl-head strong { color: var(--blue); }
+  .rlsim .rl-head span { font-family: var(--mono); font-size: .78rem; color: var(--text-dim); }
+  .rlsim .rl-head b { color: var(--text); }
+  .rlsim .rl-head .ok b { color: var(--green); }
+  .rlsim .rl-head .bad b { color: var(--red); }
+  .rlsim svg.rl-spark { display: block; width: 100%; height: 3.4rem; background: var(--bg); border: 1px solid var(--border); border-radius: 6px 6px 0 0; border-bottom: 0; }
+  .rlsim .rl-track { height: 2.6rem; border-radius: 0 0 6px 6px; position: relative; background: var(--bg); border: 1px solid var(--border); overflow: hidden; }
+  .rlsim .rl-track .sim-chip { padding: 0; width: 3px; border-radius: 1px; }
+  .rlsim .rl-track .sim-chip.ok { top: 3px; bottom: 50%; }
+  .rlsim .rl-track .sim-chip.bad { top: 50%; bottom: 3px; }
+  .rlsim .rl-edge { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--accent); }
+  .rlsim .rl-legend { font-size: .72rem; color: var(--text-dim); margin: .2rem 0 0; }
+  .rlsim [hidden] { display: none !important; }
+</style>
+
+<script>
+  import { RateSim, ALGOS, windowLimit, maxInSpan, type Algo } from '../../lib/sim/ratelimit.ts';
+  import { clamp } from '../../lib/sim.ts';
+
+  const SPAN = 10; // seconds of history on screen
+  const NAMES: Record<Algo, string> = { bucket: 'Token bucket', fixed: 'Fixed-window counter', sliding: 'Sliding-window log' };
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  document.querySelectorAll<HTMLElement>('[data-rl-sim]').forEach((el) => {
+    const q = <T extends HTMLElement>(s: string) => el.querySelector<T>(s)!;
+    const d = el.dataset;
+    let mode = d.mode || 'bucket';
+    let burstN = Math.max(1, Number(d.burst) || 15);
+    let speed = clamp(Number(d.speed) || 1, 0.25, 4);
+    const p = { capacity: clamp(Number(d.capacity) || 10, 1, 30), refill: clamp(Number(d.refill) || 5, 0.5, 20), reqRate: clamp(Number(d.rate) || 0, 0, 30), windowSec: 1 };
+    let sim = new RateSim({ ...p });
+    let raf = 0, lastTs = 0, playing = false;
+
+    const shown = (): Algo[] => (mode === 'compare' ? ALGOS : [mode as Algo]);
+    const say = (s: string) => { q('[data-msg]').textContent = s; };
+
+    const render = () => {
+      q<HTMLSelectElement>('[data-mode]').value = mode;
+      q<HTMLInputElement>('[data-cap]').value = String(p.capacity);
+      q<HTMLInputElement>('[data-refill]').value = String(p.refill);
+      q<HTMLInputElement>('[data-rate]').value = String(sim.params.reqRate);
+      q<HTMLInputElement>('[data-speed]').value = String(speed);
+      q('[data-o-cap]').textContent = String(p.capacity);
+      q('[data-o-refill]').textContent = String(p.refill);
+      q('[data-o-rate]').textContent = String(sim.params.reqRate);
+      q('[data-o-speed]').textContent = `${speed}×`;
+      q('[data-burst-n]').textContent = String(burstN);
+      q('[data-clock]').textContent = `t = ${sim.now.toFixed(1)}s`;
+      const play = q<HTMLButtonElement>('[data-play]');
+      play.setAttribute('aria-pressed', String(playing));
+      play.textContent = playing ? '⏸ Pause' : '▶ Play';
+
+      const start = Math.max(0, sim.now - SPAN);
+      const x = (t: number) => (t - start) / SPAN;
+      const limit = windowLimit(sim.params);
+      q('[data-lanes]').innerHTML = shown().map((a) => {
+        const lane = sim.lanes[a];
+        const max = a === 'bucket' ? p.capacity : limit;
+        const pts = lane.samples.filter((s, i, arr) => s.t >= start || (arr[i + 1] && arr[i + 1].t >= start))
+          .map((s) => `${(clamp(x(s.t), 0, 1) * 1000).toFixed(1)},${(58 - Math.min(1, s.v / max) * 54).toFixed(1)}`).join(' ');
+        const chips = lane.reqs.filter((r) => r.t >= start).slice(-400)
+          .map((r) => `<i class="sim-chip ${r.ok ? 'ok' : 'bad'}" style="left:${(x(r.t) * 100).toFixed(2)}%"></i>`).join('');
+        let edges = '';
+        if (a === 'fixed') for (let w = Math.ceil(start / p.windowSec); w * p.windowSec <= start + SPAN; w++) edges += `<i class="rl-edge" style="left:${(x(w * p.windowSec) * 100).toFixed(2)}%"></i>`;
+        const peak = maxInSpan(sim.allowedTimes(a).filter((t) => t >= start - 1), p.windowSec);
+        const lvl = lane.limiter.level(sim.now);
+        const what = a === 'bucket' ? `tokens <b>${lvl.toFixed(1)}</b> / ${p.capacity}` : `counted <b>${Math.round(lvl)}</b> / ${limit}`;
+        return `<div class="rl-head"><strong>${NAMES[a]}</strong><span class="ok">allowed <b>${lane.allowed}</b></span><span class="bad">rejected (429) <b>${lane.rejected}</b></span><span>${what}</span><span>most allowed in any ${p.windowSec}s: <b>${peak}</b></span></div>` +
+          `<svg class="rl-spark" viewBox="0 0 1000 60" preserveAspectRatio="none" role="img" aria-label="${NAMES[a]} ${a === 'bucket' ? 'token level' : 'request count'} over the last ${SPAN} seconds"><polyline points="${pts}" fill="none" stroke="var(--blue)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>` +
+          `<div class="rl-track">${edges}${chips}</div>`;
+      }).join('') + `<p class="rl-legend">Blue line: ${mode === 'bucket' ? 'tokens in the bucket' : 'requests counted'} (top = ${mode === 'bucket' ? p.capacity : limit}). Green ticks: allowed. Red ticks: rejected with 429.${mode === 'fixed' || mode === 'compare' ? ' Dashed lines: fixed-window edges.' : ''} Last ${SPAN}s shown.</p>`;
+    };
+
+    const frame = (ts: number) => {
+      if (!playing) return;
+      sim.advance(Math.min((ts - lastTs) / 1000, 0.1) * speed);
+      lastTs = ts;
+      render();
+      raf = requestAnimationFrame(frame);
+    };
+    const setPlaying = (on: boolean) => {
+      playing = on;
+      cancelAnimationFrame(raf);
+      if (on) { lastTs = performance.now(); raf = requestAnimationFrame(frame); }
+      render();
+    };
+    const restart = () => { sim = new RateSim({ ...p, reqRate: sim.params.reqRate }); render(); };
+
+    const summarize = (label: string, before: Record<Algo, [number, number]>) =>
+      `${label} ` + shown().map((a) => `${NAMES[a]} let ${sim.lanes[a].allowed - before[a][0]} through and rejected ${sim.lanes[a].rejected - before[a][1]}`).join('; ') + '.';
+    const snap = () => Object.fromEntries(ALGOS.map((a) => [a, [sim.lanes[a].allowed, sim.lanes[a].rejected]])) as Record<Algo, [number, number]>;
+
+    q('[data-mode]').addEventListener('change', (e) => { mode = (e.target as HTMLSelectElement).value; render(); });
+    q('[data-cap]').addEventListener('input', (e) => { p.capacity = Number((e.target as HTMLInputElement).value); restart(); });
+    q('[data-refill]').addEventListener('input', (e) => { p.refill = Number((e.target as HTMLInputElement).value); restart(); });
+    q('[data-rate]').addEventListener('input', (e) => { sim.setReqRate(Number((e.target as HTMLInputElement).value)); render(); });
+    q('[data-speed]').addEventListener('input', (e) => { speed = Number((e.target as HTMLInputElement).value); render(); });
+    q('[data-play]').addEventListener('click', () => setPlaying(!playing));
+    q('[data-step]').addEventListener('click', () => { setPlaying(false); sim.advance(0.5); render(); });
+    q('[data-reset]').addEventListener('click', () => { setPlaying(false); restart(); say('Reset. Changing capacity or refill also restarts the run.'); });
+    q('[data-burst]').addEventListener('click', () => {
+      const b = snap(); sim.burst(burstN); render();
+      say(summarize(`Burst of ${burstN} at t=${sim.now.toFixed(1)}s:`, b));
+    });
+    q('[data-edge]').addEventListener('click', () => {
+      const lim = windowLimit(p);
+      mode = 'compare';
+      sim = new RateSim({ ...p, reqRate: 0 });
+      sim.scheduleBurst(0.9, lim);
+      sim.scheduleBurst(1.1, lim);
+      sim.advance(1.2);
+      setPlaying(false);
+      say(`Window-edge demo: ${lim} requests at t=0.9s (end of window 1), then ${lim} more at t=1.1s (start of window 2). Fixed window let ${sim.lanes.fixed.allowed} through in 0.2s, which is 2x its limit of ${lim}; sliding log let ${sim.lanes.sliding.allowed}; token bucket let ${sim.lanes.bucket.allowed}.`);
+    });
+    render();
+    if (!reduced) setPlaying(true);
+  });
+</script>

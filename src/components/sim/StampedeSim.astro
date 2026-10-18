@@ -1,0 +1,134 @@
+---
+import SimShell from '../SimShell.astro';
+// Props (all optional): defaultRequests, defaultHitRatio (%), defaultCapacity (DB queries/sec), defaultTtl (sec),
+// defaultJitter (% of TTL), defaultRefillMs, defaultMitigation, panelRps (rps for the hit-ratio panel).
+interface Props {
+  defaultRequests?: number; defaultHitRatio?: number; defaultCapacity?: number; defaultTtl?: number;
+  defaultJitter?: number; defaultRefillMs?: number; panelRps?: number;
+  defaultMitigation?: 'none' | 'lock' | 'jitter' | 'swr';
+}
+const { defaultRequests = 10000, defaultHitRatio = 0, defaultCapacity = 1500, defaultTtl = 60, defaultJitter = 10,
+  defaultRefillMs = 200, panelRps = 200000, defaultMitigation = 'none' } = Astro.props;
+const fallback = `A hot cache key expires while ${defaultRequests.toLocaleString('en-US')} requests arrive in the same second. (1) With no protection every request misses and queries the database: ${defaultRequests.toLocaleString('en-US')} queries against a capacity of ${defaultCapacity.toLocaleString('en-US')} per second, so the database is overloaded. (2) With a single-flight lock only one request refills the key and the rest wait for it: 1 query. (3) With jittered TTLs the keys do not all expire together, so only a fraction of the misses land in the same second. (4) With stale-while-revalidate users get the old value immediately while one background refresh runs: 1 query and nobody waits. Separately, the hit ratio matters enormously: at 200,000 requests per second, going from a 90% to a 99% hit ratio cuts database queries from 20,000 to 2,000 per second, a 10x drop.`;
+const id = (s: string) => `stp-${s}`;
+---
+<SimShell title="Cache stampede: what hits the database when a hot key expires" fallback={fallback}>
+  <div class="stp" data-stampede data-rps={panelRps} data-mit={defaultMitigation}>
+    <div class="sim-row">
+      <label>Requests in the same second <output data-o="requests"></output>
+        <input type="range" min="1" max="10000" step="1" value={defaultRequests} data-in="requests" /></label>
+      <label>Cache hit ratio <output data-o="hitRatio"></output>
+        <input type="range" min="0" max="100" step="1" value={defaultHitRatio} data-in="hitRatio" /></label>
+      <label>DB capacity (queries/sec) <output data-o="capacity"></output>
+        <input type="range" min="10" max="20000" step="10" value={defaultCapacity} data-in="capacity" /></label>
+    </div>
+    <div class="sim-row">
+      <label>Key TTL (seconds) <output data-o="ttlSec"></output>
+        <input type="range" min="5" max="600" step="5" value={defaultTtl} data-in="ttlSec" /></label>
+      <label>TTL jitter (% of TTL) <output data-o="jitterPct"></output>
+        <input type="range" min="0" max="100" step="5" value={defaultJitter} data-in="jitterPct" /></label>
+      <label>Refill time T (ms) <output data-o="refillMs"></output>
+        <input type="range" min="10" max="2000" step="10" value={defaultRefillMs} data-in="refillMs" /></label>
+    </div>
+    <div class="sim-row">
+      <label>Mitigation
+        <select data-in="mitigation">
+          <option value="none">None</option>
+          <option value="lock">Single-flight lock</option>
+          <option value="jitter">Jittered TTL</option>
+          <option value="swr">Stale-while-revalidate</option>
+        </select></label>
+    </div>
+
+    <div class="sim-lane"><span>DB capacity</span><div class="sim-track"><div class="sim-chip ok stp-bar" data-bar-cap></div></div></div>
+    <div class="sim-lane"><span>DB queries</span><div class="sim-track"><div class="sim-chip stp-bar" data-bar-q></div></div></div>
+    <p class="stp-verdict" data-verdict></p>
+    <div class="sim-row">
+      <div class="sim-stat"><b data-s="misses"></b><small>requests that missed</small></div>
+      <div class="sim-stat"><b data-s="queries"></b><small>DB queries, first second</small></div>
+      <div class="sim-stat"><b data-s="waiting"></b><small>users waiting on the DB</small></div>
+      <div class="sim-stat"><b data-s="wait"></b><small>their approx. wait</small></div>
+    </div>
+    <p class="sim-live" role="status" aria-live="polite" aria-atomic="true" data-caption></p>
+    <p class="stp-assume">Model assumptions: every request arrives inside the same one-second refill window; the hit ratio is the share of those requests that find a warm key (the rest want the expired hot key); one DB query takes T ms to refill it; waiting time is the larger of T and the queue time (queries / capacity); jitter spreads expiry evenly across TTL x jitter% seconds.</p>
+
+    <h4 class="stp-h">Hit ratio vs DB load at <span data-panel-rps></span> requests/sec</h4>
+    <div data-panel></div>
+  </div>
+</SimShell>
+
+<style is:global>
+  .stp input[type="range"] { margin: 0; }
+  .stp-bar { left: 0; min-width: 2px; padding: 0; transition: width .25s; }
+  .stp-verdict { font-weight: 700; margin: .6rem 0 0; }
+  .stp-verdict.bad { color: var(--red); }
+  .stp-verdict.ok { color: var(--green); }
+  .stp-assume { color: var(--text-dim); font-size: .78rem; margin: .8rem 0 0; }
+  .stp-h { margin: 1.2rem 0 .3rem; font-size: .95rem; color: var(--blue); }
+  .sim select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 7px; padding: .45rem .6rem; font: inherit; font-size: .85rem; }
+  .sim .stp-prow { grid-template-columns: 7.5rem 1fr; }
+  .stp-prow .sim-chip { left: 0; padding: 0; }
+  .stp-prow small { color: var(--text-dim); font-size: .72rem; }
+  @media (max-width: 480px) { .sim .stp-prow { grid-template-columns: 5.5rem 1fr; } }
+</style>
+
+<script>
+  import { clamp, fmt } from '../../lib/sim.ts';
+  import { stampede, missesFor, type Input, type Mitigation } from '../../lib/sim/stampede.ts';
+
+  document.querySelectorAll<HTMLElement>('[data-stampede]').forEach((el) => {
+    const q = <T extends HTMLElement>(s: string) => el.querySelector<T>(s)!;
+    const panelRps = Number(el.dataset.rps);
+    const inputs = [...el.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-in]')];
+    q<HTMLSelectElement>('[data-in=mitigation]').value = el.dataset.mit!;
+    q('[data-panel-rps]').textContent = fmt(panelRps);
+    const unit: Record<string, string> = { hitRatio: '%', jitterPct: '%', ttlSec: ' s', refillMs: ' ms' };
+    const read = (): Input => {
+      const v = (k: string) => Number(q<HTMLInputElement>(`[data-in=${k}]`).value);
+      return { requests: v('requests'), hitRatio: v('hitRatio'), capacity: v('capacity'), ttlSec: v('ttlSec'),
+        jitterPct: v('jitterPct'), refillMs: v('refillMs'), mitigation: q<HTMLSelectElement>('[data-in=mitigation]').value as Mitigation };
+    };
+    const explain = (i: Input, r: ReturnType<typeof stampede>, base: ReturnType<typeof stampede>) => {
+      if (r.misses === 0) return 'Every request hit a warm key, so the database sees nothing. A high hit ratio is the first line of defence.';
+      switch (i.mitigation) {
+        case 'none': return `All ${fmt(r.misses)} missing requests go to the database at once because nobody knows anyone else is already refilling the key.`;
+        case 'lock': return `Single-flight lock: the first request refills the key and the other ${fmt(r.misses - 1)} wait for its result. Queries drop from ${fmt(base.queries)} to 1, but ${fmt(r.waiting)} users still wait about ${fmt(r.waitMs)} ms.`;
+        case 'jitter': return `Jittered TTL: expiry is spread over ${r.windowSec} s instead of landing in one second, so about ${fmt(r.queries)} of the ${fmt(base.queries)} queries land in this second. ${i.jitterPct === 0 ? 'Jitter is 0%, so nothing changed. Raise it.' : 'It reduces the peak but does not coalesce duplicate work for a single key.'}`;
+        case 'swr': return `Stale-while-revalidate: users get the old value instantly and one background refresh does the work. Queries drop from ${fmt(base.queries)} to 1 and nobody waits.`;
+      }
+    };
+    const render = () => {
+      const i = read();
+      for (const k of Object.keys(unit).concat(['requests', 'capacity'])) q(`[data-o=${k}]`).textContent = fmt(Number(q<HTMLInputElement>(`[data-in=${k}]`).value)) + (unit[k] ?? '');
+      const r = stampede(i);
+      const base = stampede({ ...i, mitigation: 'none' });
+      const scale = Math.max(r.queries, i.capacity, 1);
+      q('[data-bar-cap]').style.width = `${(i.capacity / scale) * 100}%`;
+      q('[data-bar-cap]').textContent = fmt(i.capacity);
+      const bq = q('[data-bar-q]');
+      bq.style.width = `${(r.queries / scale) * 100}%`;
+      bq.className = `sim-chip stp-bar ${r.overloaded ? 'bad' : 'ok'}`;
+      bq.textContent = fmt(r.queries);
+      const v = q('[data-verdict]');
+      v.className = `stp-verdict ${r.overloaded ? 'bad' : 'ok'}`;
+      v.textContent = r.overloaded ? `DB overloaded: ${fmt(r.queries)} queries vs capacity ${fmt(i.capacity)}`
+        : r.queries <= 1 && base.queries > 1 ? `Coalesced to ${r.queries} query (capacity ${fmt(i.capacity)})` : `DB OK: ${fmt(r.queries)} queries vs capacity ${fmt(i.capacity)}`;
+      q('[data-s=misses]').textContent = fmt(r.misses);
+      q('[data-s=queries]').textContent = fmt(r.queries);
+      q('[data-s=waiting]').textContent = fmt(r.waiting);
+      q('[data-s=wait]').textContent = r.waiting ? `${fmt(r.waitMs)} ms` : 'none';
+      q('[data-caption]').textContent = explain(i, r, base);
+
+      const rows = [90, 99, 99.9, i.hitRatio].map((h, n) => ({ h, load: missesFor(panelRps, h), mine: n === 3 }));
+      const max = Math.max(...rows.map((x) => x.load), i.capacity, 1);
+      const first = rows[0].load;
+      q('[data-panel]').innerHTML = rows.map((x) => {
+        const over = x.load > i.capacity;
+        const note = x.mine || x === rows[0] ? '' : x.load && first ? ` (${(first / x.load).toFixed(x.h === 99 ? 0 : 1).replace(/\.0$/, '')}x fewer than 90%)` : '';
+        return `<div class="sim-lane stp-prow"><span>${x.mine ? 'yours ' : ''}${x.h}%</span><div><div class="sim-track"><div class="sim-chip ${over ? 'bad' : 'ok'}" style="width:${Math.max(clamp((x.load / max) * 100, 0, 100), 0.5)}%"></div></div><small>${fmt(x.load)} misses/s${note}</small></div></div>`;
+      }).join('') + `<p class="stp-assume">Each bar is misses per second the database must absorb (red = above your DB capacity of ${fmt(i.capacity)}/s).</p>`;
+    };
+    inputs.forEach((n) => n.addEventListener('input', render));
+    render();
+  });
+</script>

@@ -1,0 +1,131 @@
+---
+// <ShardingSim /> : how keys spread over shards. Modes: hash % N, consistent-hash ring with vnodes, 16384 fixed slots.
+// Props: shards (start count, 1-12), keys (100|1000|5000), mode ('mod'|'ring'|'slots'), vnodes (1-100), hot (bool), hotShare (0.1-0.9), fallback.
+import SimShell from '../SimShell.astro';
+interface Props { shards?: number; keys?: number; mode?: 'mod' | 'ring' | 'slots'; vnodes?: number; hot?: boolean; hotShare?: number; title?: string; fallback?: string }
+const { shards = 4, keys = 1000, mode = 'mod', vnodes = 8, hot = false, hotShare = 0.3,
+  title = 'Where does each key live?',
+  fallback = 'With hash(key) % N, going from 4 to 5 shards moves about 80% of all keys, because almost every key gets a new remainder. A consistent-hash ring or 16384 fixed slots only move the keys the new shard takes over, about 1/N (20% going from 4 to 5). Virtual nodes smooth out the ring so shards get similar amounts of data. A single hot key still lands on one shard no matter how you hash.' } = Astro.props;
+---
+<SimShell title={title} fallback={fallback}>
+  <div class="shsim" data-shard-sim data-shards={shards} data-keys={keys} data-mode={mode} data-vnodes={vnodes} data-hot={hot ? '1' : '0'} data-hotshare={hotShare}>
+    <div class="sim-row" role="group" aria-label="Placement strategy">
+      <button type="button" data-m="mod" aria-pressed="false">hash % N</button>
+      <button type="button" data-m="ring" aria-pressed="false">Hash ring + vnodes</button>
+      <button type="button" data-m="slots" aria-pressed="false">16384 slots</button>
+    </div>
+    <div class="sim-row">
+      <button type="button" data-add>+ Add shard</button>
+      <button type="button" data-remove>− Remove shard</button>
+      <label>Keys <select data-keys-sel aria-label="Number of sample keys"><option>100</option><option>1000</option><option>5000</option></select></label>
+      <label data-vn-wrap>Virtual nodes per shard: <output data-vn-out></output><input type="range" min="1" max="100" data-vn aria-label="Virtual nodes per shard" /></label>
+      <label class="shsim-hot"><span><input type="checkbox" data-hot /> Hot key (<code>user:0</code>) takes <output data-share-out></output> of traffic</span><input type="range" min="10" max="90" step="5" data-share aria-label="Share of traffic on the hot key" /></label>
+    </div>
+    <div class="shsim-stats sim-row" role="status" aria-live="polite" aria-atomic="true">
+      <div class="sim-stat"><b data-s-shards></b><small>shards</small></div>
+      <div class="sim-stat"><b data-s-moved></b><small data-s-moved-note></small></div>
+      <div class="sim-stat"><b data-s-imb></b><small>imbalance (max ÷ mean)</small></div>
+    </div>
+    <div data-bars class="shsim-bars" aria-label="Load per shard"></div>
+    <div data-viz class="shsim-viz"></div>
+    <p class="sim-live" data-note></p>
+  </div>
+</SimShell>
+
+<style is:global>
+  .shsim-bars { margin-top: .8rem; }
+  .shsim .bar { height: 100%; transition: width .25s; }
+  .shsim .sim-track { height: 1.4rem; }
+  .shsim .sim-lane > span:first-child { display: flex; align-items: center; gap: .3rem; }
+  .shsim .sw { width: .7rem; height: .7rem; border-radius: 50%; display: inline-block; }
+  .shsim .val { position: absolute; right: .4rem; top: 0; line-height: 1.3rem; font-size: .72rem; font-family: var(--mono); text-shadow: 0 0 3px var(--bg); }
+  .shsim-viz svg { max-width: 190px; display: block; margin: .6rem auto 0; }
+  .shsim-strip { display: flex; height: 1.1rem; border-radius: 4px; overflow: hidden; border: 1px solid var(--border); margin-top: .6rem; }
+  .shsim-strip > i { display: block; height: 100%; }
+  .shsim-hot { min-width: 220px; }
+  .shsim [hidden] { display: none !important; }
+</style>
+
+<script>
+  import { hashKeys, modRouter, ringRouter, ringPoints, initialSlotTable, rebalanceSlots, slotRouter, ownersOf, moveFraction, loads, imbalance, hotWeights, SLOTS, type ShardMode } from '../../lib/sim/sharding.ts';
+  import { clamp, fmt } from '../../lib/sim.ts';
+
+  const color = (id: number) => `hsl(${(id * 47 + 200) % 360} 65% 55%)`;
+
+  document.querySelectorAll<HTMLElement>('[data-shard-sim]').forEach((el) => {
+    const q = <T extends HTMLElement>(s: string) => el.querySelector<T>(s)!;
+    const d = el.dataset;
+    let mode = (d.mode as ShardMode) || 'mod';
+    let vnodes = clamp(Number(d.vnodes) || 8, 1, 100);
+    let nKeys = Number(d.keys) || 1000;
+    let hot = d.hot === '1';
+    let share = clamp(Number(d.hotshare) || 0.3, 0.1, 0.9);
+    let nodes = Array.from({ length: clamp(Number(d.shards) || 4, 1, 12) }, (_, i) => i);
+    let nextId = nodes.length;
+    let table = initialSlotTable(nodes);
+    let hashes = hashKeys(nKeys);
+    let owners: number[] = [];
+    let moved: number | null = null;
+
+    const router = () => mode === 'mod' ? modRouter(nodes) : mode === 'ring' ? ringRouter(nodes, vnodes) : slotRouter(table);
+    const recompute = (topology: boolean) => {
+      const next = ownersOf(hashes, router());
+      moved = topology && owners.length === next.length ? moveFraction(owners, next) : null;
+      owners = next;
+      render();
+    };
+
+    const render = () => {
+      el.querySelectorAll<HTMLButtonElement>('[data-m]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.m === mode)));
+      q('[data-vn-wrap]').hidden = mode !== 'ring';
+      q<HTMLInputElement>('[data-vn]').value = String(vnodes);
+      q('[data-vn-out]').textContent = String(vnodes);
+      q<HTMLSelectElement>('[data-keys-sel]').value = String(nKeys);
+      q<HTMLInputElement>('[data-hot]').checked = hot;
+      q<HTMLInputElement>('[data-share]').value = String(Math.round(share * 100));
+      q('[data-share-out]').textContent = `${Math.round(share * 100)}%`;
+      q<HTMLButtonElement>('[data-remove]').disabled = nodes.length <= 1;
+      q<HTMLButtonElement>('[data-add]').disabled = nodes.length >= 12;
+
+      const l = loads(owners, nodes, hot ? hotWeights(hashes.length, share) : undefined);
+      const counts = loads(owners, nodes);
+      const max = Math.max(...l, 1);
+      const total = l.reduce((a, b) => a + b, 0);
+      q('[data-s-shards]').textContent = String(nodes.length);
+      q('[data-s-imb]').textContent = `${imbalance(l).toFixed(2)}×`;
+      q('[data-s-moved]').textContent = moved === null ? '—' : `${(moved * 100).toFixed(0)}%`;
+      q('[data-s-moved-note]').textContent = moved === null ? 'keys moved (add or remove a shard)' : `keys moved (ideal ≈ ${(100 / Math.max(nodes.length, 2)).toFixed(0)}%)`;
+      q('[data-bars]').innerHTML = nodes.map((id, i) => {
+        const label = hot ? `${fmt(counts[i])} keys · ${(l[i] / total * 100).toFixed(0)}% traffic` : `${fmt(counts[i])} keys`;
+        return `<div class="sim-lane"><span><i class="sw" style="background:${color(id)}"></i>shard ${id}</span><div class="sim-track"><div class="bar" style="width:${(l[i] / max * 100).toFixed(1)}%;background:${color(id)}66;border-right:2px solid ${color(id)}"></div><span class="val">${label}</span></div></div>`;
+      }).join('');
+
+      const viz = q('[data-viz]');
+      if (mode === 'ring') {
+        const pts = ringPoints(nodes, vnodes);
+        viz.innerHTML = `<svg viewBox="-60 -60 120 120" role="img" aria-label="Hash ring: ${pts.length} points owned by ${nodes.length} shards"><circle r="50" fill="none" stroke="var(--border)"/>${pts.map((p) => { const a = p.p / 2 ** 32 * 2 * Math.PI; return `<circle cx="${(50 * Math.sin(a)).toFixed(1)}" cy="${(-50 * Math.cos(a)).toFixed(1)}" r="${pts.length > 300 ? 1.2 : 2.2}" fill="${color(p.id)}"/>`; }).join('')}</svg>`;
+      } else if (mode === 'slots') {
+        const runs: string[] = [];
+        let start = 0;
+        for (let s = 1; s <= SLOTS; s++) if (s === SLOTS || table[s] !== table[start]) { runs.push(`<i style="width:${((s - start) / SLOTS * 100).toFixed(3)}%;background:${color(table[start])}"></i>`); start = s; }
+        viz.innerHTML = `<div class="shsim-strip" role="img" aria-label="Slots 0 to 16383 coloured by owning shard">${runs.join('')}</div><small style="color:var(--text-dim)">slot 0 → 16383 (key → slot = hash % 16384, slot → shard from a table)</small>`;
+      } else viz.innerHTML = '';
+
+      const hotShard = hot ? nodes[l.indexOf(Math.max(...l))] : null;
+      q('[data-note]').textContent = {
+        mod: 'hash % N: change N and almost every key gets a new remainder, so almost every key moves.',
+        ring: 'Ring: a key goes to the next point clockwise. Adding a shard only steals the arcs next to its points.',
+        slots: 'Slots: keys map to one of 16384 slots; only whole slots change owner when you add or remove a shard.',
+      }[mode] + (hotShard !== null ? ` The hot key pins shard ${hotShard} no matter how evenly keys are spread.` : '');
+    };
+
+    el.querySelectorAll<HTMLButtonElement>('[data-m]').forEach((b) => b.addEventListener('click', () => { mode = b.dataset.m as ShardMode; recompute(false); }));
+    q('[data-add]').addEventListener('click', () => { nodes = [...nodes, nextId++]; table = rebalanceSlots(table, nodes); recompute(true); });
+    q('[data-remove]').addEventListener('click', () => { nodes = nodes.slice(0, -1); table = rebalanceSlots(table, nodes); recompute(true); });
+    q('[data-vn]').addEventListener('input', (e) => { vnodes = Number((e.target as HTMLInputElement).value); recompute(false); });
+    q('[data-keys-sel]').addEventListener('change', (e) => { nKeys = Number((e.target as HTMLSelectElement).value); hashes = hashKeys(nKeys); recompute(false); });
+    q('[data-hot]').addEventListener('change', (e) => { hot = (e.target as HTMLInputElement).checked; render(); });
+    q('[data-share]').addEventListener('input', (e) => { share = Number((e.target as HTMLInputElement).value) / 100; render(); });
+    recompute(false);
+  });
+</script>

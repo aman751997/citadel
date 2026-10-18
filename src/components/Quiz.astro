@@ -1,31 +1,77 @@
 ---
-// Interactive multiple-choice quiz. Answers reveal explanations; score is per-question, instant.
+// Interactive multiple-choice quiz. Pick an option -> locked, verdict + explanations; score and best score persist in localStorage.
 // Usage in MDX:
-// <Quiz questions={[{ q, options: [...], answer: 1, why }]} />
+// <Quiz id="cache-basics" title="Caching checkpoint" questions={[{ q, options: [...], answer: 1, why }]} />
+// Optional per question: explain (one string per option), code (shown in <pre>), kind ('scenario'|'predict'|'tradeoff'|'failure').
+// See docs/INTERACTIVE_COMPONENTS.md.
 interface Question {
   q: string;
   options: string[];
   answer: number; // index into options
   why: string;
+  explain?: string[];
+  code?: string;
+  kind?: 'scenario' | 'predict' | 'tradeoff' | 'failure';
 }
 interface Props {
   questions: Question[];
+  id?: string;
+  title?: string;
 }
-const { questions } = Astro.props;
+const { questions, id, title } = Astro.props;
+const kindLabel = { scenario: 'Scenario', predict: 'Predict the output', tradeoff: 'Trade-off', failure: 'Failure mode' };
 ---
-<div class="quiz" data-quiz>
-  <div class="quiz-head">🧠 Checkpoint — answer before you scroll past</div>
-  {questions.map((question, qi) => (
-    <div class="quiz-q" data-answer={question.answer}>
-      <p class="quiz-question">{qi + 1}. {question.q}</p>
-      <div class="quiz-options">
-        {question.options.map((opt, oi) => (
-          <button class="quiz-opt" data-idx={oi} type="button">{opt}</button>
-        ))}
+<div class="quiz" data-quiz data-quiz-id={id ?? ''} data-total={questions.length}>
+  <div class="quiz-head">🧠 {title ?? 'Checkpoint — answer before you scroll past'}</div>
+  <div class="quiz-live-part" data-quiz-live hidden>
+    {questions.map((question, qi) => (
+      <div class="quiz-q" data-answer={question.answer} data-options={question.options.length}>
+        <p class="quiz-question">
+          {question.kind && <span class="quiz-kind">{kindLabel[question.kind]}</span>}
+          {qi + 1}. {question.q}
+        </p>
+        {question.code && <pre class="quiz-code"><code>{question.code}</code></pre>}
+        <div class="quiz-options" role="group" aria-label={`Question ${qi + 1} options`}>
+          {question.options.map((opt, oi) => (
+            <button class="quiz-opt" data-idx={oi} type="button" aria-pressed="false"><span class="quiz-opt-text">{opt}</span><span class="quiz-mark" aria-hidden="false"></span></button>
+          ))}
+        </div>
+        <div class="quiz-feedback" data-feedback hidden tabindex="-1">
+          <p class="quiz-verdict" data-verdict></p>
+          {question.explain && (
+            <ul class="quiz-explain">
+              {question.options.map((opt, oi) => (
+                <li data-idx={oi}><span class="quiz-tag" data-tag></span> <strong>{opt}</strong>{question.explain![oi] && <> — {question.explain![oi]}</>}</li>
+              ))}
+            </ul>
+          )}
+          <p class="quiz-why">{question.why}</p>
+          <button class="quiz-btn" type="button" data-retry>Try again</button>
+        </div>
       </div>
-      <p class="quiz-why" hidden>{question.why}</p>
+    ))}
+    <div class="quiz-score" data-score-box hidden>
+      <span class="quiz-score-text" data-score-text></span>
+      <button class="quiz-btn" type="button" data-retry-all>Retry whole quiz</button>
     </div>
-  ))}
+    <div class="quiz-sr" role="status" aria-live="polite" data-live></div>
+  </div>
+  <noscript>
+    <ol class="quiz-plain">
+      {questions.map((question) => (
+        <li>
+          <p class="quiz-question">{question.q}</p>
+          {question.code && <pre class="quiz-code"><code>{question.code}</code></pre>}
+          <ul>
+            {question.options.map((opt, oi) => (
+              <li>{oi === question.answer ? '✓ Correct: ' : ''}{opt}{question.explain?.[oi] && <> — {question.explain[oi]}</>}</li>
+            ))}
+          </ul>
+          <p class="quiz-why">{question.why}</p>
+        </li>
+      ))}
+    </ol>
+  </noscript>
 </div>
 
 <style>
@@ -46,8 +92,26 @@ const { questions } = Astro.props;
   }
   .quiz-q { margin: 1rem 0; }
   .quiz-question { font-weight: 600; margin: 0.4rem 0 0.6rem; }
+  .quiz-kind {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--blue);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.05rem 0.5rem;
+    margin-right: 0.5rem;
+    vertical-align: 1px;
+  }
+  .quiz-code { margin: 0.5rem 0 0.7rem; font-size: 0.85rem; }
   .quiz-options { display: grid; gap: 0.45rem; }
   .quiz-opt {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    align-items: baseline;
     text-align: left;
     background: var(--bg);
     color: var(--text);
@@ -58,11 +122,25 @@ const { questions } = Astro.props;
     font-family: inherit;
     cursor: pointer;
     transition: border-color 0.15s;
+    overflow-wrap: anywhere;
   }
-  .quiz-opt:hover { border-color: var(--accent-dim); }
+  .quiz-opt:hover:not(:disabled) { border-color: var(--accent-dim); }
+  .quiz-opt:focus-visible, .quiz-btn:focus-visible, .quiz-feedback:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .quiz-opt.correct { border-color: var(--green); background: rgba(63, 185, 80, 0.12); }
   .quiz-opt.wrong { border-color: var(--red); background: rgba(248, 81, 73, 0.1); }
-  .quiz-opt:disabled { cursor: default; opacity: 0.85; }
+  .quiz-opt:disabled { cursor: default; opacity: 0.9; color: var(--text); }
+  .quiz-mark { font-weight: 700; font-size: 0.8rem; white-space: nowrap; }
+  .quiz-opt.correct .quiz-mark { color: var(--green); }
+  .quiz-opt.wrong .quiz-mark { color: var(--red); }
+  .quiz-feedback { margin: 0.7rem 0 0; font-size: 0.88rem; color: var(--text-dim); }
+  .quiz-verdict { font-weight: 700; margin: 0 0 0.4rem; }
+  .quiz-verdict.ok { color: var(--green); }
+  .quiz-verdict.bad { color: var(--red); }
+  .quiz-explain { list-style: none; margin: 0.3rem 0; padding: 0; display: grid; gap: 0.35rem; }
+  .quiz-explain li { border-left: 2px solid var(--border); padding-left: 0.7rem; }
+  .quiz-explain li.is-correct { border-left-color: var(--green); }
+  .quiz-explain li.is-picked-wrong { border-left-color: var(--red); }
+  .quiz-tag { font-weight: 700; font-size: 0.78rem; color: var(--text); }
   .quiz-why {
     font-size: 0.88rem;
     color: var(--text-dim);
@@ -70,23 +148,142 @@ const { questions } = Astro.props;
     padding-left: 0.8rem;
     margin: 0.7rem 0 0;
   }
+  .quiz-btn {
+    margin-top: 0.7rem;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--accent-dim);
+    border-radius: 7px;
+    padding: 0.35rem 0.8rem;
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .quiz-btn:hover { background: var(--bg-hover); }
+  .quiz-score {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 1rem;
+    border-top: 1px dashed var(--border);
+    margin-top: 1rem;
+    padding-top: 0.5rem;
+  }
+  .quiz-score .quiz-btn { margin-top: 0; }
+  .quiz-score-text { font-weight: 700; }
+  .quiz-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .quiz { position: relative; }
+  .quiz-plain { padding-left: 1.2rem; }
+  .quiz-plain ul { padding-left: 1.2rem; }
 </style>
 
 <script>
-  document.querySelectorAll('[data-quiz] .quiz-q').forEach((qEl) => {
-    const answer = Number(qEl.getAttribute('data-answer'));
-    const opts = qEl.querySelectorAll<HTMLButtonElement>('.quiz-opt');
-    const why = qEl.querySelector<HTMLElement>('.quiz-why');
-    opts.forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const picked = Number(btn.dataset.idx);
-        opts.forEach((b) => {
-          b.disabled = true;
-          if (Number(b.dataset.idx) === answer) b.classList.add('correct');
+  import { quizKey, scorePicks, bestOf, normalizeQuizState, getJSON, setJSON } from '../lib/learn-store.ts';
+
+  const quizzes = Array.from(document.querySelectorAll<HTMLElement>('[data-quiz]'));
+  quizzes.forEach((root, index) => {
+    const live = root.querySelector<HTMLElement>('[data-quiz-live]')!;
+    const qEls = Array.from(root.querySelectorAll<HTMLElement>('.quiz-q'));
+    const answers = qEls.map((q) => Number(q.dataset.answer));
+    const counts = qEls.map((q) => Number(q.dataset.options));
+    const key = quizKey(location.pathname, root.dataset.quizId || index);
+    const scoreBox = root.querySelector<HTMLElement>('[data-score-box]')!;
+    const scoreText = root.querySelector<HTMLElement>('[data-score-text]')!;
+    const sr = root.querySelector<HTMLElement>('[data-live]')!;
+    let picks: (number | null)[] = qEls.map(() => null);
+    let best: number | null = null;
+
+    const save = () => setJSON(key, { picks, best });
+
+    function render(qi: number, focus: boolean) {
+      const q = qEls[qi];
+      const picked = picks[qi];
+      const answer = answers[qi];
+      const opts = Array.from(q.querySelectorAll<HTMLButtonElement>('.quiz-opt'));
+      const fb = q.querySelector<HTMLElement>('[data-feedback]')!;
+      opts.forEach((b, oi) => {
+        const isPicked = picked === oi;
+        const isCorrect = picked !== null && oi === answer;
+        b.disabled = picked !== null;
+        b.setAttribute('aria-pressed', String(isPicked));
+        b.classList.toggle('correct', isCorrect);
+        b.classList.toggle('wrong', isPicked && oi !== answer);
+        b.querySelector<HTMLElement>('.quiz-mark')!.textContent = isCorrect ? (isPicked ? '✓ Correct' : '✓ Correct answer') : isPicked ? '✗ Incorrect' : '';
+      });
+      fb.hidden = picked === null;
+      if (picked === null) return;
+      const ok = picked === answer;
+      const verdict = fb.querySelector<HTMLElement>('[data-verdict]')!;
+      verdict.textContent = ok ? '✓ Correct.' : '✗ Not quite — see why below.';
+      verdict.className = 'quiz-verdict ' + (ok ? 'ok' : 'bad');
+      const list = fb.querySelector<HTMLElement>('.quiz-explain');
+      if (list) {
+        const items = Array.from(list.querySelectorAll<HTMLElement>('li'));
+        const rank = (li: HTMLElement) => { const i = Number(li.dataset.idx); return i === picked ? 0 : i === answer ? 1 : 2 + i; };
+        items.sort((a, b) => rank(a) - rank(b)).forEach((li) => {
+          const i = Number(li.dataset.idx);
+          li.classList.toggle('is-correct', i === answer);
+          li.classList.toggle('is-picked-wrong', i === picked && !ok);
+          li.querySelector<HTMLElement>('[data-tag]')!.textContent =
+            i === answer ? (i === picked ? '✓ Your pick, correct:' : '✓ Correct answer:') : i === picked ? '✗ Your pick, not suitable:' : 'Less suitable:';
+          list.appendChild(li);
         });
-        if (picked !== answer) btn.classList.add('wrong');
-        if (why) why.hidden = false;
+      }
+      if (focus) fb.focus();
+    }
+
+    function renderScore(announce: boolean) {
+      const { score, total, done } = scorePicks(picks, answers);
+      scoreBox.hidden = !done;
+      if (!done) return;
+      scoreText.textContent = `Score ${score}/${total}` + (best !== null ? ` · Best ${best}/${total}` : '');
+      if (announce) sr.textContent = `Quiz complete. Score ${score} out of ${total}.`;
+    }
+
+    function finish() {
+      const { score, total, done } = scorePicks(picks, answers);
+      if (!done) return;
+      best = bestOf(best, score);
+      save();
+      renderScore(true);
+      root.dispatchEvent(new CustomEvent('citadel:quiz-complete', { detail: { key, score, total }, bubbles: true }));
+    }
+
+    qEls.forEach((q, qi) => {
+      q.querySelectorAll<HTMLButtonElement>('.quiz-opt').forEach((b) => b.addEventListener('click', () => {
+        if (picks[qi] !== null) return;
+        picks[qi] = Number(b.dataset.idx);
+        save();
+        render(qi, true);
+        finish();
+      }));
+      q.querySelector<HTMLButtonElement>('[data-retry]')!.addEventListener('click', () => {
+        picks[qi] = null;
+        save();
+        render(qi, false);
+        renderScore(false);
+        q.querySelector<HTMLButtonElement>('.quiz-opt')!.focus();
       });
     });
+
+    root.querySelector<HTMLButtonElement>('[data-retry-all]')!.addEventListener('click', () => {
+      picks = qEls.map(() => null);
+      save();
+      qEls.forEach((_, qi) => render(qi, false));
+      renderScore(false);
+      sr.textContent = 'Quiz reset.';
+      qEls[0].querySelector<HTMLButtonElement>('.quiz-opt')!.focus();
+    });
+
+    function restore() {
+      const state = normalizeQuizState(getJSON(key), qEls.length, counts);
+      picks = state.picks;
+      best = state.best;
+      qEls.forEach((_, qi) => render(qi, false));
+      renderScore(false);
+    }
+    restore();
+    live.hidden = false;
+    document.addEventListener('citadel:progress-reset', restore);
   });
 </script>

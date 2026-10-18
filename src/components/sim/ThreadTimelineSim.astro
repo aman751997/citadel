@@ -1,0 +1,188 @@
+---
+// <ThreadTimelineSim scenario="lost-update" /> : concurrency timeline. Lanes = threads, columns = steps; the panel shows shared
+// state (variables, lock owners, registers, per-thread cached copies) after every step. Outcomes are computed by
+// src/lib/sim/thread-timeline.ts from the interleaving, not hard-coded.
+// Props: scenario (preset id or a Scenario object, default 'lost-update'), title, fallback.
+// Presets: lost-update, lost-update-synchronized, atomic-cas, check-then-act, check-then-act-synchronized,
+//          visibility, visibility-volatile, deadlock, deadlock-ordered.
+// Two modes: "Watch" steps the preset interleaving; "Choose the interleaving" lets the reader pick which thread runs next.
+import SimShell from '../SimShell.astro';
+import { PRESETS, trace, type Scenario } from '../../lib/sim/thread-timeline.ts';
+interface Props { scenario?: string | Scenario; title?: string; fallback?: string }
+const { scenario: sc = 'lost-update', title, fallback } = Astro.props;
+const scenario: Scenario = typeof sc === 'string' ? PRESETS[sc] : sc;
+if (!scenario) throw new Error(`ThreadTimelineSim: unknown preset "${sc}"`);
+const run = trace(scenario);
+const text = fallback ?? `${scenario.summary} Interleaving: ${run.steps.map((e, i) => `${i + 1}. ${scenario.threads[e.tid].name}: ${e.text} (${e.note}).`).join(' ')} Outcome: ${run.text}`;
+---
+<SimShell title={title ?? scenario.title} stepper fallback={text}>
+  <div class="tlsim" data-tl data-scenario={JSON.stringify(scenario)}>
+    <p class="tl-summary">{scenario.summary}</p>
+    <div class="sim-row" role="group" aria-label="Mode">
+      <button type="button" data-mode="watch" aria-pressed="true">Watch the interleaving</button>
+      <button type="button" data-mode="choose" aria-pressed="false">Choose the interleaving</button>
+    </div>
+    <div class="tl-choose" data-choose hidden>
+      <p class="tl-hint" data-goal></p>
+      <div class="sim-row" data-picks role="group" aria-label="Run the next operation of which thread?"></div>
+      <div class="sim-row"><button type="button" data-undo>Undo last choice</button><button type="button" data-clear>Start over</button><span class="sim-count" data-choose-count></span></div>
+    </div>
+    <div class="tl-grid-wrap"><div class="tl-grid" data-grid></div></div>
+    <div class="tl-state" data-state></div>
+    <p class="tl-verdict" data-verdict role="status" aria-live="polite" hidden></p>
+  </div>
+</SimShell>
+
+<style is:global>
+  .tlsim [hidden] { display: none !important; }
+  .tlsim .tl-summary, .tlsim .tl-hint { color: var(--text-dim); font-size: .9rem; margin: 0 0 .4rem; }
+  .tlsim .tl-grid-wrap { overflow-x: auto; margin-top: .8rem; padding-bottom: .3rem; }
+  .tlsim .tl-grid { display: grid; gap: .3rem; align-items: stretch; min-width: max-content; }
+  .tlsim .tl-lane-name { font-family: var(--mono); font-size: .78rem; color: var(--text-dim); align-self: center; position: sticky; left: 0; background: var(--bg-raised); padding-right: .4rem; }
+  .tlsim .tl-cell { min-height: 2.3rem; min-width: 6.4rem; border-radius: 6px; border: 1px dashed var(--border); }
+  .tlsim .tl-cell.has { border-style: solid; border-color: var(--blue); background: #58a6ff22; padding: .25rem .4rem; font-family: var(--mono); font-size: .72rem; line-height: 1.25; }
+  .tlsim .tl-cell.has.warn { border-color: var(--accent); background: #e3b34122; }
+  .tlsim .tl-cell.has.bad { border-color: var(--red); background: #f8514922; }
+  .tlsim .tl-cell.future { opacity: .35; }
+  .tlsim .tl-cell.now { outline: 2px solid var(--text); outline-offset: 1px; }
+  .tlsim .tl-axis { font-size: .65rem; color: var(--text-dim); text-align: center; font-family: var(--mono); }
+  .tlsim .tl-state { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .8rem; }
+  .tlsim .tl-state .sim-stat { flex: 1 1 8rem; }
+  .tlsim .tl-state .sim-stat small { display: block; overflow-wrap: anywhere; }
+  .tlsim .tl-state .sim-stat.chg { border-color: var(--accent); }
+  .tlsim .tl-verdict { margin: .8rem 0 0; padding: .5rem .8rem; border-radius: 8px; border: 1px solid var(--border); font-size: .9rem; }
+  .tlsim .tl-verdict.ok { border-color: var(--green); }
+  .tlsim .tl-verdict.bad { border-color: var(--red); }
+  @media (max-width: 480px) { .tlsim .tl-cell { min-width: 5.4rem; } }
+</style>
+
+<script>
+  import { mountStepper } from '../../lib/sim.ts';
+  import { trace, newMachine, step, runnable, isDone, isBlocked, isFinished, isDeadlocked, evaluate, describe,
+    type Scenario, type StepEvent, type Machine } from '../../lib/sim/thread-timeline.ts';
+
+  const show = (v: unknown) => (v === null || v === undefined ? 'null' : typeof v === 'string' ? `"${v}"` : String(v));
+  const cap = (s: Scenario, e: StepEvent) => `${s.threads[e.tid].name}: ${e.text}. ${e.note}.`;
+
+  document.querySelectorAll<HTMLElement>('[data-tl]').forEach((el) => {
+    const s: Scenario = JSON.parse(el.dataset.scenario!);
+    const root = el.closest<HTMLElement>('[data-sim-root]')!;
+    const q = <T extends HTMLElement>(sel: string) => el.querySelector<T>(sel)!;
+    const grid = q('[data-grid]'), stateEl = q('[data-state]'), verdict = q('[data-verdict]');
+    const controls = root.querySelector<HTMLElement>('.sim-controls')!;
+    const caption = root.querySelector<HTMLElement>('[data-sim-caption]')!;
+    const totalOps = s.threads.reduce((n, t) => n + t.ops.length, 0);
+    let mode: 'watch' | 'choose' = 'watch';
+    let picks: number[] = [];
+
+    const drawGrid = (events: StepEvent[], cols: number, current: number) => {
+      grid.style.gridTemplateColumns = `5.5rem repeat(${cols}, minmax(6.4rem, 1fr))`;
+      grid.replaceChildren();
+      const axis = document.createElement('span');
+      grid.append(axis);
+      for (let c = 0; c < cols; c++) { const a = document.createElement('span'); a.className = 'tl-axis'; a.textContent = `step ${c + 1}`; grid.append(a); }
+      s.threads.forEach((th, t) => {
+        const name = document.createElement('span');
+        name.className = 'tl-lane-name'; name.textContent = th.name; grid.append(name);
+        for (let c = 0; c < cols; c++) {
+          const cell = document.createElement('span');
+          const e = events[c];
+          cell.className = 'tl-cell';
+          if (e && e.tid === t) {
+            const cls = e.kind === 'stale' ? 'bad' : e.kind === 'ran' ? '' : 'warn';
+            const mark = e.kind === 'blocked' ? 'WAIT ' : e.kind === 'cas-fail' ? 'FAIL ' : e.kind === 'stale' ? 'STALE ' : '';
+            cell.className = `tl-cell has ${cls}`;
+            cell.textContent = `${mark}${e.text}`;
+            if (c > current) cell.classList.add('future');
+            if (c === current) cell.classList.add('now');
+          }
+          grid.append(cell);
+        }
+      });
+    };
+
+    const drawState = (m: Machine, prev: Machine | null) => {
+      stateEl.replaceChildren();
+      const add = (label: string, value: string, changed: boolean) => {
+        const d = document.createElement('div');
+        d.className = 'sim-stat' + (changed ? ' chg' : '');
+        const b = document.createElement('b'); b.textContent = value;
+        const sm = document.createElement('small'); sm.textContent = label + (changed ? ' (changed)' : '');
+        d.append(b, sm); stateEl.append(d);
+      };
+      for (const v of Object.keys(m.vars)) add(`shared ${v}${s.volatile?.includes(v) ? ' (volatile / atomic)' : ''}`, show(m.vars[v]), !!prev && prev.vars[v] !== m.vars[v]);
+      for (const l of Object.keys(m.locks)) add(`lock ${l} owner`, m.locks[l] === null ? 'free' : s.threads[m.locks[l]!].name, !!prev && prev.locks[l] !== m.locks[l]);
+      s.threads.forEach((th, t) => {
+        const regs = Object.entries(m.threads[t].regs).map(([k, v]) => `${k}=${show(v)}`).join(', ') || 'none yet';
+        const cache = Object.entries(m.threads[t].cache).map(([k, v]) => `${k}=${show(v)}`).join(', ');
+        const p = prev?.threads[t];
+        add(`${th.name} locals${cache ? `; cached copy: ${cache}` : ''}`, regs, !!p && JSON.stringify(p.regs) !== JSON.stringify(m.threads[t].regs));
+      });
+    };
+
+    const finish = (m: Machine, who: 'watch' | 'choose') => {
+      const r = evaluate(s, m);
+      verdict.hidden = false;
+      verdict.className = `tl-verdict ${r.met ? 'ok' : 'bad'}`;
+      const lead = who === 'choose' && !r.met ? 'You reproduced the bug. ' : '';
+      verdict.textContent = `${r.met ? '✓ Correct outcome.' : '✗ Bug outcome.'} ${lead}${r.text}`;
+    };
+
+    // ---- watch mode, driven by the shell's Back/Next/Play/Reset
+    const run = trace(s);
+    const steps = run.steps.map((e) => ({ ...e, caption: cap(s, e) }));
+    const watch = (e: StepEvent, i: number) => {
+      if (mode !== 'watch') return;
+      drawGrid(steps, steps.length, i);
+      drawState(e.snap, i > 0 ? steps[i - 1].snap : null);
+      if (i === steps.length - 1) finish(e.snap, 'watch'); else verdict.hidden = true;
+    };
+    mountStepper(root, { steps, render: watch, intervalMs: 1800 });
+
+    // ---- choose mode: the reader picks the next thread
+    const replay = () => {
+      const m = newMachine(s);
+      const events = picks.map((t) => step(s, m, t)!);
+      return { m, events };
+    };
+    const drawChoose = () => {
+      const { m, events } = replay();
+      const done = isFinished(s, m) || isDeadlocked(s, m);
+      drawGrid(events, Math.max(totalOps, events.length), events.length - 1);
+      drawState(m, events.length > 1 ? events[events.length - 2].snap : null);
+      const row = q('[data-picks]');
+      row.replaceChildren();
+      s.threads.forEach((th, t) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        const fin = isDone(s, m, t), blk = isBlocked(s, m, t);
+        b.disabled = done || fin || blk;
+        b.textContent = fin ? `${th.name}: finished` : blk ? `${th.name}: blocked on a lock` : `Run ${th.name}: ${describe(th.ops[m.threads[t].pc])}`;
+        b.addEventListener('click', () => { picks.push(t); drawChoose(); (row.querySelector<HTMLButtonElement>('button:not(:disabled)') ?? q('[data-undo]')).focus(); });
+        row.append(b);
+      });
+      q<HTMLButtonElement>('[data-undo]').disabled = picks.length === 0;
+      q('[data-choose-count]').textContent = `${events.length} steps taken`;
+      const last = events[events.length - 1];
+      caption.textContent = last ? cap(s, last) : 'Pick a thread to run its next operation.';
+      if (done) finish(m, 'choose'); else verdict.hidden = true;
+      if (done && isDeadlocked(s, m)) caption.textContent += ' No thread can run: deadlock.';
+    };
+    q('[data-undo]').addEventListener('click', () => { picks.pop(); drawChoose(); });
+    q('[data-clear]').addEventListener('click', () => { picks = []; drawChoose(); });
+    const goal = q('[data-goal]');
+    goal.textContent = run.met
+      ? 'Goal: try to break it. Pick which thread runs each step. (This variant is the fix, so no ordering should fail.)'
+      : 'Goal: find an ordering that produces the bug. Pick which thread runs each step.';
+
+    el.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((b) =>
+      b.addEventListener('click', () => {
+        mode = b.dataset.mode as 'watch' | 'choose';
+        el.querySelectorAll<HTMLButtonElement>('[data-mode]').forEach((o) => o.setAttribute('aria-pressed', String(o === b)));
+        q('[data-choose]').hidden = mode === 'watch';
+        controls.style.display = mode === 'watch' ? '' : 'none';
+        if (mode === 'watch') root.querySelector<HTMLButtonElement>('[data-sim-reset]')!.click();
+        else { picks = []; drawChoose(); }
+      }));
+  });
+</script>

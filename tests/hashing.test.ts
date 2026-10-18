@@ -33,7 +33,7 @@ test('chapter 1: bucket numbers, the add return value and the resize threshold',
   // toy wall: 3 and 11 share hole 3, and so does 19 — Java's own bucket choice agrees for small Integers
   for (const x of [3, 11, 19]) { assert.equal(x % 8, 3); assert.equal(bucket(x, 8), 3); }
   assert.deepEqual(cells(wall[0].rows[0]).map((v, i) => (v === '·' ? null : i)).filter(i => i !== null), [3]);
-  assert.match(correct(wall[0]), /^Hole 3/);
+  assert.match(correct(wall[0]), /^Bucket 3/);
   // figure in the prologue: 3, 11, 4, 19, 8 in eight holes
   const holes: number[][] = Array.from({ length: 8 }, () => []);
   for (const x of [3, 11, 4, 19, 8]) holes[x % 8].push(x);
@@ -67,7 +67,7 @@ test('chapter 3: key facts (list hashes, holes, string-key collisions)', () => {
   assert.equal(bucket(994, 16), 2);
   assert.equal(bucket(30817, 16), 1);
   assert.match(correct(keys[2]), /stranded/);
-  assert.match(keys[2].choices[1].feedback, /994 \(hole 2 of 16\) and \[1, 2, 3\] to 30817 \(hole 1\)/);
+  assert.match(keys[2].choices[1].feedback, /994 \(bucket 2 of 16\) and \[1, 2, 3\] to 30817 \(bucket 1\)/);
   assert.equal(`${1}${23}`, `${12}${3}`);
   assert.equal(`${11}${1}`, `${1}${11}`);
   assert.notEqual(`${1},${23}`, `${12},${3}`);

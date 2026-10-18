@@ -2,11 +2,11 @@
 import { row, step } from '../../lib/trace.ts';
 
 export const wall = [
-  step('A toy wall of 8 pigeonholes files each number in hole (number mod 8). 3 and 11 are already filed. Where does 19 go, and what does contains(19) have to do?',
-    [row('Pigeonholes', ['·', '·', '·', '3 · 11', '·', '·', '·', '·'], { 3: 'hole 3' }, { tones: { 3: 'hot' } })], 0, [
-      ['Hole 3, beside 3 and 11. contains(19) goes to hole 3 and compares 19 with each letter there', 'Yes. 19 mod 8 = 3, the same hole as 3 and 11: a collision. The stamp narrows the search to one hole; equals still checks the two letters inside. That short chain is why a lookup is O(1) on average, not always.'],
-      ['Hole 19: every number gets a hole of its own', 'A hole for every possible int would mean four billion holes. The wall has 8, many numbers share each one, and that is fine as long as each hole stays short.'],
-      ['Hole 3, and contains(19) can say yes at once because the hole is occupied', 'An occupied hole only means some number with the same stamp is filed there. 3 and 11 share hole 3 with 19, but neither is 19. Equals has to check.'],
+  step('A toy hash table of 8 buckets files each number in bucket (number mod 8). 3 and 11 are already filed. Where does 19 go, and what does contains(19) have to do?',
+    [row('Buckets', ['·', '·', '·', '3 · 11', '·', '·', '·', '·'], { 3: 'bucket 3' }, { tones: { 3: 'hot' } })], 0, [
+      ['Bucket 3, beside 3 and 11. contains(19) goes to bucket 3 and compares 19 with each key there', 'Yes. 19 mod 8 = 3, the same bucket as 3 and 11: a collision. The hash code narrows the search to one bucket; equals still checks the two keys inside. That short chain is why a lookup is O(1) on average, not always.'],
+      ['Bucket 19: every number gets a bucket of its own', 'A bucket for every possible int would mean four billion buckets. The table has 8, many numbers share each one, and that is fine as long as each bucket stays short.'],
+      ['Bucket 3, and contains(19) can say yes at once because the bucket is occupied', 'An occupied bucket only means some number with the same hash code is filed there. 3 and 11 share bucket 3 with 19, but neither is 19. Equals has to check.'],
     ]),
   step('Contains Duplicate on [1, 2, 3, 1]. You hold the 1 at index 3, and the set holds 1, 2 and 3. What does seen.add(1) return, and what do you do?',
     [row('nums', [1, 2, 3, 1], { 3: 'HERE' }, { tones: { 0: 'done', 1: 'done', 2: 'done', 3: 'hot' } }), row('seen', [1, 2, 3], {}, { tones: { 0: 'hot' } })], 1, [
@@ -17,7 +17,7 @@ export const wall = [
   step('A default Java HashMap starts with 16 buckets and load factor 0.75. You put the 13th distinct key. What happens?', [], 2, [
       ['Nothing special: the chains just get longer', 'Without resizing, chains would grow with n and every lookup would slide toward O(n). The threshold is 16 × 0.75 = 12 entries, and the 13th crosses it.'],
       ['The map adds one bucket, making 17', 'Growing by one would re-file every entry on almost every put: O(n) each, O(n²) in total. Java always doubles, and keeps the capacity a power of two.'],
-      ['It doubles to 32 buckets and re-files all 13 entries. That rare O(n) step averages out to O(1) per put', 'Yes. Because the wall doubles, all the re-filing over the map’s whole life adds up to roughly 2n entry moves at most: amortised O(1) per put.'],
+      ['It doubles to 32 buckets and re-files all 13 entries. That rare O(n) step averages out to O(1) per put', 'Yes. Because the table doubles, all the re-filing over the map’s whole life adds up to roughly 2n entry moves at most: amortised O(1) per put.'],
       ['It throws: the map is full', 'A HashMap is never full. It grows until memory runs out.'],
     ]),
 ];
@@ -25,7 +25,7 @@ export const wall = [
 export const twoSum = [
   step('[3, 2, 4], target 6. You hold the 3 at index 0, and the register is empty. Which comes first?',
     [row('nums', [3, 2, 4], { 0: 'x' }, { tones: { 0: 'hot' } }), row('Register (value → index)', [])], 1, [
-      ['File 3 → 0, then ask for 6 − 3 = 3', 'Then the register answers “yes, at index 0”: the 3 finds itself and you report [0, 0], one stamp used twice. The real answer is [1, 2].'],
+      ['File 3 → 0, then ask for 6 − 3 = 3', 'Then the register answers “yes, at index 0”: the 3 finds itself and you report [0, 0], one value used twice. The real answer is [1, 2].'],
       ['Ask for 6 − 3 = 3 first; only then file 3 → 0', 'Yes. The register only holds values from earlier positions, so any match is a different index. Nothing is found, so file 3 → 0 and move on.'],
       ['Ask for 3 itself', 'You ask for the partner, target − x, not for x. Here they happen to be equal, which is exactly the case where filing first would go wrong.'],
     ]),
@@ -45,8 +45,8 @@ export const twoSum = [
 
 export const keys = [
   step('Class Point overrides equals (same x, same y) but not hashCode. You add new Point(0, 0) to a HashSet, walk around the block, and add new Point(0, 0) again. What usually happens?', [], 1, [
-    ['add returns false: the two points are equal', 'Equals never gets asked. The inherited hashCode comes from object identity, so two equal points almost always get different stamps and land in different holes. Equals only compares letters that share a hole.'],
-    ['add returns true, and the set now holds two equal points', 'Yes. The contract says equal objects must have equal hash codes. Break it, and the set finds the twin only when two unrelated identity hashes happen to share a hole, so the bug even comes and goes.'],
+    ['add returns false: the two points are equal', 'Equals never gets asked. The inherited hashCode comes from object identity, so two equal points almost always get different hash codes and land in different buckets. Equals only compares keys that share a bucket.'],
+    ['add returns true, and the set now holds two equal points', 'Yes. The contract says equal objects must have equal hash codes. Break it, and the set finds the twin only when two unrelated identity hashes happen to share a bucket, so the bug even comes and goes.'],
     ['It throws an exception', 'Nothing checks the contract at runtime. That is why this bug is so quiet.'],
   ]),
   step('Integer a = 1000, b = 1000. What does a == b print?', [], 1, [
@@ -55,8 +55,8 @@ export const keys = [
     ['It does not compile', 'It compiles without a warning. That is the trap.'],
   ]),
   step('You add an ArrayList [1, 2] to a HashSet, then call list.add(3) on that same list. Does set.contains(list) find it?', [], 1, [
-    ['Yes: it is the very same object', 'Same object, new hash. The set filed it under the hash of [1, 2]; contains stamps [1, 2, 3], looks in a different hole, and finds nothing.'],
-    ['No: the key changed its hash after it was filed, so it is stranded in the wrong hole', 'Yes. [1, 2] hashes to 994 (hole 2 of 16) and [1, 2, 3] to 30817 (hole 1). Neither the old list nor the new one finds the entry. Never change a key while it is filed.'],
+    ['Yes: it is the very same object', 'Same object, new hash. The set filed it under the hash of [1, 2]; contains hashes [1, 2, 3], looks in a different bucket, and finds nothing.'],
+    ['No: the key changed its hash after it was filed, so it is stranded in the wrong bucket', 'Yes. [1, 2] hashes to 994 (bucket 2 of 16) and [1, 2, 3] to 30817 (bucket 1). Neither the old list nor the new one finds the entry. Never change a key while it is filed.'],
     ['Only after you call rehash()', 'There is no public rehash. Remove the key, change it, and add it again — or use keys that cannot change.'],
   ]),
   step('You decide to key each corner (x, y) as a String. Which key is safe?', [], 2, [
@@ -171,9 +171,9 @@ export const mixedReview = [
     ['Sort the whole list after every arrival', 'O(n log n) per arrival. A tree keeps the order up to date for O(log n).'],
   ]),
   step('You use your own class as a HashMap key. What must you do?', [], 2, [
-    ['Override equals, so equal keys match', 'Not enough. The map checks equals only inside one hole, and without hashCode equal keys land in different holes.'],
-    ['Override hashCode, so equal keys share a hole', 'Not enough. Without equals, two keys in the same hole are still compared by identity and never match.'],
-    ['Override both equals and hashCode from the same fields (or use a record), and never change those fields while the key is filed', 'Yes. Equal objects must have equal hash codes, and a key whose hash changes is stranded in the wrong hole.'],
+    ['Override equals, so equal keys match', 'Not enough. The map checks equals only inside one bucket, and without hashCode equal keys land in different buckets.'],
+    ['Override hashCode, so equal keys share a bucket', 'Not enough. Without equals, two keys in the same bucket are still compared by identity and never match.'],
+    ['Override both equals and hashCode from the same fields (or use a record), and never change those fields while the key is filed', 'Yes. Equal objects must have equal hash codes, and a key whose hash changes is stranded in the wrong bucket.'],
   ]),
   step('An int[] of 200 million values already fills most of your memory. Is any value repeated?', [], 1, [
     ['Copy them into a HashSet<Integer>', 'Each boxed entry costs dozens of bytes against 4 in the array: around ten times the memory you have.'],

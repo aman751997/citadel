@@ -2,7 +2,7 @@
 export const hints: Record<string, [string, string, string]> = {
   containsDuplicate: [
     'Comparing every pair is O(n²). What could you keep as you go, so that “have I seen this before?” costs one step?',
-    'A HashSet of the values met so far. A repeat of x can only be filed in x’s own hole, so one lookup answers the question.',
+    'A HashSet of the values met so far. A repeat of x can only be filed in x’s own bucket, so one lookup answers the question.',
     'For each x: if seen.add(x) returns false, x was already there, so return true. After the loop, return false.',
   ],
   twoSum: [

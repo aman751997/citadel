@@ -41,7 +41,7 @@ export const MODULES: ModuleDef[] = [
     planned: [],
   },
   {
-    id: 6, icon: '🔒', title: 'Contention & Exactly-Once',
+    id: 6, icon: '⚖️', title: 'Contention & Exactly-Once',
     tagline: 'Locks, idempotency, ledgers. Unlocks: Ticketmaster, payments, job scheduler, Airbnb, flash sales. Full walkthroughs inside the lesson: Ticketmaster, Payments (Stripe), Distributed Job Scheduler.',
     planned: [],
   },

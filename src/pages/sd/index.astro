@@ -18,9 +18,9 @@ const orderedIds = lessons.map((l) => l.id);
   <header class="hero">
     <h1>🏗️ The System Design Wing</h1>
     <p class="sub">
-      Your private Hello-Interview, pattern-first: Every lesson is open: start anywhere. The ▶️ marks the next one in the suggested order.
+      Your private Hello-Interview, pattern-first: Every lesson is open: start anywhere. The “▶ next” badge marks the next one in the suggested order.
       Progress auto-syncs to git when “🔗 git sync” is linked in the nav (survives cache resets);
-      “📋 Copy progress” pasted to the buddy still syncs Notion. New lessons get forged as you climb.
+      “📋 Copy progress” pasted to the buddy still syncs Notion. New lessons get added over time.
     </p>
     <div class="progress-wrap">
       <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
@@ -37,19 +37,16 @@ const orderedIds = lessons.map((l) => l.id);
         <p class="module-tagline">{mod.tagline}</p>
         <div class="lesson-grid">
           {modLessons.map((l) => (
-            <a
-              href={`${base}sd/lessons/${l.id}/`}
-              class="lesson-card"
-              data-lesson-id={l.id}
-              data-unlock-order={orderedIds.indexOf(l.id)}
-            >
-              <span class="lesson-state" data-state-icon>🔒</span>
-              <div>
-                <div class="lesson-title">{l.data.title}</div>
+            <div class="lesson-card" data-lesson-id={l.id} data-unlock-order={orderedIds.indexOf(l.id)}>
+              <label class="check-hit">
+                <input type="checkbox" class="lesson-check" aria-label={`Mark ${l.data.title} as done`} />
+              </label>
+              <a class="lesson-link" href={`${base}sd/lessons/${l.id}/`}>
+                <div class="lesson-title">{l.data.title} <span class="next-badge" hidden>▶ next</span></div>
                 <div class="lesson-desc">{l.data.description}</div>
                 <div class="lesson-meta">~{l.data.minutes} min</div>
-              </div>
-            </a>
+              </a>
+            </div>
           ))}
           {mod.planned.map((p) => (
             <div class="lesson-card planned">
@@ -124,9 +121,17 @@ const orderedIds = lessons.map((l) => l.id);
   }
   a.lesson-card:hover { border-color: var(--accent-dim); background: var(--bg-hover); }
   a.war-card:hover { border-color: var(--green); }
+  .lesson-card:has(.lesson-link:hover) { border-color: var(--accent-dim); background: var(--bg-hover); }
   .lesson-card.done { border-color: rgba(63, 185, 80, 0.45); }
   .lesson-card.planned { opacity: 0.45; }
   .lesson-state { font-size: 1.15rem; line-height: 1.5; }
+  .lesson-card:has(.check-hit) { padding: 0; gap: 0; align-items: stretch; }
+  .check-hit { display: flex; align-items: flex-start; justify-content: center; flex: 0 0 44px; min-height: 44px; padding-top: 0.75rem; cursor: pointer; }
+  .lesson-check { width: 1.25rem; height: 1.25rem; margin: 0; cursor: pointer; accent-color: var(--green); }
+  .lesson-check:disabled { cursor: default; }
+  .lesson-check:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .lesson-link { flex: 1; min-width: 0; padding: 0.95rem 1.1rem 0.95rem 0.2rem; color: var(--text); text-decoration: none; }
+  .next-badge { font-size: 0.7rem; font-family: var(--mono); color: var(--accent); border: 1px solid var(--accent-dim); border-radius: 4px; padding: 0 0.35rem; margin-left: 0.4rem; white-space: nowrap; }
   .lesson-title { font-weight: 600; }
   .lesson-desc { font-size: 0.86rem; color: var(--text-dim); margin-top: 0.15rem; }
   .lesson-meta { font-size: 0.75rem; color: var(--text-dim); font-family: var(--mono); margin-top: 0.35rem; }
@@ -134,40 +139,62 @@ const orderedIds = lessons.map((l) => l.id);
 
 <script>
   import { SD_DONE } from '../../progress';
+  import { queueSync } from '../../sync';
+  import { getList, toggleItem } from '../../lib/lesson-check.ts';
   // Baked (git-synced) completions + localStorage overlay of NEW ones not yet synced.
-  const local: string[] = JSON.parse(localStorage.getItem('sdc-progress') || '[]');
-  const fresh = local.filter((s) => !SD_DONE.includes(s));
-  if (fresh.length !== local.length) localStorage.setItem('sdc-progress', JSON.stringify(fresh));
-  const done: string[] = [...SD_DONE, ...fresh];
+  const KEY = 'sdc-progress';
+  const baked = new Set<string>(SD_DONE);
+  const freshIds = () => getList(KEY).filter((s) => !baked.has(s));
+  const isDone = (id: string) => baked.has(id) || getList(KEY).includes(id);
+  // Drop overlay entries that are now baked into git.
+  if (freshIds().length !== getList(KEY).length) {
+    getList(KEY).filter((s) => baked.has(s)).forEach((s) => toggleItem(KEY, s, false));
+  }
   const cards = [...document.querySelectorAll<HTMLElement>('[data-lesson-id]')].sort(
     (a, b) => Number(a.dataset.unlockOrder) - Number(b.dataset.unlockOrder)
   );
-  let gateOpen = true; // the first incomplete lesson gets the ▶️ marker; every lesson stays open
-  for (const card of cards) {
-    const id = card.dataset.lessonId!;
-    const icon = card.querySelector('[data-state-icon]')!;
-    if (done.includes(id)) {
-      card.classList.add('done');
-      icon.textContent = '✅';
-    } else if (gateOpen) {
-      icon.textContent = '▶️';
-      gateOpen = false;
-    }
-  }
   const fill = document.getElementById('progress-fill');
   const label = document.getElementById('progress-label');
   const total = cards.length;
-  const doneCount = cards.filter((c) => done.includes(c.dataset.lessonId!)).length;
-  if (fill && total > 0) fill.style.width = `${(doneCount / total) * 100}%`;
-  if (label) label.textContent = `${doneCount} / ${total} lessons`;
+  let doneCount = 0;
+  const refresh = () => {
+    let nextMarked = false;
+    doneCount = 0;
+    for (const card of cards) {
+      const id = card.dataset.lessonId!;
+      const box = card.querySelector<HTMLInputElement>('.lesson-check')!;
+      const badge = card.querySelector<HTMLElement>('.next-badge')!;
+      const d = isDone(id);
+      box.checked = d;
+      if (baked.has(id)) {
+        box.disabled = true;
+        box.closest('label')!.title = 'Recorded in git sync';
+      }
+      card.classList.toggle('done', d);
+      if (d) doneCount++;
+      badge.hidden = d || nextMarked;
+      if (!d) nextMarked = true;
+    }
+    if (fill && total > 0) fill.style.width = `${(doneCount / total) * 100}%`;
+    if (label) label.textContent = `${doneCount} / ${total} lessons`;
+  };
+  refresh();
+  window.addEventListener('pageshow', (e) => { if (e.persisted) refresh(); });
+  for (const card of cards) {
+    const box = card.querySelector<HTMLInputElement>('.lesson-check')!;
+    box.addEventListener('change', () => {
+      toggleItem(KEY, card.dataset.lessonId!, box.checked);
+      if (box.checked) queueSync();
+      refresh();
+    });
+  }
 
   // Copy-progress: structured report to paste to the buddy, who logs it to Notion + repo.
   const copyBtn = document.getElementById('copy-progress') as HTMLButtonElement | null;
   copyBtn?.addEventListener('click', async () => {
-    const cleared = cards.filter((c) => done.includes(c.dataset.lessonId!));
-    const clearedIds = cleared.map((c) => c.dataset.lessonId);
-    const newIds = fresh.filter((s) => cards.some((c) => c.dataset.lessonId === s));
-    const nextCard = cards.find((c) => !done.includes(c.dataset.lessonId!));
+    const clearedIds = cards.filter((c) => isDone(c.dataset.lessonId!)).map((c) => c.dataset.lessonId);
+    const newIds = freshIds().filter((s) => cards.some((c) => c.dataset.lessonId === s));
+    const nextCard = cards.find((c) => !isDone(c.dataset.lessonId!));
     const report = [
       `🏰 Citadel progress report — ${new Date().toISOString().slice(0, 10)}`,
       `SD lessons cleared (${doneCount}/${total}): ${clearedIds.length ? clearedIds.join(', ') : 'none yet'}`,

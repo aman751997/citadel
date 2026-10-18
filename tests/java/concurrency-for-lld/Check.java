@@ -88,6 +88,7 @@ public class Check {
         rates();
         stamped();
         atomics();
+        refClaims();
         visits();
         tariffs();
         pools();
@@ -374,6 +375,51 @@ public class Check {
         B_atomics.DailyRecord rec = g.new DailyRecord();
         parallel(8, 10_000, t -> { for (int i = 0; i < 10_000; i++) rec.offer(t * 10_000L + i); });
         eq(79_999L, rec.highest(), "running max");
+    }
+
+    // Chapter 5: a volatile reference is visible and assigned atomically, but check-then-set on it still races; compareAndSet does not.
+    static void refClaims() {
+        int rounds = 200_000;
+        showsFailure(5, () -> {
+            B_volatileRefMess mess = new B_volatileRefMess();
+            B_volatileRefMess.VolatileClaim[] slots = new B_volatileRefMess.VolatileClaim[rounds];
+            for (int i = 0; i < rounds; i++) slots[i] = mess.new VolatileClaim();
+            boolean[][] won = new boolean[2][rounds];
+            AtomicInteger arrived = new AtomicInteger();
+            parallel(2, 30_000, t -> {
+                for (int r = 0; r < rounds; r++) {
+                    arrived.incrementAndGet();
+                    while (arrived.get() < 2 * (r + 1)) Thread.onSpinWait();
+                    won[t][r] = slots[r].claim(t == 0 ? "KA-01" : "KA-02");
+                }
+            });
+            int both = 0;
+            for (int r = 0; r < rounds; r++) if (won[0][r] && won[1][r]) both++;
+            return both;
+        }, "volatile reference: both threads claim the same slot");
+
+        B_atomicRefClaim fixed = new B_atomicRefClaim();
+        B_atomicRefClaim.AtomicClaim[] slots = new B_atomicRefClaim.AtomicClaim[rounds];
+        for (int i = 0; i < rounds; i++) slots[i] = fixed.new AtomicClaim();
+        boolean[][] won = new boolean[2][rounds];
+        AtomicInteger arrived = new AtomicInteger();
+        parallel(2, 30_000, t -> {
+            for (int r = 0; r < rounds; r++) {
+                arrived.incrementAndGet();
+                while (arrived.get() < 2 * (r + 1)) Thread.onSpinWait();
+                won[t][r] = slots[r].claim(t == 0 ? "KA-01" : "KA-02");
+            }
+        });
+        for (int r = 0; r < rounds; r++) {
+            eq(1, (won[0][r] ? 1 : 0) + (won[1][r] ? 1 : 0), "AtomicReference.compareAndSet: exactly one winner in round " + r);
+            eq(won[0][r] ? "KA-01" : "KA-02", slots[r].owner(), "owner is the winner");
+        }
+
+        B_atomicRefClaim.AtomicClaim byValue = fixed.new AtomicClaim();
+        String plate = new String("KA-01");
+        yes(byValue.claim(plate), "claim an empty slot");
+        yes(!byValue.releaseIfOwner(new String("KA-01")), "compareAndSet compares references: an equal but different String does not match");
+        yes(byValue.releaseIfOwner(plate), "the same reference does match");
     }
 
     // Chapter 6: get-then-put loses; merge, compute, computeIfAbsent don't.

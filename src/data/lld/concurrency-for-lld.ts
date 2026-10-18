@@ -62,7 +62,7 @@ export const races = [
   ]),
   step('park() calls spot.isFree(), then spot.assign(plate). Both methods are synchronized. Is park() safe?', [], 2, [
     ['Yes — both methods are synchronized', 'Each call is atomic, but the lock is released between them. Two gates can both pass isFree() before either assigns.'],
-    ['Yes — assign is fast, so the window is tiny', 'A tiny window is still a window. Oona’s rig hits it thousands of times in 200,000 rounds.'],
+    ['Yes — assign is fast, so the window is tiny', 'A tiny window is still a window. The stress test hits it thousands of times in 200,000 rounds.'],
     ['No — check-then-act spans two calls; it must be one atomic step like tryAssign', 'Right. The invariant spans both steps, so both steps must happen under one lock (or one CAS).'],
   ]),
   step('Which of these is a data race in the memory-model sense?', [], 0, [

@@ -195,7 +195,7 @@ export const composite = [
     ['Add print() and gst() to BillNode', 'Fine for one operation. For five (claims export, discount audit…) every node class is reopened five times.'],
     ['A Decorator per operation', 'Decorators wrap one object’s calls. They do not walk a tree.'],
   ]),
-  step('Oona runs group.add(group) and then group.total(). What happens?', [], 2, [
+  step('A test runs group.add(group) and then group.total(). What happens?', [], 2, [
     ['It returns 0', 'The group contains itself, so total() calls total() on itself before it can add anything.'],
     ['It returns the total twice', 'There is no base case to stop at the second visit.'],
     ['StackOverflowError: the cycle recurses forever', 'Right. A composite must be a tree. Build it bottom-up from finished children, or reject adding an ancestor; the checker shows the overflow.'],
@@ -264,7 +264,7 @@ export const tellApart = [
 ];
 
 export const drills = [
-  step('Bram wants Copperline’s display board to show free spots per level, and later per zone and per row. Spots, zones and levels must all answer “how many free?”', [], 1, [
+  step('A parking garage’s display board must show free spots per level, and later per zone and per row. Spots, zones and levels must all answer “how many free?”', [], 1, [
     ['Bridge', 'There are not two independent hierarchies here, just one part–whole tree.'],
     ['Composite', 'Right. A spot answers 1 or 0; a section sums its parts; the board asks a level exactly what it would ask a spot.'],
     ['Flyweight', 'Memory is not the issue. Uniform questions over a tree are.'],

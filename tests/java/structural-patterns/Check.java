@@ -399,7 +399,7 @@ public class Check {
         eq(new B_clinic.PaymentResult(true, "PL-1"), s.paid(), "summary payment");
         eq(B_clinic.Money.rupees(54500), s.bill().pendingDue(), "54,500 due");
 
-        // the bug Oona found: the original facade carries on after a decline
+        // the bug QA found: the original facade carries on after a decline
         steps.clear();
         B_clinic.PaymentProcessor declining = (id, amt) -> { steps.add("payment"); return new B_clinic.PaymentResult(false, null); };
         c.new DischargeFacade(billing, declining, pharmacy, sms, audit).discharge("ADM-1");

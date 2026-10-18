@@ -38,7 +38,7 @@ _Last updated: 2026-10-19 01:00 (regenerated from git; see "How to refresh" at t
 - Java checkers: **34 lessons PASS**
 - Mermaid: **522 diagrams on 68 pages, 0 failures** (3 pre-existing broken ones fixed)
 
-## Known open items
+## Known open items (full list in `docs/PENDING.md`)
 
 - Over-length lessons to trim (word ratio vs original, measured): caching 2.69×, contention 1.75×, async-jobs 1.69×, partitioning 1.67×, databases 1.57×, blob-cdn 1.53×, rate-limiter 1.52×, fan-out 1.52×, core-concepts 1.49×, search 1.48×, llm-gateway 1.47×, url-shortener 1.43×. (Caching's original was short, so its ratio is inflated.) Word counts include code, quizzes and revision cards.
 - Interactive pieces (DryRun predict mode, quizzes, simulations) were exercised by agents in headless Chrome but not by a person; click through a few before relying on them.
@@ -133,6 +133,7 @@ _Last updated: 2026-10-19 01:00 (regenerated from git; see "How to refresh" at t
 | Live task list for the current work | the Tasks list under my latest message in the app |
 | Live agents | the sessions sidebar / `ListAgents`; ask me "how many agents are running" |
 | SQL & Redis verification evidence | `docs/qa/sql-redis-verification.md` |
+| Pending / not-yet-verified items | `docs/PENDING.md` |
 | Component docs | `docs/INTERACTIVE_COMPONENTS.md`, `docs/DRYRUN.md`, `docs/REVISION.md` |
 
 ## How to refresh this file

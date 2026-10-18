@@ -2,12 +2,12 @@ import { row, step } from '../../lib/trace.ts';
 
 // Chapter 2 · DNS
 export const dns = [
-  step('Kestrel wants to fail over to a standby region within about a minute by changing a DNS record. What has to be true first?', [], 1, [
+  step('The team wants to fail over to a standby region within about a minute by changing a DNS record. What has to be true first?', [], 1, [
     ['Nothing — a DNS change takes effect everywhere at once', 'Resolvers and clients keep their cached answer until its TTL runs out. A one-hour TTL means up to an hour of traffic still going to the dead region.'],
     ['The record’s TTL must already be low (about 60 s) before the failure — and some clients will still cache longer than that', 'Right. The TTL that matters is the one resolvers cached before things broke. Low TTL buys fast failover at the cost of more lookups, and misbehaving resolvers or runtime caches are why serious failover also uses anycast or load-balancer health checks.'],
     ['Lower the TTL during the incident', 'Too late. Everyone who already cached the record holds it for the old TTL. You lower TTLs before a planned move, not during an outage.'],
   ]),
-  step('A typo puts the wrong IP in the api.kestrel.example A record, which has a 24-hour TTL. You fix it after 10 minutes. How long can some users keep failing?', [], 2, [
+  step('A typo puts the wrong IP in the api.example.com A record, which has a 24-hour TTL. You fix it after 10 minutes. How long can some users keep failing?', [], 2, [
     ['About 10 minutes', 'Fixing the record does not reach caches that already hold the wrong answer.'],
     ['Until they restart their browser', 'The operating system and the recursive resolver also cache. A browser restart clears only one layer.'],
     ['Up to about 24 hours, until cached copies expire', 'Right. Any resolver that fetched the bad record holds it for the full TTL. High TTLs are cheap and fast in good times and haunt you for a day in bad ones.'],
@@ -97,7 +97,7 @@ export const realtime = [
 
 // Chapter 9 · L4, L7 and gateways
 export const balancing = [
-  step('Kestrel’s gRPC clients sit behind an L4 load balancer. Ten backends exist, but one runs at 90% CPU and the rest are idle. Why?', [], 1, [
+  step('The gRPC clients sit behind an L4 load balancer. Ten backends exist, but one runs at 90% CPU and the rest are idle. Why?', [], 1, [
     ['gRPC is single-threaded', 'gRPC servers are concurrent. The imbalance comes from how the load balancer counts.'],
     ['L4 balances connections, and each gRPC client multiplexes all its calls over one long-lived HTTP/2 connection', 'Right. One connection lands on one backend and stays there. Balance per request with an L7 proxy that understands HTTP/2, or use client-side load balancing.'],
     ['The health checks are wrong', 'All ten backends are healthy. The balancer simply never moves an open connection.'],

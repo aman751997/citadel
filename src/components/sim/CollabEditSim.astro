@@ -1,0 +1,71 @@
+---
+import SimShell from '../SimShell.astro';
+// Props: mode (starting merge strategy), scenario (starting edit pair).
+interface Props { mode?: 'naive' | 'ot' | 'crdt'; scenario?: 'shift' | 'tie' | 'double-delete' }
+const { mode = 'naive', scenario = 'shift' } = Astro.props;
+const fallback = 'Alice and Bob both start with "cat". Alice inserts "s" at position 3 ("cats"); Bob, at the same moment, inserts "b" at position 0 ("bcat"). Naive: each applies the other\'s edit unchanged. Alice gets "bcats", Bob gets "bcast", and the screens stay different forever. OT: each side rewrites the incoming edit first. Alice\'s insert at 3 becomes an insert at 4 because Bob\'s b went in front; both end with "bcats". CRDT: each edit names the character it goes after by a permanent id, so there is no position to rewrite; both end with "bcats". Two more cases are in the picker: both inserting at the same position (naive diverges; OT needs a tie-break by site id; the CRDT breaks the tie by id) and both deleting the same letter (naive deletes a second, innocent letter; OT turns the second delete into a no-op; the CRDT marks the character deleted once).';
+---
+<SimShell title="Two users, one word" stepper fallback={fallback}>
+  <div class="ces" data-collab data-mode={mode} data-scenario={scenario}>
+    <fieldset class="ces-modes"><legend>Merge strategy</legend>
+      <label><input type="radio" name="m" value="naive" /> Naive (apply as received)</label>
+      <label><input type="radio" name="m" value="ot" /> OT (transform positions)</label>
+      <label><input type="radio" name="m" value="crdt" /> CRDT (permanent ids)</label>
+    </fieldset>
+    <fieldset class="ces-modes"><legend>Edits</legend>
+      <label><input type="radio" name="s" value="shift" /> Different places</label>
+      <label><input type="radio" name="s" value="tie" /> Same place</label>
+      <label><input type="radio" name="s" value="double-delete" /> Both delete the same letter</label>
+    </fieldset>
+    <div class="ces-grid">
+      <div class="ces-box"><h4>Alice's screen</h4><p class="ces-doc" data-doc="alice"></p></div>
+      <div class="ces-box"><h4>Bob's screen</h4><p class="ces-doc" data-doc="bob"></p></div>
+    </div>
+    <p class="ces-verdict" data-verdict role="status"></p>
+  </div>
+</SimShell>
+
+<style is:global>
+  .ces fieldset { border: 1px solid var(--border); border-radius: 8px; display: flex; flex-wrap: wrap; gap: .3rem 1rem; padding: .4rem .7rem .6rem; margin: 0 0 .7rem; }
+  .ces legend { font-size: .75rem; color: var(--text-dim); padding: 0 .3rem; }
+  .sim .ces fieldset label { flex-direction: row; align-items: center; gap: .4rem; min-width: 0; flex: 0 1 auto; color: var(--text); }
+  .ces-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; }
+  .ces-box { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: .5rem .7rem; min-width: 0; }
+  .ces-box h4 { margin: 0 0 .3rem; font-size: .85rem; color: var(--blue); }
+  .ces-doc { margin: 0; font-family: var(--mono); font-size: 1.3rem; min-height: 1.6em; overflow-wrap: anywhere; }
+  .ces-verdict { margin: .7rem 0 0; font-size: .85rem; min-height: 1.4em; }
+  .ces-verdict.bad { color: var(--red); }
+  .ces-verdict.ok { color: var(--green); }
+</style>
+
+<script>
+  import { mountStepper } from '../../lib/sim.ts';
+  import { run, type Mode, type ScenarioId, type Step } from '../../lib/sim/collab-edit.ts';
+
+  document.querySelectorAll<HTMLElement>('[data-collab]').forEach((el, n) => {
+    const root = el.closest<HTMLElement>('[data-sim-root]')!;
+    let mode = el.dataset.mode as Mode;
+    let scenario = el.dataset.scenario as ScenarioId;
+    const radios = (name: string) => [...el.querySelectorAll<HTMLInputElement>(`input[name=${name}]`)];
+    const set = (name: string, value: string) => radios(name).forEach((r) => { r.name = `${name}-${n}`; r.checked = r.value === value; });
+    set('m', mode); set('s', scenario);
+    const steps: Step[] = run(mode, scenario);
+    const q = <T extends HTMLElement>(s: string) => el.querySelector<T>(s)!;
+    mountStepper(root, {
+      steps,
+      render(s) {
+        q('[data-doc=alice]').textContent = s.alice;
+        q('[data-doc=bob]').textContent = s.bob;
+        const v = q('[data-verdict]');
+        v.textContent = s.verdict ? (s.verdict === 'converged' ? 'Converged. ' : s.verdict === 'diverged' ? 'Diverged. ' : 'Converged, but wrong. ') + s.caption : '';
+        v.className = 'ces-verdict ' + (s.verdict === 'converged' ? 'ok' : s.verdict ? 'bad' : '');
+      },
+    });
+    const rerun = () => { steps.splice(0, steps.length, ...run(mode, scenario)); root.querySelector<HTMLButtonElement>('[data-sim-reset]')!.click(); };
+    el.addEventListener('change', (e) => {
+      const t = e.target as HTMLInputElement;
+      if (t.name.startsWith('m-')) mode = t.value as Mode; else scenario = t.value as ScenarioId;
+      rerun();
+    });
+  });
+</script>

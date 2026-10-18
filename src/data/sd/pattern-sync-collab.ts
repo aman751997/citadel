@@ -34,6 +34,22 @@ export const lww = [
   ]),
 ];
 
+export const vectors = [
+  step('Two replicas hold different versions of one note. The first has version vector {A: 2, B: 1}; the second has {A: 1, B: 2}. How do they relate?', [
+    row('First', ['A: 2', 'B: 1']),
+    row('Second', ['A: 1', 'B: 2']),
+  ], 2, [
+    ['The first is newer, because it has the higher A entry', 'It is ahead on A but behind on B. It has not seen the second replica’s latest write, so it is not simply newer.'],
+    ['The second is newer, because it has the higher B entry', 'Same mistake from the other side: the second is behind on A.'],
+    ['They are concurrent: neither vector is at least as large in every entry', 'Right. Each side has a write the other has not seen. The resolved value would carry {A: 2, B: 2}.'],
+  ]),
+  step('The first replica has {A: 2, B: 1}; the second has {A: 2, B: 3}. What should the sync do?', [], 0, [
+    ['Replace the first with the second: the second dominates, so it is strictly newer', 'Right. Every entry of {A: 2, B: 3} is at least the matching entry of {A: 2, B: 1}, so the first happened before the second. No conflict.'],
+    ['Report a conflict', 'A conflict needs each side to have seen something the other has not. Here the first has nothing the second lacks.'],
+    ['Keep whichever was written last by wall-clock time', 'Wall clocks are exactly what vectors are there to avoid.'],
+  ]),
+];
+
 export const chunking = [
   step('A 200 MB file is stored as 4 MB fixed-size chunks. The user inserts one byte at the very start. How many chunks must be uploaded?', [
     row('Chunks', ['0–4 MB', '4–8 MB', '…', '196–200 MB'], { 0: '+1 byte' }, { tones: { 0: 'hot' } }),
@@ -84,7 +100,7 @@ export const conflicts = [
     ['Rejected as stale; B keeps its edit as "report (B’s conflicted copy).docx" and downloads v9', 'Right. Parent 8 ≠ current 9 means B edited without seeing A’s change. Both versions survive; a human decides.'],
     ['The server merges the two .docx files', 'A .docx is a zip of XML. A byte-level merge produces a corrupt file at best.'],
   ]),
-  step('Kestrel Drive has a central server that orders every commit. Does each file need a full version vector?', [], 0, [
+  step('A file-sync product has a central server that orders every commit. Does each file need a full version vector?', [], 0, [
     ['No — one server-assigned version per file is enough, because every commit passes through one ordering point', 'Right. "Parent = current?" detects every concurrent edit. Version vectors earn their keep when replicas sync peer-to-peer with no single authority.'],
     ['Yes — without a vector, concurrent edits go undetected', 'With a single authority, a counter and a parent check detect them all. The vector is per-replica history you only need without that authority.'],
     ['Neither — timestamps are enough', 'Timestamps cannot tell "edited after seeing v8" from "edited while v8 was being written".'],
@@ -131,7 +147,7 @@ export const sequencer = [
     ['So there is one agreed order: each op is transformed only against the ops ordered before it', 'Right. With one sequencer, transforms only need the simple two-op property. Without one, every pair of replicas must agree on every interleaving — much harder transform rules that many published algorithms got wrong.'],
     ['To check permissions', 'Permissions are checked at the edge. One server per document is about the order of edits.'],
   ]),
-  step('Kestrel Docs has one million open documents. Is "one sequencer per document" a scaling bottleneck?', [], 2, [
+  step('A document editor has one million open documents. Is "one sequencer per document" a scaling bottleneck?', [], 2, [
     ['Yes — all ops go through one machine', 'They go through one machine per document, not one machine overall. Different documents sit on different servers.'],
     ['Yes — so switch to CRDTs', 'CRDTs have their own reasons. Scale is not one of them here: the busiest document still sees only a few hundred ops per second.'],
     ['No — load is per document and small; shard documents across session servers by doc id', 'Right. A doc with 50 typists makes about 250 ops/s. One in-memory sequencer handles that easily; a million docs spread over about 100 servers.'],
@@ -155,12 +171,12 @@ export const crdt = [
 ];
 
 export const choose = [
-  step('Kestrel’s notes app must work fully offline for days, sync between a phone and a laptop with no server in between, and merge cleanly. OT or CRDT?', [], 1, [
+  step('A notes app must work fully offline for days, sync between a phone and a laptop with no server in between, and merge cleanly. OT or CRDT?', [], 1, [
     ['OT with a central sequencer', 'There is no reliable central point here, and OT’s simple form assumes one.'],
     ['A CRDT', 'Right. Any replica can merge any other’s ops in any order and converge. Offline-first and peer-to-peer are where CRDTs shine.'],
     ['Last-writer-wins on the whole note', 'Two days of edits on two devices: one device’s days vanish.'],
   ]),
-  step('Kestrel Docs is always online, already has a server per document, and needs version history and access checks on every edit. What is the strongest default?', [], 0, [
+  step('A document editor is always online, already has a server per document, and needs version history and access checks on every edit. What is the strongest default?', [], 0, [
     ['OT through the per-document server, which also writes the op log', 'Right. The server you need anyway becomes the sequencer, and its log is your history. A CRDT would also work; it buys offline merging you mostly don’t need, and costs metadata.'],
     ['Peer-to-peer CRDT with no server', 'You would still need a server for permissions, history and persistence — so you have paid for both.'],
     ['Lock each paragraph while someone types', 'Locks make two people in one paragraph wait on each other, and a dropped connection leaves a paragraph locked.'],
@@ -222,7 +238,7 @@ export const drills = [
     ['It uploads a half-written file; wait until the file is stable (unchanged size/mtime for a moment), hash, then upload', 'Right. Debounce file-system events and re-check the hash before committing.'],
     ['The server rejects it', 'The server has no idea the bytes are half-written. They hash just fine.'],
   ]),
-  step('Kestrel Docs: a session server crashes mid-edit. What prevents lost edits?', [], 2, [
+  step('A document editor: a session server crashes mid-edit. What prevents lost edits?', [], 2, [
     ['Clients hold the document; nothing is lost', 'Clients hold unacknowledged ops, but acknowledged ones live only where the server put them.'],
     ['Restart the server and replay from memory', 'Memory is what crashed.'],
     ['Ack an op only after it is durably appended to the op log; clients resend un-acked ops to the new session server', 'Right. The new owner loads snapshot + log, and clients resend in-flight ops with their base revision; the server transforms them as usual.'],

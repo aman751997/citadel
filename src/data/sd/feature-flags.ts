@@ -5,12 +5,12 @@ import { row, step } from '../../lib/trace.ts';
 // dara 6317, hana 7286, eli 7678, ben 8655; dark-mode: chen 82).
 
 export const kinds = [
-  step('Iris wants the new seller dashboard hidden until it is finished, then turned on for everyone over a week. Which kind of flag is it, and how long should it live?', [], 0, [
+  step('The product team wants the new seller dashboard hidden until it is finished, then turned on for everyone over a week. Which kind of flag is it, and how long should it live?', [], 0, [
     ['A release toggle; days to weeks, deleted once it reaches 100%', 'Right. It exists to separate deploy from release. Once everyone has the new path, the flag and the old branch are dead code to delete.'],
     ['A permission flag; forever', 'Permission flags gate who may use a feature (a paid plan, a beta programme). Nothing here depends on who the user is in the long run.'],
     ['An ops kill switch; forever', 'A kill switch protects a feature that already works. This one is not finished yet, and it should disappear when it is.'],
   ]),
-  step('Recommendations call a model service that sometimes melts under load. Dev wants a switch that turns them off in seconds without a deploy. Which kind, and what should the code default be if the flag system cannot be reached?', [], 1, [
+  step('Recommendations call a model service that sometimes melts under load. On-call wants a switch that turns them off in seconds without a deploy. Which kind, and what should the code default be if the flag system cannot be reached?', [], 1, [
     ['A release toggle defaulting to off', 'If this defaulted to off, a flag-system outage at boot would silently switch off a working feature for everyone.'],
     ['An ops kill switch; long-lived; the default keeps the feature running', 'Right. A kill switch is a long-lived lever for degrading on purpose. Its fallback is normal operation: the flag system being down is not a reason to degrade the product.'],
     ['An experiment flag; it lives until the result is in', 'Nothing is being measured. The question is how fast you can turn it off, not which variant wins.'],
@@ -23,21 +23,21 @@ export const kinds = [
 ];
 
 export const bucketing = [
-  step('new-checkout is at 10%. Kestrel computes bucket = hash(flag key + "." + user key) mod 10,000 and serves the new checkout when bucket < 1,000. Who sees it?', [
+  step('new-checkout is at 10%. The app computes bucket = hash(flag key + "." + user key) mod 10,000 and serves the new checkout when bucket < 1,000. Who sees it?', [
     row('Bucket', ['farah 571', 'ana 656', 'chen 2189', 'gus 2218', 'dara 6317'], { 0: 'IN', 1: 'IN' }, { tones: { 0: 'done', 1: 'done' } }),
   ], 1, [
     ['Everyone whose bucket is below 10', 'The threshold is in buckets, not percent: 10% of 10,000 buckets is 1,000.'],
     ['farah and ana', 'Right. 571 and 656 are below 1,000; chen at 2189 is not.'],
     ['A random 10% of requests, different each time', 'Nothing here is random per request. The hash gives each user the same bucket on every request, in every process.'],
   ]),
-  step('Iris ramps new-checkout from 10% to 25% (bucket < 2,500). What happens to farah and ana?', [
+  step('The product team ramps new-checkout from 10% to 25% (bucket < 2,500). What happens to farah and ana?', [
     row('Bucket', ['farah 571', 'ana 656', 'chen 2189', 'gus 2218', 'dara 6317'], { 0: 'IN', 1: 'IN', 2: 'NEW', 3: 'NEW' }, { tones: { 0: 'done', 1: 'done', 2: 'hot', 3: 'hot' } }),
   ], 0, [
     ['They stay in; chen and gus join them', 'Right. Their buckets did not change; only the threshold moved from 1,000 to 2,500. A ramp only ever adds users.'],
     ['They are reshuffled with everyone else', 'Reshuffling would happen only if the hash input (flag key or salt) changed. The threshold moved; the buckets did not.'],
     ['They drop out so the 25% is a fresh sample', 'Nobody leaves when a range widens. Kicking people out mid-ramp is exactly the flapping that bucketing exists to prevent.'],
   ]),
-  step('A second flag, dark-mode, also goes to 10%. Kestrel’s first version hashed only the user key. What would that have meant?', [
+  step('A second flag, dark-mode, also goes to 10%. The first version hashed only the user key. What would that have meant?', [
     row('new-checkout', ['farah 571', 'ana 656', 'chen 2189'], { 0: 'IN', 1: 'IN' }, { tones: { 0: 'done', 1: 'done' } }),
     row('dark-mode', ['farah 9119', 'ana 5434', 'chen 82'], { 2: 'IN' }, { tones: { 2: 'done' } }),
   ], 2, [
@@ -53,7 +53,7 @@ export const distribution = [
     ['About 20 GB versus about 10 MB', 'Right. 10,000 × 2 MB = 20 GB; 10,000 × 1 KB = 10 MB. Push deltas; serve full snapshots only at startup and after a gap.'],
     ['About 2 GB versus about 1 MB', 'Off by ten: 10,000 × 2 MB is 20,000 MB, which is 20 GB.'],
   ]),
-  step('Kestrel polls every 30 seconds with an ETag. Dev says the kill switch needs to land within about 5 seconds. What do you tell him?', [], 0, [
+  step('The SDK polls every 30 seconds with an ETag. On-call says the kill switch needs to land within about 5 seconds. What do you tell them?', [], 0, [
     ['Polling alone cannot do it: worst case is 30 s plus processing. Stream changes (SSE) and keep polling as the fallback', 'Right. Polling at 30 s is cheap (about 333 mostly-304 requests per second) but its staleness is up to the whole interval. A stream delivers in about a second.'],
     ['Poll every second instead', 'That is 10,000 requests per second, almost all returning “nothing changed”, to buy what one open stream per instance gives you for free.'],
     ['Have every request call the flag service directly', 'That puts a network call on every flag check and makes the flag service a dependency of every request. The cure is worse than the delay.'],
@@ -66,7 +66,7 @@ export const distribution = [
 ];
 
 export const clientSide = [
-  step('The Kestrel web app needs flag values in the browser. The simplest idea is to ship the server ruleset to the browser and evaluate there. What is wrong with it?', [], 1, [
+  step('The web app needs flag values in the browser. The simplest idea is to ship the server ruleset to the browser and evaluate there. What is wrong with it?', [], 1, [
     ['The browser is too slow to evaluate rules', 'Evaluation is microseconds anywhere. Speed is not the problem.'],
     ['The ruleset exposes everyone’s targeting: beta customers’ emails, segment lists, names of unreleased features', 'Right. Anything sent to a browser is public. Send only this user’s results, evaluated on the server or at the edge.'],
     ['Browsers cannot open SSE connections', 'Browsers support SSE natively (EventSource). The problem is what you would be sending, not how.'],
@@ -79,7 +79,7 @@ export const clientSide = [
 ];
 
 export const failure = [
-  step('A new Kestrel API pod starts while the flag service is completely down, and it has no cached ruleset on disk. What should flag checks return?', [], 2, [
+  step('A new API pod starts while the flag service is completely down, and it has no cached ruleset on disk. What should flag checks return?', [], 2, [
     ['Block startup until the flag service answers', 'Now an outage of the flag service stops you from scaling or restarting the product. The flag system must never take the product down.'],
     ['Throw an exception from every flag check', 'Every request that touches a flag would fail. That converts a flag outage into a product outage.'],
     ['Wait a bounded time (a second or two), then serve the defaults written in code and keep retrying in the background', 'Right. Bounded initialization, then fail-safe defaults, then catch up when the stream reconnects. Log and alert that the pod is running on defaults.'],
@@ -92,7 +92,7 @@ export const failure = [
 ];
 
 export const rollout = [
-  step('A guarded rollout puts 1% of Kestrel’s 500,000 requests per second on the new search path. Control errors at 0.1%; the new path errors at 0.5%. Roughly how many errors would one minute show in the 1% treatment?', [], 1, [
+  step('A guarded rollout puts 1% of the 500,000 requests per second on the new search path. Control errors at 0.1%; the new path errors at 0.5%. Roughly how many errors would one minute show in the 1% treatment?', [], 1, [
     ['About 15 errors', 'Check the volume: 1% of 500,000 is 5,000 requests per second, and a minute is 60 seconds.'],
     ['About 1,500, versus about 300 if it behaved like control', 'Right. 5,000/s × 60 s = 300,000 requests. At 0.5% that is 1,500 errors; at control’s 0.1% it would be 300. Unmistakable within a minute, so the rollout can stop and roll back automatically.'],
     ['About 150,000', 'That would be a 50% error rate. 0.5% of 300,000 is 1,500.'],
@@ -152,7 +152,7 @@ export const drills = [
     ['A temporary flag that “might be useful later”', 'This is how flag debt starts. If it is not needed now, delete it.'],
     ['The kill switch around the recommendation model call', 'Right. Ops kill switches are deliberately permanent levers, like circuit breakers. They still need an owner and a periodic test that flipping them works.'],
   ]),
-  step('Kestrel has 10,000 SDK instances and a kill switch must land within seconds. Which distribution design?', [], 0, [
+  step('A fleet has 10,000 SDK instances and a kill switch must land within seconds. Which distribution design?', [], 0, [
     ['Streaming deltas (SSE) through regional relays, versioned rulesets with gap detection, CDN-cached snapshots for startup and resync, polling as fallback', 'Right. Each piece answers one need: speed (stream), scale (relays and CDN), correctness (versions), resilience (poll fallback, last-known-good).'],
     ['Polling every 30 seconds from the database', '333 queries per second on the source of truth and up to 30 seconds of delay for a kill switch.'],
     ['Push the full ruleset to every instance on each change', '20 GB per change at 2 MB × 10,000. Push deltas.'],

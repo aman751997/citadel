@@ -27,16 +27,16 @@ export const hints: Record<string, [string, string, string]> = {
 };
 
 export const clock = [
-  step('Minute 6. You have asked four clarifying questions and the Interviewer is answering patiently. What should exist on the whiteboard or in a comment before minute 10?', [], 2, [
+  step('Minute 6. You have asked four clarifying questions and the interviewer is answering patiently. What should exist on the whiteboard or in a comment before minute 10?', [], 2, [
     ['The class diagram', 'The diagram comes next. Without an agreed scope you would be drawing classes for features that may not be wanted.'],
     ['The first compiling class', 'Opening the IDE before scope is agreed is how candidates spend 20 minutes on a feature nobody asked for.'],
-    ['A must / should / won’t list, read back to the Interviewer', 'Right. Reading the cut list aloud turns every later “you missed X” into “X was descoped — want it instead of Y?”. It costs one minute.'],
+    ['A must / should / won’t list, read back to the interviewer', 'Right. Reading the cut list aloud turns every later “you missed X” into “X was descoped — want it instead of Y?”. It costs one minute.'],
     ['Nothing yet — keep asking until every detail is known', 'Clarifying has diminishing returns. Ten minutes is the box; ask what changes the design, then commit.'],
   ]),
   step('Minute 32. Your interfaces compile. Which of these do you build first?', [], 1, [
     ['All four operations as stubs, then fill them in together', 'Breadth-first building leaves six half-features and nothing to demo. The round ends with “show me”.'],
     ['The one flow the demo depends on, end to end, until it runs', 'Right. A narrow slice that runs beats a broad skeleton every time. Breadth comes after the first path works.'],
-    ['The extension you think the Interviewer will ask for', 'Predicting the follow-up is good; building it before the core works is not. Leave the seam empty and come back.'],
+    ['The extension you think the interviewer will ask for', 'Predicting the follow-up is good; building it before the core works is not. Leave the seam empty and come back.'],
     ['Unit tests for every class', 'Tests for code that does not exist yet eat the time the core flow needs. A few fast tests come at 75.'],
   ]),
   step('Minute 84. The demo runs and you have six minutes left. What is the best use of them?', [], 3, [
@@ -73,8 +73,8 @@ export const clarify = [
     ['“How many users will the system have?”', 'Scale only matters here for choosing data structures. This is not a high-level design round.'],
     ['“Should there be a web UI?”', 'There almost never is. Asking it signals you may spend time on a UI.'],
   ]),
-  step('The Interviewer says: “Members can be standard or premium, but treat them the same for now.” What does that sentence tell you?', [], 2, [
-    ['Ignore tiers entirely — YAGNI', 'Ignoring them is fine for behaviour, but the Interviewer has just told you where the follow-up will land.'],
+  step('The interviewer says: “Members can be standard or premium, but treat them the same for now.” What does that sentence tell you?', [], 2, [
+    ['Ignore tiers entirely — YAGNI', 'Ignoring them is fine for behaviour, but the interviewer has just told you where the follow-up will land.'],
     ['Build both tiers’ rules now, guessing the premium ones', 'Guessing rules nobody specified is speculative work, and you will probably guess wrong.'],
     ['Put lending rules behind one interface chosen by tier, with one implementation for now', 'Right. One seam on the hinted axis, one implementation, and the follow-up becomes a new class plus a wiring line.'],
   ]),
@@ -141,7 +141,7 @@ export const skeleton = [
 ];
 
 export const followUp = [
-  step('Parking lot. The Interviewer’s intro mentions “weekend rates, maybe”. What do you build at minute 20?', [], 0, [
+  step('Parking lot. The interviewer’s intro mentions “weekend rates, maybe”. What do you build at minute 20?', [], 0, [
     ['A FeeStrategy interface with one hourly implementation', 'Right. The hint names the axis. One seam, one implementation: the weekend follow-up becomes a decorator or a new strategy.'],
     ['Weekend pricing, right now', 'It was “maybe”. Build the seam, not the feature. If the follow-up never comes, you lost nothing.'],
     ['Nothing — if-else on the day is simple enough', 'The ladder works until the second follow-up. The hint told you which method will be reopened.'],
@@ -222,7 +222,7 @@ export const round = [
     ['6 days late × 10 = 60', 'Right. Due on 16 March (2 + 14); 22 − 16 = 6 days late.'],
     ['7 days late × 10 = 70', 'Off by one. From the 16th to the 22nd is 6 days; returning on the due date itself is 0 days late.'],
   ]),
-  step('Bram’s follow-up: premium members get 21-day loans, 3 grace days, then 5 a day, capped at 50. Bo borrows on 2 March and returns on 1 April. What does he pay?', [
+  step('The follow-up: premium members get 21-day loans, 3 grace days, then 5 a day, capped at 50. Bo borrows on 2 March and returns on 1 April. What does he pay?', [
     row('Date', ['2 Mar', '23 Mar', '1 Apr'], { 0: 'BORROW', 1: 'DUE', 2: 'RETURN' }),
   ], 0, [
     ['30 — 9 days late, minus 3 grace days, times 5', 'Right. Due on 23 March; 1 April is 9 days later (8 left in March, plus 1). (9 − 3) × 5 = 30, under the cap.'],
@@ -233,11 +233,11 @@ export const round = [
 ];
 
 export const drills = [
-  step('30 minutes left, core flow works, two features remain: (a) the pricing variation the Interviewer hinted at in the intro, (b) multi-floor spot allocation. What do you build?', [], 1, [
+  step('30 minutes left, core flow works, two features remain: (a) the pricing variation the interviewer hinted at in the intro, (b) multi-floor spot allocation. What do you build?', [], 1, [
     ['Both, quickly, skipping tests', 'Two rushed features and no tests risk a broken demo. Hints tell you which one is graded.'],
     ['The hinted pricing variation, as a new strategy; then describe the allocation plan aloud, its seam already in place', 'Right. Hints telegraph the rubric. The variation lands cheaply if your seams are honest, demos well, and proves open/closed. The other feature becomes a narrated plan pointing at an existing interface — nearly full credit for zero minutes.'],
-    ['Multi-floor — it is architecturally more interesting', 'Interesting to you is not the same as graded. The Interviewer told you what they will ask about.'],
-    ['Neither — polish and test the core flow', 'Polish is worth less than the follow-up the Interviewer signalled. Build it, then test.'],
+    ['Multi-floor — it is architecturally more interesting', 'Interesting to you is not the same as graded. The interviewer told you what they will ask about.'],
+    ['Neither — polish and test the core flow', 'Polish is worth less than the follow-up the interviewer signalled. Build it, then test.'],
   ]),
   step('Why does park() throw SpotUnavailableException instead of returning null or false?', [], 1, [
     ['Exceptions are faster than null checks', 'They are not faster. The reason is API design, not speed.'],
@@ -255,15 +255,15 @@ export const drills = [
     ['A Repository interface with an in-memory implementation', 'Two minutes, and it shows you know storage is swappable. An investment.'],
     ['A selfTest() with five assertions', 'Five minutes, and it catches regressions from the follow-up. An investment.'],
     ['Wiring H2 and JPA “to be realistic”', 'Right. Twenty minutes of plumbing nobody grades. Say “storage sits behind a repository; a JPA version would be a second implementation”.'],
-    ['Reading the cut list back to the Interviewer', 'One minute that protects you from “you missed X”. An investment.'],
+    ['Reading the cut list back to the interviewer', 'One minute that protects you from “you missed X”. An investment.'],
   ]),
-  step('The Interviewer asks, at minute 85: “What if two kiosks borrow the last copy at once?” You have five minutes. Best answer?', [], 3, [
+  step('The interviewer asks, at minute 85: “What if two kiosks borrow the last copy at once?” You have five minutes. Best answer?', [], 3, [
     ['“Java’s ConcurrentHashMap makes it safe already.”', 'Each map call is atomic, but borrow is check-then-act across the member’s loan count and the copy’s status. Two kiosks can both pass the checks.'],
     ['“Make every method synchronized on every entity.”', 'Locking every entity separately invites deadlocks and does not make the multi-step borrow atomic.'],
     ['“It cannot happen in a library.”', 'Two kiosks is exactly the concurrency the question describes. Dismissing it loses the line on the rubric.'],
     ['“Borrow is check-then-act. One lock around the mutating operations is correct now; per-title locks if throughput matters.” — then add it', 'Right. Name the race, ship the simple correct fix as one new class, and say how you would make it finer.'],
   ]),
-  step('Your seven interfaces each have one implementation. The Interviewer frowns. Which ones keep their interface?', [], 0, [
+  step('Your seven interfaces each have one implementation. The interviewer frowns. Which ones keep their interface?', [], 0, [
     ['Those with a second implementation, a test double, or an announced axis of change', 'Right. LendingPolicy (two implementations), Repository (in-memory now, a database later — say it) and Clock (a manual clock in tests) stay. The rest get inlined.'],
     ['All of them — interfaces are always good practice', 'Graders mark unearned interfaces as speculative generality.'],
     ['None — interfaces are over-engineering in 90 minutes', 'The follow-up landed as a class because of one interface. Seams on the real axis are what extensibility is graded on.'],

@@ -2,7 +2,7 @@ import { row, step } from '../../lib/trace.ts';
 
 // Chapter 1 · Why async
 export const whyAsync = [
-  step('Kestrel Clips transcodes each upload inside the HTTP request. A transcode takes about 120 seconds, and peak is 30 uploads per second. How many requests are held open at once (Little’s law: in flight = arrival rate × time in system)?', [], 2, [
+  step('A video app transcodes each upload inside the HTTP request. A transcode takes about 120 seconds, and peak is 30 uploads per second. How many requests are held open at once (Little’s law: in flight = arrival rate × time in system)?', [], 2, [
     ['30', 'That is the arrival rate per second, not how many are in the system. Each one stays for 120 seconds.'],
     ['250', '30 ÷ 120 is not a quantity anything measures. Multiply rate by duration.'],
     ['3,600', 'Right. 30 per second × 120 seconds = 3,600 requests in flight, each pinning a thread, a connection and a load-balancer slot — and most load balancers will cut them off long before 120 seconds.'],
@@ -28,7 +28,7 @@ export const template = [
     ['202 Accepted with a job id and a status URL', 'Right. 202 means “accepted for processing, not done”. The job id is the tracking number; GET /jobs/{id} answers “is it done?”.'],
   ]),
   step('A partner’s server, not a browser, starts the export. How should it learn the job finished?', [], 1, [
-    ['A WebSocket from Kestrel to the partner', 'Persistent connections suit live user interfaces. A partner’s backend wants a call it can receive whenever the job ends, even hours later.'],
+    ['A WebSocket from our service to the partner', 'Persistent connections suit live user interfaces. A partner’s backend wants a call it can receive whenever the job ends, even hours later.'],
     ['A signed webhook, retried with backoff until acknowledged — with GET /jobs/{id} still available', 'Right. Server-to-server completion is a webhook. Sign it, retry it, make the receiver idempotent on the job id, and keep polling as the fallback.'],
     ['Polling every 100 ms', 'Polling is a fine fallback, but at 100 ms for a job that takes minutes it is thousands of wasted requests per job.'],
   ]),
@@ -116,7 +116,7 @@ export const fairness = [
 
 // Chapter 8 · Back-pressure, autoscaling and cost
 export const scaling = [
-  step('Kestrel Clips: 1,000,000 one-minute videos a day; the full rendition ladder costs about 4 core-minutes per video-minute. About how many cores are busy on average?', [], 1, [
+  step('A video app: 1,000,000 one-minute videos a day; the full rendition ladder costs about 4 core-minutes per video-minute. About how many cores are busy on average?', [], 1, [
     ['About 4,000,000', 'That is core-minutes per day. Divide by the 1,440 minutes in a day to get cores busy at once.'],
     ['About 2,800', 'Right. 4,000,000 core-minutes ÷ 1,440 minutes ≈ 2,778 cores — about 87 machines of 32 cores. Peak at 3× is about 8,300 cores, or 261 machines.'],
     ['About 46', '4,000,000 ÷ 86,400 divides core-minutes by seconds. The units do not match.'],

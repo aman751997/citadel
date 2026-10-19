@@ -32,13 +32,18 @@ Closed on 2026-10-19 (third pass; evidence in `docs/qa/kafka-java-client.md`, `m
 - [x] **Code sketches** (single-flight errors, SIGTERM shutdown, breaker text vs code in both lessons, token reservation return value, facet mapping, GCounter on older Python) and the two `dryrun.ts` type errors.
 - [x] **Quiz balance leftovers:** all outlier files are inside the band (site-wide: always-pick-longest 30%, always-pick-shortest 27%, fair about 31%).
 
+Closed in the fourth pass (evidence: `rabbitmq-4-classic-timeout.md`, `kafka-kip848.md`, `pgvector-defaults.md`, `es-facet-mapping.md`, `nudge-recheck.md`):
+- [x] RabbitMQ 4.x classic `consumer_timeout`: 4.3.0 deliberately stopped enforcing it for classic queues and streams (release notes + reproduction on 4.2.9 and 4.3.6).
+- [x] Kafka KIP-848 (`group.protocol=consumer`) tested with the Java client; differs from the classic protocol and the lesson says how.
+- [x] pgvector 0.8.7 defaults confirmed from source: `m=16`, `ef_construction=64`, `ef_search=40` (+ the `ef_construction >= 2*m` rule).
+- [x] Elasticsearch 8.19 run of every request in the search lesson (one snippet conflict fixed).
+- [x] The 38 nudged quiz questions re-solved with real Java, Python and MySQL runs (1 wording fix).
+
 Still open (hedges kept; reasons in the evidence files):
-- [ ] **Not tested:** RabbitMQ 4.x classic queues never enforced `consumer_timeout` in 330 s (cause unknown; default is 30 minutes); the Kafka new consumer-group protocol (KIP-848) and client versions other than 4.3.1; `innodb_flush_log_at_trx_commit = 2` on a real OS crash or power loss; pgvector's own defaults for `m` and `ef_construction` (index sizes were identical, so the test proved nothing); the Mastery Postgres stand-ins for billing tables were built from the owning services' migrations, not the live schema.
+- [ ] **Not tested:** `innodb_flush_log_at_trx_commit = 2` on a real OS crash or power loss (a simulation inside Docker Desktop's VM was started but stopped unfinished; the lesson cites the MySQL manual and the measured `kill -9` results); RabbitMQ 4.0/4.1 and the 30-minute default on 4.3 classic; the Kafka client versions other than 4.3.1, static membership and `FencedInstanceIdException`; the Mastery Postgres billing stand-ins were built from the owning services' migrations, not a live schema.
 - [ ] **Noticed, not fixed:** the billing view's `created_at` is `timestamp` without time zone while the catalog says `TIMESTAMPTZ` (works through an implicit session-time-zone conversion).
 - [ ] **Dry-run captions** have no tests (only final answers do). Read a few for wording.
 - [ ] **Diagram readability**: all 522 Mermaid diagrams render, but nobody has looked at them for clarity on a phone.
-- [ ] **Quiz nudges** were re-read but not re-run (no Java or Python run for the 35 touched questions); creational-patterns (41%) and intervals (42%) sit near the band edge.
-- [ ] **Facet mapping** fix in search.mdx was not run against Elasticsearch.
 
 ## Facts you must confirm yourself (Mastery)
 - [ ] **Your ownership and contribution** on each project (the notes mark this unverified; git shows other authors on the reporting engine).

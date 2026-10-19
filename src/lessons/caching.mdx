@@ -808,14 +808,21 @@ def single_flight(key, load):
     if leader:
         try:
             box["value"] = load()
+        except BaseException as e:
+            box["error"] = e
+            raise
         finally:
             with _lock:
                 del _inflight[key]
             event.set()
     else:
         event.wait()
-    return box.get("value")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
 ```
+
+If the loader fails, the leader and every waiting request see the same error, so none of them quietly gets `None`. Each one can then retry or serve a stale copy.
 
 With 200 app servers this reduces 10,000 queries to at most 200, one per server. For one query total, you need a cross-server lock.
 
@@ -1355,7 +1362,7 @@ Redis starts evicting when memory reaches `maxmemory`. The `maxmemory-policy` se
 | `allkeys-random` / `volatile-random` | Random key | All / TTL keys |
 | `volatile-ttl` | Key closest to expiry | Only keys with a TTL |
 
-For a pure cache, `allkeys-lru` or `allkeys-lfu` is the usual choice. `volatile-*` policies only touch keys with a TTL, so if none have one, they behave like `noeviction`. Redis's own default is `noeviction`. Its LRU and LFU are approximations based on sampling a few keys, which is good enough and cheap. In a test with `maxmemory 4mb`, a Zipf-skewed read workload (hit ratio about 0.86 to 0.88 for both) and then a one-time scan of 40,000 new keys, LRU kept only 13 of the 1,000 hottest keys and its hit ratio dropped to 0.58 before climbing back to 0.75; LFU kept all 1,000 and stayed near 0.86. Your numbers will depend on key sizes and the workload.
+For a pure cache, `allkeys-lru` or `allkeys-lfu` is the usual choice. `volatile-*` policies only touch keys with a TTL, so if none have one, they behave like `noeviction`. Redis's own default is `noeviction`. Its LRU and LFU are approximations based on sampling a few keys, which is good enough and cheap. In a test with `maxmemory 4mb`, a Zipf-skewed read workload (hit ratio about 0.86 to 0.88 for both) and then a one-time scan of 40,000 new keys, LRU kept only 13 of the 1,000 hottest keys and its hit ratio dropped to 0.58 before climbing back to 0.75; LFU kept all 1,000 and stayed near 0.86. A second test changed the hot set. Cache size 4 MB (about 16,700 keys of 100 bytes), 12,000 hot keys read evenly in phase 1, then a different 12,000 hot keys in phase 2, at about 3,000 requests a second. `allkeys-lru` gave the new keys a 90% hit ratio within about 60,000 requests (22 s). `allkeys-lfu` with the default `lfu-decay-time 1` and `lfu-log-factor 10` needed about 420,000 requests (about 2.5 minutes), because the old keys' counters had to decay (one step per idle minute) before the new keys could replace them. With `lfu-decay-time 0` (no decay) the new keys reached only a 70% hit ratio after 1.8 million requests (11 minutes) and were still climbing. Your numbers will depend on key sizes and the workload.
 
 **LRU vs LFU.**
 
@@ -1363,7 +1370,7 @@ For a pure cache, `allkeys-lru` or `allkeys-lfu` is the usual choice. `volatile-
 |---|---|---|
 | Question it asks | When was this last touched? | How often is this touched? |
 | Good when | Recency predicts reuse | The hot set is stable |
-| Weakness | **Scan pollution**: a one-time scan makes cold keys look recent and pushes hot keys out | Slow to adapt: an old favourite with a high count lingers (Redis decays counts over time) |
+| Weakness | **Scan pollution**: a one-time scan makes cold keys look recent and pushes hot keys out | Slower to adapt: an old favourite with a high count lingers until its count decays (in a test, about 7 times more requests than LRU with the default `lfu-decay-time 1`) |
 | Example | Users browsing recent items | A nightly job reads every profile once. LFU ignores it, LRU gets flushed |
 
 Try it: run the `scan` preset and compare how LRU and LFU treat the one-off keys.
@@ -1417,7 +1424,7 @@ The scan touches millions of cold keys once each, and each one becomes "most rec
   { front: 'Size the cache by what?', back: 'The working set (the hot slice of data), not the whole dataset. Add per-key overhead.' },
   { front: 'Default Redis maxmemory-policy?', back: 'noeviction: writes fail when memory is full. For a cache choose allkeys-lru or allkeys-lfu.' },
   { front: 'What do volatile-* policies evict?', back: 'Only keys with a TTL. If no key has one they behave like noeviction.' },
-  { front: 'LRU vs LFU weakness?', back: 'LRU: scan pollution. LFU: slow to adapt to a changing hot set (Redis decays counts).' },
+  { front: 'LRU vs LFU weakness?', back: 'LRU: scan pollution. LFU: slower to adapt to a changing hot set (about 7x the requests of LRU in one test with the default decay; with decay off it stayed stuck).' },
   { front: 'Why cluster if the data fits on one node?', back: 'For throughput (ops/s) and availability (replicas), not capacity.' },
 ]} />
 

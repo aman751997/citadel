@@ -79,7 +79,7 @@ A common slip is to name a many-to-many relationship and index only one side. Ch
     options: [
       'Propose MySQL instead, because a relational database is the safe default and everyone knows it.',
       'Benchmark three candidate databases on generated data and pick the one with the best throughput.',
-      'List each screen and API with query, rate, latency budget and transaction needs, then choose.',
+      'List each screen and API with query, rate, latency budget and transaction needs, then check which ones the default store serves badly.',
     ],
     answer: 2,
     why: 'Decision 1 is access patterns. Only with the list can you say which pattern, if any, the default store serves badly.',
@@ -93,7 +93,7 @@ A common slip is to name a many-to-many relationship and index only one side. Ch
     kind: 'tradeoff',
     q: 'Which one-sentence reason for a store survives the follow-up "why exactly?"',
     options: [
-      '"Messages are append-heavy and read newest-first per conversation: partition by it, sort by time."',
+      '"Messages are append-heavy and read newest-first per conversation: partition by conversation, sort by time."',
       '"It scales horizontally, and our growth plan needs more write capacity than one node can ever provide."',
       '"A large messaging company runs its chat on it in production, so it is proven at the scale we want."',
     ],
@@ -190,7 +190,7 @@ For most data, scale is not the scarce resource. Flexibility is. Orders at 120 w
     q: 'A team proposes DynamoDB for orders "because it scales". Orders peak at 120 writes/s, finance runs new reports every quarter, and checkout must write order, payment and stock together. What is the strongest objection?',
     options: [
       'DynamoDB has no transactions, so checkout cannot write order, payment and stock together atomically.',
-      'The load needs no horizontal scale; the data needs joins, ad-hoc queries and multi-row atomicity.',
+      'The load needs no horizontal scale; the data needs joins, ad-hoc queries and multi-row atomicity in one transaction.',
       'DynamoDB costs more than MySQL at this size, and the bill would grow with every quarterly report.',
     ],
     answer: 1,
@@ -331,7 +331,7 @@ No. A join on indexed keys that returns a handful of rows costs well under a mil
     options: [
       'Nothing; the check uses the primary key of listings, so it is a single lookup per delete.',
       'The constraint is skipped until an index exists, so deleting the user leaves orphans behind.',
-      'Each delete scans listings to find referencing rows, which gets slow on a large table.',
+      'Each delete scans listings to find referencing rows, so the cost grows with the size of the table.',
     ],
     answer: 2,
     why: 'The reference check is a lookup by the foreign-key value. Without an index it is a scan.',
@@ -511,7 +511,7 @@ Daylight saving. 9:00 in New York is 13:00 UTC in summer (UTC−4) and 14:00 UTC
     kind: 'scenario',
     q: 'You must make double-booking a meeting room impossible in MySQL, with bookings of arbitrary start and end times. Which design is correct?',
     options: [
-      'Lock the room row with FOR UPDATE, check for overlap, then insert in one transaction.',
+      'Lock the room row with SELECT ... FOR UPDATE, check for overlap, then insert in one transaction.',
       'A CHECK constraint that compares the new booking against existing bookings for the room.',
       'Check for overlap in the application, then insert, inside a REPEATABLE READ transaction.',
     ],
@@ -527,7 +527,7 @@ Daylight saving. 9:00 in New York is 13:00 UTC in summer (UTC−4) and 14:00 UTC
     kind: 'tradeoff',
     q: 'You copy events.starts_at into event_attendees. Marketing now reschedules a 1,000-person event daily. What do you do?',
     options: [
-      'Keep the copy; update all 1,000 rows in the same transaction as the event.',
+      'Keep the copy; update all 1,000 rows in the same transaction as the event, since reads far outnumber reschedules.',
       'Drop the copy and join to events for every calendar read, since reschedules are frequent.',
       'Keep the copy but refresh it from a nightly batch job to avoid 1,000-row updates.',
     ],
@@ -810,7 +810,7 @@ No. Through the leftmost-prefix rule, `(a, b)` already serves queries on `a` alo
     q: 'You have INDEX (seller_id, status, created_at). The plan for the query below shows type: range, key: the index, rows: 3100000, Extra: Using where; Using index; Using filesort. What is the most likely cause?',
     code: "SELECT id FROM listings\nWHERE seller_id = 42 AND status <> 'removed'\nORDER BY created_at DESC LIMIT 20;",
     options: [
-      'status <> is a range condition, so created_at is no longer in index order; rows get sorted.',
+      'status <> is a range condition on the middle column, so created_at is no longer in index order; rows get sorted.',
       'The index is not used, so MySQL reads the whole table and sorts the result in a temporary table.',
       'The LIMIT 20 clause forces a filesort, since MySQL must sort before it can pick the first rows.',
     ],
@@ -842,7 +842,7 @@ No. Through the leftmost-prefix rule, `(a, b)` already serves queries on `a` alo
     kind: 'scenario',
     q: 'The tag page runs SELECT photo_id, created_at FROM photo_tags WHERE tag_id = ? ORDER BY created_at DESC LIMIT 30 at 5,000 requests/s. The table has PK (photo_id, tag_id). What is the best index?',
     options: [
-      'INDEX (tag_id, created_at), since the primary key columns are appended automatically',
+      'INDEX (tag_id, created_at), since the primary key columns are appended automatically, so photo_id is covered.',
       'INDEX (created_at, tag_id), so the newest rows come first and tag_id filters each one.',
       'INDEX (photo_id, tag_id), so each photo finds its tags and the tag lookup is covered.',
     ],
@@ -896,7 +896,7 @@ VALUES ('tr_8f3a', 7, 9, 2500);                     -- transfer_id is UNIQUE: a 
 COMMIT;
 ```
 
-**Durability is a setting, not a given.** In InnoDB, `innodb_flush_log_at_trx_commit = 1` flushes the redo log to disk at every commit; `sync_binlog = 1` does the same for the binary log. With both at 1 a committed transaction survives a crash. Lower values trade a window of lost commits for speed. Engines use *group commit* (one flush for many transactions that commit together), so durability does not cost one flush per transaction.
+**Durability is a setting, not a given.** In InnoDB, `innodb_flush_log_at_trx_commit = 1` flushes the redo log to disk at every commit; `sync_binlog = 1` does the same for the binary log. With both at 1 a committed transaction survives a crash. Lower values trade a window of lost commits for speed. What each value survives: with `2`, the log is written to the operating system at every commit and flushed to disk about once a second, so a crash of the MySQL process alone loses nothing (tested on MySQL 8.0.46: 8 of 8 commits survived a `kill -9` of `mysqld`), but a crash of the whole machine or a power loss can lose about the last second. With `0`, the log is written and flushed only about once a second, so even a process crash can lose recent commits (tested: 3 of 8 single commits were lost when `mysqld` was killed right after the commit). With `1`, nothing was lost in the process-crash test (8 of 8); surviving a power loss rests on the disk really honouring the flush, as the MySQL manual describes (not simulated here). The MySQL 8.0 manual says: with 0 the log is written and flushed once per second; with 2 it is written at each commit and flushed once per second; in both cases transactions not yet flushed "can be lost in a crash" (up to about one second, and the once-per-second flush is not 100% guaranteed). The manual does not split mysqld crash from OS crash; the usual reading is that value 2 survives a mysqld-only crash (the OS still holds the written log) but not an OS crash or power loss. InnoDB crash recovery still leaves transactions applied entirely or erased entirely. Engines use *group commit* (one flush for many transactions that commit together), so durability does not cost one flush per transaction.
 
 **Autocommit.** By default each statement runs as its own transaction. So `UPDATE ... SET n = n + 1` is atomic by itself. Logic that spans several statements (read, decide, write) needs an explicit `START TRANSACTION`.
 
@@ -937,7 +937,7 @@ Yes. Outside an explicit `START TRANSACTION ... COMMIT`, each statement runs as 
     why: 'Durability depends on when the redo log is flushed. Value 2 writes to the OS cache at commit and flushes about once a second.',
     explain: [
       'Not with this setting. COMMIT returned once the log reached the OS cache, which a power loss can lose.',
-      'Correct. With 1 (and sync_binlog = 1) a returned commit survives. Lower values are a deliberate trade for write speed. Check the docs for the exact crash cases.',
+      'Correct. With 1 (and sync_binlog = 1) a returned commit survives. Lower values are a deliberate trade for write speed. The MySQL 8.0 manual says unflushed transactions "can be lost in a crash".',
       'InnoDB recovery restores a consistent state; the cost is lost recent commits, not corruption.',
     ],
   },

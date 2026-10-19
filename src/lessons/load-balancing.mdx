@@ -1005,14 +1005,20 @@ import signal, threading, time
 
 draining = threading.Event()
 
-def on_sigterm(*_):
-    draining.set()          # /ready now returns 503 so the balancer stops routing here
+def drain_and_stop():
     time.sleep(5)           # let every proxy notice before we stop accepting
     server.shutdown()       # stop accepting; in-flight handlers finish
     # then wait for in-flight work with a deadline shorter than the grace period
 
+def on_sigterm(*_):
+    draining.set()          # /ready now returns 503 so the balancer stops routing here
+    threading.Thread(target=drain_and_stop).start()   # not inline: see below
+
 signal.signal(signal.SIGTERM, on_sigterm)
+server.serve_forever()      # main thread; returns once shutdown() is called
 ```
+
+Do not call `server.shutdown()` inside the handler itself. Python runs the handler on the main thread, which is the thread running `serve_forever()`. `shutdown()` waits for that loop to stop, so the program waits on itself and hangs. Starting a second thread avoids it.
 
 **Long-lived connections do not drain on their own.** A WebSocket server holding 40,000 connections might wait forever. Set a drain deadline, close connections deliberately (a WebSocket close frame), and have clients **reconnect with jitter** so 40,000 reconnects do not arrive in the same second.
 

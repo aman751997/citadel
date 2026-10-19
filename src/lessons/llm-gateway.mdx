@@ -388,7 +388,7 @@ Notice that the filters are plain predicates and the order is one sort key. That
     q: 'Routing 60% of calls to a model a fifth of the price cuts the bill about 48% on paper. What must be true before you ship it?',
     options: [
       'The price list shows the saving, and the vendor says the cheaper model is nearly as good',
-      'The cheaper model is measured good enough on those routes, and retries do not eat the saving',
+      'Quality is measured good enough on those routes, and retries do not eat the saving',
       'The cheaper model has lower latency and a higher score on the provider\'s public benchmark',
     ],
     answer: 1,
@@ -428,13 +428,13 @@ Take an outage replay. Provider A starts returning errors at 14:02. Three featur
 
 **Backoff with jitter.** Wait longer after each failure, and add randomness so a thousand callers do not retry in lockstep. A common form is "full jitter": sleep a random time between 0 and `min(cap, base × 2^attempt)`.
 
-**Circuit breakers, per provider × model × region.** After enough failures in a window (say 50% of at least 20 calls in 30 seconds), the breaker **opens**: routing treats that target as unavailable and fails over at once, with no timeout to wait out. After a cool-down it goes **half-open** and lets a few probe calls through. If they succeed it closes. Breakers are per target because providers fail partially: one model in one region, not the whole company. The <a href={`${BASE}sd/lessons/load-balancing/#gateway`}>load-balancing lesson</a> has the general state machine.
+**Circuit breakers, per provider × model × region.** After enough failures in a window (say 50% of at least 20 calls in 30 seconds), the breaker **opens**: routing treats that target as unavailable and fails over at once, with no timeout to wait out. After a cool-down it goes **half-open** and lets probe calls through. In this sketch the first result decides: success closes the breaker, failure opens it again. Breakers are per target because providers fail partially: one model in one region, not the whole company. The <a href={`${BASE}sd/lessons/load-balancing/#gateway`}>load-balancing lesson</a> has the general state machine.
 
 ```python
 import random, time
 
 class Breaker:
-    """closed -> open (fail fast) -> half-open (a few probes) -> closed."""
+    """closed -> open (fail fast) -> half-open (first result decides) -> closed."""
     def __init__(self, window_s=30, min_calls=20, error_rate=0.5, cooldown_s=20):
         self.events = []                  # (timestamp, ok)
         self.state, self.opened_at = "closed", 0.0
@@ -539,7 +539,7 @@ Not necessarily. Oversubscription is normal because tenants rarely peak together
 <RevisionCards id="llm-gateway-fallbacks" cards={[
   { front: 'Which failures should NOT be retried?', back: 'context_too_long, invalid request, auth errors, and provider content filtering. They will fail again or are a policy result.' },
   { front: 'What does a retry budget do?', back: 'Caps retries at a share of requests (say 10%) so an outage does not become three times the load.' },
-  { front: 'Breaker states?', back: 'Closed (normal), open (fail fast, skip target), half-open (a few probes after a cool-down). Per provider, model and region.' },
+  { front: 'Breaker states?', back: 'Closed (normal), open (fail fast, skip target), half-open (the first probe result decides, after a cool-down). Per provider, model and region.' },
   { front: 'Why split timeouts for streams?', back: 'TTFT timeout catches a dead start, stall timeout catches a dead stream, overall cap bounds the rest. One 60 s timeout is wrong for both.' },
   { front: 'Fallback rule?', back: 'It must pass the same hard filters as the primary (context, capability, region, allowed providers).' },
 ]} />
@@ -789,12 +789,12 @@ local ok = tokens >= cost
 if ok then tokens = tokens - cost end
 redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
 redis.call('EXPIRE', KEYS[1], math.ceil(cap / rate) + 60)
-return {ok and 1 or 0, math.ceil(math.max(0, cost - tokens) / rate)}   -- admitted?, seconds to wait
+return {ok and 1 or 0, ok and 0 or math.ceil((cost - tokens) / rate)}   -- admitted?, seconds to wait (0 when admitted)
 """)
 
 def reserve(tenant: str, n: int, cap=1_500_000, rate=150_000):
     ok, wait_s = RESERVE(keys=[f"tb:{{{tenant}}}"], args=[cap, rate, n])
-    return bool(ok), int(wait_s)            # wait_s becomes Retry-After on a 429
+    return bool(ok), int(wait_s)            # wait_s is 0 when admitted; otherwise it becomes Retry-After on a 429
 
 def reconcile(tenant: str, reserved: int, actual: int):
     # +ve delta refunds, -ve delta charges. HINCRBYFLOAT is atomic. A refund can exceed capacity
@@ -1066,7 +1066,7 @@ The precise difference: the first two **replace** the model call and can therefo
     q: 'A route answers HR policy questions from a shared handbook at temperature 0, for one tenant, and the handbook is edited weekly. Which caching setup is the best fit?',
     options: [
       'A semantic cache at a 0.85 threshold shared across all tenants for the best hit rate',
-      'Exact-match with the handbook version in the key, plus prefix caching on the system prompt',
+      'Exact-match with the handbook version in the key, plus prefix caching on the prompt',
       'Exact-match keyed on the question text only, with a 24-hour TTL so edits expire daily',
     ],
     answer: 1,
@@ -1082,7 +1082,7 @@ The precise difference: the first two **replace** the model call and can therefo
     q: 'Cached input is billed at 10% and 1,200 of 1,500 input tokens are a stable prefix. Someone adds a per-request timestamp as the first line of the system prompt. What happens to the saving?',
     options: [
       'Nothing much changes: 1,200 of the 1,500 tokens are still identical to before',
-      'The saving is mostly lost: the first line differs every request, so no prefix matches',
+      'Mostly lost: the first line differs every request, so no prefix matches',
       'The cost drops further, because a more specific prompt gets a better cache match',
     ],
     answer: 1,
@@ -1375,8 +1375,8 @@ Imagine a page: "support bot slow". Total latency p50 is flat. Error rate is fla
     kind: 'tradeoff',
     q: 'Traces at 100% would cost about 100 GB a day. Your on-call needs every failing request traceable. Which sampling plan fits?',
     options: [
-      'Head-sample 10% for all traffic and accept that some failures have no trace',
-      'Head-sample routine traffic at 10%; tail-sample all errors, fallbacks and slow calls',
+      'Head-sample 10% of all traffic and accept that some failing requests have no trace',
+      'Head-sample routine traffic at 10%; tail-sample errors, fallbacks and slow calls',
       'Sample 1% of all requests, since the on-call can reproduce failures from the logs',
     ],
     answer: 1,

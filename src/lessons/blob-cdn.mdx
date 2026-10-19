@@ -951,7 +951,7 @@ Storage is cheap per gigabyte and expensive per petabyte. The main lever is how 
 | **One Zone-IA** | a bit below IA | Milliseconds | One availability zone: lost if that zone is lost. Only for re-creatable data (thumbnails you can regenerate) |
 | **Glacier Instant Retrieval** | about ⅙ | Milliseconds | Higher retrieval fee, 90-day minimum |
 | **Glacier Flexible Retrieval** | lower still | Minutes to hours (restore first) | Must restore before reading, 90-day minimum |
-| **Glacier Deep Archive** | about 1/20 or less (about 1/23 in us-east-1 list prices, October 2026) | Hours | 180-day minimum. For compliance and "just in case" |
+| **Glacier Deep Archive** | about 1/20 or less ($0.00099 vs $0.023 per GB-month, first 50 TB, is about 1/23 in AWS us-east-1 list prices, price list dated 2026-10-15) | Hours | 180-day minimum. For compliance and "just in case" |
 | **Intelligent-Tiering** | moves objects for you | Milliseconds for the frequent and infrequent tiers | Small per-object monitoring fee, tiny objects are not tiered |
 
 **Lifecycle rules** move or delete objects automatically by age (filtered by prefix, tag or size): *"after 30 days → Standard-IA. After 365 days → Glacier Instant Retrieval. Abort incomplete multipart uploads after 7 days. Delete `tmp/` after 1 day."*
@@ -977,7 +977,7 @@ All Standard                    16,425 TB × 1                   = 16,425 units
 ### The fees that eat the savings
 
 - **Retrieval.** Cold classes charge per GB read. If old photos are actually viewed (a "this day three years ago" feature), retrieval can cost more than you saved. The **CDN absorbs repeat reads** of the same object, which helps.
-- **Minimum size.** Standard-IA bills each object as at least 128 KB. A 20 KB thumbnail is billed at 6.4× its size, at half the price: **3.2× more** than leaving it in Standard. Keep tiny objects in Standard (or pack them). (Since September 2024, S3 lifecycle rules do not transition objects under 128 KB by default. You need an object size filter to force it.)
+- **Minimum size.** Standard-IA bills each object as at least 128 KB. A 20 KB thumbnail is billed at 6.4× its size, at about half the price (Standard-IA is $0.0125 vs $0.023, so 54%, in us-east-1 list prices, October 2026): roughly **3.2× to 3.5× more** than leaving it in Standard. Keep tiny objects in Standard (or pack them). (Since September 2024, S3 lifecycle rules do not transition objects under 128 KB by default. You need an object size filter to force it.)
 - **Minimum duration.** Delete an IA object after 10 days and you still pay for 30.
 - **Transition requests.** Lifecycle transitions are billed per object. Moving billions of tiny objects costs real money.
 
@@ -1162,7 +1162,7 @@ Video giants run the push model at enormous scale: Netflix's Open Connect, for e
 
 **The problem.** The CDN dashboard says the hit ratio for images is 61%. It should be well above 90%, because the photos never change. Sampling the logs shows the same photo requested as `?w=400&h=300`, as `?h=300&w=400`, and with a marketing tag appended by the email team. The CDN is not wrong. It was told these are three different things.
 
-The **cache key** is promise number one at the edge: what exactly makes two requests "the same"? By default most CDNs key on scheme, host, path and the **full query string**, compared as strings. Every difference that does not change the response is a wasted miss.
+The **cache key** is promise number one at the edge: what exactly makes two requests "the same"? The defaults differ by vendor (checked 2026-10-19 in each vendor's docs). **Cloudflare** keys on the full URL (scheme, host, path and the **full query string**, compared as strings), plus a few headers such as `Origin`. **Fastly** hashes the URL (path and query string) and the Host header, and ignores the HTTP method and whether the request came over TLS. **Amazon CloudFront** keys on only the distribution's domain name and the URL path: query strings, headers and cookies are left out until you add them in a cache policy. Check which one you run. Every difference that does not change the response is a wasted miss.
 
 **Normalise the key:**
 
@@ -1173,7 +1173,7 @@ The **cache key** is promise number one at the edge: what exactly makes two requ
 
 **`Vary` adds request headers to the key.** `Vary: Accept-Encoding` is normal (a gzip copy and a Brotli copy). `Vary: User-Agent` or `Vary: Cookie` shards the cache into thousands of near-empty slices. If the response genuinely differs by device or format, map the header into a **few buckets** at the edge and key on the bucket (Chapter 16).
 
-**Cookies and `Authorization`.** By the HTTP caching rules (RFC 9111), a shared cache must not reuse a response to a request carrying `Authorization` unless the response explicitly allows it (`public`, `s-maxage` or `must-revalidate`). Many CDNs also skip caching when cookies are present unless configured otherwise; check yours. Serve public images from a **cookieless domain or path** so they cache cleanly.
+**Cookies and `Authorization`.** By the HTTP caching rules (RFC 9111), a shared cache must not reuse a response to a request carrying `Authorization` unless the response explicitly allows it (`public`, `s-maxage` or `must-revalidate`). Cookies are not in the default cache key for CloudFront (it uses only domain and path), Fastly (URL and Host) or Cloudflare (full URL plus a few headers), and each vendor has its own rules for caching responses that set cookies, so check yours. Serve public images from a **cookieless domain or path** so they cache cleanly.
 
 | Request | Default key (string compare) | Normalised key |
 |---|---|---|
@@ -1358,7 +1358,7 @@ They never need a new version of the old URL, because there is none. The HTML th
 Promise number three: **how the edge learns the truth changed**. Fingerprinted URLs avoid the question for content that is replaced. For content that must **disappear** or change in place, you purge:
 
 - **By URL**: exact objects. **By prefix or wildcard**: where supported. **By tag**: the origin labels responses with tags (Fastly calls them surrogate keys; Cloudflare and CloudFront have cache tags too), and one call purges everything carrying a tag, like "every image of user 42".
-- **Latency varies widely by CDN**, from well under a second to several minutes, and some charge per purge path beyond an allowance (CloudFront: the first 1,000 paths a month are free, and a path with a `*` wildcard counts as one). Check yours, and do not design a correctness guarantee around a purge.
+- **Latency varies widely by CDN**, from well under a second to several minutes (Fastly advertises "150 ms instant purge" on its caching page, a marketing figure checked 2026-10-19, not a guarantee), and some charge per purge path beyond an allowance (CloudFront: the first 1,000 paths a month are free, and a path with a `*` wildcard counts as one). Check yours, and do not design a correctness guarantee around a purge.
 - **Purge only clears the CDN.** Browsers and apps that already hold a copy keep it until their `max-age` runs out. For content that might have to vanish (private photos, anything takedown-prone), keep **browser TTLs short** and use `s-maxage` for the edge, or serve it through **expiring signed URLs** (Chapter 14) so even a leaked link dies.
 - **A purge is a mass expiry.** Purge a hot object at 200 PoPs and you get up to 200 near-simultaneous origin fetches, more if PoPs do not collapse concurrent misses. It is a cache stampede at continental scale. The origin shield (next chapter) is the fix.
 

@@ -54,7 +54,7 @@ export const fallbacks = [
   step('Provider B has failed 60% of calls in the last 30 seconds. What should the gateway do with the next request routed to it?', [], 2, [
     ['Send it; every request deserves a fresh chance', 'Each call would wait for a timeout before failing over. Callers pay the latency of a dead provider on every request.'],
     ['Remove Provider B from config until an engineer re-adds it', 'Manual removal is slow during an incident and easy to forget afterwards. Automate the decision.'],
-    ['Open the circuit for Provider B: skip it and fail over at once, then let a few probe calls through after a cool-down', 'Right. A circuit breaker per (provider, model, region) fails fast while open and probes in half-open state. Recovery is automatic.'],
+    ['Open the circuit for Provider B: skip it and fail over at once, then let probe calls through after a cool-down', 'Right. A circuit breaker per (provider, model, region) fails fast while open and probes in half-open state. Recovery is automatic.'],
   ]),
   step('The tier\'s fallback model is from a different provider. What must the gateway check before failing over?', [], 1, [
     ['Only that the fallback provider is healthy', 'Health is necessary, not sufficient. A healthy model that cannot accept the request still fails.'],

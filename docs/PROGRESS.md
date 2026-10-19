@@ -29,6 +29,7 @@ _Last updated: 2026-10-19 01:00 (regenerated from git; see "How to refresh" at t
 | 7b. Verification wave (quizzes, code, services, docs, links) | ✅ done 2026-10-19; see `docs/PENDING.md` and `docs/qa/` |
 | 7c. Quiz rebalance (answer-length bias) + blind re-solve of every rewritten quiz | ✅ done 2026-10-19 (longest 79% → 23%, ratio 2.67 → 1.00) |
 | 7d. Remaining docs/spec claims and live tests (Cassandra, drivers, Kafka, Redis Cluster) | ✅ done 2026-10-19 |
+| 7e. Third pass: Java Kafka client, Mastery Postgres SQL, paper/price/doc claims, live tests, code sketches, quiz balance outliers | ✅ done 2026-10-19 |
 | 8. Trim over-length lessons | ⏳ not started |
 | 9. Browser spot-checks (mobile, a11y, no-JS) | ⏳ partly done by agents; not exhaustive |
 | 10. Final report | ⏳ after 5, 8, 9 |

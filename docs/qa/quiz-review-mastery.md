@@ -1,6 +1,6 @@
 # Quiz and model-answer review: mastery chapters
 
-Scope: every `<Quiz>`, in-DryRun predict question, `<Reveal>` model answer and `<AnswerModes>` block under `src/mastery/**` (ai-pipeline, reporting-engine, telemedicine-poc, war-stories). Source of truth: the chapter text plus the local repos, read-only (`~/code/rgt-ai-pipeline-service`, `~/code/rgt-healthcare-ecosystem`, `~/code/telemedicine-poc`). Reviewed 2026-10-19. No secrets or personal data recorded.
+Scope: every `<Quiz>`, in-DryRun predict question, `<Reveal>` model answer and `<AnswerModes>` block under `src/mastery/**` (ai-pipeline, reporting-engine, telemedicine-poc, war-stories). Source of truth: the chapter text plus the local repos, read-only (the local AI pipeline repo, the local healthcare monorepo, the local telemedicine PoC repo). Reviewed 2026-10-19. No secrets or personal data recorded.
 
 Totals: 6 `<Quiz>` blocks (15 questions), 2 DryRun predict questions, 146 `<Reveal>`, 40 `<AnswerModes>`. Quiz verdicts: 11 OK, 4 FIXED (explanations only; no answer index was wrong).
 

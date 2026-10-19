@@ -102,7 +102,7 @@ export function twoSumSortedFrames(nums: number[], target: number): Frame[] {
   const out = new Set<number>();
   const arr = (extra: Partial<ArrayView> = {}): ArrayView => ({
     kind: 'array', name: 'nums', values: nums,
-    pointers: l <= h ? [{ at: l, label: 'left', tone: 'gold' }, { at: h, label: 'right', tone: 'blue' }].filter(p => p.at >= 0 && p.at < nums.length) : [],
+    pointers: l <= h ? [{ at: l, label: 'left', tone: 'gold' as PtrTone }, { at: h, label: 'right', tone: 'blue' as PtrTone }].filter(p => p.at >= 0 && p.at < nums.length) : [],
     tones: Object.fromEntries([...out].map(i => [i, 'out' as CellTone])), ...extra,
   });
   r.frame(`The array is sorted, so we can start with the widest pair: left at the smallest value, right at the largest. We want two numbers adding to ${target}.`, [arr(), tvars({ target })]);
@@ -398,7 +398,7 @@ export function reverseListFrames(values: Val[]): Frame[] {
     const rev = values.slice(0, k + (flipped ? 1 : 0)).reverse();
     const rest = values.slice(k + (flipped ? 1 : 0));
     return [
-      { kind: 'array', name: 'reversed so far', values: [...rev, 'null'], join: '→', tones: { ...(flipped && k < n ? { 0: 'active' as CellTone } : {}), [rev.length]: 'out' } },
+      { kind: 'array', name: 'reversed so far', values: [...rev, 'null'], join: '→', tones: { ...(flipped && k < n ? { 0: 'active' as CellTone } : {}), [rev.length]: 'out' } as Record<number, CellTone> },
       { kind: 'array', name: 'still to do', values: rest.length ? [...rest, 'null'] : ['null'], join: '→', indices: false,
         pointers: !flipped && k < n ? [{ at: 0, label: 'curr', tone: 'gold' }] : [], tones: { [rest.length]: 'out' } },
       tvars(vars, prevVars),

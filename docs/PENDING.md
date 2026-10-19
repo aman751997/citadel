@@ -24,17 +24,21 @@ Closed on 2026-10-19 (second pass):
 - [x] **Quiz design:** the correct option was the single longest in 79% of questions (ratio 2.67x). About 1,000 questions were rewritten so wrong options are realistic, parallel mistakes. Now longest 23% / shortest 22% / ratio 1.00 (`node scripts/quiz-balance-src.mjs src/lessons src/dsa-lessons src/lld-lessons src/mastery`). Every rewritten question was then solved blind again (about 75 more fixes, including 4 answer indices that pointed at the wrong option). `node scripts/check-quiz-integrity.mjs` guards the structure (0 problems). Evidence: `docs/qa/quiz-balance-*.md`, `docs/qa/quiz-recheck-*.md`.
 - [x] **Docs and spec claims** (`docs/qa/spec-claims-1.md`, `spec-claims-2.md`, `live-tests-2.md`): HIPAA Safe Harbor wording, GLiNER truncation, FDA link, five papers, LiveKit/WebRTC, Gemini naming, Elasticsearch RRF licence, OpenSearch k-NN, Kafka partition guidance and poll interval, ALB, DNS/JVM cache, CloudFront, Fastly, Glacier, SQS, browser connection limits; Cassandra CQL, MySQL drivers (`CLIENT_FOUND_ROWS`), Kafka after `max.poll.interval.ms` and retention, thread-limit failure, Redis Cluster failover, LRU vs LFU.
 
+Closed on 2026-10-19 (third pass; evidence in `docs/qa/kafka-java-client.md`, `mastery-postgres-sql.md`, `spec-claims-3.md`, `live-tests-3.md`, `sketch-fixes.md`, `quiz-balance-nudge.md`):
+- [x] **Java Kafka client:** `CommitFailedException` run for real (kafka-clients 4.3.1 on a 4.3.1 broker): commitSync, commitAsync, auto-commit, heartbeat/leave-group, and the `auto.offset.reset=none` exceptions.
+- [x] **Mastery Postgres SQL:** all SQL blocks run on Postgres 16 / pgvector 0.8.7 against the real Flyway migrations and the real pgvector DDL (26 verified, 5 corrected; e.g. chunk text is in S3, not Postgres).
+- [x] **Paper details** (Splitwise ISCA 2024 51st edition, DistServe, Sarathi-Serve, Orca, Earlybird, Koren, Linden, PagedAttention, Gorilla, Dynamo, Tail at Scale, Brewer, Abadi, Cormack) checked against Crossref/arXiv/USENIX; Apache's Kafka partition wording added; Glacier Deep Archive and Standard-IA ratios from the AWS price list; CDN default cache keys per vendor; Fastly purge figure attributed; OpenSearch HNSW defaults; LiveKit egress needs the shared Redis.
+- [x] **Live tests:** RabbitMQ `consumer_timeout` (1-minute check; 3.13 classic and quorum, 4.3 quorum), Redis LFU vs LRU when the hot set changes, the "fourth node moves 25%" figure, `innodb_flush_log_at_trx_commit` under `kill -9`.
+- [x] **Code sketches** (single-flight errors, SIGTERM shutdown, breaker text vs code in both lessons, token reservation return value, facet mapping, GCounter on older Python) and the two `dryrun.ts` type errors.
+- [x] **Quiz balance leftovers:** all outlier files are inside the band (site-wide: always-pick-longest 30%, always-pick-shortest 27%, fair about 31%).
+
 Still open (hedges kept; reasons in the evidence files):
-- [ ] The Java client's `CommitFailedException` by name (Kafka was tested with the Python client); LFU being slow to adapt to a changed hot set; the "fourth node moves 25%" figure (arithmetic only).
-- [ ] LiveKit egress and Redis; OpenSearch HNSW `m` default; Splitwise ISCA edition number; paper venue details taken from abstract pages.
-- [ ] Apache's own Kafka partition-limit page (Confluent sources used); Glacier Deep Archive $/GB (ratio is approximate); default CDN cache-key and cookie behaviour (vendor-specific); Fastly purge timing.
-- [ ] `innodb_flush_log_at_trx_commit=2` behaviour on power loss (needs a real power loss).
-- [ ] **Not run:** the Postgres-style SQL in the Mastery chapters (no schema), other languages' drivers beyond Connector/J, mysql2, Go and the two Python drivers, RabbitMQ 4.x classic-queue `consumer_timeout`.
-- [ ] **Code sketches left as they are:** single-flight waiters get `None` if the leader raises; the SIGTERM sketch calls `server.shutdown()` in a signal handler (deadlocks with stdlib servers); the circuit-breaker text says "a few probes" but the code decides on the first result; `reserve` returns a non-zero wait even when admitted; the facet snippets assume `material` and `category` are keyword fields.
-- [ ] **Quiz balance leftovers:** creational-patterns correct-is-longest is 47%; stacks and prefix-sum correct-is-shortest is 0% and 11%; llm-gateway and recsys shortest 4%. Lengthen or shorten a few options if you care.
+- [ ] **Not tested:** RabbitMQ 4.x classic queues never enforced `consumer_timeout` in 330 s (cause unknown; default is 30 minutes); the Kafka new consumer-group protocol (KIP-848) and client versions other than 4.3.1; `innodb_flush_log_at_trx_commit = 2` on a real OS crash or power loss; pgvector's own defaults for `m` and `ef_construction` (index sizes were identical, so the test proved nothing); the Mastery Postgres stand-ins for billing tables were built from the owning services' migrations, not the live schema.
+- [ ] **Noticed, not fixed:** the billing view's `created_at` is `timestamp` without time zone while the catalog says `TIMESTAMPTZ` (works through an implicit session-time-zone conversion).
 - [ ] **Dry-run captions** have no tests (only final answers do). Read a few for wording.
 - [ ] **Diagram readability**: all 522 Mermaid diagrams render, but nobody has looked at them for clarity on a phone.
-- [ ] **Type errors**: `src/lib/dryrun.ts` has two strict-mode type errors (around lines 105 and 401). They do not affect the build.
+- [ ] **Quiz nudges** were re-read but not re-run (no Java or Python run for the 35 touched questions); creational-patterns (41%) and intervals (42%) sit near the band edge.
+- [ ] **Facet mapping** fix in search.mdx was not run against Elasticsearch.
 
 ## Facts you must confirm yourself (Mastery)
 - [ ] **Your ownership and contribution** on each project (the notes mark this unverified; git shows other authors on the reporting engine).

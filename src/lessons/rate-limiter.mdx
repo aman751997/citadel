@@ -2099,7 +2099,7 @@ It depends on consequences, not taste:
 ### Fail open, done properly
 
 1. **A tight timeout.** The Redis call gets 3 ms. Beyond that the answer is too late to be useful.
-2. **A circuit breaker.** Without one, *every* request waits the full 3 ms for a dead Redis, which eats most of the 5 ms budget. The breaker opens after repeated failures, skips Redis entirely, and lets a trickle of probe calls test for recovery.
+2. **A circuit breaker.** Without one, *every* request waits the full 3 ms for a dead Redis, which eats most of the 5 ms budget. The breaker opens after repeated failures and skips Redis entirely. After a cooldown it lets the next call through as a probe: a success closes the breaker, a failure opens it again for another cooldown.
 3. **A coarse local fallback, not "unlimited".** Each gateway keeps an in-memory bucket per key at, say, ten times its fair share. A Pro key's 10/s divided by 200 gateways, times 10, is 0.5/s per gateway, or 100/s across the fleet. Honest clients rarely notice uneven load balancing with 10x headroom. A retry storm like the one in the prologue (40,000/s) is cut to 100/s: **400 times less**.
 4. **A per-gateway load-shedding limit that never depends on Redis**, protecting the backends no matter what the per-key layer is doing.
 5. **Never silent.** Every fail-open decision emits an audit event (asynchronously, through the queue), and the fail-open rate is the **top alert on the limiter's dashboard**. A silent fail-open is "no limits, and nobody knows".
@@ -2115,7 +2115,7 @@ It depends on consequences, not taste:
     FB -.-> AUD["Audit event\n+ fail-open alert"]`} />
 </Figure>
 
-A sketch in Python. It is deliberately small and not production-ready: the breaker is not thread-safe, and the local buckets need eviction.
+A sketch in Python. It is deliberately small and not production-ready: the breaker is not thread-safe (with many threads, every call after the cooldown would count as a probe, so real breakers cap concurrent probes), and the local buckets need eviction.
 
 ```python
 import time, redis
@@ -2127,7 +2127,7 @@ class Breaker:
     def can_call(self):
         if self.opened_at is None:
             return True
-        return time.monotonic() - self.opened_at >= self.cooldown   # half-open: let a probe through
+        return time.monotonic() - self.opened_at >= self.cooldown   # half-open: the next call is the probe; its result decides
     def record(self, ok):
         if ok:
             self.failures, self.opened_at = 0, None

@@ -32,8 +32,8 @@ def analyse(path):
         a=q['answer']
         if a not in lens: continue
         m=max(lens.values()); n=min(lens.values())
-        longest = lens[a]==m and list(lens.values()).count(m)==1
-        shortest = lens[a]==n and list(lens.values()).count(n)==1
+        longest = (1/list(lens.values()).count(m)) if lens[a]==m else 0
+        shortest = (1/list(lens.values()).count(n)) if lens[a]==n else 0
         mean_others=(sum(lens.values())-lens[a])/(len(lens)-1)
         out.append((longest,shortest,lens[a]/max(mean_others,1),len(o)))
     return out

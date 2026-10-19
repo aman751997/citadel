@@ -38,6 +38,8 @@ All components are static Astro + vanilla TS; progress lives in `localStorage` o
 Props: `questions` (required), `id?` (stable persistence id; default is the quiz's position on the page, so set it if quizzes may be reordered), `title?`.
 Per question: `q`, `options`, `answer` (index), `why` are required (the old API, unchanged). Optional: `explain?: string[]` (one entry per option), `code?: string` (rendered in `<pre>`), `kind?: 'scenario' | 'predict' | 'tradeoff' | 'failure'` (label chip).
 
+Shuffling: options and `explain` are shuffled at build time with a seeded permutation (`src/lib/quiz-shuffle.ts`; seed = `id`, else page path + first question), so the order is stable but the correct answer is not always the same slot. `answer`, `data-idx` and stored picks stay in author index space. Never refer to options by position or letter in any option, `explain` or `why` text; name the content. Opt out per question with `fixed: true` ('All of the above', ordered scales) or per quiz with `shuffle={false}`. The no-JS list keeps author order.
+
 Behaviour: picking locks the question and shows a verdict, then every option's explanation (your pick first, then the correct one, then the rest) when `explain` is given, else just `why`. "Try again" resets one question; once all are answered "Score 3/4" and "Retry whole quiz" appear. Best score and picks persist under `citadel-quiz-v1:<pathname>:<id|index>`. A bubbling `citadel:quiz-complete` event (`detail: {key, score, total}`) fires on completion. "Passed" = best score of at least 70%.
 
 ## ChapterDone / LessonProgress

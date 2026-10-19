@@ -98,9 +98,9 @@ By the end you'll have a model of the whole workshop — about thirty small type
     kind: 'scenario',
     q: 'You have a one-page brief and 90 minutes. What do you do in the first ten minutes?',
     options: [
-      'Start writing classes for every noun so there is something to show',
-      'Pick the design patterns the problem probably needs',
-      'Pull out the nouns and verbs, sort them into entities, values, enums and non-classes, and note what must always be true and who owns it',
+      'Write a class for every noun in the brief so you have code on screen early',
+      'Choose the design patterns the problem is likely to need, then fit classes',
+      'Pull out nouns and verbs, sort them by kind, and note the rules and who owns them',
     ],
     answer: 2,
     why: 'Boundaries and invariants carry most of the grade; patterns come last and fall out of the first two.',
@@ -247,9 +247,9 @@ The sentence's grammar and the code's ownership are different questions. The rul
     kind: 'scenario',
     q: 'The brief says "drivers book a bay". Where should the clash check live?',
     options: [
-      'On Customer, as Customer.book(bay, slot)',
-      'On a per-bay schedule that holds all of that bay\'s bookings',
-      'In a static helper that every caller can reach',
+      'On Customer, as book(bay, slot), asking the bay for its bookings',
+      'On a per-bay schedule that sees all of that bay\'s bookings',
+      'In a static BookingRules helper that every caller can reach',
     ],
     answer: 1,
     why: 'The rule needs every booking of the bay, so it belongs to the object that holds them. The customer becomes a parameter.',
@@ -262,7 +262,11 @@ The sentence's grammar and the code's ownership are different questions. The rul
   {
     kind: 'failure',
     q: 'Which noun from the brief is best modelled as an enum rather than a class?',
-    options: ['Booking', 'Mechanic', 'Job (oil change, tyre rotation, brake check)'],
+    options: [
+      'Booking, with its id, status and time slot',
+      'Mechanic, with a name and a list of skills',
+      'Job: oil change, tyre rotation or brake check',
+    ],
     answer: 2,
     why: 'The set of jobs is closed and known at compile time; each carries a duration and needs.',
     explain: [
@@ -410,23 +414,31 @@ record TimeSlot(Instant start, Instant end) {
   {
     kind: 'predict',
     q: 'A class overrides equals() but not hashCode(). a.equals(b) is true. What does map.get(b) return when only a is a key?',
-    options: ['Usually null, because the hash codes differ and equals is never called', 'The stored value, because equals is true', 'It throws an exception'],
+    options: [
+      'Usually null: the hash codes differ, so equals is never called',
+      'The stored value, since equals() says a and b are the same',
+      'It throws IllegalStateException because the hash codes disagree',
+    ],
     answer: 0,
     why: 'HashMap goes to the bucket for the key\'s hash first. Two equal objects must have equal hash codes.',
     explain: [
       'Correct. This is the contract: equal objects must have equal hash codes.',
-      'equals is only called on entries that share the key\'s hash.',
+      'equals is only called on entries that share the key\'s hash, so it is never reached.',
       'There is no exception; the lookup just quietly misses.',
     ],
   },
   {
     kind: 'failure',
     q: 'A record has a List<Job> component. The caller keeps the ArrayList and adds to it later. What happens?',
-    options: ['Nothing: records are immutable', 'The record changes with it, including its hashCode', 'The compiler rejects it'],
+    options: [
+      'Nothing: records make a defensive copy of every component',
+      'The record changes too, and so does its hashCode',
+      'The compiler rejects a mutable List component in a record',
+    ],
     answer: 1,
     why: 'Final fields stop reassignment, not mutation of what they point at. Copy in the compact constructor with List.copyOf.',
     explain: [
-      'Records are only shallowly immutable.',
+      'Records are only shallowly immutable; they do not copy their components.',
       'Correct. Copy mutable components in the compact constructor.',
       'It compiles fine; that is why it is dangerous.',
     ],
@@ -569,9 +581,9 @@ Not comfortably. A record's `equals` compares every component, which is value se
     kind: 'failure',
     q: 'Why did the booking vanish from the HashSet?',
     options: [
-      'HashSet does not support mutable objects at all',
-      'The set removed it when the status changed',
-      'equals and hashCode included a field that changed, so the stored hash no longer matched',
+      'HashSet cannot store mutable objects, so it dropped the booking',
+      'The set evicted it when the status field changed, as it tracks changes',
+      'equals and hashCode used a field that changed, so the stored hash was stale',
     ],
     answer: 2,
     why: 'The set filed the object under its old hash. After the change, contains looks under a new hash.',
@@ -584,7 +596,11 @@ Not comfortably. A record's `equals` compares every component, which is value se
   {
     kind: 'tradeoff',
     q: 'Should Booking be a record?',
-    options: ['No: it changes and stays the same booking, so it is a final class with an id', 'Yes, it is mostly data', 'Yes, with a custom equals over all fields'],
+    options: [
+      'No: it keeps its identity while changing, so use a final class with an id',
+      'Yes: it is mostly data, and a record is the shortest way to write that',
+      'Yes, with a custom equals and hashCode over every field',
+    ],
     answer: 0,
     why: 'Records give value semantics and final fields; every transition would need a new object, and equality would change with state.',
     explain: [
@@ -772,11 +788,15 @@ class BillSplitter {
   {
     kind: 'predict',
     q: 'In Java, what is 1.10 + 2.20 == 3.30 for doubles?',
-    options: ['true', 'false: 0.1 has no exact binary representation', 'It depends on the JVM'],
+    options: [
+      'true, because the compiler folds 1.10 + 2.20 into the exact constant 3.30',
+      'false, as 1.1 and 2.2 have no exact binary representation',
+      'It depends on the JVM version and the CPU floating-point unit',
+    ],
     answer: 1,
     why: 'One-tenth is a repeating fraction in binary, like one-third in decimal. Each operand is slightly off and the errors do not cancel.',
     explain: [
-      'The sum is 3.3000000000000003.',
+      'Constant folding uses the same double arithmetic. The sum is 3.3000000000000003.',
       'Correct. It is a representation problem, not a precision one.',
       'IEEE 754 makes the result deterministic.',
     ],
@@ -785,16 +805,16 @@ class BillSplitter {
     kind: 'scenario',
     q: 'A bill of 1,000.00 must be split across three cost centres. What is the right result?',
     options: [
-      '333.33 each; the missing paisa is a rounding difference',
-      '333.34, 333.33, 333.33: leftover paise go to the first shares so the total is exact',
-      '333.333... each, kept as a double',
+      '333.33 each, and the missing paisa is booked as rounding',
+      '333.34, 333.33, 333.33: the leftover paisa goes to the first share',
+      '333.333... each, kept as a double so the shares stay exact',
     ],
     answer: 1,
     why: 'Allocate leftovers instead of losing them: shares differ by at most one paisa and add up exactly.',
     explain: [
       'That loses a paisa; finance will find it.',
       'Correct. 100,000 paise is 33,333 each with 1 left over.',
-      'A double cannot hold it exactly and cannot be paid.',
+      'A double cannot hold 333.333... exactly, and money cannot be paid in fractions of a paisa.',
     ],
   },
 ]} />
@@ -959,12 +979,16 @@ The conversion happens once, in `slot()`, with the zone the record carries; ever
   {
     kind: 'tradeoff',
     q: 'Why does the cancellation policy take a Clock (or an Instant) instead of calling Instant.now()?',
-    options: ['A test can move the clock by hand to check expiry and the 24-hour window', 'It is faster', 'Instant.now() is not thread-safe'],
+    options: [
+      'A test can set the time by hand to check the 24-hour cutoff',
+      'Instant.now() is slow because it makes a system call each time',
+      'Instant.now() is not thread-safe when two bookings run at once',
+    ],
     answer: 0,
     why: '"Now" is a dependency. A manual clock lets a test cover 08:20 without waiting until 08:20.',
     explain: [
       'Correct. Same idea as injecting any collaborator you need to control in tests.',
-      'Speed is not the reason.',
+      'Speed is not the reason. The point is control in tests.',
       'It is thread-safe; the problem is control, not safety.',
     ],
   },
@@ -1261,25 +1285,33 @@ Because reading isn't deciding. The booking screen shows the status, the report 
   {
     kind: 'failure',
     q: 'A getter returns the object\'s internal List. What is the problem?',
-    options: ['Callers can mutate the list and break invariants without the object knowing', 'It is slower', 'Nothing; Lists are safe to share'],
+    options: [
+      'Callers can change the list and break invariants unseen',
+      'Returning the same list object each time breaks equals() on the owner',
+      'Nothing, as long as the field is declared final',
+    ],
     answer: 0,
     why: 'Return a value or a read-only view (List.copyOf, an unmodifiable collection), never the live collection.',
     explain: [
       'Correct. The change happens inside someone else\'s code and cannot be audited.',
-      'Performance is not the issue.',
-      'A List is mutable; sharing it shares the right to change it.',
+      'equals is unaffected; the issue is that callers can mutate the list.',
+      'final stops reassignment of the field, not mutation of the list.',
     ],
   },
   {
     kind: 'tradeoff',
     q: 'Does tell-don\'t-ask forbid a status() getter?',
-    options: ['Yes: all getters are banned', 'No: reading is fine; the smell is a decision about an object\'s state made outside it', 'Only for booleans'],
+    options: [
+      'Yes: any getter that exposes state is banned, so use methods only',
+      'No: reading is fine; the smell is deciding on state outside the object',
+      'Only for boolean getters like isConfirmed(), as they invite branching',
+    ],
     answer: 1,
     why: 'Screens, reports and tests need to read. What the booking refuses is letting anyone write the status.',
     explain: [
       'The principle is about decisions, not about looking.',
       'Correct. Queries are fine; setters on anything with a rule are not.',
-      'The type of the getter is irrelevant.',
+      'The type of the getter is irrelevant; the smell is the decision made outside.',
     ],
   },
 ]} />
@@ -1509,7 +1541,11 @@ Both are defensible; say which you chose and why. Computing it ("held and now �
   {
     kind: 'failure',
     q: 'The importer calls setStatus(CONFIRMED) on a cancelled booking. What is the root cause?',
-    options: ['The importer has a bug', 'Enums cannot model lifecycles', 'A public setter exists, so the state machine lives in services and anyone can bypass it'],
+    options: [
+      'The importer is buggy and should check the status before calling',
+      'Enums cannot model a lifecycle, so the status needs a class',
+      'A public setter exists, so anyone can bypass the state machine',
+    ],
     answer: 2,
     why: 'One table on the type, one door per transition on the entity. Without a setter there is no seventh arrow.',
     explain: [
@@ -1521,7 +1557,11 @@ Both are defensible; say which you chose and why. Computing it ("held and now �
   {
     kind: 'tradeoff',
     q: 'Confirmed bookings now send reminders and checked-in ones start a job timer. What changes?',
-    options: ['One class per state (State pattern), with the enum table kept as the guard', 'Add if (status == ...) branches in services', 'Use strings for states'],
+    options: [
+      'One class per state (State pattern), keeping the enum table as guard',
+      'Add if (status == ...) branches in each service that reacts',
+      'Switch the states to strings so new ones are easy to add',
+    ],
     answer: 0,
     why: 'Edges vary: enum table. Behaviour varies: State classes. Both: State classes with the table guarding transitions.',
     explain: [
@@ -1669,7 +1709,11 @@ Read the arrows out loud as you draw them — *the workshop owns its schedules (
   {
     kind: 'scenario',
     q: 'Booking holds a CustomerId, not a Customer. Which arrow?',
-    options: ['Composition', 'Association, by id (different aggregate)', 'Inheritance'],
+    options: [
+      'Composition: the booking owns the customer record',
+      'Association by id, as it is another aggregate',
+      'Inheritance: a booking is a kind of customer',
+    ],
     answer: 1,
     why: 'The booking knows its customer but neither owns nor loads it. Holding the id keeps the aggregates separate.',
     explain: [
@@ -1681,7 +1725,11 @@ Read the arrows out loud as you draw them — *the workshop owns its schedules (
   {
     kind: 'tradeoff',
     q: 'In Java, what makes a relationship "composition"?',
-    options: ['The keyword final', 'Using a List', 'The whole creates or copies its parts and never lets a mutable reference escape'],
+    options: [
+      'Declaring the part final and initialising it in the constructor',
+      'Holding the parts in a List instead of one field per part',
+      'The whole creates its parts and never lets a mutable reference escape',
+    ],
     answer: 2,
     why: 'Java has no "owns" syntax. It is a promise: Booking copies its lines with List.copyOf; the schedule never returns its map.',
     explain: [
@@ -1872,9 +1920,9 @@ Default to interfaces for every boundary between components: that is the seam a 
     kind: 'failure',
     q: 'Why did new EvBay("B3", 22).label() say 0 kW?',
     options: [
-      'The base constructor called an overridable method before the subclass field was assigned',
-      'The constructor argument was dropped',
-      'Integers default to 0 in the base class',
+      'The base constructor called an overridable method before the field was set',
+      'The 22 was dropped because the subclass constructor ran first',
+      'The base class has an int field that defaults to 0 and hides it',
     ],
     answer: 0,
     why: 'Java runs the superclass constructor first; the virtual call reaches the override while its field still holds the default.',
@@ -1887,7 +1935,11 @@ Default to interfaces for every boundary between components: that is the seam a 
   {
     kind: 'scenario',
     q: 'Standard and Gold customers differ by discount, and a customer can be upgraded. How do you model it?',
-    options: ['GoldCustomer extends Customer', 'A Tier enum field on Customer, with the discount on the enum', 'Two unrelated classes'],
+    options: [
+      'GoldCustomer extends Customer, and upgrading creates a new object',
+      'A Tier enum field on Customer, with the discount on the enum',
+      'Two unrelated classes, StandardCustomer and GoldCustomer',
+    ],
     answer: 1,
     why: 'An object cannot change its class. A role that changes during the object\'s life is a field.',
     explain: [
@@ -2060,19 +2112,27 @@ For a dozen mechanics and three jobs, computing the reverse view on demand costs
   {
     kind: 'failure',
     q: 'After order.assign(ravi), the order lists Ravi but ravi.jobs is empty. What is the underlying fix?',
-    options: ['Update both lists in assign and hope removal does the same', 'Make both lists static', 'Keep the relationship in one owner (a Roster) that writes both indexes in the same method'],
+    options: [
+      'Update both lists in assign and hope removal does the same',
+      'Make both lists static so every caller sees the same data',
+      'Keep the link in one owner (a Roster) that writes both indexes',
+    ],
     answer: 2,
     why: 'Two references that must agree are two places to forget. One owner, one method, two indexes.',
     explain: [
       'Better than one side only, but still two collections every caller can reach.',
-      'Static does not solve synchronisation.',
+      'Static does not solve synchronisation, and now every order shares the lists.',
       'Correct.',
     ],
   },
   {
     kind: 'scenario',
     q: 'A mechanic\'s role (lead or assistant) on a booking belongs to...',
-    options: ['The pair: a link object (Assignment)', 'Mechanic', 'Booking'],
+    options: [
+      'The pair, held in a link object (Assignment)',
+      'Mechanic, as a role field on the mechanic',
+      'Booking, as a single role field on the booking',
+    ],
     answer: 0,
     why: 'Ravi leads one job and assists on another; a booking has one lead and several assistants. The data belongs to the pair.',
     explain: [
@@ -2242,7 +2302,11 @@ In this single-file model, yes — `Booking`'s transition methods are package-pr
   {
     kind: 'scenario',
     q: '"No two active bookings share a bay at the same time." What is the smallest boundary that can enforce it?',
-    options: ['Each Booking', 'One schedule per bay', 'The whole Workshop'],
+    options: [
+      'Each Booking, by checking itself',
+      'A schedule object per bay',
+      'The whole Workshop, as one lock',
+    ],
     answer: 1,
     why: 'It talks about all bookings of one bay. Different bays never contend.',
     explain: [
@@ -2254,7 +2318,11 @@ In this single-file model, yes — `Booking`'s transition methods are package-pr
   {
     kind: 'failure',
     q: 'Why does "if free then save" in a service fail?',
-    options: ['It is slower than a lock', 'Services cannot read the database', 'Other code paths skip it, and concurrent requests can both see the slot as free'],
+    options: [
+      'It holds a database connection open for longer than a lock would',
+      'Services cannot read the database state inside the transaction',
+      'Other paths can skip it, and two requests can both see it free',
+    ],
     answer: 2,
     why: 'The check and the change must happen inside the same boundary, in the same step.',
     explain: [
@@ -2540,7 +2608,11 @@ Read the arrows out loud as you draw: *composition* (filled diamond — the floo
   {
     kind: 'scenario',
     q: 'Where does "convert 10:00 Copperline time to an Instant" belong?',
-    options: ['In OpeningHours.slot, called by the application service at the edge', 'In Booking', 'In every caller'],
+    options: [
+      'In OpeningHours.slot, called by the service at the edge',
+      'In Booking, as it holds the slot\'s start time',
+      'In each caller, next to where the user types the time',
+    ],
     answer: 0,
     why: 'The conversion happens once, with the zone the record carries; everything after is Instants.',
     explain: [
@@ -2552,7 +2624,11 @@ Read the arrows out loud as you draw: *composition* (filled diamond — the floo
   {
     kind: 'tradeoff',
     q: 'Why does a refused booking still consume an id (BK-2)?',
-    options: ['It is a bug', 'The id is drawn before the schedule checks the clash; never promise gapless ids', 'Ids are reused later'],
+    options: [
+      'A bug: the id counter should only advance on a successful booking',
+      'The id is drawn before the clash check, so gaps happen',
+      'The id is kept and given to the next successful booking',
+    ],
     answer: 1,
     why: 'Ids are issued by a generator at construction. Gaps are normal.',
     explain: [

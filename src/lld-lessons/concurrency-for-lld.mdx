@@ -168,7 +168,7 @@ The two shapes have one cure: **make the steps that protect an invariant indivis
 
 ### Practice
 
-<Quiz id="cl-races" title="Race checkpoint" questions={[{"kind": "predict", "q": "In the lost-update timeline, thread A runs read, add, write to completion before thread B starts. What is x at the end?", "options": ["1", "2", "It depends on the CPU"], "answer": 1, "why": "With no interleaving each increment sees the previous result, so x is 2. The bug needs the steps to overlap.", "explain": ["That needs both threads to read 0 before either writes. This schedule does not interleave them.", "Correct: B reads 1 and writes 2. A race is a possible schedule, not every schedule, which is why it can pass on your laptop.", "The result is decided by the schedule, not the CPU model."]}, {"kind": "failure", "q": "A bay is claimed with: if (spot.isFree()) spot.assign(plate). Both methods are synchronized. Which statement is true?", "options": ["No data race and no race condition", "A data race, because assign writes", "No data race, but still a race condition"], "answer": 2, "why": "Every access is ordered by the monitor so there is no data race, but the lock is released between the two calls, so two gates can both pass the check.", "explain": ["The check and the act are still two steps; the invariant spans both.", "Both writes happen under the monitor, so they are ordered.", "Correct: ordered accesses, but a timing-dependent bug."]}]} />
+<Quiz id="cl-races" title="Race checkpoint" questions={[{"kind": "predict", "q": "In the lost-update timeline, thread A runs read, add, write to completion before thread B starts. What is x at the end?", "options": ["1", "2", "It depends on the CPU"], "answer": 1, "why": "With no interleaving each increment sees the previous result, so x is 2. The bug needs the steps to overlap.", "explain": ["That needs both threads to read 0 before either writes. This schedule does not interleave them.", "Correct: B reads 1 and writes 2. A race is a possible schedule, not every schedule, which is why it can pass on your laptop.", "The result is decided by the schedule, not the CPU model."]}, {"kind": "failure", "q": "A bay is claimed with: if (spot.isFree()) spot.assign(plate). Both methods are synchronized. Which statement is true?", "options": ["No data race and no race condition, as both calls are synchronized", "A data race, because assign() writes a field the caller never locks", "No data race, but a race condition between the check and the act"], "answer": 2, "why": "Every access is ordered by the monitor so there is no data race, but the lock is released between the two calls, so two gates can both pass the check.", "explain": ["The check and the act are two separate lock holds; another thread can claim the spot between them.", "assign() takes the monitor itself, so its write is ordered. That is not a data race.", "Correct: the accesses are ordered, but the result still depends on timing."]}]} />
 
 <Trace title="Count the steps" steps={races} takeaway="Read-modify-write and check-then-act are both two-step operations on shared state. If an invariant depends on both steps, they must become one." />
 
@@ -789,7 +789,7 @@ CAS checks that the value is *equal* to what you read, not that *nothing happene
 
 ### Practice
 
-<Quiz id="cl-atomic-refs" title="volatile vs AtomicReference" questions={[{"kind": "scenario", "q": "Two threads call claim(plate) on a slot whose owner is a volatile String, using if (owner == null) owner = plate. What can happen?", "options": ["Exactly one wins: volatile makes the read and write atomic", "Both can read null and both be told they won", "The second thread throws"], "answer": 1, "why": "volatile makes each read and write visible but the check and the assignment are still two steps.", "explain": ["volatile does not join two accesses into one step.", "Correct: the checker sees this on the first run. Use compareAndSet(null, plate).", "Nothing throws; the bug is silent."]}, {"kind": "predict", "q": "An AtomicReference holds the String object p. You call compareAndSet(new String(\"KA-01\"), null) where p also reads \"KA-01\". Result?", "options": ["false, compareAndSet compares references with ==", "true, the strings are equal", "It throws NullPointerException"], "answer": 0, "why": "AtomicReference.compareAndSet uses ==. An equal but different object does not match.", "explain": ["Correct. Release with the same reference, or clear it once you own the claim.", "That would be equals(), which AtomicReference does not use.", "null is a legal value for an AtomicReference."]}]} />
+<Quiz id="cl-atomic-refs" title="volatile vs AtomicReference" questions={[{"kind": "scenario", "q": "Two threads call claim(plate) on a slot whose owner is a volatile String, using if (owner == null) owner = plate. What can happen?", "options": ["Exactly one wins: volatile makes the read and write atomic", "Both can read null and both be told they won", "The second thread throws"], "answer": 1, "why": "volatile makes each read and write visible but the check and the assignment are still two steps.", "explain": ["volatile does not join two accesses into one step.", "Correct: the checker sees this on the first run. Use compareAndSet(null, plate).", "Nothing throws; the bug is silent."]}, {"kind": "predict", "q": "An AtomicReference holds the String object p. You call compareAndSet(new String(\"KA-01\"), null) where p also reads \"KA-01\". Result?", "options": ["false: compareAndSet compares references with ==", "true: it compares the strings with equals(), so the values match", "It throws NullPointerException because the new value is null"], "answer": 0, "why": "AtomicReference.compareAndSet uses ==. An equal but different object does not match.", "explain": ["Correct. Release with the same reference, or clear it once you own the claim.", "That would be equals(), which AtomicReference does not use.", "null is a legal value for an AtomicReference."]}]} />
 
 <Trace title="Compare, then set" steps={atomics} takeaway="One variable, read-modify-write: an atomic with a CAS loop (or updateAndGet with a pure function). Hot counter, approximate reads: LongAdder. Two variables with one invariant: not an atomic each — one lock, or one immutable value." />
 
@@ -1028,7 +1028,7 @@ An **executor** separates submitting work from deciding how the work runs: how m
 
 ### Problem
 
-An app starts a `new Thread` for every request, to check a plate against a slow stolen-car service. At peak the server holds 9,000 threads, then fails with `OutOfMemoryError: unable to create native thread`, and everything stops. Nobody decided how many threads to allow. That is the bug.
+An app starts a `new Thread` for every request, to check a plate against a slow stolen-car service. At peak the server holds thousands of threads, then fails with `OutOfMemoryError: unable to create native thread`, and everything stops. (The count depends on stack size, memory and OS limits. In a 1 GB Docker container, 17,000 idle threads were allowed before the kernel killed the process, and a pids limit of 4,000 gave this exact error at 3,983 threads.) Nobody decided how many threads to allow. That is the bug.
 
 ### Bad design
 
@@ -2339,67 +2339,67 @@ Close the lesson and answer from memory. Every wrong choice explains what it wou
   {
     q: 'ConcurrentHashMap<String, Integer> counts; two threads run counts.put(k, counts.get(k) + 1). Thread-safe?',
     options: [
-      'Yes — ConcurrentHashMap synchronizes all access',
-      'No — get-then-put is a compound action; both threads can read 5 and write 6. Fix: counts.merge(k, 1, Integer::sum)',
-      'No — but only on JDK 8 and older',
-      'Yes if the key is immutable',
+      'Yes: every ConcurrentHashMap call locks the whole map while it runs',
+      'No: get then put is two steps, so both threads can read 5 and write 6',
+      'No, but only before JDK 9, which made compound updates atomic',
+      'Yes, as long as the key is immutable and the value is an Integer',
     ],
     answer: 1,
     why: 'Thread-safe structure ≠ thread-safe usage. Safety composes at the operation level: use the atomic compound ops (merge/compute/putIfAbsent) or an AtomicInteger value. This is a classic concurrency-interview trap.',
     explain: [
       'Each call is safe on its own, but get then put is two calls. Another thread can write in between, and one update is lost.',
-      'Correct. The map keeps its own data safe, not your two-step update. merge does the read and write as one step.',
+      'Correct. The map keeps its own data safe, not your two-step update. Fix: counts.merge(k, 1, Integer::sum) does the read and write as one step.',
       'The same gap exists on every JDK version.',
-      'An immutable key does not help. The race is on the value, not the key.',
+      'An immutable key or value does not help. The race is in the read-modify-write on the value.',
     ],
   },
   {
     q: 'In the bounded queue, why "while (items.isEmpty()) notEmpty.await()" instead of "if"?',
     options: [
-      'Style convention from Doug Lea',
-      'while is needed only with notifyAll, and we use signal',
-      'if would not compile with Condition',
-      'Spurious wakeups exist AND another consumer may consume the item between your wakeup and your lock reacquisition — the condition must be rechecked',
+      'A while is faster, since it skips the lock when the queue has items',
+      'A while is needed only with notifyAll, and this queue uses signal()',
+      'await() throws InterruptedException, which an if cannot handle',
+      'Spurious wakeups happen, and another consumer may take the item first',
     ],
     answer: 3,
     why: 'await() can return without a signal (spurious), and signal order does not guarantee the woken thread wins the race back to the lock. The predicate loop is mandatory; "if" is the textbook bug graders plant — and a stress run of the if-version can return null items, while the while-version did not.',
     explain: [
-      'It is not style. With an if, a woken thread skips the recheck and can act on an empty queue.',
+      'It is not about speed. With an if, a woken thread skips the recheck and can act on an empty queue.',
       'The recheck is needed with signal too. Another consumer can take the item before the woken thread gets the lock back.',
-      'An if compiles fine. That is why the bug survives until a stress run.',
+      'An if compiles fine and handles it the same way. The difference is the missing recheck after waking.',
       'Correct. After waking, the queue can be empty again, so the condition must be checked in a loop.',
     ],
   },
   {
     q: 'Your parking lot: 200 spots, one ReentrantLock on the whole lot around park(). Correct but slow. Best next move?',
     options: [
-      'Replace with volatile fields on each spot',
-      'Use a thread pool so fewer threads contend',
-      'Push locking down to the invariant owner: per-spot tryAssign (synchronized or CAS on occupant), keep a lock-free counter (AtomicInteger/LongAdder) for capacity',
-      'Make everything immutable',
+      'Make each Spot\'s occupant volatile and drop the lot-wide lock',
+      'Put park() calls on a fixed thread pool so fewer threads contend',
+      'Per-spot tryAssign, plus a lock-free counter for capacity',
+      'Switch to a ReadWriteLock and take the read lock inside park()',
     ],
     answer: 2,
     why: 'Lock granularity = the object that owns the invariant. Spot occupancy is per-spot; total capacity is a single-variable invariant that CAS handles. Coarse lock is the correct FIRST answer, then narrow it — that order is the graded behavior.',
     explain: [
       'volatile gives visibility, not an atomic check-then-claim. Two cars can still take one spot.',
-      'A pool of threads does not remove the shared lock. The same lock is still taken for every park().',
-      'Correct. Lock only the object that owns each rule, so cars in different spots never wait on each other.',
-      'Making everything immutable cannot work. A spot has to change from free to taken.',
+      'A pool does not remove the shared lock. The same lock is still taken for every park().',
+      'Correct. Per-spot tryAssign (synchronized or CAS on the occupant) locks only the object that owns the rule; AtomicInteger or LongAdder counts capacity.',
+      'park() writes, and a read lock lets several threads in at once, so two cars can claim the same spot.',
     ],
   },
   {
     q: 'Two threads run transfer(A,B) and transfer(B,A) at the same time, each synchronizing on from then to. What can happen, and what is the standard fix?',
     options: [
-      'It always works: one thread waits, then proceeds, because locks queue fairly',
-      'Can deadlock when the two interleave: each holds one account and waits for the other (circular wait). Fix: acquire locks in a global order (e.g. by account id), or tryLock with timeout',
-      'Livelock: both retry forever',
-      'JVM detects the cycle and throws DeadlockException',
+      'Always safe: the second thread simply waits until the first finishes',
+      'Deadlock if they interleave; fix: lock in a global order (e.g. by id)',
+      'Livelock: both threads keep retrying and burning CPU forever',
+      'The JVM detects the cycle at run time and throws DeadlockException',
     ],
     answer: 1,
     why: 'All four deadlock conditions hold; ordering lock acquisition by a total order (id) breaks circular wait. Know the thread-dump diagnosis too: two BLOCKED threads, each owning the monitor the other wants.',
     explain: [
-      'Locks do not queue in a way that avoids this. If each thread already holds one lock, neither can get the second.',
-      'Correct. It can happen when the two calls overlap, so it may pass many tests and hang in production.',
+      'If each thread already holds one lock, neither can get the second, so neither finishes.',
+      'Correct. Circular wait: each holds one account and waits for the other. It can pass many tests and hang in production. The other standard fix is tryLock with a timeout.',
       'A livelock keeps retrying and burning CPU. Plain synchronized blocks just wait, so they hang.',
       'The JVM does not detect this while running, and there is no DeadlockException. You see it in a thread dump.',
     ],

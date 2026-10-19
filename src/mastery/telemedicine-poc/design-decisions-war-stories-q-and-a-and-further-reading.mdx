@@ -19,7 +19,7 @@ import ChapterDone from '../../components/ChapterDone.astro';
 | Decision | Explain it to a friend | Alternatives | Why this | Revisit when |
 | --- | --- | --- | --- | --- |
 | **LiveKit (self-hosted) as the SFU** | "An open-source video server we run ourselves; it forwards packets, records tracks, and emits webhooks." | Twilio Video / Daily / Agora (managed); raw WebRTC mesh | Data residency (PHI stays on our infra), per-track egress out of the box, server SDK for tokens and room control, no per-minute billing for a POC. | If ops cost of running the SFU outweighs managed pricing at production scale; LiveKit Cloud is a drop-in. |
-| **Track egress per mic, no diarization** | "Record each person separately so we never have to guess who said what." | Room composite + pyannote / WhisperX | Exact labels; no GPU diarization pass; Opus pass-through. Moves difficulty to alignment and half-silent tracks, both solved deterministically. | Three or more participants with cross-talk; then per-track still works, alignment just has more tracks. |
+| **Track egress per mic, no diarization** | "Record each person separately so we never have to guess who said what." | Room composite + pyannote / WhisperX | Exact labels; no GPU diarization pass; no mixing step. Moves difficulty to alignment and half-silent tracks, both solved deterministically. | Three or more participants with cross-talk; then per-track still works, alignment just has more tracks. |
 | **Whisper on-device (MLX)** | "Transcribe on the Mac's own GPU so audio never leaves the machine during the demo." | Cloud STT (Deepgram, Sarvam, Google); faster-whisper on a CUDA box | Zero data egress for audio, no API cost, under a minute for demo-length calls. The provider seam is one function. | Production: managed Indic STT (Sarvam) or a GPU worker pool; laptops are not servers. |
 | **Consent as a set that must empty** | "Recording starts only when the last person says yes." | Boolean flag; implied consent by joining | Late joiners are not covered; decline aborts; revoke is distinct from stop. Matches DPDP purpose-and-consent principles and the Telemedicine Practice Guidelines. | Never loosen. Tighten by persisting consent events with timestamps. |
 | **Dual-path control messages** | "Send every control message two ways and de-duplicate, because one way fails for silent participants." | Data channel only; HTTP only | Mic-less participants have no publisher connection; data-channel sends time out. HTTP relay via `sendData` reaches the subscriber side. Receivers are idempotent. | If we move to a proper backend, control messages go through the server only. |
@@ -136,7 +136,7 @@ Each story is a real problem from building the proof of concept. The source give
 
 | Question | 15-second answer | Deeper |
 | --- | --- | --- |
-| Why per-track egress instead of composite plus diarization? | Labels exact by construction; no diarization model; Opus pass-through. Cost moves to alignment, solved with egress timestamps. | Page 2 |
+| Why per-track egress instead of composite plus diarization? | Labels exact by construction; no diarization model; no mixing step. Cost moves to alignment, solved with egress timestamps. | Page 2 |
 | How do you align two independent recordings? | Each egress reports `startedAt` in ns; add it as the track's offset, sort, rebase to first utterance. Poll until COMPLETE because the record arrives late. Fallback to relative time with a warning. | Page 3 §3 |
 | Whisper hallucinates. How did you handle it? | Disable conditioning on previous text; gates on no_speech_prob, compression ratio, avg_logprob, duration; then measure the window's peak with ffmpeg and drop anything under −35 dBFS. | Page 3 §2 |
 | Why did consent messages fail for some participants? | No publisher connection when nothing is published, so data-channel sends time out. Fixed with an HTTP relay via `sendData` plus receiver de-duplication. | Page 2 |
@@ -147,7 +147,7 @@ Each story is a real problem from building the proof of concept. The source give
 | How do you keep the AI summary safe? | Grounding prompt, five fixed sections, labelled draft, non-fatal on failure, nothing enters the chart unsigned, signed note write-once with the machine transcript preserved. | Page 3 §5–6 |
 | What is the production path? | Auth and server-derived roles, CA TLS, Postgres + object storage, managed Indic STT or GPU workers behind a queue, VAD, retention policy, tests. The STT seam is one function. | This page |
 | What is an SFU and why not peer-to-peer? | An SFU forwards each participant's streams to the others without mixing; P2P mesh does not scale past two or three and cannot record server-side. LiveKit is an SFU. | WebRTC for the Curious |
-| Why Opus? | WebRTC's mandatory audio codec: low latency, good at speech from 6 to 510 kbps, built-in packet-loss concealment. Recording it as-is avoids a transcode. | RFC 6716 |
+| Why Opus? | One of the two audio codecs every WebRTC endpoint must support (with G.711, RFC 7874): low latency, good at speech from 6 to 510 kbps, built-in packet-loss concealment. Egress writes Opus into an Ogg file. | RFC 6716 |
 
 ### Think first: three levels
 

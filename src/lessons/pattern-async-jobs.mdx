@@ -84,30 +84,30 @@ Nothing in that story is exotic. It is what happens when slow work lives inside 
     options: [
       'Generate it inside the request and raise the load balancer timeout to 120 seconds',
       'Insert a job row, enqueue its id, return 202 with a job id, and let the client poll',
-      'Spawn a thread inside the API process and return 200 right away'
+      'Spawn a thread inside the API process and return 200 at once, with progress in memory',
     ],
     answer: 1,
     why: 'A job row plus a queue survives restarts and gives the client something to poll.',
     explain: [
       'A longer timeout hides the symptom. Phones, proxies and browsers also time out, and every retry starts another export.',
       'Correct: the work is persisted before the response, so a crash or deploy does not lose it, and the id is the tracking number.',
-      'A thread in the API process dies with the process on every deploy or crash, with no record the job ever existed.'
+      'A thread in the API process dies with the process on every deploy or crash, with no record the job ever existed.',
     ]
   },
   {
     kind: 'tradeoff',
     q: 'Which of these is NOT a good reason to make something a job?',
     options: [
-      'It takes 20 minutes',
+      'It takes 20 minutes and would hold a connection the whole time',
       'It is a 15 ms lookup the user needs to render the page',
-      'It must run every Monday at 9 AM'
+      'It must run every Monday at 9 AM, with nobody waiting on the result',
     ],
     answer: 1,
     why: 'A queue in front of a fast, needed answer only adds latency and failure modes.',
     explain: [
       'Duration is the classic reason: it outlives any request timeout.',
       'Correct: a fast answer the user is waiting for should stay synchronous.',
-      'Scheduled work has no request to run inside, so it needs a stored job.'
+      'Scheduled work has no request to run inside, so it needs a stored job.',
     ]
   }
 ]} />
@@ -174,30 +174,35 @@ In flight = 30 uploads/s × 120 s = 3,600 requests
   {
     kind: 'predict',
     q: 'Peak is 50 uploads/s and each synchronous request holds a thread for 40 s. How many threads are pinned at peak (Little\'s law)?',
-    options: ['50', '90', '2,000', '40'],
+    options: [
+      '50',
+      '4,000',
+      '2,000',
+      '40',
+    ],
     answer: 2,
     why: '50 × 40 = 2,000 requests in flight.',
     explain: [
       'That is the arrival rate per second, not how many are in the system at once.',
-      'Adding the two numbers has no meaning. Little\'s law multiplies them.',
+      'That counts each request twice. Each request pins one thread for its 40 seconds, so the product is 2,000.',
       'Correct: 50 per second for 40 seconds each is 2,000 threads or connections held at once.',
-      'That is the duration of one request. Multiply by the arrival rate.'
+      'That is the duration of one request. Multiply by the arrival rate.',
     ]
   },
   {
     kind: 'failure',
     q: 'A request does a 3-minute export inline. The load balancer times out at 60 s and the client retries. What actually happens on the server?',
     options: [
-      'The first export is cancelled when the connection drops',
-      'The first export keeps running and a second one starts',
-      'The retry returns the first export\'s result'
+      'The first export is cancelled as soon as the load balancer drops the connection',
+      'The first export keeps running, and the retry starts a second export alongside it',
+      'The retry is matched to the first export by the load balancer and returns its result',
     ],
     answer: 1,
     why: 'A timeout cuts the connection, not the work. Nothing links the retry to the first run.',
     explain: [
       'Most servers do not notice a dropped client until they try to write the response, so the work usually continues.',
       'Correct: both run, and that is how one video got seven transcodes.',
-      'Without an idempotency key or a job id, the server cannot connect the retry to the first run.'
+      'Without an idempotency key or a job id, nothing connects the retry to the first run, and a load balancer does not know either.',
     ]
   }
 ]} />
@@ -360,18 +365,18 @@ The **idempotency key** on `POST /exports`. The client generates a key per logic
     kind: 'failure',
     q: 'Why persist the job row BEFORE enqueueing, rather than only sending to the queue?',
     options: [
-      'Queues are slower than databases',
-      'The DB row is durable truth. If the enqueue fails or the message is lost, a reconciler re-enqueues stuck rows; queue-only jobs vanish with no record they existed',
-      'To generate the job ID',
-      'Compliance requires DB records'
+      'Queues are slower than databases for single writes, so the row goes first for speed',
+      'The DB row is durable truth; if the enqueue fails, a reconciler re-enqueues stuck rows',
+      'The queue needs the database-generated job id before it can accept a message',
+      'Compliance rules require every job to be stored in a database before it runs',
     ],
     answer: 1,
     why: 'DB-first plus reconciliation gives at-least-once end to end even across queue failures.',
     explain: [
       'Speed is not the reason. Durability and the ability to answer "what happened to job 81?" are.',
-      'Correct. The reverse order has a hole too: enqueued, then the DB write fails, so a worker processes a job that officially does not exist.',
+      'Correct. Queue-only jobs vanish with no record they existed. The reverse order has a hole too: enqueued, then the DB write fails, so a worker processes a job that officially does not exist.',
       'An id can be generated either way, and the queue could carry a client-generated id.',
-      'Compliance may also ask for it, but it is not the engineering reason.'
+      'Compliance may also ask for it, but it is not the engineering reason.',
     ]
   },
   {
@@ -383,32 +388,32 @@ WHERE status = 'queued'
 ORDER BY run_after LIMIT 1
 FOR UPDATE SKIP LOCKED;`,
     options: [
-      'Both get the same row and one fails on the UPDATE',
-      'The second worker blocks until the first commits',
-      'Each gets a different row; the second skips the row the first has locked'
+      'Both get the same row, and the second one fails when it tries to UPDATE it',
+      'The second worker waits for the first to commit, then takes the next row',
+      'Each gets a different row; the second skips the row the first has locked',
     ],
     answer: 2,
     why: 'SKIP LOCKED ignores rows locked by other transactions instead of waiting for them.',
     explain: [
       'That is what happens without row locks; with FOR UPDATE the second cannot read the locked row as claimable.',
       'Plain FOR UPDATE would block. SKIP LOCKED is exactly the option that avoids waiting.',
-      'Correct: it is what lets many workers drain one table in parallel without a thundering queue on the first row.'
+      'Correct: it is what lets many workers drain one table in parallel without a thundering queue on the first row.',
     ]
   },
   {
     kind: 'scenario',
     q: 'The API inserts the job row, then crashes before publishing to RabbitMQ. What is the cleanest recovery?',
     options: [
-      'Nothing; the client will retry and create a duplicate job',
-      'A reconciler finds rows still queued after a couple of minutes and re-publishes their ids; workers claim by conditional update so duplicates are harmless',
-      'Publish first and insert second next time'
+      'Nothing needs doing: the client will retry, and the retry simply creates the job again',
+      'A reconciler re-publishes rows stuck in queued, so duplicates are harmless',
+      'Publish to RabbitMQ first and insert the row second, so a crash can never lose the job',
     ],
     answer: 1,
     why: 'The reconciler closes the dual-write gap, and idempotent claiming makes re-publishing safe.',
     explain: [
       'With an idempotency key the retry returns the same row, but if the client never retries the job still stalls.',
-      'Correct: it needs no distributed transaction, just a sweep and idempotent consumers.',
-      'Reversing the order creates a different hole: a worker may run a job with no row.'
+      'Correct: it needs no distributed transaction, just a sweep after a couple of minutes and idempotent consumers.',
+      'Reversing the order creates a different hole: a worker may run a job with no row.',
     ]
   }
 ]} />
@@ -497,32 +502,32 @@ This is the same idea as fencing tokens for distributed locks in <a href={`${BAS
 UPDATE jobs SET status = 'succeeded', output_ref = 'exports/81.csv'
 WHERE id = 81 AND status = 'running' AND attempt = 2;`,
     options: [
-      'It succeeds and overwrites B\'s work',
-      'It matches 0 rows, so A learns it lost the job and stops',
-      'It raises a deadlock error'
+      'It succeeds and overwrites B\'s work, because the id and status still match',
+      'It matches 0 rows, so A learns it lost the job and abandons its result',
+      'It raises a lock timeout error, because B holds the row lock while it works',
     ],
     answer: 1,
     why: 'The row now says attempt 3, so the WHERE clause matches nothing.',
     explain: [
-      'That would happen with an unconditional UPDATE ... WHERE id = 81, which is exactly the bug the attempt check prevents.',
+      'Only without the attempt condition. attempt = 2 no longer matches the row, which is now at attempt 3.',
       'Correct: rowcount is 0. A treats that as "not mine any more" and abandons its result.',
-      'No locks are in conflict; the statement just matches no rows.'
+      'B\'s claim is already committed, so no lock is held. The statement just matches no rows.',
     ]
   },
   {
     kind: 'scenario',
     q: 'A job fails with "unsupported codec" on every attempt. Which terminal state is right, and why?',
     options: [
-      '`dead`, so an operator is paged',
-      '`failed`, so the user hears about the bad input right away without wasting retries',
-      '`retrying`, because the codec library may be updated later'
+      '`dead`, so an operator is paged and can inspect the file before the user notices',
+      '`failed`, so the user hears about the bad input at once without wasting retries',
+      '`retrying`, because the codec library may be updated later and the job will then succeed',
     ],
     answer: 1,
     why: 'The input can never work, so it is a permanent failure.',
     explain: [
       'Paging an operator for something the user must fix creates noise. Dead means our side kept breaking.',
       'Correct: classify it as permanent, fail within seconds, keep the input for inspection.',
-      'Retrying only burns attempts and delays the user\'s answer; if the library is updated later, resubmit.'
+      'Retrying only burns attempts and delays the user\'s answer; if the library is updated later, resubmit.',
     ]
   }
 ]} />
@@ -662,34 +667,34 @@ Because the timeout is also the **recovery time**. If a worker dies one minute i
     kind: 'failure',
     q: 'A worker crashes 80% through transcoding job 42. What is the recovery chain?',
     options: [
-      'The job is failed and the user is told to retry',
-      'The lease or visibility timeout expires, the job returns to the queue, another worker runs it from the start, and that is safe only because the work is idempotent (deterministic output key, conditional completion)',
-      'A monitor service resumes at 80%',
-      'The replacement worker inherits the dead worker\'s memory state'
+      'The job is marked failed after the crash, and the user is asked to resubmit it from the start',
+      'The lease expires, another worker reruns the job from the start; idempotent work makes it safe',
+      'A monitor service notices the crash and resumes the job at the 80% mark',
+      'The replacement worker is handed the dead worker\'s in-memory state by the broker',
     ],
     answer: 1,
     why: 'Crash, redelivery, idempotency is the chain. Resume-at-80% needs checkpointing you rarely need.',
     explain: [
       'A transient crash is not the user\'s fault. Asking them to retry loses the point of a queue.',
-      'Correct. Restarting safely is simpler and standard.',
+      'Correct. The job returns to the queue when the lease or visibility timeout expires, with a deterministic output key and conditional completion. Restarting safely is simpler and standard.',
       'Resuming needs checkpoints the worker wrote earlier; there is no monitor that knows the state.',
-      'Workers are stateless and process memory dies with the process.'
+      'Workers are stateless and process memory dies with the process.',
     ]
   },
   {
     kind: 'tradeoff',
     q: 'Jobs last up to 2 hours. You want crashes noticed within about a minute. Which lease design fits?',
     options: [
-      'A 2-hour lease with no heartbeat',
-      'A 60 s lease renewed every 20 s by a heartbeat',
-      'A 10 s lease and no heartbeat'
+      'A 2-hour lease with no heartbeat, so a job is never handed over mid-run',
+      'A 60 s lease renewed every 20 s by a heartbeat, so a crash is noticed in a minute',
+      'A 10-second lease with no heartbeat, so crashes are noticed in seconds',
     ],
     answer: 1,
     why: 'Short lease gives fast recovery; heartbeat lets long jobs keep it.',
     explain: [
       'A crash would leave the job invisible for up to two hours.',
       'Correct: recovery is about a minute, and a healthy two-hour job just keeps renewing.',
-      'A lease shorter than the job with no renewal hands the job to a second worker while the first is still working.'
+      'A lease shorter than the job with no renewal hands the job to a second worker while the first is still working.',
     ]
   },
   {
@@ -698,16 +703,16 @@ Because the timeout is also the **recovery time**. If a worker dies one minute i
     code: `# A's lease key now holds "worker-B"
 PEXPIRE lease:job:42 60000`,
     options: [
-      'Error, because A does not own the key',
+      'An error, because Redis rejects TTL changes from a client that does not own the key',
       'It extends B\'s lease, because PEXPIRE does not check who owns the key',
-      'It recreates a lease for A'
+      'It recreates a lease for A, because PEXPIRE sets the key if it is missing',
     ],
     answer: 1,
     why: 'PEXPIRE only sets a TTL on whatever key exists. Ownership needs a compare, done atomically in Lua.',
     explain: [
       'Redis has no notion of owner for a plain key, so no error.',
       'Correct: A silently prolongs B\'s lease. That is why the extension script compares the value first.',
-      'PEXPIRE does not create keys; it only sets a TTL on an existing key.'
+      'PEXPIRE does not create keys; it only sets a TTL on an existing key.',
     ]
   }
 ]} />
@@ -824,32 +829,32 @@ Use one wait queue per delay step (30 s, 2 min, 10 min). A per-queue TTL works b
     kind: 'scenario',
     q: 'The thumbnail service has 20-minute outages. Your policy is 6 attempts, base 1 s, doubling. What happens during an outage?',
     options: [
-      'Jobs survive, because six attempts is plenty',
+      'Jobs survive, because six attempts is plenty for an outage of this size',
       'Every affected job exhausts its attempts in about 31 seconds and goes dead',
-      'Jobs wait in the queue until the service recovers'
+      'Jobs wait in the queue untouched until the thumbnail service recovers',
     ],
     answer: 1,
     why: '1+2+4+8+16 = 31 s of total backoff, far less than 20 minutes.',
     explain: [
       'Attempts matter less than the total time they cover.',
       'Correct. You need a window longer than the outage: minutes of backoff, or a circuit breaker that pauses the stage.',
-      'Only a circuit breaker or an explicitly paused stage does that. A plain retry policy spends its attempts.'
+      'Only a circuit breaker or an explicitly paused stage does that. A plain retry policy spends its attempts.',
     ]
   },
   {
     kind: 'failure',
     q: 'A message crashes the consumer every time and attempt is only incremented when a failure is reported. What goes wrong?',
     options: [
-      'Nothing, the job is retried a few times and then goes dead',
-      'The crash happens before any failure is recorded, so the count never rises and the message loops forever',
-      'The broker deletes the message after the first crash'
+      'Nothing: the job is retried a few times, then dead-lettered once attempts run out',
+      'The crash skips the failure handler, so the count never rises and the message loops',
+      'The broker drops the message after the first crash, so it is silently lost',
     ],
     answer: 1,
     why: 'Count on claim, before the work, so crashes are counted too.',
     explain: [
       'That is the outcome if the attempt were incremented on claim; a crash path never runs your failure handler.',
-      'Correct: the failure handler never runs, so the count never moves. Increment on claim, or rely on a broker delivery limit.',
-      'An unacknowledged message is redelivered, not deleted.'
+      'Correct: the failure handler never runs, so the count never moves and the message loops forever. Increment on claim, or rely on a broker delivery limit.',
+      'An unacknowledged message is redelivered, not deleted.',
     ]
   }
 ]} />
@@ -944,32 +949,32 @@ That version records first, then sends, which can lose an email. The order is a 
   ON DUPLICATE KEY UPDATE job_id = job_id;
 -- rowcount is checked; the email is sent only if rowcount == 1`,
     options: [
-      'Inserts a second row and sends a second email',
+      'Inserts a second row with the same job_id and sends a second email',
       'Inserts nothing (rowcount 0) so no second email is sent',
-      'Raises a duplicate key error that crashes the worker'
+      'Raises a duplicate key error that crashes the worker',
     ],
     answer: 1,
     why: 'The primary key (job_id, effect) makes the second insert a no-op.',
     explain: [
       'The primary key forbids a second row.',
       'Correct: the no-op upsert swallows the duplicate and rowcount is 0, so the guard skips the send.',
-      'The no-op upsert turns the duplicate into rowcount 0, which is the point. (INSERT IGNORE would also hide truncation and NOT NULL errors, so it is the riskier form.)'
+      'The no-op upsert turns the duplicate into rowcount 0, which is the point. (INSERT IGNORE would also hide truncation and NOT NULL errors, so it is the riskier form.)',
     ]
   },
   {
     kind: 'tradeoff',
     q: 'Which ordering is right for "your export is ready" email versus a payment capture?',
     options: [
-      'Both: record the marker first, then act',
-      'Email: send then mark (a rare duplicate is fine). Payment: pass an idempotency key to the provider, never accept a duplicate',
-      'Both: send first, mark second, always'
+      'Both: record the marker first, then act, because a lost action is easy to retry',
+      'Email: send then mark (a rare duplicate is fine). Payment: a provider idempotency key',
+      'Both: send first and mark second, since a duplicate is better than a missed action',
     ],
     answer: 1,
     why: 'Choose by which failure is worse: a duplicate or a miss. Providers\' idempotency keys beat both orders when available.',
     explain: [
       'Marker-first loses the email on a crash; fine for some effects, not a blanket rule.',
-      'Correct: duplicates are harmless for the email, unacceptable for a charge, so the charge gets a provider-side key.',
-      'Send-first can double-charge on redelivery.'
+      'Correct: duplicates are harmless for the email, unacceptable for a charge, so the charge gets a provider-side key and never accepts a duplicate.',
+      'Send-first can double-charge on redelivery.',
     ]
   }
 ]} />
@@ -1066,16 +1071,16 @@ This counter drifts if a worker dies between `INCR` and `DECR`, so recompute it 
     kind: 'scenario',
     q: 'One tenant enqueues a million exports and small tenants complain of 8-minute waits. Which fix addresses the cause?',
     options: [
-      'Scale workers 10× so the million drains sooner',
-      'Per-tenant queues or claim-time caps, with weighted fair scheduling, plus API quotas',
-      'Make the queue LIFO'
+      'Scale workers 10× so the million drains sooner and small tenants stop waiting',
+      'Per-tenant queues or claim-time caps with weighted fair scheduling, plus quotas',
+      'Make the queue LIFO so the newest small jobs run before the older bulk ones',
     ],
     answer: 1,
     why: 'The problem is who gets turns, not raw capacity.',
     explain: [
       'It hides the bug and costs 10×. A bigger burst brings the unfairness back.',
       'Correct: the million-job tenant waits behind its own jobs, not behind everyone else\'s.',
-      'LIFO starves old jobs and still lets one tenant dominate.'
+      'LIFO starves old jobs and still lets one tenant dominate.',
     ]
   }
 ]} />
@@ -1181,16 +1186,16 @@ The queue, plus a warm floor. Jobs wait for the few minutes it takes new machine
     kind: 'failure',
     q: 'You autoscale on CPU at 70%. Workers wait on object storage half the time and CPU sits at 55% while the queue age climbs to 40 minutes. What is the fix?',
     options: [
-      'Lower the CPU target to 40%',
+      'Lower the CPU target to 40% so scaling starts well before the workers saturate',
       'Scale on oldest-job age or backlog per worker, which measure what users feel',
-      'Add RAM to the workers'
+      'Add RAM to the workers so objects fetched from storage stay cached in memory',
     ],
     answer: 1,
     why: 'CPU is an indirect proxy; queue age directly measures the delay.',
     explain: [
       'It might trigger earlier, but it is still the wrong signal and would scale on unrelated CPU noise.',
       'Correct: queue age or backlog per worker rises whatever the worker is waiting on.',
-      'The bottleneck is I/O wait, not memory.'
+      'The bottleneck is I/O wait, not memory.',
     ]
   }
 ]} />
@@ -1262,32 +1267,32 @@ r.hset(f"progress:job:{job_id}", mapping={"done": done, "total": total, "stage":
     kind: 'failure',
     q: 'A job\'s lease keeps renewing but its progress hasn\'t moved for 20 minutes. What does that tell you and what should alert?',
     options: [
-      'Nothing; renewing the lease proves it is healthy',
-      'The worker is alive but possibly stuck. Alert on "no progress for N minutes" in addition to expired leases',
-      'The lease is too short'
+      'Nothing: a renewing lease proves the worker is healthy and making progress',
+      'The worker is alive but possibly stuck; alert on no progress as well as lease expiry',
+      'The lease is too short, so the worker spends its time renewing instead of working',
     ],
     answer: 1,
     why: 'A heartbeat proves liveness, not forward movement.',
     explain: [
       'A worker in an infinite loop can heartbeat happily forever.',
-      'Correct: two alerts, one for dead workers (lease expiry) and one for stuck ones (no progress).',
-      'Lease length does not explain a lack of progress.'
+      'Correct: two alerts, one for dead workers (lease expiry) and one for stuck ones (no progress for N minutes).',
+      'Lease length does not explain a lack of progress.',
     ]
   },
   {
     kind: 'scenario',
     q: 'The user cancels a job with 140 queued chunk tasks and 8 running. Which approach works?',
     options: [
-      'Search the queue and delete the 140 messages',
-      'Mark the job cancelled; queued tasks check the status on dequeue and skip; running tasks stop at the next heartbeat; a sweeper removes partial output',
-      'Kill the worker processes that hold the running tasks'
+      'Scan the queue and delete the 140 messages that belong to the job, then stop workers',
+      'Mark the job cancelled; queued tasks skip it and running tasks stop at a heartbeat',
+      'Kill the worker processes that hold the 8 running tasks, then drop the queue entries',
     ],
     answer: 1,
     why: 'Queues are not built to pluck messages out, and workers are shared.',
     explain: [
       'Most brokers cannot delete arbitrary messages by predicate, and it would race with consumers.',
-      'Correct: a state change on the row that everyone already consults.',
-      'Workers serve other jobs too; killing them disrupts unrelated work.'
+      'Correct: a state change on the row that everyone already consults. A sweeper then removes partial output.',
+      'Workers serve other jobs too; killing them disrupts unrelated work.',
     ]
   }
 ]} />
@@ -1372,16 +1377,16 @@ Because `ack` is last, a crash between the publish and the ack redelivers the ta
     kind: 'scenario',
     q: 'Captions (GPU model) fail for two hours because the model server is down. What should happen to playback of newly uploaded videos?',
     options: [
-      'Nothing is published until captions work',
-      'Publish without captions and add them when the stage recovers, since captions are a non-blocking branch',
-      'Drop the caption stage permanently'
+      'Hold publishing until captions are ready, so that every video ships complete',
+      'Publish without captions and add them when the stage recovers',
+      'Drop the caption stage for good and add captions manually when requested',
     ],
     answer: 1,
     why: 'Decide per branch whether it blocks publish. Captions arrive later; a content scan blocks.',
     explain: [
       'That makes a nice-to-have a hard dependency, so one failing stage stops the product.',
       'Correct: failure isolation is a main reason for stages, and the product decision is explicit.',
-      'The stage is useful; it just must not block publish.'
+      'The stage is useful; it just must not block publish.',
     ]
   }
 ]} />
@@ -1485,18 +1490,18 @@ Yes, it is a legitimate design and sometimes simpler: a packaging job for video 
     kind: 'failure',
     q: 'A fan-in counter starts at 300 and each finished chunk task runs an atomic DECR. What goes wrong?',
     options: [
-      'Nothing, because DECR is atomic',
-      'A redelivered completion decrements twice, so the next stage fires one task early with a chunk missing',
-      'Redis cannot hold a counter that large',
-      'The counter must be a float'
+      'Nothing goes wrong, because DECR is atomic and each decrement applies exactly once',
+      'A redelivered completion decrements twice, so the next stage fires with a chunk missing',
+      'The counter overflows past 255, so it wraps to a negative value before reaching zero',
+      'The counter has to be a float, so DECR drifts and never hits exactly zero',
     ],
     answer: 1,
     why: 'Atomic is not idempotent. Mark each task done with a conditional update and decrement in the same transaction.',
     explain: [
       'Atomicity stops two decrements from corrupting each other. It does not stop the same task being counted twice.',
-      'Correct: counter reaches zero while a task is still running.',
-      'Counter size is not the issue.',
-      'Integers are fine; the problem is double counting, not type.'
+      'Correct: the counter reaches zero while a task is still running.',
+      'Redis counters are 64-bit integers. Counter size is not the issue.',
+      'Integers are exact; the problem is double counting, not type.',
     ]
   },
   {
@@ -1596,32 +1601,32 @@ In an interview you rarely need to name an engine. Say: *"An orchestrator with a
     kind: 'scenario',
     q: 'Support needs "where is video 9, and rerun from packaging". Which design makes that easy?',
     options: [
-      'Pure choreography with seven independent subscribers',
-      'An orchestrator with a durable per-stage state table for the core flow, and events for side effects',
-      'A bigger log retention window'
+      'Pure choreography: seven independent subscribers, each logging its own progress',
+      'An orchestrator with a durable per-stage state table, and events for side effects',
+      'A longer log retention window, so every stage\'s events can be replayed on demand',
     ],
     answer: 1,
     why: 'Orchestration puts the plan and the state in one place you can query and rerun from.',
     explain: [
-      'There is no single place that knows the video\'s state, so the question has no clean answer.',
+      'Each subscriber knows only its own step, so no single place answers "where is video 9".',
       'Correct: one query answers "where is it", and a status reset reruns from a stage.',
-      'Retention keeps events around but does not make the plan visible.'
+      'Retention keeps events around but does not make the plan visible.',
     ]
   },
   {
     kind: 'tradeoff',
     q: 'Your workflow engine replays workflow code against history to rebuild state. Which line in the workflow code is a bug?',
     options: [
-      'A call to an activity that sends the email',
-      'datetime.now() used to decide a branch',
-      'A retry policy attached to an activity'
+      'A call to an activity that sends the confirmation email',
+      'A call to datetime.now() whose result decides a branch',
+      'A retry policy attached to an activity with a 30-second timeout',
     ],
     answer: 1,
     why: 'Replay must be deterministic; wall-clock time and randomness differ on replay.',
     explain: [
       'Side effects belong in activities, which are recorded and not re-run on replay.',
       'Correct: on replay the clock gives a different answer. Use the engine\'s own time API.',
-      'Retry policies are configuration, not non-deterministic logic.'
+      'Retry policies are configuration, not non-deterministic logic.',
     ]
   }
 ]} />
@@ -1711,34 +1716,34 @@ This is why "design a distributed job scheduler" is a top-tier question: it is t
     kind: 'scenario',
     q: 'Two replicated scheduler nodes both see "9 AM job due". How do you prevent double-firing?',
     options: [
-      'Run only one scheduler node',
-      'A lease per firing (lock, TTL, heartbeat, or partitioned ownership), plus idempotent job execution as the backstop when the lease dance fails anyway',
-      'Fire twice and deduplicate in analytics later',
-      'NTP-synchronised clocks so both fire simultaneously'
+      'Run only one scheduler node and accept that nothing fires if it dies',
+      'A lease per firing (lock with TTL), plus an idempotent execution key as the backstop',
+      'Fire both and deduplicate the duplicate emails and charges in analytics afterwards',
+      'NTP-synchronised clocks so both nodes agree which one should fire',
     ],
     answer: 1,
     why: 'Two layers: coordination makes double-firing rare, idempotency makes it harmless.',
     explain: [
       'One node trades correctness for availability: if it dies, nothing fires. Say why you rejected it.',
-      'Correct: coordination plus a unique (schedule_id, scheduled_time) execution key.',
+      'Correct: coordination (lock, TTL, heartbeat or partitioned ownership) plus a unique (schedule_id, scheduled_time) execution key for when the lease dance fails anyway.',
       'Users already received two emails; analytics cannot undo it.',
-      'Synchronised clocks make a double fire more likely, not less.'
+      'Clocks agree on when 9 AM is, not on which node fires, so both still fire.',
     ]
   },
   {
     kind: 'failure',
     q: 'The scheduler was down 8:55-9:20 and the job is a once-a-minute metrics rollup. What policy is right?',
     options: [
-      'Fire every missed tick: 25 runs at once',
+      'Fire every missed tick: 25 runs at once, so no window of data is ever missing',
       'Fire once for the latest window (or skip) per a per-schedule misfire policy',
-      'Do nothing and never run again'
+      'Do nothing, and the schedule is lost because the missed ticks were never recorded',
     ],
     answer: 1,
     why: 'Misfire behaviour is a per-schedule decision. Firing every missed tick can flood the system.',
     explain: [
       'A day of downtime would fire 1,440 times. Make "catch up" an explicit choice.',
       'Correct: pick fire-once-now or skip according to what the job means.',
-      'Not running again would be a bug; the next tick is still scheduled.'
+      'Not running again would be a bug; the next tick is still scheduled.',
     ]
   }
 ]} />
@@ -1858,28 +1863,32 @@ Without the Lua script, two fetchers could both read the same due host before ei
     kind: 'failure',
     q: 'A fetcher pops a host from the Redis sorted set with ZREM and then crashes. What happens to that host, and what is the fix?',
     options: [
-      'Nothing; another fetcher picks it up automatically',
-      'The host vanishes from the heap and is never crawled again. Pop with a lease: re-insert with a later score atomically in Lua, and reset to now + gap when done',
-      'The sorted set deletes itself'
+      'Nothing is lost: another fetcher sees the host again once a visibility timeout passes',
+      'The host is gone from the heap; pop with a lease instead, re-inserting it atomically',
+      'The whole sorted set is deleted, so every host is lost until the frontier is reloaded',
     ],
     answer: 1,
     why: 'A destructive pop with no lease loses the work if the worker dies.',
     explain: [
-      'ZREM removed it, so no other fetcher can see it.',
-      'Correct: the same lease idea as job leases, applied to hosts.',
-      'Redis keeps the set; the single host entry is just gone.'
+      'ZREM removed it, so no other fetcher can see it, and a sorted set has no visibility timeout.',
+      'Correct: the same lease idea as job leases, applied to hosts. Do the pop in Lua, re-insert with a later score, and reset to now + gap when done.',
+      'Redis keeps the set; the single host entry is just gone.',
     ]
   },
   {
     kind: 'tradeoff',
     q: 'You have ten crawler nodes. Which partition key gives local politeness?',
-    options: ['Hash of the full URL', 'Hash of the host', 'Round-robin'],
+    options: [
+      'Hash of the full URL',
+      'Hash of the host name',
+      'Round-robin by arrival order',
+    ],
     answer: 1,
     why: 'Host-level state (gap, robots, DNS, budget) needs a single owner per host.',
     explain: [
       'It scatters one host\'s pages over all nodes, so no node can enforce the gap alone.',
       'Correct: one owner per host. A per-host budget limits the damage of very large sites.',
-      'Round-robin has the same scatter problem.'
+      'Round-robin has the same scatter problem.',
     ]
   }
 ]} />
@@ -1981,10 +1990,10 @@ You can: sharded by host, 10 billion URLs as 8-byte fingerprints is about 80 GB 
     kind: 'failure',
     q: 'A crawler\'s seen-URL Bloom filter is sized for a 1% false-positive rate. What does a false positive cost?',
     options: [
-      'A page is fetched twice',
-      'A genuinely new URL is treated as seen and never crawled',
-      'The filter has to be rebuilt',
-      'robots.txt is ignored for that host'
+      'A seen page is fetched a second time, wasting bandwidth',
+      'A genuinely new URL is treated as already seen and is never crawled',
+      'The filter must be rebuilt from scratch once it passes its capacity',
+      'robots.txt is skipped for that host, so disallowed pages get crawled',
     ],
     answer: 1,
     why: 'Bloom filters have no false negatives, so a seen URL is never re-fetched because of the filter. About 1% of new URLs are skipped.',
@@ -1992,23 +2001,23 @@ You can: sharded by host, 10 billion URLs as 8-byte fingerprints is about 80 GB 
       'That is a false negative, which Bloom filters never produce.',
       'Correct. Lower p if coverage matters (0.1% is about 18 GB for 10 billion URLs).',
       'False positives do not corrupt the filter.',
-      'robots.txt is a separate check.'
+      'robots.txt is a separate check.',
     ]
   },
   {
     kind: 'scenario',
     q: 'One host has served two million pages from an endless "next month" calendar. Which control actually stops it?',
     options: [
-      'A bigger Bloom filter',
+      'A bigger Bloom filter sized for ten billion URLs at a lower false-positive rate',
       'A per-host page budget plus depth, URL-length and repeated-pattern rules',
-      'SimHash on page content'
+      'Exact SHA-256 hashes of each page body, to skip repeated pages',
     ],
     answer: 1,
     why: 'Every calendar URL is genuinely new, so seen-URL dedup can\'t help.',
     explain: [
       'The URLs are all new, so a larger filter still reports them as unseen.',
       'Correct: bound the damage by budget and rules, and cut the budget when yield is low.',
-      'SimHash helps near-duplicate content, not an infinite supply of distinct pages.'
+      'Each month\'s page has different content, so exact hashes all differ and nothing is skipped.',
     ]
   }
 ]} />
@@ -2090,16 +2099,16 @@ Each flag closes a specific hole: no network (no metadata-service probing), read
     kind: 'scenario',
     q: 'You only have `docker run` with default settings. Why is that not enough for a public judge?',
     options: [
-      'Docker is too slow',
-      'Defaults allow network access and share the host kernel. Add no-network, resource limits, read-only FS, non-root, and a stronger boundary such as gVisor or a microVM, discarded after each run',
-      'Docker cannot run Python'
+      'Docker starts too slowly for a judge, which has to run thousands of short jobs',
+      'Defaults allow network access and share the host kernel, so isolation is too weak',
+      'Docker cannot run untrusted code at all, so a judge must use a different runtime',
     ],
     answer: 1,
     why: 'Hostile code needs layered isolation, not just a container.',
     explain: [
       'Speed is not the concern; isolation is.',
-      'Correct: the metadata-service probe is precisely what a default network allows.',
-      'Docker runs Python fine; that is not the issue.'
+      'Correct: add no-network, resource limits, read-only FS, non-root, and a stronger boundary such as gVisor or a microVM, discarded after each run. The metadata-service probe is exactly what a default network allows.',
+      'Docker can run untrusted code with the right isolation; the defaults are what is not enough.',
     ]
   }
 ]} />
@@ -2231,16 +2240,16 @@ Per-rendition tasks give you 5-way parallelism. A 60-minute 1080p encode is stil
     kind: 'failure',
     q: 'Chunk 42 is redelivered after a crash. Which pair of rules makes this harmless?',
     options: [
-      'Random output names plus a global lock',
-      'Deterministic output key (overwrite) plus a conditional mark-done so it counts once',
-      'Delete all outputs and restart the whole video'
+      'Random output names plus a global lock around each chunk, so two copies never overlap',
+      'Deterministic output key (overwrite) plus a conditional mark-done',
+      'Delete all of the video\'s outputs and restart the whole job from the first chunk',
     ],
     answer: 1,
     why: 'Overwriting the same key keeps storage correct; the conditional mark keeps the count correct.',
     explain: [
-      'Random names leave orphans, and a global lock does not stop double counting.',
-      'Correct: one rule protects the data, the other protects the counter.',
-      'That makes a crash cost the whole video, not one chunk.'
+      'Random names leave orphans, and a lock does not stop a second, later run from double counting.',
+      'Correct: one rule protects the data (overwrite), the other protects the counter (counts once).',
+      'That makes a crash cost the whole video, not one chunk.',
     ]
   }
 ]} />
@@ -2334,31 +2343,31 @@ The robots.txt error handling and the direction of the Bloom filter's error. Bot
     q: 'A billion pages a month at 100 KB each. Roughly what sustained bandwidth and which constraint dominates?',
     options: [
       'About 310 Mbps; bandwidth is not the constraint, politeness and dedup are',
-      'About 310 Gbps; bandwidth dominates',
-      'About 3 Mbps; nothing is constrained'
+      'About 310 Gbps; bandwidth is the constraint, so dedup and politeness are minor',
+      'About 3 Mbps; no constraint matters, so a single machine can run the whole crawl',
     ],
     answer: 0,
     why: '386 pages/s × 100 KB ≈ 39 MB/s ≈ 310 Mbps, which one node can handle. The hard parts are politeness, dedup and traps.',
     explain: [
       'Correct.',
-      'That is 1,000× too high.',
-      'That is 100× too low; also, the politeness and dedup constraints are real.'
+      'That is 1,000× too high: 100 TB a month is about 310 Mbps, not 310 Gbps.',
+      'That is 100× too low; also, the politeness and dedup constraints are real.',
     ]
   },
   {
     kind: 'failure',
     q: 'A crawler node dies. What must already be true so the crawl continues without restarting from the seeds?',
     options: [
-      'Nothing; crawlers are stateless',
-      'The frontier is persisted, URLs are leased to fetchers, and the dead node\'s host range is reassigned to a new owner who picks them up',
-      'All nodes keep a full copy of every frontier'
+      'Nothing: crawlers are stateless, so any node can take over the dead node\'s hosts',
+      'A persisted frontier, leased URLs, and the dead node\'s host range reassigned',
+      'Every node keeps a full copy of every other node\'s frontier, so any node can take over',
     ],
     answer: 1,
     why: 'The frontier is state. Persist it and lease URLs so a crash re-offers them.',
     explain: [
       'The frontier, robots cache and host clocks are state.',
       'Correct: host-range reassignment plus a durable frontier.',
-      'Full replication of every frontier everywhere would defeat partitioning.'
+      'Full replication of every frontier everywhere would defeat partitioning.',
     ]
   }
 ]} />
@@ -2383,64 +2392,64 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
     kind: 'failure',
     q: 'RabbitMQ goes down for ten minutes while the API keeps accepting exports. What state are you in afterwards, and what recovers it?',
     options: [
-      'Every export accepted during the outage is lost',
-      'Rows exist as queued; a reconciler re-publishes them once the broker returns, and idempotent claiming makes any duplicates harmless',
-      'The API should have returned 200 and the user will retry'
+      'Every export accepted during the outage is lost, because the broker held the only copy of each job',
+      'Rows exist as queued; a reconciler re-publishes them once the broker returns, so nothing is lost',
+      'The API should have returned 200 and told the user to retry once the broker is back',
     ],
     answer: 1,
     why: 'Because the row is written before the enqueue, no accepted job is lost.',
     explain: [
       'That would be true for queue-only designs. The row is the reason it is not true here.',
-      'Correct: that is the point of DB first, queue second. Publish failures during the outage can also be retried by the API.',
-      '200 is the wrong contract for async work; and the user does not need to retry.'
+      'Correct: that is the point of DB first, queue second. Duplicates are harmless because claiming is idempotent, and publish failures during the outage can also be retried by the API.',
+      '200 is the wrong contract for async work; and the user does not need to retry.',
     ]
   },
   {
     kind: 'failure',
     q: 'The job database fails over and the last few seconds of writes are lost. Some workers believe they own jobs that the new primary shows as queued. What stops corruption?',
     options: [
-      'Nothing; some jobs will be corrupted',
-      'Conditional updates on status and attempt: stale workers\' writes match nothing, deterministic outputs make reruns overwrite harmlessly',
-      'Stop all workers until the failover is finished'
+      'Nothing: after a failover some jobs will inevitably be corrupted and need a manual fix',
+      'Conditional updates on status and attempt, so stale workers\' writes match nothing',
+      'Stop all workers until the failover finishes, then replay from the last backup',
     ],
     answer: 1,
     why: 'The same fencing and idempotency rules that handle zombie workers handle this.',
     explain: [
       'The design assumes duplicated or stale attempts and neutralises them.',
-      'Correct: stale attempt numbers match nothing, and reruns overwrite the same keys.',
-      'Pausing is optional extra caution, not what protects correctness.'
+      'Correct: stale attempt numbers match nothing, and deterministic outputs make reruns overwrite the same keys harmlessly.',
+      'Pausing is optional extra caution, not what protects correctness.',
     ]
   },
   {
     kind: 'tradeoff',
     q: 'Load grows 100×: 100,000 jobs/s. The database-as-queue claim query becomes the bottleneck. Which change fits?',
     options: [
-      'Add more workers polling the table',
-      'Move delivery to a broker (RabbitMQ or SQS) with the DB still as truth, shard job rows by tenant, and batch status writes',
-      'Switch status updates to eventually consistent with no conditions'
+      'Add more workers polling the table and shorten their poll interval to claim sooner',
+      'Move delivery to a broker with the DB as truth, shard rows by tenant, batch status writes',
+      'Switch status updates to eventually consistent writes with no conditions, to cut contention',
     ],
     answer: 1,
     why: 'Polling a table scales poorly; a broker delivers, the DB remains the truth, and writes get sharded and batched.',
     explain: [
       'More pollers add more contention on the same index.',
-      'Correct: separate delivery from truth, partition the state, reduce write frequency.',
-      'Dropping the conditions reintroduces double processing and lost updates.'
+      'Correct: separate delivery from truth (RabbitMQ or SQS), partition the state, reduce write frequency.',
+      'Dropping the conditions reintroduces double processing and lost updates.',
     ]
   },
   {
     kind: 'scenario',
     q: 'At 3 AM the oldest queued job is 90 minutes old and workers show 20% CPU. How do you debug it?',
     options: [
-      'Add workers immediately',
-      'Check per-stage queue age, worker logs for blocking on a dependency (DB, storage, third-party), the lease-expiry and retry rate, and whether a poison job is crash-looping or one tenant is flooding',
-      'Restart the queue'
+      'Add workers immediately to drain the backlog, then investigate once the queue is short',
+      'Check per-stage queue age, blocking dependencies in logs, retry rate and poison jobs',
+      'Restart the broker and the workers so stuck consumers reconnect and pick up jobs again',
     ],
     answer: 1,
     why: 'Low CPU with a growing queue means workers are waiting or failing, not saturated.',
     explain: [
-      'More workers can worsen a slow downstream or a crash loop.',
-      'Correct: find where the time goes before scaling.',
-      'A restart risks dropping in-flight work and fixes nothing structural.'
+      'More workers can worsen a slow downstream or a crash loop, and 20% CPU suggests waiting, not a lack of workers.',
+      'Correct: find where the time goes before scaling. Look at worker logs for blocking on a dependency (DB, storage, third-party), lease-expiry and retry rates, and whether a poison job is crash-looping or one tenant is flooding.',
+      'A restart risks dropping in-flight work and fixes nothing structural.',
     ]
   }
 ]} />

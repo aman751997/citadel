@@ -81,7 +81,11 @@ The pitch for the whole product is the **kill switch**: a bad change behind a fl
   {
     kind: 'failure',
     q: 'Every service calls a central flag API on each request. The flag API is 99.9% available. Eight services each make one flag call per request. Roughly what is the best-case availability of a request that needs all eight calls?',
-    options: ['99.9%, the same as one call', 'About 99.2%, and a slow flag API also adds latency to every request', 'About 99.99%, because the calls are independent'],
+    options: [
+      'About 99.9%, because all eight calls reach the same service and its availability counts once',
+      'About 99.2% (0.999 to the 8th), and a slow flag API adds latency to every request',
+      'About 99.99%, because independent calls spread the failure rate across all eight',
+    ],
     answer: 1,
     why: 'Availability multiplies along a dependency chain: 0.999^8 is about 0.992. The calls also fail together (same service), so the real picture is worse: one slow flag API stalls everything.',
     explain: [
@@ -135,7 +139,11 @@ A common slip: "we'll put it behind a flag" with no kind, owner or end date. Eve
   {
     kind: 'scenario',
     q: 'A pod boots while the flag service and its disk cache are both unavailable. The call is flags.variation("recs-disabled", ctx, false), where false means recommendations keep running. What do users see?',
-    options: ['No recommendations: the switch fails closed', 'Recommendations, as normal: the code default is the healthy state', 'An error page until the flag service returns'],
+    options: [
+      'No recommendations, because the switch fails closed when it cannot load rules',
+      'Recommendations run as normal, because the code default is the healthy state',
+      'An error page for the first requests, until the flag service returns and rules load',
+    ],
     answer: 1,
     why: 'The default lives in code at the call site. For a kill switch it must be normal operation, so a flag outage never degrades the product by itself.',
     explain: [
@@ -147,7 +155,11 @@ A common slip: "we'll put it behind a flag" with no kind, owner or end date. Eve
   {
     kind: 'tradeoff',
     q: '"Enterprise customers get SSO." Where should this rule live?',
-    options: ['A permanent flag targeting plan = enterprise', 'The billing or authorization service; a flag only for rolling out the SSO feature itself', 'A kill switch, because enterprise is critical'],
+    options: [
+      'A permanent flag targeting plan = enterprise, so product can change it without a deploy',
+      'The billing or authorization service; a flag only to roll out the SSO feature itself',
+      'A kill switch scoped to enterprise, because losing SSO for them would be critical',
+    ],
     answer: 1,
     why: 'An entitlement never expires and must survive a flag outage; the plan system is the source of truth for what customers paid for.',
     explain: [
@@ -325,7 +337,11 @@ A common slip is order-dependent rules nobody can read. Rules run top to bottom 
   {
     kind: 'failure',
     q: 'A background job evaluates "paid-reports" with a context that has no plan attribute. Rule 1 is "plan NOT_IN [free]" serving on. The fallthrough is off. What should happen?',
-    options: ['Serve on, because the plan is not free', 'Serve the fallthrough (off) and report FALLTHROUGH', 'Throw, because the context is incomplete'],
+    options: [
+      'Serve on, because a missing plan means the user is not on the free plan',
+      'Serve the fallthrough (off) and record the reason as FALLTHROUGH in the log',
+      'Throw an error, because the context is incomplete and the caller must fix it',
+    ],
     answer: 1,
     why: 'A missing attribute never matches, including NOT_IN. Fail closed to the conservative variation and make the reason visible.',
     explain: [
@@ -462,11 +478,15 @@ When the assignment must survive **rule changes**, not just restarts. Hashing is
   {
     kind: 'failure',
     q: 'An experiment is running 33/33/34. Someone "simplifies" it to 50/50 mid-test. What is the damage?',
-    options: ['None: hashing is deterministic', 'Some users change arms, which contaminates the results', 'Everyone is reshuffled because the salt changed'],
+    options: [
+      'None: hashing is deterministic, so every user keeps the same bucket and the same arm',
+      'Some users switch arms mid-test, which contaminates the results of both arms',
+      'Everyone is reshuffled into new arms, because changing weights regenerates the salt',
+    ],
     answer: 1,
     why: 'Boundaries moved, and the middle range is cut. Users whose bucket sat in the moved part change variation, and their earlier behaviour was measured in the other arm.',
     explain: [
-      'Deterministic only means the bucket is stable. The mapping from bucket to variation changed.',
+      'The bucket is stable, but the mapping from bucket to variation changed.',
       'Correct. A ramp is monotonic; a re-split is not. Do not change weights mid-experiment.',
       'The salt did not change, so buckets are the same. Only the ranges moved.',
     ],
@@ -474,12 +494,16 @@ When the assignment must survive **rule changes**, not just restarts. Hashing is
   {
     kind: 'tradeoff',
     q: 'Your Node edge worker and Java servers must agree on every bucket. Which choice is safest?',
-    options: ['Each language uses its built-in string hash', 'One written spec: UTF-8 bytes of salt + "." + key, a named hash, mod 10,000, tested with shared vectors', 'Store the bucket in a cookie the first time'],
+    options: [
+      'Each language uses its own standard-library hash of the user key, then mod 10,000',
+      'One written spec: UTF-8 bytes, a named hash, mod 10,000, tested with shared vectors',
+      'Compute the bucket once at the edge and store it in a cookie for all later requests',
+    ],
     answer: 1,
     why: 'Bucketing is a cross-language contract. Built-in hashes differ between runtimes, and cookies break for server-to-server calls.',
     explain: [
       'Java hashCode, JS string hashes and Python hash() all differ (Python randomises per process).',
-      'Correct. Shared test vectors in CI catch drift between SDKs.',
+      'Correct. The salt and key format are part of the spec, and shared test vectors in CI catch drift between SDKs.',
       'A cookie is a stored assignment, which does not exist for background jobs or other services.',
     ],
   },
@@ -549,7 +573,11 @@ A common slip is "the flag service is highly available, so calling it is fine." 
   {
     kind: 'failure',
     q: 'The control-plane database is down for an hour. Which statement about production traffic is right for this design?',
-    options: ['Evaluations fail, because rules cannot be read', 'Evaluations continue from SDK memory; only flag edits are blocked', 'Evaluations continue, but percentage rollouts re-randomise'],
+    options: [
+      'Evaluations fail until the database returns, because rules cannot be read',
+      'Evaluations continue from SDK memory; flag edits and kill switches are blocked',
+      'Evaluations continue, but percentage rollouts re-randomise users until recovery',
+    ],
     answer: 1,
     why: 'The data plane holds a full copy of the ruleset and never calls the control plane on the request path. Edits (and kill switches!) stop working until it returns.',
     explain: [
@@ -561,7 +589,11 @@ A common slip is "the flag service is highly available, so calling it is fine." 
   {
     kind: 'tradeoff',
     q: 'At 100x scale (1 billion evaluations per second across customer fleets), which part of the flag platform do you need to scale first?',
-    options: ['Evaluation capacity, because the volume is huge', 'Connections and event ingestion; evaluation runs in the customers\' processes', 'The admin UI database, because every evaluation reads it'],
+    options: [
+      'Evaluation servers, since 1 billion lookups per second need a large fleet',
+      'Connections and event ingestion; evaluation runs in the customers\' processes',
+      'The admin database, because every SDK reads rules from it on each evaluation',
+    ],
     answer: 1,
     why: 'Evaluation cost sits with the caller. The platform pays for open streams, snapshot fan-out and exposure/summary events.',
     explain: [
@@ -714,7 +746,11 @@ A common slip is "we push changes over WebSocket" with no answer for the missed 
   {
     kind: 'scenario',
     q: 'The SDK holds v41 and receives a patch for v43 over the stream. Which action is correct, and why not the others?',
-    options: ['Apply it: 43 is newer', 'Ignore it and wait for 42', 'Fetch a snapshot (v43 or later), then resume patches'],
+    options: [
+      'Apply it directly, since version 43 is newer than the version 41 held',
+      'Ignore it and wait for version 42 to be redelivered on the stream',
+      'Fetch a snapshot (v43 or later) and then resume applying patches',
+    ],
     answer: 2,
     why: 'Versions count up by one, so a jump means a missed change. Patching on top of 41 would build a state that never existed on the server.',
     explain: [
@@ -726,7 +762,11 @@ A common slip is "we push changes over WebSocket" with no answer for the missed 
   {
     kind: 'failure',
     q: 'A streaming node with 50,000 SDK connections crashes and all clients reconnect at once. Each can either pull a 500 KB snapshot from the origin or ask for deltas since its last version. What is the safest design?',
-    options: ['Jittered reconnect, deltas since last version, snapshots from the CDN only for clients too far behind', 'Reconnect immediately and always pull a snapshot, to be safe', 'Disable streaming and rely on 30-second polling'],
+    options: [
+      'Jittered reconnects, deltas since last version, CDN snapshots for far-behind clients',
+      'Reconnect immediately and always pull a full snapshot from the origin, to be safe',
+      'Disable streaming and fall back to 30-second polling until the node is healthy',
+    ],
     answer: 0,
     why: '50,000 x 500 KB is 25 GB. Jitter spreads the herd, deltas are tiny, and the CDN absorbs the few full snapshots.',
     explain: [
@@ -785,7 +825,11 @@ A common slip is treating a client-side flag as security. A flag that hides a bu
   {
     kind: 'scenario',
     q: 'A flag hides the "Export all data" button for non-admins in the SPA. A user calls the export API directly. What happens, and what is the fix?',
-    options: ['Nothing, the flag blocks it', 'The export works: enforce admin permission in the API, and keep the flag as UI polish', 'The flag SDK blocks the request at the network layer'],
+    options: [
+      'Nothing happens, because the flag hides the endpoint as well as the button',
+      'The export works: enforce admin permission in the API; keep the flag as UI polish',
+      'The flag SDK blocks the call, because it intercepts requests at the network layer',
+    ],
     answer: 1,
     why: 'Client-side flags control presentation. Authorization has to be enforced on the server.',
     explain: [
@@ -847,7 +891,11 @@ A common slip is "if the flag service is down, we fail closed." For which flag? 
   {
     kind: 'failure',
     q: 'The control plane has been down for 6 hours and a rollout was mid-ramp at 25%. Someone proposes "after 5 minutes of staleness, every SDK reverts to code defaults". What happens?',
-    options: ['A safe rollback to the old path', 'A global flip: 25% of users suddenly lose the new path, and kill switches default to whatever the code says', 'Nothing, because defaults match the ruleset'],
+    options: [
+      'A safe automatic rollback to the old path while the control plane recovers',
+      'A global flip: 25% of users lose the new path and kill switches go to code defaults',
+      'Nothing changes for users, because the code defaults already match the live ruleset',
+    ],
     answer: 1,
     why: 'Reverting on staleness converts a flag-system outage into a product-wide behaviour change. Keep serving last-known-good and alert.',
     explain: [
@@ -859,12 +907,16 @@ A common slip is "if the flag service is down, we fail closed." For which flag? 
   {
     kind: 'scenario',
     q: 'Autoscaling adds 200 pods during an incident, and the flag service is unreachable. Which startup behaviour is right?',
-    options: ['Block until flags load so pods are never wrong', 'Wait a second or two, load disk or relay copies if present, else serve code defaults and retry', 'Crash and restart until the flag service answers'],
+    options: [
+      'Block pod startup until flags load, so that no pod serves a wrong variation',
+      'Wait a second or two, load disk or relay copies, else serve code defaults and retry',
+      'Crash and restart each pod in a loop until the flag service answers again',
+    ],
     answer: 1,
     why: 'Scaling must not depend on the flag service. Bounded wait, then the best available ruleset, then defaults.',
     explain: [
       'Blocking means the flag outage stops you from adding capacity during an incident.',
-      'Correct.',
+      'Correct: bounded wait, then the best available ruleset, then defaults.',
       'A crash loop on 200 pods makes a bad day much worse.',
     ],
   },
@@ -912,7 +964,11 @@ A common slip is promising "instant" propagation. Say "seconds, measured" and na
   {
     kind: 'scenario',
     q: 'The cart service and the payment service each evaluate "new-checkout" with the same user. At the instant of a ramp, they disagree. Which fix handles it without a central call?',
-    options: ['Make the flag service synchronous across all pods', 'Evaluate once at the start of the flow and pass the variation downstream in a header or the session', 'Increase the polling interval so everyone updates together'],
+    options: [
+      'Make the flag service commit each change synchronously to all pods before it applies',
+      'Evaluate once at the start of the flow and pass the variation downstream in a header',
+      'Increase the polling interval so all pods pick up each change in one batch',
+    ],
     answer: 1,
     why: 'You cannot make a distributed fleet flip at one instant, but one flow can use one decision.',
     explain: [
@@ -924,7 +980,11 @@ A common slip is promising "instant" propagation. Say "seconds, measured" and na
   {
     kind: 'tradeoff',
     q: 'You carry the checkout decision in a 30-minute session. A kill switch flips for the new checkout. What should the carried decision do?',
-    options: ['Keep serving the new path until the session ends', 'Let a kill switch (a safety override evaluated fresh) win over the carried value', 'Drop all sessions immediately'],
+    options: [
+      'Keep honouring the carried new-checkout decision until the 30-minute session ends',
+      'Let the kill switch (a fresh safety override) win over the carried value',
+      'Invalidate every active session immediately so each user is re-bucketed',
+    ],
     answer: 1,
     why: 'Stability must not defeat safety. Kill switches are evaluated on every check, and carried values apply only to non-emergency ramps.',
     explain: [
@@ -1005,19 +1065,27 @@ A common slip is an automatic rollback that only watches absolute thresholds. Sa
   {
     kind: 'failure',
     q: 'A guarded rollout compares treatment error rate against a fixed 1% threshold. An unrelated database incident pushes every request to 3% errors. What happens, and what is better?',
-    options: ['The rollout is rolled back, which is the safe thing to do', 'The rollout is blamed for an unrelated outage. Compare treatment to control at the same time', 'Nothing happens because 1% is only a warning'],
+    options: [
+      'The rollout is rolled back automatically, which is the safe outcome here',
+      'The rollout is blamed for the outage; compare treatment against control instead',
+      'Nothing happens, because a 1% threshold raises a warning and does not roll back',
+    ],
     answer: 1,
     why: 'An absolute threshold cannot tell your change from background noise. Comparing arms in the same window cancels common causes.',
     explain: [
       'Rollback may be harmless, but it cuts a ramp for the wrong reason and hides the real incident.',
-      'Correct. The reverse also happens: a regression from 0.1% to 0.9% would go unnoticed under a fixed 1% line.',
+      'Correct. Compare treatment to control at the same time. The reverse also happens: a regression from 0.1% to 0.9% would go unnoticed under a fixed 1% line.',
       'The design said the threshold triggers rollback.',
     ],
   },
   {
     kind: 'scenario',
     q: 'The recommendations model is melting down. You hold two flags: "recs-ramp" (release toggle at 100%) and "recs-kill" (kill switch). Which do you flip and what do users get?',
-    options: ['recs-ramp off, so the code path returns to a pre-launch state', 'recs-kill: the model call is skipped and a cached or static fallback is served', 'Redeploy the previous build'],
+    options: [
+      'recs-ramp off, so every user returns to the pre-launch recommendations code path',
+      'recs-kill: the model call is skipped and a cached or static fallback is served',
+      'Roll back by redeploying the previous build from before the model change',
+    ],
     answer: 1,
     why: 'The kill switch exists for exactly this, wraps the dependency, and takes effect in seconds without a deploy.',
     explain: [
@@ -1105,8 +1173,12 @@ A common slip is "we'll log every evaluation." It is the most expensive sentence
 <Quiz id="ff-experiments" title="Chapter 10 checkpoint" questions={[
   {
     kind: 'tradeoff',
-    q: 'Only 8% of users who are assigned to a checkout experiment ever reach checkout. Which population should you analyse for the checkout conversion lift?',
-    options: ['All assigned users, because assignment is what was randomised', 'Users with an exposure event, in both arms, logged when the flagged code ran', 'Only treatment users who reached checkout'],
+    q: 'Only 8% of users who are assigned to a checkout experiment ever reach checkout. Which population gives the most power for the checkout conversion lift while keeping the comparison fair?',
+    options: [
+      'All assigned users in both arms, because assignment is what was randomised',
+      'Users with an exposure event in both arms, logged when the flagged code ran',
+      'Only users in treatment who reached checkout, compared with all control users',
+    ],
     answer: 1,
     why: 'Unexposed users behave identically in both arms and dilute the effect. Restricting to exposed users in both arms keeps the comparison fair.',
     explain: [
@@ -1118,11 +1190,15 @@ A common slip is "we'll log every evaluation." It is the most expensive sentence
   {
     kind: 'failure',
     q: 'Exposure events are logged at 500,000 per second at peak. The warehouse bill explodes. What is the first fix?',
-    options: ['Sample 1% of users out of the experiment', 'Deduplicate to first exposure per user and experiment, in the SDK and again in a stream job', 'Move to a bigger Kafka cluster'],
+    options: [
+      'Log exposures for only 1% of users and extrapolate to the whole population',
+      'Dedupe to first exposure per user and experiment, in the SDK and a stream job',
+      'Move the exposure stream to a bigger Kafka cluster and more warehouse capacity',
+    ],
     answer: 1,
     why: 'Analysis needs one row per user and experiment. Dedupe cuts the volume by orders of magnitude without losing information.',
     explain: [
-      'Sampling shrinks your power and changes the experiment instead of the logging.',
+      'Sampling shrinks your power and changes what you measure, instead of fixing the duplicate logging.',
       'Correct: 43 billion events a day becomes about 200 million.',
       'More hardware pays for data you do not need.',
     ],
@@ -1194,7 +1270,11 @@ A common slip is "we'll A/B test it" as a complete sentence. Say what is randomi
     kind: 'predict',
     q: 'Designed 50/50. Observed 50,000 vs 50,300. Threshold 10.83. What does the check say?',
     code: 'srmChiSquare(50_000, 50_300, 0.5)  // about 0.90',
-    options: ['Mismatch: investigate', 'Ordinary noise: proceed to read results', 'Inconclusive: collect more data'],
+    options: [
+      'Mismatch: the 300-user gap is large enough to investigate assignment',
+      'Ordinary noise: the gap is far below the threshold, so read the results',
+      'Inconclusive: the gap is borderline, so collect more data first',
+    ],
     answer: 1,
     why: '300 / 100,300 is 0.3%, and chi-square 0.90 is far below 10.83. Compare with 50,000 vs 51,500 at 22.2.',
     explain: [
@@ -1206,13 +1286,17 @@ A common slip is "we'll A/B test it" as a complete sentence. Say what is randomi
   {
     kind: 'scenario',
     q: 'You need to detect a conversion lift from 10.0% to 10.25% (half the earlier effect). How does the required sample per arm change versus the 57,600 for a 0.5-point lift?',
-    options: ['It doubles', 'It roughly quadruples, to about 230,000 per arm', 'It stays about the same'],
+    options: [
+      'It roughly doubles, to about 115,000 per arm',
+      'It roughly quadruples, to about 230,000 per arm',
+      'It grows about 8x, to about 460,000 per arm',
+    ],
     answer: 1,
     why: 'n scales with 1 / delta squared, so half the effect needs four times the users (16 x 0.09 / 0.0025^2 is about 230,000).',
     explain: [
       'Doubling would be the case if n scaled with 1 / delta.',
       'Correct. Small effects are expensive, which is why teams pick a minimum detectable effect before the test.',
-      'Smaller effects hide in the noise, so n must grow.',
+      'Eight times would need n to scale with 1 / delta cubed. The scaling is 1 / delta squared.',
     ],
   },
 ]} />
@@ -1261,7 +1345,11 @@ A common slip is "we clean up flags periodically." Interviewers hear "never". Sa
   {
     kind: 'failure',
     q: 'A release toggle has served 100% on for 60 days. A developer archives it in the platform without touching the code. What breaks?',
-    options: ['Nothing; the flag is just metadata', 'Code still calls it, gets FLAG_NOT_FOUND and uses the code default, which may be the old path', 'The SDK crashes at startup'],
+    options: [
+      'Nothing; archived flags stay readable, so the code keeps its old behaviour unchanged',
+      'Code still calls it, gets FLAG_NOT_FOUND and uses its default, which may be the old path',
+      'The SDK throws on the unknown key and the service fails its health check',
+    ],
     answer: 1,
     why: 'Removal is a code change first. Archiving a flag the code still reads silently switches everyone to the default.',
     explain: [
@@ -1310,11 +1398,15 @@ A common slip is forgetting that the environment, not the flag, is the unit of d
   {
     kind: 'failure',
     q: 'One tenant publishes 40,000 flags and changes them every few seconds. What protects the other tenants?',
-    options: ['Nothing; each tenant just shares the stream', 'Per-environment partitioning plus per-tenant limits on flag count, ruleset size and change rate', 'Giving that tenant a separate region'],
+    options: [
+      'Nothing extra: every tenant already gets its own copy of the shared stream',
+      'Per-environment partitioning, plus per-tenant caps on flag count and change rate',
+      'Move that tenant to a dedicated region and stream, with no quotas needed',
+    ],
     answer: 1,
     why: 'Keying everything by environment stops one environment\'s changes from fanning out to others, and quotas stop a tenant from consuming shared capacity.',
     explain: [
-      'A shared stream without partitioning would deliver their changes to everyone\'s SDKs.',
+      'A shared stream without partitioning would deliver the noisy tenant\'s changes to everyone\'s SDKs.',
       'Correct. Isolation by environment, and limits against noisy neighbours.',
       'It may help eventually, but it is a heavy answer when partitioning and quotas are needed anyway.',
     ],
@@ -1430,7 +1522,11 @@ For most people it is the **outbox** sentence in the high-level design. Without 
   {
     kind: 'failure',
     q: 'The control API commits the flag change and the process crashes before publishing to the change bus. What does the transactional outbox give you?',
-    options: ['Nothing; the change is lost', 'A committed outbox row that a relay publishes after restart, so SDKs still receive the change', 'The SDKs poll the database to catch up'],
+    options: [
+      'Nothing; the change is lost, because the database committed and nobody published it to SDKs',
+      'A committed outbox row that a relay publishes after restart, so SDKs get the change',
+      'SDKs notice the missed change by polling the control-plane database directly',
+    ],
     answer: 1,
     why: 'The outbox row commits in the same transaction as the config, so "committed" and "will be published" cannot diverge.',
     explain: [
@@ -1442,12 +1538,16 @@ For most people it is the **outbox** sentence in the high-level design. Without 
   {
     kind: 'tradeoff',
     q: 'The interviewer says "now 100x more SDKs". What do you change first?',
-    options: ['Evaluation servers, to handle 100x lookups', 'Streaming nodes and relays for connection count, and the event log partitioning for exposures', 'Switch to polling every second'],
+    options: [
+      'Evaluation servers, scaled out to handle 100x more flag lookups per second',
+      'Streaming nodes and relays for connections, plus event-log partitioning for exposures',
+      'Switch SDKs to polling every second, so no streaming connections need to be held open',
+    ],
     answer: 1,
     why: 'Evaluation is local. Connections, fan-out and event volume are what grow with the SDK count.',
     explain: [
       'There are no evaluation servers for server SDKs; they run in customers\' processes.',
-      'Correct.',
+      'Correct: connections, fan-out and event volume are what grow with the SDK count.',
       'Polling every second means 100x more requests and worse propagation than a stream.',
     ],
   },
@@ -1484,16 +1584,16 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
     kind: 'tradeoff',
     q: 'Why must flag evaluation be local (SDK memory) instead of a flag-service API call?',
     options: [
-      'API calls are harder to authenticate',
-      'Flag checks run thousands of times per second in the hot path; a network hop per check adds latency and makes the flag service a single point of failure for everything',
-      'Local evaluation is easier to test',
-      'SSE cannot carry evaluation results',
+      'API calls are harder to authenticate than in-process lookups, so keys leak more often',
+      'Checks run in the hot path; a network hop adds latency and a single point of failure',
+      'Local evaluation is easier to test because no flag service is needed in unit tests',
+      'SSE cannot carry evaluation results, so the SDK must hold the rules itself',
     ],
     answer: 1,
     why: 'Push config, evaluate locally: the inversion that defines this design. It also produces the availability story (last-known-good on disk) for free.',
     explain: [
       'Authentication is solvable. Latency and coupling are the problem.',
-      'Correct.',
+      'Correct: it also gives the availability story, because the SDK keeps serving the last known ruleset if the flag service is down.',
       'It is easier to test, but that is a side benefit, not the reason.',
       'SSE can carry anything; local evaluation is about the hot path.',
     ],
@@ -1502,16 +1602,16 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
     kind: 'tradeoff',
     q: 'Why hash(user_id + flag_key) rather than hash(user_id)?',
     options: [
-      'It distributes more uniformly',
-      'Without the flag key, the same cohort lands in treatment for every experiment, so cohorts correlate across experiments and contaminate all results',
-      'user_id alone can collide',
-      'The flag key makes the hash cryptographically secure',
+      'It spreads users more uniformly across the 10,000 buckets than user_id alone',
+      'Without the flag key, the same users land in treatment in every experiment',
+      'Hashing user_id alone produces collisions that put two users in one bucket',
+      'Adding the flag key makes the hash resistant to users guessing their bucket',
     ],
     answer: 1,
     why: 'Independent randomisation per flag. One token of salt buys the statistical validity of the whole platform.',
     explain: [
       'A hash of the user id alone is already uniform. Uniform but identical for every flag is the problem.',
-      'Correct.',
+      'Correct: cohorts correlate across experiments and contaminate each other\'s results.',
       'Collisions are by design: many users share each bucket.',
       'Security is not the goal. Independence across flags is.',
     ],
@@ -1520,33 +1620,33 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
     kind: 'failure',
     q: 'The product manager checks the dashboard daily and stops the experiment the first day p < 0.05. What is wrong?',
     options: [
-      'Nothing; that is what significance means',
-      'Peeking: repeated interim checks with stop-on-significance inflate false positives (about 25% at 20 looks); fix the sample size up front or use a sequential test',
-      'The sample was too small on day one',
-      'p-values require a week minimum by convention',
+      'Nothing; reaching p < 0.05 means the result is significant, so stopping is valid',
+      'Peeking: stop-on-significance inflates false positives; fix the sample size up front',
+      'The first-day sample is too small, so p-values on day one are unreliable',
+      'Experiments must run a fixed two weeks before any p-value counts as valid',
     ],
     answer: 1,
     why: 'Optional stopping is the most common real-world experimentation mistake. Naming the fix is what "has shipped experiments" sounds like.',
     explain: [
       'Significance at 0.05 assumes one planned look.',
-      'Correct.',
+      'Correct: about 25% false positives at 20 looks. Fix the sample size up front or use a sequential test.',
       'Small samples are noisy, but the stopping rule inflates false positives at any size.',
-      'There is no such convention. A full week is often wise for weekly seasonality, which is a separate point.',
+      'There is no such rule. A full week is often wise for weekly seasonality, which is a separate point.',
     ],
   },
   {
     kind: 'scenario',
     q: 'You must tell an interviewer how an SDK stays correct if the stream drops a message. Which answer is strongest?',
     options: [
-      'Use TCP, which is reliable',
-      'Versions per environment count up by one; apply n+1, ignore old, resync from a snapshot on a gap; polling as the backstop',
-      'Send every change twice',
+      'Use TCP, which already guarantees reliable in-order delivery of every message',
+      'Versioned messages: apply n+1, ignore old, resync from a snapshot on a gap',
+      'Send every change twice over two streams so one lost message does not matter',
     ],
     answer: 1,
     why: 'Transport reliability ends at the connection. Application-level versions detect missed messages across reconnects.',
     explain: [
       'TCP does not help across reconnects or server restarts.',
-      'Correct.',
+      'Correct: versions per environment count up by one, a gap triggers a snapshot resync, and polling is the backstop.',
       'Duplicates are handled by version checks, but they do not repair a missed change.',
     ],
   },

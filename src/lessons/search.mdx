@@ -79,15 +79,15 @@ Search appears in interviews in two ways. As a **box inside a bigger design** ("
     kind: 'scenario',
     q: 'Your product spec says "users can search listings". Which first sentence of the design is strongest?',
     options: [
-      'Add a search endpoint that runs LIKE on the listings table',
-      'Keep Postgres as the source of truth, and feed a separate search index from it through a change stream, accepting a second or two of lag',
-      'Store listings in Elasticsearch only, since it is built for search',
+      'Add a search endpoint that runs LIKE on the listings table, with an index on the title column',
+      'Keep Postgres as the source of truth and feed a separate search index through a change stream',
+      'Move listings into Elasticsearch only, since it is built for search and removes the sync work',
     ],
     answer: 1,
     why: 'Search is a derived, rebuildable copy. Naming the sync mechanism and the lag is what separates a design from a box on a whiteboard.',
     explain: [
       'It works at 10,000 rows. At 50 million it scans every row per query and ranks nothing, so it fails on both speed and quality.',
-      'Correct. Database stays the truth, the index is rebuildable, and the lag is stated up front.',
+      'Correct. The database stays the truth, the index is rebuildable, and the lag (a second or two) is stated up front.',
       'Search engines are not built to be the system of record: they are near-real-time, have weaker durability and transaction semantics than a database, and you could not rebuild the index from anything if it were lost.',
     ],
   },
@@ -311,9 +311,9 @@ Without positions you can answer "contains both words" but not "contains this ph
     kind: 'failure',
     q: 'After deploying, searching "running shoes" finds nothing, though listings titled "Running Shoes" exist. The mapping uses the english analyzer at index time, but the search code sends the query against a `keyword` sub-field. Why does it fail?',
     options: [
-      'The keyword field stores the exact string "Running Shoes", so the query "running shoes" does not match it',
-      'Stop words were dropped from the query',
-      'The index has not refreshed yet',
+      'The keyword field holds the exact string "Running Shoes", so "running shoes" does not match',
+      'Stop words were dropped from the query, so nothing is left to match against the field',
+      'The index has not refreshed yet, so recently indexed listings are not visible to queries yet',
     ],
     answer: 0,
     why: 'Query and index must use the same analysis. A keyword field is one untokenised, case-sensitive term; it never meets the stemmed, lowercased terms of a text field.',
@@ -448,15 +448,15 @@ News and tweets weight ranking freshness heavily; a furniture catalogue barely d
     kind: 'scenario',
     q: 'Users complain that the newest listings always rank first, even when they barely match the query. The team sorted by created_at desc with the text score as a tiebreaker. What do you change?',
     options: [
-      'Sort by popularity instead',
-      'Score by BM25 and multiply by a recency decay with a half-life, so newness nudges but does not override a match',
-      'Remove recency completely',
+      'Sort by popularity instead, so the most viewed listings rise above weakly matching new ones',
+      'Score by BM25 and multiply by a recency decay, so newness nudges but does not override a match',
+      'Remove recency from the ranking entirely, so only the text score decides the final order',
     ],
     answer: 1,
     why: 'A sort is all-or-nothing; a decay multiplies the text score by a factor between 0 and 1, so a much better match can still win.',
     explain: [
       'Popularity as a single sort key ignores whether the result matches the query.',
-      'Correct. Relevance stays the base. Recency becomes a bounded factor you can tune with scale and decay.',
+      'Correct. Relevance stays the base. Recency becomes a bounded factor (decay with a half-life) you can tune with scale and decay.',
       'Some products need recency (news, listings). Removing it trades one problem for another; the fix is blending, not deleting.',
     ],
   },
@@ -464,13 +464,17 @@ News and tweets weight ranking freshness heavily; a furniture catalogue barely d
     kind: 'predict',
     q: 'BM25 with k1 = 1.2, b = 0.75. Listing A (average length) mentions "lamp" 2 times. Listing B (average length) mentions it 100 times. Roughly how do their TF parts compare?',
     code: "tf part = tf * (k1 + 1) / (tf + k1 * (1 - b + b * len/avg))\nA: tf = 2, len = avg  -> ?\nB: tf = 100, len = avg -> ?",
-    options: ['B is about 50 times A', 'B is about 1.6 times A (2.17 vs 1.38)', 'They are equal'],
+    options: [
+      'B is about 50 times A (100 vs 2 mentions)',
+      'B is about 1.6 times A (2.17 vs 1.38)',
+      'They are equal (both capped at 2.2)',
+    ],
     answer: 1,
     why: 'TF saturates at k1 + 1 = 2.2, so 100 mentions score only about 58% more than 2.',
     explain: [
       'That is raw TF-IDF behaviour without saturation: the keyword-stuffing hole BM25 closes.',
       'Correct. A = 2 × 2.2 / (2 + 1.2) = 1.38 and B = 100 × 2.2 / (100 + 1.2) = 2.17.',
-      'They are not equal; more mentions still help, just very little.',
+      'They are not equal: B is a little higher (2.17 vs 1.38). More mentions still help, just very little.',
     ],
   },
 ]} />
@@ -613,16 +617,16 @@ The chain matches the caching lesson: **data size picks the primaries; query rat
     kind: 'scenario',
     q: 'Search traffic doubles and p99 climbs. The cluster has 3 primaries and 1 replica each, and CPU is high on every node. What is the cheapest sensible change?',
     options: [
-      'Reindex into 6 primaries',
-      'Add replicas (and nodes to hold them)',
-      'Increase the refresh interval to 30 seconds',
+      'Reindex into 6 primaries so each shard holds less data',
+      'Add replicas and nodes to hold them, spreading reads',
+      'Raise the refresh interval to 30 s to cut indexing work',
     ],
     answer: 1,
     why: 'Each query needs one copy of each shard, so extra copies spread queries across more nodes. More primaries would add fan-out to every query.',
     explain: [
       'It needs a reindex, and every query would then fan out to 6 shards instead of 3, which worsens the tail.',
       'Correct. Replicas can be added live and raise read throughput. They also add failure tolerance. Cost: disk, memory and a little write overhead.',
-      'A longer refresh reduces indexing overhead, and makes new documents visible later. It does little for query CPU.',
+      'A longer refresh reduces indexing overhead and makes new documents visible later. It does little for query CPU.',
     ],
   },
 ]} />
@@ -755,15 +759,15 @@ You can, if the service publishes them through a transactional outbox, so the ev
     kind: 'failure',
     q: 'The indexer crashes for 20 minutes during peak. Postgres is healthy and Kafka has 7 days of retention. What do users see, and what do you do?',
     options: [
-      'Searches fail until the indexer is back',
-      'Search keeps working with stale results; new and changed listings appear after the indexer resumes from its committed offset and catches up',
-      'Data is lost for those 20 minutes and must be re-entered',
+      'Searches fail until the indexer is back, because queries are routed through it to the cluster',
+      'Search keeps working with stale results; the indexer resumes from its committed offset and catches up',
+      'Data is lost for those 20 minutes and must be re-entered by the users who made the changes',
     ],
     answer: 1,
     why: 'The queue decouples capture from indexing. The lag grows, nothing is lost, and versioned upserts make the catch-up safe.',
     explain: [
       'Queries hit the search cluster, not the indexer. The index just stops getting new updates.',
-      'Correct. Alert on consumer lag, scale the indexer if catch-up is slow, and have a banner or database fallback for the author.',
+      'Correct. New and changed listings appear after catch-up. Alert on consumer lag, scale the indexer if catch-up is slow, and have a banner or database fallback for the author.',
       'The log and Kafka hold every change; the indexer resumes from its offset.',
     ],
   },
@@ -771,9 +775,9 @@ You can, if the service publishes them through a transactional outbox, so the ev
     kind: 'scenario',
     q: 'You must switch the title field to a new analyzer with search live. Which plan is right?',
     options: [
-      'PUT the new mapping on the live index; old documents will use it',
-      'Create listings_v2, record the stream offset, backfill, replay from the offset, verify, then atomically swap the alias',
-      'Delete the index overnight and rebuild',
+      'PUT the new analyzer on the live index and let old documents pick it up as they are updated',
+      'Create listings_v2, backfill, replay from the recorded offset, verify, then swap the alias atomically',
+      'Delete the index in the quiet overnight window, then rebuild it from the database from scratch',
     ],
     answer: 1,
     why: 'Postings are built at index time by the analyzer. A different analyzer means different postings, so every document must be re-analysed into a new index.',
@@ -867,9 +871,9 @@ The product answer matters as much as the API: **nobody reads page 500.** Cap br
     kind: 'scenario',
     q: 'Users page by clicking 1, 2, 3 ... up to 20, and a "next" button on a mobile infinite scroll. Which pagination for each?',
     options: [
-      'search_after for both',
-      'from/size for the numbered pages (capped at a small depth) and search_after for infinite scroll',
-      'from/size for both, with max_result_window raised to 1,000,000',
+      'search_after for both, since cursors stay cheap at any depth and never skip results',
+      'from/size for numbered pages (capped at a small depth), search_after for infinite scroll',
+      'from/size for both, with max_result_window raised to 1,000,000 so any page can be reached',
     ],
     answer: 1,
     why: 'Numbered pages need random access, which only offsets give, and shallow depth keeps the cost small. Infinite scroll only needs "next", which a cursor does cheaply and stably.',
@@ -966,15 +970,15 @@ Read it backwards and the architecture falls out:
     kind: 'scenario',
     q: 'Your typeahead calls the central search cluster (one region) on every keystroke. Users in Asia see suggestions that lag two or three characters behind. What do you change first?',
     options: [
-      'Add more shards to the search cluster',
-      'Serve precomputed suggestions from an in-memory service in each region, with hot prefixes cached at the edge',
-      'Remove the client debounce to send requests sooner',
+      'Add more shards to the search cluster so each query has less data to scan',
+      'Serve precomputed suggestions from a small in-memory service in each region',
+      'Remove the client debounce so requests are sent sooner after each keystroke',
     ],
     answer: 1,
     why: 'The budget is dominated by distance and by a scatter-gather. The fix removes both: nearby data, one lookup.',
     explain: [
       'More shards means more fan-out and a worse tail. It also does not shorten the distance to the user.',
-      'Correct. A cross-ocean round trip alone can exceed 100 ms. Moving the data near the user fixes it.',
+      'Correct. Cache hot prefixes at the edge too. A cross-ocean round trip alone can exceed 100 ms; moving the data near the user fixes it.',
       'Without debounce you send more requests, so there is more load and more out-of-order responses. It does nothing for latency per request.',
     ],
   },
@@ -1086,15 +1090,15 @@ Because typeahead predicts what *this user is about to type*, and the best evide
     kind: 'tradeoff',
     q: 'A teammate proposes updating each trie node\'s top-K live on every search, so suggestions are always fresh. What is the main problem?',
     options: [
-      'Tries cannot be updated at all',
-      'Every search would write to every ancestor node (one per character) on every serving replica, with locks on hot nodes; and lowering a count cannot be handled correctly without rescanning the subtree',
-      'It would make lookups O(n) instead of O(prefix)',
+      'Tries are immutable once built, so every update means rebuilding the whole structure from scratch',
+      'Every search writes to all ancestor nodes on every replica, and a falling count needs a rescan',
+      'It would turn lookups from O(prefix) into O(n) over all the stored queries, which is too slow',
     ],
     answer: 1,
     why: 'Live increments are cheap to reason about, but they put write contention on the read path, and decreases or decay break the "top-K per node is enough" invariant. Offline rebuild plus a small trending layer avoids both.',
     explain: [
       'Tries can be updated. The issue is the cost and correctness of doing it live at this volume.',
-      'Correct. Hot top nodes ("c", "ca") take every write. And if a cached query\'s count falls, the right replacement might not be in the list.',
+      'Correct. Hot top nodes ("c", "ca") take every write, with locks. And if a cached query\'s count falls, the right replacement might not be in the list.',
       'Lookups stay O(prefix). It is the write path that gets expensive.',
     ],
   },
@@ -1168,13 +1172,17 @@ The index cost is real: a 6-word title of 6-letter words becomes about 36 indexe
     kind: 'predict',
     q: 'A title field uses an edge_ngram analyzer (min 1, max 10) for both index and search. A user types "lam", and the match query uses its default OR between terms. Which titles match?',
     code: "analyzer (index + search) = edge_ngram(1..10)\nquery 'lam' -> terms: l, la, lam\n\ntitles: 'lamp', 'lantern', 'ladder', 'table'",
-    options: ['Only "lamp"', '"lamp", "lantern" and "ladder"', 'None'],
+    options: [
+      'Only "lamp"',
+      '"lamp", "lantern" and "ladder"',
+      '"lamp" and "lantern"',
+    ],
     answer: 1,
     why: 'The query itself was n-grammed, so the term "l" matches any title with a word starting with l. Use a plain search analyzer.',
     explain: [
       'That is the behaviour you want, but it needs search_analyzer set to a plain analyzer.',
       'Correct. "l" is one of the query terms and it matches the grams of lamp, lantern and ladder. Fix: search_analyzer: standard.',
-      '"l" is a query term and it is in the index, so at least "lantern" and "ladder" match too.',
+      '"ladder" also has the grams l and la, which are query terms, so it matches too.',
     ],
   },
 ]} />
@@ -1251,16 +1259,16 @@ Query logs add the strongest signal of all: when many users search "armchiar" an
     kind: 'tradeoff',
     q: 'Zero-result queries are 8% of traffic, mostly typos. The team enables fuzziness 2 on every query. Support now reports odd results for short queries like "cat". Why, and what do you do?',
     options: [
-      'Short words within two edits match many unrelated words; use AUTO fuzziness, require a prefix, and rank exact matches first',
-      'Fuzzy search is broken for short words; disable it',
-      'The index needs more shards',
+      'Two edits match many unrelated short words; use AUTO fuzziness and rank exact matches first',
+      'Fuzzy search is broken for short words; disable it and accept the zero-result queries',
+      'The analyzer is stemming "cat" wrongly; switch to the keyword analyzer for the title field',
     ],
     answer: 0,
     why: 'Within two edits, a 3-letter word reaches a large share of the dictionary. Distance should scale with length, and exact matches must rank above fuzzy ones.',
     explain: [
       'Correct. AUTO gives 0 edits to 1 to 2 characters, 1 edit to 3 to 5, 2 edits beyond. Requiring the first letter also helps.',
       'Disabling loses the typo recovery you wanted. Tune it rather than remove it.',
-      'Shard count affects speed, not which words are within an edit distance.',
+      'Stemming is not involved: the odd matches come from expanding the query term by edit distance.',
     ],
   },
 ]} />
@@ -1318,15 +1326,15 @@ es.search(index="listings", size=20,
     kind: 'failure',
     q: 'A multi-tenant search app hides other tenants\' documents by filtering in application code after fetching the top 20. What goes wrong?',
     options: [
-      'Nothing, if the filter is correct',
-      'Pages come back short or empty, totals are wrong, and a bug in the app filter leaks other tenants\' data; the filter belongs in the query',
-      'Scores become negative',
+      'Nothing goes wrong, as long as the application filter is written and tested correctly by every team',
+      'Pages come back short or empty, totals are wrong, and an app-filter bug leaks other tenants\' data',
+      'Scores for the filtered results are recomputed and become unreliable, so ranking changes',
     ],
     answer: 1,
     why: 'Permissions must be applied inside the engine so ranking, paging and counts only ever see allowed documents.',
     explain: [
       'Even if correct, 15 filtered of 20 means a 5-result page, and the next cursor is off.',
-      'Correct. It is both a correctness and a security issue. Use a filter clause (and consider per-tenant routing).',
+      'Correct. It is both a correctness and a security issue: the filter belongs in the query. Use a filter clause (and consider per-tenant routing).',
       'Scores are unaffected; the problem is what is in the set.',
     ],
   },
@@ -1334,7 +1342,11 @@ es.search(index="listings", size=20,
     kind: 'predict',
     q: 'The shopper ticks "material = brass". The query applies it as a post_filter, with a terms aggregation on material. What do the facet counts show?',
     code: "query: lamp in stock\npost_filter: material = brass\naggs: terms(material)",
-    options: ['Only brass, with its count', 'All materials among "lamp in stock" with their counts, while hits show only brass', 'An error'],
+    options: [
+      'Only brass, with its count, because aggregations see the filtered hits',
+      'All materials among "lamp in stock", while hits show only brass',
+      'An error, because a post_filter cannot be combined with an aggregation',
+    ],
     answer: 1,
     why: 'post_filter runs after aggregations, so the aggregation still sees every matching lamp, and the user can switch material.',
     explain: [
@@ -1360,7 +1372,7 @@ es.search(index="listings", size=20,
 
 **Geo search.** Search engines index locations as points (Lucene uses tree structures built for multi-dimensional points) and support distance filters ("within 10 km"), bounding boxes and sorting by distance. In ranking, use a **distance decay** that multiplies the text score (closer is better, smoothly) rather than a hard sort that puts a barely relevant listing first because it is 200 metres away. The cell structures underneath (geohash, quadtrees, H3) and the "nearby drivers" variants are in <a href={`${BASE}sd/lessons/pattern-geospatial/`}>Geospatial indexing</a>.
 
-**Semantic (vector) search.** An embedding model turns text into a vector so that texts with similar *meaning* land near each other: "something warm to read by in bed" lands near "bedside lamp, warm white". Finding the nearest vectors among millions needs an **approximate nearest-neighbour (ANN)** index such as HNSW. Elasticsearch and OpenSearch both offer one (check current docs), as do dedicated vector databases. The pipeline (chunking, embeddings, ANN, reranking) is in <a href={`${BASE}sd/lessons/rag/`}>RAG & vector search</a>.
+**Semantic (vector) search.** An embedding model turns text into a vector so that texts with similar *meaning* land near each other: "something warm to read by in bed" lands near "bedside lamp, warm white". Finding the nearest vectors among millions needs an **approximate nearest-neighbour (ANN)** index such as HNSW. Elasticsearch and OpenSearch both offer one, as do dedicated vector databases. In OpenSearch the k-NN plugin builds HNSW indexes (and IVF on the Faiss engine) with the Faiss or Lucene engines; the older NMSLIB engine is deprecated (OpenSearch docs, checked 2026-10-19). HNSW settings are `m`, `ef_construction` and `ef_search`; the Lucene engine ignores `ef_search` and uses k. The pipeline (chunking, embeddings, ANN, reranking) is in <a href={`${BASE}sd/lessons/rag/`}>RAG & vector search</a>.
 
 **Lexical and semantic fail in opposite places:**
 
@@ -1402,7 +1414,7 @@ final = rrf(bm25, vec)[:20]
 
 The `embedding` field is a `dense_vector` mapping with a vector index (Elasticsearch 8.x). Elasticsearch also has a built-in RRF retriever, but it is a paid-licence feature: on the free Basic licence (8.19) the request is refused with a 403 "license is non-compliant" error. Other engines vary, so check current docs. Fusing in application code as above is always possible and easy to reason about.
 
-**Filters meet vectors.** "Semantic search, but only in-stock items under 50" is harder than it sounds: an ANN index returns the nearest k overall, and filtering afterwards can leave three results instead of twenty. Engines offer filtered ANN search (the `filter` inside `knn` above applies during the search); know the problem exists and name it.
+**Filters meet vectors.** "Semantic search, but only in-stock items under 50" is harder than it sounds: an ANN index returns the nearest k overall, and filtering afterwards can leave three results instead of twenty. Engines offer filtered ANN search (the `filter` inside `knn` above applies during the search; OpenSearch does this for Lucene HNSW and for Faiss, and its post-filters can return fewer than k results); know the problem exists and name it.
 
 <Trace title="Words or meaning?" steps={hybrid} takeaway="Lexical wins exact tokens; vectors win paraphrase. Hybrid retrieval with RRF fuses ranks, not scores. Filtered ANN is a real problem: name it." />
 
@@ -1415,9 +1427,9 @@ The `embedding` field is a `dense_vector` mapping with a vector index (Elasticse
     kind: 'scenario',
     q: 'Your vector-only search is great on descriptive queries, but customers pasting SKUs like "BL-4471" get similar-looking wrong items. What do you do?',
     options: [
-      'Raise the embedding dimension',
-      'Add lexical retrieval (BM25 on an exact SKU field) and fuse with the vector results, for example by RRF',
-      'Use fuzzy search on every query',
+      'Raise the embedding dimension so that similar-looking codes get more distinct vectors',
+      'Add exact SKU matching (BM25 on a SKU field) and fuse it with the vector results, e.g. by RRF',
+      'Turn on fuzzy matching on every query so that near-miss SKUs are found as well as exact ones',
     ],
     answer: 1,
     why: 'Embeddings blur identifiers. A lexical retriever matches rare exact tokens strongly, and fusion keeps the semantic wins.',
@@ -1449,16 +1461,16 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
     kind: 'scenario',
     q: 'Search is added to your feed design. The interviewer asks: "will you query Postgres with LIKE?" Strong answer:',
     options: [
-      'Yes, with an index on the text column',
-      'No: leading-wildcard LIKE cannot use a B-tree and scans the table. I would add an inverted index (Elasticsearch), fed from the DB via CDC, searchable within about 2 s',
-      'Yes for small scale, Elasticsearch later',
-      'No: cache popular search results in Redis instead',
+      'Yes, with a B-tree index on the text column, so the LIKE query is fast enough at this scale',
+      'No: LIKE with a leading wildcard scans the table. I would use an inverted index fed by CDC',
+      'Yes while the table is small, then move to Elasticsearch once searches get slow and users complain',
+      'No: cache the popular search results in Redis, so that repeated queries never reach the database',
     ],
     answer: 1,
     why: 'Names the exact failure, the fix, the sync mechanism and the staleness bound.',
     explain: [
       'Which index? A B-tree cannot serve a leading wildcard, so this is the hand-wave.',
-      'Correct: failure, fix, sync, lag in four clauses.',
+      'Correct: failure, fix, sync, lag in a few clauses. Say the index is searchable within about 2 s of the write.',
       'Defensible only if you name Postgres full-text search or a trigram index. Plain LIKE on a big table is not the answer.',
       'A cache helps repeat queries, but search queries are long-tailed with a poor hit ratio, and the first of each still scans.',
     ],
@@ -1467,16 +1479,16 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
     kind: 'tradeoff',
     q: 'Why does typeahead store precomputed top-K completions at every trie node instead of walking the subtree per query?',
     options: [
-      'Subtree walks give wrong results',
-      'The budget is under 100 ms per keystroke and the subtree of "a" has millions of nodes. Precomputed top-K makes reads O(prefix): pay at offline write time, not at read time',
-      'Tries cannot be traversed downward efficiently',
-      'To save memory',
+      'A subtree walk returns incorrect completions, because counts change while the walk is running',
+      'The budget is under 100 ms and the subtree of "a" is huge, so precomputed top-K makes reads O(prefix)',
+      'Tries are slow to traverse downward, because each node stores its children in a linked list',
+      'To save memory, because the top-K list replaces storing child pointers at every node',
     ],
     answer: 1,
     why: 'Read-time work moved to precompute: the same trade as fan-out-on-write and materialized views. Seeing it as a pattern is the transferable skill.',
     explain: [
       'The output is right; the cost is the issue.',
-      'Correct. The top-K lists cost extra memory in exchange for latency.',
+      'Correct. You pay at offline write time, not at read time. The top-K lists cost extra memory in exchange for latency.',
       'Downward traversal is exactly what tries do well.',
       'Top-K lists use more memory, not less. The goal is latency.',
     ],
@@ -1485,17 +1497,17 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
     kind: 'failure',
     q: 'Your Elasticsearch cluster is destroyed. What is the recovery story if the design was done right?',
     options: [
-      'Restore from snapshots and accept some data loss',
-      'The search data is gone; rebuild what you can from logs',
-      'Reindex everything from the primary DB: search was a derived copy, never the source of truth, and is degraded (not down) meanwhile',
-      'Fail over to a standby cluster, which is mandatory',
+      'Restore from the latest snapshot, then accept the loss of every change made after it was taken',
+      'The search data is gone for good, so rebuild what you can from application logs and backups',
+      'Reindex everything from the primary DB: search is a derived copy and runs degraded meanwhile',
+      'Fail over to a hot standby cluster, which every search design must keep running at all times',
     ],
     answer: 2,
     why: '"Derived and rebuildable" is what makes losing the cluster an inconvenience, not an incident. Snapshots and standbys only speed things up.',
     explain: [
       'Snapshots help recovery time, but the story does not depend on them, and nothing in the DB is lost.',
       'Nothing is only in search, so there is nothing to scrape from logs.',
-      'Correct. About 42 minutes at 20,000 docs/s for 50M listings, with a banner and category browsing meanwhile.',
+      'Correct. About 42 minutes at 20,000 docs/s for 50M listings, with a banner and category browsing meanwhile. The source of truth was never in search.',
       'A standby shortens the outage but is optional, and costs a whole second cluster.',
     ],
   },
@@ -1628,7 +1640,7 @@ Related: <a href={`${BASE}sd/lessons/typeahead/`}>Typeahead walkthrough</a> (the
 - Elastic documentation: [near-real-time search](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search), [paginating search results](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/paginate-search-results), [sizing shards](https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards) and [aliases](https://www.elastic.co/docs/manage-data/data-store/aliases): the vendor details behind Chapters 4 to 6. [OpenSearch documentation](https://docs.opensearch.org/latest/) covers the same ground for the open-source fork.
 - PostgreSQL: [full-text search](https://www.postgresql.org/docs/current/textsearch.html) and [pg_trgm](https://www.postgresql.org/docs/current/pgtrgm.html): the middle ground from Chapter 1.
 - [Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods](https://cormack.uwaterloo.ca/cormacksigir09-rrf.pdf) (Cormack, Clarke, Büttcher, SIGIR 2009): the short paper behind hybrid fusion.
-- Busch et al., *Earlybird: Real-Time Search at Twitter* (ICDE 2012): time-partitioned, document-partitioned real-time search at scale.
+- Busch et al., *Earlybird: Real-Time Search at Twitter* (ICDE 2012): the in-memory real-time index behind Twitter search, with tweets hash-partitioned across servers (document partitioning) and one writer thread per index with many reader threads. It does not teach time-based partitioning; the time partitioning in the tweet-search question above is our own extension.
 - [Apache Lucene](https://lucene.apache.org/): the library underneath Elasticsearch, OpenSearch and Solr.
 
 **Look these up yourself**

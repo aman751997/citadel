@@ -77,15 +77,15 @@ The first is **contention**: many actors try to change one scarce thing at the s
     kind: 'scenario',
     q: 'Support reports: "customer X was charged twice for one order" and "seat B-4-17 has two owners". Which statement is right?',
     options: [
-      'Both are the same bug, so one fix (a global lock) solves both',
-      'The first is duplication (one request delivered twice); the second is contention (two different requests racing). They need different tools: idempotency for one, conditional writes or locks for the other',
-      'Both are duplication, and an idempotency key on every endpoint solves both',
+      'Both are the same bug, so one global lock around checkout fixes both the double charge and the double seat',
+      'The first is duplication (one request twice); the second is contention (two requests racing)',
+      'Both are duplication, so an idempotency key on every endpoint fixes both the double charge and the shared seat',
     ],
     answer: 1,
     why: 'Idempotency makes one intent harmless when repeated. It does nothing when two different buyers want the same seat. Contention needs an atomic check-and-change.',
     explain: [
       'A global lock would serialise everyone for no reason and still not stop a retried charge, which arrives after the lock was released.',
-      'Correct. Duplication: one actor, one intent, many deliveries. Contention: many actors, one scarce thing. Different failure, different cheapest fix.',
+      'Correct. Duplication: one actor, one intent, many deliveries (fix: idempotency). Contention: many actors, one scarce thing (fix: conditional writes or locks).',
       'Two different buyers have different idempotency keys, so keys cannot tell them apart. Idempotency only catches repeats of one intent.',
     ],
   },
@@ -161,7 +161,11 @@ SELECT status FROM event_seats WHERE event_id = 77 AND seat_id = 'B-4-17';
 UPDATE event_seats SET status = 'HELD', held_by = :me
  WHERE event_id = 77 AND seat_id = 'B-4-17';
 COMMIT;`,
-    options: ['Exactly one: InnoDB detects the conflict', 'Both: the UPDATE has no condition, so the second one just overwrites the first', 'Neither: the second session deadlocks and both roll back'],
+    options: [
+      'Exactly one: InnoDB detects the read-then-write conflict and aborts the second session',
+      'Both: the UPDATE has no condition, so the second one overwrites the first',
+      'Neither: the second session deadlocks and both roll back to the start',
+    ],
     answer: 1,
     why: 'REPEATABLE READ gives each session a consistent snapshot for its SELECT, so both see AVAILABLE. The UPDATE waits for the row lock, then runs anyway because nothing in its WHERE checks the status. Both report success.',
     explain: [
@@ -173,12 +177,16 @@ COMMIT;`,
   {
     kind: 'scenario',
     q: 'A teammate fixes the race by raising the isolation level to SERIALIZABLE everywhere. What is the most likely production effect?',
-    options: ['The race is gone and nothing else changes', 'The race is gone, but plain reads now take shared locks, so concurrent read-then-write transactions deadlock and one is aborted: you must add retry logic and throughput may drop', 'The race remains, because SERIALIZABLE only affects reads'],
+    options: [
+      'The race is gone and throughput is unchanged, because locks are only taken on writes',
+      'The race is gone, but read-then-write sessions deadlock and one must be retried',
+      'The race remains, because SERIALIZABLE only changes how plain SELECT statements behave',
+    ],
     answer: 1,
     why: 'In InnoDB SERIALIZABLE, plain SELECTs inside a transaction become locking reads. Two transactions that both read then both try to write each hold a shared lock the other needs to upgrade: a deadlock, one is rolled back.',
     explain: [
       'Not free. The correctness comes from locking reads, and locks cost throughput and cause deadlocks.',
-      'Correct. It trades a silent wrong answer for an error you must handle. A conditional UPDATE avoids both the wrong answer and the deadlock.',
+      'Correct. Plain reads take shared locks, so one of two read-then-write sessions is aborted and throughput may drop. A conditional UPDATE avoids both.',
       'It affects reads and writes: reads take locks, which is what closes the gap.',
     ],
   },
@@ -202,7 +210,7 @@ The shortest form interviewers like is `UPDATE seats SET held_by = ? WHERE id = 
 
 Two MySQL details matter here:
 
-- **Affected rows means changed rows.** By default MySQL reports rows whose values actually changed, not rows that matched. Here the statement always changes a matched row (status goes to `HELD`), so 1 or 0 is reliable. If an UPDATE could set a column to the value it already has, a matched row would report 0. Drivers have a "found rows" flag (`CLIENT_FOUND_ROWS`) that switches to counting matches; PyMySQL and MySQL Connector/Python leave it off by default, and with it on a no-op UPDATE reports 1. Check what your driver does before relying on the count.
+- **Affected rows means changed rows.** By default MySQL reports rows whose values actually changed, not rows that matched. Here the statement always changes a matched row (status goes to `HELD`), so 1 or 0 is reliable. If an UPDATE could set a column to the value it already has, a matched row would report 0. Drivers have a "found rows" flag (`CLIENT_FOUND_ROWS`) that switches to counting matches; tested on MySQL 8.0.46: PyMySQL, MySQL Connector/Python and Go's `go-sql-driver/mysql` leave it off (a no-op UPDATE reports 0), while MySQL Connector/J (`useAffectedRows=false` is its default) and Node `mysql2` turn it on (a no-op UPDATE reports 1). Check what your driver does before relying on the count.
 - **Use the database's clock** (`NOW(3)`), not the application server's. App servers drift apart. One clock gives one answer to "has this hold expired?".
 
 **Several seats at once, all or nothing.** A buyer picks four seats together. Hold them in one statement and compare the count:
@@ -273,38 +281,50 @@ Because an `UPDATE` does not use the snapshot the transaction started with. It i
  WHERE event_id = 77 AND seat_id = 17
    AND (status = 'AVAILABLE' OR (status = 'HELD' AND held_until < NOW(3)));
 SELECT ROW_COUNT();`,
-    options: ['1: B overwrites A because it also saw AVAILABLE', '0: B waited for A, re-checked the WHERE against the committed row, and nothing matched', 'An error: B times out because A holds the lock'],
+    options: [
+      '1: B also matched, because it evaluated the WHERE before A committed',
+      '0: B waited, re-checked the WHERE against A\'s committed row, and nothing matched',
+      'An error 1205: B hits the lock wait timeout while A is still finishing its statement',
+    ],
     answer: 1,
     why: 'B blocks on the row lock for the duration of A\'s statement (microseconds). After A commits, B evaluates its WHERE against the new row (HELD, held_until in the future), which fails, so zero rows change.',
     explain: [
-      'That would be true only for an unconditional UPDATE. The WHERE is what protects A.',
+      'B waits for the row lock and then re-checks the WHERE against the latest committed row, where the status is now HELD and not expired.',
       'Correct. The loser gets a clean "0 rows" and tells the user the seat is taken. No exception, no retry loop.',
-      'The wait is only as long as A\'s one statement or short transaction. A lock wait timeout (error 1205, default 50 s) only happens if A holds the lock for a long time.',
+      'The wait lasts only as long as A\'s one statement. A lock wait timeout (error 1205, default 50 s) only happens if A holds the lock for a long time.',
     ],
   },
   {
     kind: 'predict',
     q: 'Two requests redeem the same coupon for the same user at the same time. The table has UNIQUE (coupon_id, user_id). What happens to the second INSERT, and what should the app do?',
     code: `INSERT INTO coupon_redemptions (coupon_id, user_id) VALUES (9, 501);`,
-    options: ['It succeeds, then a background job removes the duplicate', 'It fails with error 1062 (duplicate entry); the app treats that as "already redeemed" and returns the same answer as the first request', 'It silently inserts a second row with a new auto-increment id'],
+    options: [
+      'It succeeds, and a nightly cleanup job later deletes the duplicate redemption row',
+      'It fails with error 1062; the app treats it as "already redeemed"',
+      'It waits for the first INSERT to commit, then inserts a second row with a new id anyway',
+    ],
     answer: 1,
     why: 'The unique index makes the second insert fail atomically, whatever the concurrency. A duplicate-key error on an idempotency or uniqueness constraint is an expected outcome, not a crash.',
     explain: [
       'Cleanup jobs run after money or stock has already moved. The constraint prevents the duplicate from existing at all.',
       'Correct. Catch errno 1062 and map it to the business answer. Do not let it become a 500.',
-      'Only if there were no unique constraint, which is exactly the bug the constraint is there to prevent.',
+      'The unique index refuses the second row once the first commits. A second row would only appear if there were no unique constraint.',
     ],
   },
   {
     kind: 'tradeoff',
     q: 'You need "at most one live booking per seat, but a cancelled booking must not block re-booking" in MySQL. Which is the right schema change?',
-    options: ['UNIQUE (event_id, seat_id) on the tickets table', 'A generated column that is NULL when status = CANCELLED, with UNIQUE (event_id, live_seat) on it', 'Check for an existing live booking in application code before inserting'],
+    options: [
+      'UNIQUE (event_id, seat_id, status) on the tickets table, so a cancelled row has its own key',
+      'A generated column that is NULL when CANCELLED, with UNIQUE (event_id, live_seat) on it',
+      'Check for a live booking in application code inside a transaction, then insert',
+    ],
     answer: 1,
     why: 'MySQL has no partial unique index. A unique index ignores NULLs, so a generated column that is NULL for cancelled rows gives you "unique among live rows".',
     explain: [
-      'Blocks re-booking forever: a cancelled row still occupies the key.',
+      'A second cancellation of the same seat would collide with the first CANCELLED row, so re-booking and cancelling again fails.',
       'Correct. The database enforces it for every code path, including the support tool someone writes next year.',
-      'Check-then-insert is the race again. Both checks pass, both insert.',
+      'Check-then-insert is the race again. At REPEATABLE READ both checks pass, both insert.',
     ],
   },
 ]} />
@@ -424,13 +444,17 @@ START TRANSACTION;
 SELECT ticket_id FROM ga_tickets
  WHERE event_id = 5 AND status = 'AVAILABLE'
  ORDER BY ticket_id LIMIT 1 FOR UPDATE SKIP LOCKED;`,
-    options: ['Both get ticket 1', 'Session 1 gets ticket 1; session 2 skips it and gets ticket 2', 'Session 1 gets ticket 1; session 2 waits until session 1 commits, then gets ticket 1 or 2'],
+    options: [
+      'Both get ticket 1, because each saw it AVAILABLE before the other locked it',
+      'Session 1 gets ticket 1; session 2 skips it and gets ticket 2',
+      'Session 1 gets ticket 1; session 2 waits for session 1 to commit, then gets ticket 2',
+    ],
     answer: 1,
     why: 'SKIP LOCKED means "ignore rows another transaction has locked". Session 2 does not wait, it moves on to ticket 2. Without SKIP LOCKED you get the third behaviour: a single-file line.',
     explain: [
       'Impossible: FOR UPDATE takes an exclusive lock on the row it returns, so the second session cannot also lock it.',
       'Correct. This is why SKIP LOCKED suits "any free row" workloads: job queues, general admission, free beds.',
-      'That is plain FOR UPDATE. It is correct but serialises everyone behind one row.',
+      'That is plain FOR UPDATE. It is correct but serialises everyone behind one row. SKIP LOCKED never waits.',
     ],
   },
   {
@@ -439,36 +463,48 @@ SELECT ticket_id FROM ga_tickets
     code: `UPDATE events SET description = :new, version = version + 1
  WHERE id = 42 AND version = 7;
 SELECT ROW_COUNT();`,
-    options: ['1: both succeed, the last description wins', '0: the row is now at version 8, so B must reload and redo its edit', 'An error: duplicate version'],
+    options: [
+      '1: both succeed, because B\'s UPDATE locks the row only after A commits',
+      '0: the row is now at version 8, so B must reload and redo its edit',
+      'An error: B\'s UPDATE is rejected as a deadlock and must be retried',
+    ],
     answer: 1,
     why: 'A changed version to 8. B\'s WHERE needs version = 7, which no longer matches, so zero rows are updated. B has detected the conflict without any lock being held while the humans typed.',
     explain: [
-      'That is the lost update. The version check exists to prevent it.',
+      'B waits for A\'s commit, then re-checks WHERE version = 7 against the committed row. The version is 8, so nothing matches.',
       'Correct. B reloads, shows the organiser the other change, and retries or asks them to merge.',
-      'There is no unique constraint on version. The check is just a WHERE condition.',
+      'There is no deadlock: one row, one lock holder. B just sees zero rows changed.',
     ],
   },
   {
     kind: 'failure',
     q: 'A load test of an "optimistic" seat-hold loop with 500 threads on one hot seat shows CPU and DB load far above the number of successful bookings. What is the most likely cause, and the best fix?',
-    options: ['The database is under-provisioned; add replicas', 'Losers retry immediately and collide again, so attempts grow roughly with the square of the contenders; replace the loop with a conditional UPDATE that needs no retry, and meter the crowd', 'Version columns are slow to index'],
+    options: [
+      'The database is under-provisioned; add read replicas so the hold attempts spread over more nodes',
+      'Losers retry at once and collide again; use a conditional UPDATE and meter the crowd',
+      'The version column is slow to compare, so move the check into the application',
+    ],
     answer: 1,
     why: 'N(N+1)/2 attempts for N winners is the cost of immediate retries on one row. A conditional UPDATE answers "taken" in one round trip, and a waiting room keeps the crowd away from single rows.',
     explain: [
       'Replicas serve reads. Every one of these attempts is a write to the same primary row.',
-      'Correct. Backoff with jitter softens it, but the best fix is not to retry a contended row at all.',
+      'Correct. Attempts grow roughly with the square of the contenders. Backoff with jitter softens it, but the best fix is not to retry a contended row at all.',
       'The version check is a plain comparison on a row already located by primary key.',
     ],
   },
   {
     kind: 'scenario',
     q: 'Checkout takes four minutes (bank verification, one-time code). A teammate proposes SELECT ... FOR UPDATE on the seat when checkout starts, so nobody else can buy it. What do you say?',
-    options: ['Fine: InnoDB row locks are cheap', 'No: a database lock held across minutes of human time blocks everyone who touches the row, ties up a connection and hits the lock wait timeout. Use a hold with an expiry written as a conditional UPDATE', 'Use optimistic locking instead, with a version check at payment time'],
+    options: [
+      'Fine: InnoDB row locks are cheap, so holding one for four minutes costs little',
+      'No: a lock held for minutes blocks other writers and hits lock timeouts; use an expiring hold',
+      'Use optimistic locking instead: read the seat\'s version at start and check it at payment',
+    ],
     answer: 1,
     why: 'Locks are for milliseconds. A hold is a state (HELD, with held_until) that is written in one short statement and then enforced by later conditional writes, so no lock outlives the statement.',
     explain: [
       'Taking a lock is cheap. Holding one for four minutes per buyer is what costs: connections, waiting writers and timeouts (error 1205).',
-      'Correct. This is the "held, not sold" chapter below.',
+      'Correct. A conditional UPDATE that writes a hold with an expiry reserves the seat without holding a database lock. See the "held, not sold" chapter below.',
       'A version check tells you someone else changed the row, but it does not reserve it for the buyer in the meantime. Two buyers could both pay.',
     ],
   },
@@ -571,11 +607,15 @@ SELECT qty FROM stock WHERE id = 1;            -- app reads 10
                                                COMMIT;
 UPDATE stock SET qty = 9 WHERE id = 1;         -- app computed 10 - 1
 COMMIT;`,
-    options: ['8: InnoDB merges the two decrements', '9, and one sale is lost: a lost update that REPEATABLE READ does not prevent', 'An error: write conflict detected'],
+    options: [
+      '8: InnoDB re-reads qty at the UPDATE and applies the decrement on top of B\'s',
+      '9, and one sale is lost: a lost update that REPEATABLE READ does not prevent',
+      'An error: InnoDB detects the write conflict and aborts session A\'s UPDATE',
+    ],
     answer: 1,
     why: 'Two items were sold but the stock only went down by one. InnoDB at REPEATABLE READ does not detect write-write conflicts based on stale reads. Use `SET qty = qty - 1`, a version check, or `SELECT ... FOR UPDATE` for the first read.',
     explain: [
-      'The database cannot merge application-computed values. It just executes the statements it is given.',
+      'The statement sets qty = 9 literally. The database cannot merge application-computed values; it just executes what it is given.',
       'Correct. Quiet and wrong. This is why "it is in a transaction" is not an answer.',
       'Postgres at REPEATABLE READ would abort the second writer. InnoDB does not.',
     ],
@@ -588,11 +628,15 @@ SELECT COUNT(*) FROM stock;   -- first read of a table: the snapshot is taken he
 -- (session B inserts key 'k1' and commits)
 INSERT INTO idempotency_keys (client_id, idem_key, ...) VALUES (7, 'k1', ...);  -- error 1062
 SELECT status FROM idempotency_keys WHERE client_id = 7 AND idem_key = 'k1';`,
-    options: ['The row B inserted', 'Zero rows: the row is newer than A\'s snapshot, even though the key exists', 'An error: the transaction is aborted after a duplicate key'],
+    options: [
+      'The row B inserted, because the duplicate-key error refreshes A\'s snapshot',
+      'Zero rows: the row is newer than A\'s snapshot, even though the key exists',
+      'An error: the transaction was already rolled back by the duplicate-key failure',
+    ],
     answer: 1,
     why: 'A plain SELECT reads the snapshot, which does not contain B\'s row. Add FOR SHARE or FOR UPDATE (a current read), or do the claim in its own autocommit statement, so the follow-up read sees what is really there.',
     explain: [
-      'This would be the case at READ COMMITTED, or after adding FOR SHARE.',
+      'A duplicate-key error does not refresh the snapshot. You would see the row at READ COMMITTED, or after adding FOR SHARE.',
       'Correct. The unique index sees the truth; your snapshot does not. A very common bug in idempotency code on MySQL.',
       'A duplicate-key error fails only that statement. The transaction stays open.',
     ],
@@ -600,13 +644,17 @@ SELECT status FROM idempotency_keys WHERE client_id = 7 AND idem_key = 'k1';`,
   {
     kind: 'tradeoff',
     q: 'Two on-call doctors both check "at least one other doctor is on call" then each sets their own row to off-call. At REPEATABLE READ both succeed and nobody is on call. Which fix is smallest and correct?',
-    options: ['Raise to READ COMMITTED', 'Make both transactions first lock a shared parent row (SELECT ... FOR UPDATE on the shift row), so they run one after the other', 'Add a unique index on doctor id'],
+    options: [
+      'Raise the isolation level to READ COMMITTED so each statement sees fresh data',
+      'Both transactions first lock a shared parent row with SELECT ... FOR UPDATE on the shift row',
+      'Add a unique index on (shift, doctor id) so each doctor appears once per shift',
+    ],
     answer: 1,
     why: 'This is write skew: each wrote a different row. Locking a common parent row, or using SERIALIZABLE with retries, forces an order. READ COMMITTED makes it no better.',
     explain: [
       'Weaker isolation allows the same anomaly. It only changes what each statement can see.',
-      'Correct. The rule involves two rows, so the lock must be on something both transactions share.',
-      'Each doctor already has a distinct id. The rule is about the combination, which a per-row unique index cannot express.',
+      'Correct. The rule involves two rows, so the lock must be on something both transactions share, and they then run one after the other.',
+      'Each doctor already appears once per shift. The rule is about the combination of rows, which a per-row unique index cannot express.',
     ],
   },
 ]} />
@@ -736,11 +784,15 @@ No pause bound is guaranteed. Long GC pauses, VM live migration and network part
   {
     kind: 'failure',
     q: 'Worker A holds a Redis lock (TTL 30 s) and pauses for 40 s. Worker B acquires the lock and writes. A wakes and writes. The storage is MySQL. What stops A\'s write?',
-    options: ['Nothing, unless the write carries a fence: `UPDATE ... WHERE fence <= :token` rejects A\'s older token', 'Redis, because A\'s SET was NX', 'MySQL row locks, because B committed first'],
+    options: [
+      'Nothing, unless the write carries a fencing token that the storage checks',
+      'Redis, because A\'s original SET NX is checked again when A writes',
+      'MySQL row locks, because B committed first and A\'s UPDATE must wait for it',
+    ],
     answer: 0,
     why: 'Row locks serialise A and B but do not know A is stale: A\'s UPDATE would run after B\'s and overwrite it. Only a condition that compares a fencing token makes the stale write change zero rows.',
     explain: [
-      'Correct. The storage rejects the zombie. Not the lock, not the holder.',
+      'Correct. The storage rejects the zombie, for example UPDATE ... WHERE fence <= :token. Not the lock, not the holder.',
       'NX only governed the acquire. It says nothing about a write A makes 40 seconds later.',
       'The row lock just makes A wait for B. Once B commits, A\'s unconditional UPDATE runs and wins.',
     ],
@@ -748,7 +800,11 @@ No pause bound is guaranteed. Long GC pauses, VM live migration and network part
   {
     kind: 'tradeoff',
     q: 'You need to ensure only one instance of a cache-warming cron runs per minute. A rare double run is harmless but wasteful. Which lock is the right size?',
-    options: ['Redlock across five Redis nodes', 'A single Redis `SET NX PX` lease, or MySQL GET_LOCK', 'A ZooKeeper cluster with fencing tokens'],
+    options: [
+      'Redlock across five Redis nodes with clock-drift checks on every acquire',
+      'A single Redis SET NX PX lease, or a MySQL GET_LOCK on the cron name',
+      'A ZooKeeper ensemble with fencing tokens on every cache write',
+    ],
     answer: 1,
     why: 'When a rare duplicate is harmless this is an efficiency lock. A simple lease is enough. Spend consensus and fencing only where a duplicate moves money or stock.',
     explain: [
@@ -819,7 +875,11 @@ The most robust way to avoid fighting over a resource is to **stop sharing it**.
   {
     kind: 'failure',
     q: 'Bookings go through a Kafka topic keyed by seat block, one consumer per partition. The consumer for partition 3 crashes and a new one takes over mid-batch. What must the design handle?',
-    options: ['Nothing: Kafka guarantees each message is processed once', 'The new consumer may reprocess messages the old one already applied, so the apply step must be idempotent (conditional write or dedupe by request id) and the old consumer must not still be writing (fencing)', 'Order across partitions'],
+    options: [
+      'Nothing: Kafka\'s exactly-once guarantee covers the MySQL write as well as the topic, so no dedupe is needed',
+      'The new consumer may reapply messages, so the apply step must be idempotent and the old consumer fenced',
+      'Ordering across partitions, which needs a global sequence number on every message',
+    ],
     answer: 1,
     why: 'Kafka offsets give at-least-once processing for external effects. After failover the same request can be applied twice, and a slow old consumer can wake up late. Idempotent applies plus a fence handle both.',
     explain: [
@@ -831,11 +891,15 @@ The most robust way to avoid fighting over a resource is to **stop sharing it**.
   {
     kind: 'scenario',
     q: 'Choose the better fit. Per-symbol order matching at microsecond latency, versus a seat hold for a web checkout.',
-    options: ['Both: conditional UPDATE', 'Matching: single-threaded engine per symbol; seat hold: conditional UPDATE', 'Matching: FOR UPDATE; seat hold: queue'],
+    options: [
+      'Both: a conditional UPDATE, because it avoids locks in each case',
+      'Matching: single-threaded engine per symbol; seat hold: conditional UPDATE',
+      'Matching: FOR UPDATE on the book; seat hold: a queue per event',
+    ],
     answer: 1,
     why: 'Every order on one symbol conflicts with every other one, so lock waits would set your latency. A seat hold conflicts only on that seat, and one statement is enough.',
     explain: [
-      'Lock waits on a single order book would dominate latency.',
+      'A conditional UPDATE still waits on the row lock, and lock waits on a single order book would dominate latency.',
       'Correct. Serialise when everyone needs the same thing; use a conditional write when contention is per-row and the answer is needed now.',
       'Reversed: a queue adds latency for a user waiting on a web response, and FOR UPDATE on the book is slow.',
     ],
@@ -936,37 +1000,49 @@ You can. A Redis key per seat, `SET seat:B-4-17 hold-9 NX EX 600`, is a hold tha
  WHERE event_id = 77 AND seat_id = 'B-4-17'
    AND status = 'HELD' AND held_by = 'hold-1' AND held_until > NOW(3);
 SELECT ROW_COUNT();`,
-    options: ['Returns 1: the seat is still marked HELD', 'Returns 0 (held_by is the other buyer or held_until passed); void the authorisation and tell the buyer the seats are gone', 'Returns 1 and the other buyer is evicted'],
+    options: [
+      'Returns 1, because the seat\'s status is still HELD and held_until has not changed',
+      'Returns 0 (the hold is gone); void the authorisation and tell the buyer',
+      'Returns 1 and the other buyer\'s hold is overwritten, since this buyer paid first',
+    ],
     answer: 1,
     why: 'Confirm is conditional on a live hold that is still mine. The other buyer\'s hold has a different held_by, so zero rows match. Because you only authorised (not captured), a void means no money moved.',
     explain: [
       'Another buyer holds it, so held_by does not match hold-1. The status alone being HELD is not enough.',
-      'Correct. This is why authorise-confirm-capture beats charge-then-assign: the failure ends in a void, not a refund.',
+      'Correct. held_by is the other buyer or held_until passed. Authorise-confirm-capture beats charge-then-assign: the failure ends in a void, not a refund.',
       'Confirm never evicts anyone. It only upgrades a hold that is still yours and live.',
     ],
   },
   {
     kind: 'scenario',
     q: 'The expired-hold sweeper job has been down for an hour. What is the effect on correctness?',
-    options: ['Expired seats stay locked for an hour and cannot be bought', 'None for correctness: the hold statement already treats expired holds as available; only the seat map looks stale', 'Double bookings, because expired holds are still marked HELD'],
+    options: [
+      'Expired seats cannot be bought for an hour, because the hold statement checks only the status',
+      'None: the hold statement already treats expired holds as available',
+      'Double bookings, because old holders can still confirm seats that are marked HELD',
+    ],
     answer: 1,
     why: 'The expiry check is inside the hold and confirm WHERE clauses, so correctness never depends on the sweeper. The sweeper only refreshes the visible state and triggers waitlist notifications.',
     explain: [
-      'Only if the hold statement trusted the status column alone. This one does not.',
-      'Correct. This is the design rule: correctness in the conditional write, tidying in the background.',
+      'The hold statement also accepts rows whose held_until has passed, so expired seats can be bought at once.',
+      'Correct. Only the seat map looks stale. This is the design rule: correctness in the conditional write, tidying in the background.',
       'Booking requires a live hold, checked in the confirm WHERE, so an expired HELD seat cannot be confirmed by its old holder.',
     ],
   },
   {
     kind: 'tradeoff',
     q: 'Where should holds live for an on-sale where a waiting room admits 100 buyers per second?',
-    options: ['In Redis with key TTLs, to be as fast as possible', 'In the database, with Redis for the seat-map cache and queue', 'In application memory on each web server'],
+    options: [
+      'In Redis with key TTLs, so expiry is automatic and the database is never touched',
+      'In the database as expiring rows; Redis only for the cache and queue',
+      'In a local cache on each web server, replicated every few seconds',
+    ],
     answer: 1,
     why: 'About 100 hold writes per second is well within one MySQL primary, and keeping one source of truth avoids reconciling Redis and the database. Move holds to Redis only when metered traffic still exceeds what the primary can take.',
     explain: [
       'Two sources of truth: you must make confirm atomic across both and decide what happens when Redis fails over and forgets a hold.',
-      'Correct, and say the condition that would flip it.',
-      'Web servers do not share memory, so two servers would sell the same seat.',
+      'Correct. One source of truth; say the condition that would flip it.',
+      'Replication lag leaves a window where two servers both see a seat as free and sell it twice.',
     ],
   },
 ]} />
@@ -1037,23 +1113,31 @@ The waiting room makes bots cheaper to see, not impossible. Require a logged-in,
   {
     kind: 'failure',
     q: 'Redis holding the waiting-room position counter fails over and loses the last few seconds of INCRs. What breaks, and how does the design limit it?',
-    options: ['Nothing, because Redis never loses data', 'Some users may receive a position that another user already holds. Because positions only order admission (they are not the seat truth), the cost is a small unfairness; seat ownership is still decided by the conditional UPDATE in MySQL', 'Seats are double sold'],
+    options: [
+      'Nothing, because failover promotes a replica that already holds every acknowledged INCR from the primary',
+      'A few users share a position; it only orders admission, and the MySQL conditional UPDATE owns the seat',
+      'Seats are double sold, because the queue position is what decides who owns a seat in the end',
+    ],
     answer: 1,
     why: 'The waiting room orders the crowd. It does not own seats. A duplicate or reordered position is a fairness blemish, not a correctness failure, because the hold statement still decides who owns each seat.',
     explain: [
       'Asynchronous replication can lose the most recent writes on failover.',
-      'Correct. State clearly which layer is "best effort" and which is the source of truth.',
+      'Correct. The cost is a small unfairness. State clearly which layer is best effort and which is the source of truth.',
       'The seat table never depends on the queue. A position only gets a user to the door.',
     ],
   },
   {
     kind: 'scenario',
     q: '2,000,000 people poll their queue status every 10 seconds. What is the cheapest design?',
-    options: ['Each poll reads the user\'s own row from MySQL', 'The user\'s position is in a signed token; the poll fetches a single "now serving" number that is CDN-cached for a second', 'A WebSocket per user pushing updates'],
+    options: [
+      'Each poll reads the user\'s own row from MySQL, served through a read replica to spread load',
+      'The position rides in a signed token; polls fetch one "now serving" number cached on a CDN for a second',
+      'A WebSocket per user that pushes position updates as soon as they change',
+    ],
     answer: 1,
     why: '200,000 requests/s become one shared value that the edge can answer. A per-user database read would need its own waiting room.',
     explain: [
-      '200,000 reads/s on the primary for a number that changes once a second.',
+      '200,000 reads/s across replicas for a number that changes once a second.',
       'Correct. The expensive per-user state moved into a token the client carries.',
       'Two million long-lived connections is a large fleet just to say "not yet".',
     ],
@@ -1194,12 +1278,16 @@ It is a heuristic, and it fails both ways. A customer buying two separate ₹500
   {
     kind: 'failure',
     q: 'The server crashes after the card was charged but before the key row was set to COMPLETED. The client retries with the same key 40 seconds later. The row says IN_PROGRESS with locked_until already passed. What is the correct recovery?',
-    options: ['Charge again, since the previous attempt clearly did not finish', 'Call the payment provider again with the same provider-side idempotency key (or query its status), record that result, then COMPLETE the key', 'Return 500 and ask the client to use a new key'],
+    options: [
+      'Charge again with a fresh provider key, since the attempt clearly did not finish',
+      'Call the provider with the same idempotency key (or query it), record the result, then COMPLETE',
+      'Return 500 and ask the client to retry under a new key, so the lock is bypassed',
+    ],
     answer: 1,
     why: 'The charge may have succeeded. Re-calling the provider with the same key makes the provider replay the original result instead of charging again. A new key from the client would risk a second charge.',
     explain: [
       'A new charge with a new provider key is how customers get billed twice.',
-      'Correct. This is why the provider call carries a key derived from yours: recovery can be safely repeated.',
+      'Correct. The provider call carries a key derived from yours, so recovery can be safely repeated.',
       'Telling the client to use a new key defeats the point of idempotency and invites the double charge.',
     ],
   },
@@ -1209,7 +1297,11 @@ It is a heuristic, and it fails both ways. A customer buying two separate ₹500
     code: `-- both requests run, in separate connections:
 INSERT INTO idempotency_keys (client_id, idem_key, request_hash, status, locked_until)
 VALUES (7, 'a1b2', :hash, 'IN_PROGRESS', NOW(3) + INTERVAL 30 SECOND);`,
-    options: ['Both inserts succeed, then each reads the other\'s row and one aborts', 'One insert succeeds and proceeds to charge; the other gets error 1062, reads the row (IN_PROGRESS, valid lock) and returns 409', 'Both fail, because the primary key is held by the first insert'],
+    options: [
+      'Both inserts succeed, because they run in separate connections, then each reads the other\'s row',
+      'One insert succeeds and charges; the other gets error 1062, reads the row and returns 409',
+      'Both fail with error 1062, because the key is locked as soon as either starts',
+    ],
     answer: 1,
     why: 'The primary key makes the insert an atomic claim. The loser does no work and answers fast with 409 so the client backs off and retries, which then replays the stored result.',
     explain: [
@@ -1221,24 +1313,32 @@ VALUES (7, 'a1b2', :hash, 'IN_PROGRESS', NOW(3) + INTERVAL 30 SECOND);`,
   {
     kind: 'scenario',
     q: 'A client retries POST /charges with the same Idempotency-Key, but the amount changed from ₹500 to ₹900 because of a client bug. The first request completed. What do you return?',
-    options: ['The stored ₹500 response, because the key matches', '422 (the request hash does not match the one stored with the key)', 'Process ₹900 as a new charge'],
+    options: [
+      'The stored ₹500 response, since a matching key means the same request',
+      '422: the request hash does not match the one stored with the key',
+      'Process ₹900 as a new charge and store it under the same key',
+    ],
     answer: 1,
     why: 'Same key means "same operation". A different payload is a client bug. Replaying would tell the client its ₹900 request succeeded when it did not. Executing would charge twice.',
     explain: [
       'A silent wrong answer: the client believes a ₹900 charge was made.',
-      'Correct. Store a hash of the canonical request with the key; mismatch means reject.',
+      'Correct. Store a hash of the canonical request with the key; a mismatch means reject.',
       'That breaks the key\'s promise and can double charge.',
     ],
   },
   {
     kind: 'tradeoff',
     q: 'How long should you keep idempotency keys, and what sets the table size?',
-    options: ['Forever, so any retry is always caught', 'Longer than the longest client retry window (24 hours is a common choice); retention, not traffic, sets the size (10M payments/day × 24 h ≈ 10M rows ≈ 5 GB)', '10 seconds, since retries happen quickly'],
+    options: [
+      'Forever, so any retry however late is caught; the table size stays small anyway',
+      'Longer than the longest retry window (24 hours is common); retention sets the size',
+      '10 seconds, since a client retries within moments of a timeout and keys are cheap to recreate',
+    ],
     answer: 1,
     why: 'Keys older than any possible retry only cost space. Too-short retention reopens the double-charge window for slow retries (mobile apps with long backoff).',
     explain: [
-      'It grows without bound and a retry after days is effectively a new request anyway.',
-      'Correct. And partition or batch-delete old rows so pruning does not lock the table.',
+      'It grows without bound, and a retry after days is effectively a new request anyway.',
+      'Correct. 10M payments/day kept for 24 h is about 10M rows, roughly 5 GB at 500 bytes a row. Partition or batch-delete old rows so pruning does not lock the table.',
       'Mobile retry queues can wait minutes or hours; 10 seconds would drop protection exactly when networks are worst.',
     ],
   },
@@ -1297,12 +1397,16 @@ COMMIT;   -- the state change and the event become visible together, or not at a
   {
     kind: 'failure',
     q: 'A consumer reads an event, sends the email through a provider, then crashes before committing its offset. On restart it reads the event again. What design makes the customer get exactly one email?',
-    options: ['Turn on Kafka exactly-once semantics', 'Pass the event id to the email provider as its idempotency key (or record the event id in a dedup table before sending and check it), so the second send is a no-op', 'Commit the offset before sending the email'],
+    options: [
+      'Turn on Kafka exactly-once semantics and commit offsets inside the same transaction',
+      'Pass the event id to the email provider as its idempotency key, or check a dedup table first',
+      'Commit the offset first, then send the email, so the event is never read twice',
+    ],
     answer: 1,
     why: 'The email leaves Kafka\'s boundary, so Kafka\'s guarantees stop there. At-least-once delivery plus an idempotent effect (deduped by event id) is effectively once.',
     explain: [
       'It covers read-process-write inside Kafka. The email provider is outside that transaction.',
-      'Correct. Duplicates arrive; the effect ignores them.',
+      'Correct. Duplicates arrive; the effect ignores them, so the second send is a no-op.',
       'That turns a duplicate risk into a lost-email risk: a crash after the commit and before the send loses the email.',
     ],
   },
@@ -1313,12 +1417,16 @@ COMMIT;   -- the state change and the event become visible together, or not at a
 INSERT INTO processed_events (event_id) VALUES (:id);   -- PRIMARY KEY (event_id)
 UPDATE tickets SET status = 'ISSUED' WHERE booking_id = :b;
 COMMIT;`,
-    options: ['Runs both statements again, issuing the ticket twice', 'The INSERT fails with 1062, so the transaction is rolled back and the effect is applied once', 'Only the UPDATE runs, which is harmless'],
+    options: [
+      'Both statements run again, because the transaction starts fresh on each delivery',
+      'The INSERT fails with 1062, so the transaction rolls back and the effect is applied once',
+      'Only the UPDATE runs again, which is harmless because it sets the same status',
+    ],
     answer: 1,
     why: 'The marker and the effect are in one transaction, so a duplicate fails at the marker and the effect never repeats. The dedup row must live in the same database as the effect for this to hold.',
     explain: [
-      'The primary key on event_id makes the second INSERT fail.',
-      'Correct. Treat 1062 here as "already processed" (rollback, acknowledge the message).',
+      'The primary key on event_id makes the second INSERT fail, so the ticket is not issued twice.',
+      'Correct. Treat 1062 here as "already processed": roll back and acknowledge the message.',
       'The failing INSERT aborts the transaction in your code path; the UPDATE should not run at all.',
     ],
   },
@@ -1428,31 +1536,43 @@ INSERT INTO ledger_transactions (external_ref, kind) VALUES ('charge:pay_881', '
 -- ... entries ...
 COMMIT;
 -- (UNIQUE KEY uq_ref (external_ref))`,
-    options: ['Posts a second set of entries, doubling the balances', 'The first INSERT fails with 1062; the app rolls back and treats it as "already posted", so balances do not change', 'Updates the existing entries in place'],
+    options: [
+      'Posts a second set of entries, because the retry runs in a new transaction',
+      'The INSERT fails with 1062; the app rolls back and treats it as already posted',
+      'Updates the existing entries in place with the same amounts, so nothing changes',
+    ],
     answer: 1,
     why: 'The unique external_ref makes the posting idempotent at the schema level, so even a bug in the retry logic cannot double-post.',
     explain: [
-      'Only if there were no unique reference. That is exactly the failure the UNIQUE key prevents.',
-      'Correct. The ledger refuses the repeat and the API replays the earlier answer.',
-      'Ledger entries are never updated. A correction is a new transaction.',
+      'A new transaction does not help: the UNIQUE key on external_ref refuses the second header row.',
+      'Correct. Balances do not change; the ledger refuses the repeat and the API replays the earlier answer.',
+      'Ledger entries are never updated. The repeat is refused; a correction is a new transaction.',
     ],
   },
   {
     kind: 'failure',
     q: 'A nightly check shows one ledger transaction whose entries sum to ₹-10 (not zero). Production is up. What do you do first?',
-    options: ['UPDATE the entry to fix the sum', 'Treat it as an incident: find the posting code path that wrote it, then post an adjusting transaction (a new balanced entry) with a reference to the bad one, and fix the bug', 'Delete the transaction so the books balance'],
+    options: [
+      'UPDATE the bad entry so the sum is zero, and note the change in the incident ticket afterwards',
+      'Treat it as an incident: post a balanced adjusting entry that references the bad one, fix the bug',
+      'Delete the whole transaction and re-post it correctly, keeping a note in the incident ticket',
+    ],
     answer: 1,
     why: 'Fixing by mutation destroys the evidence and breaks the audit trail. An adjustment keeps history and makes the correction itself explainable. The cause (a code path that skipped the assertion) must also be fixed.',
     explain: [
-      'Updates are exactly what an append-only ledger forbids; they also would not be permitted by the database grants.',
+      'Updates are exactly what an append-only ledger forbids; they would not be permitted by the database grants either.',
       'Correct. Append a correction, preserve the history, find the root cause.',
-      'Deleting a movement is how ledgers stop matching the bank.',
+      'Deleting a movement erases history and is how ledgers stop matching the bank.',
     ],
   },
   {
     kind: 'tradeoff',
     q: 'At 579 payments/s peak, every payment updates one "platform fee revenue" balance row (2 ms lock). What is the smallest fix?',
-    options: ['Add a read replica', 'Stop maintaining a synchronous running balance for that account (derive it or aggregate it asynchronously), or split it into N sub-accounts', 'Switch to SERIALIZABLE isolation'],
+    options: [
+      'Add a read replica and move the fee balance reads to it, so the primary has less to do',
+      'Derive the balance asynchronously, or split it into N sub-accounts',
+      'Switch to SERIALIZABLE isolation so each update is applied in a clean order',
+    ],
     answer: 1,
     why: 'One row can take about 500 updates/s at 2 ms per lock. The problem is queueing on one lock, so remove the single hot row.',
     explain: [
@@ -1531,24 +1651,32 @@ Reconciliation exists because **every distributed system has a crack you did not
     code: `UPDATE payments SET state = 'SUCCEEDED', provider_ref = :ref
  WHERE id = :id AND state IN ('SUBMITTED', 'UNKNOWN');
 SELECT ROW_COUNT();`,
-    options: ['Run the statement for both; the second one changes 0 rows and does nothing, so the ledger and outbox are written once', 'Reject the webhook because the retry is more trustworthy', 'Use two separate transactions and hope the ledger rows deduplicate'],
+    options: [
+      'Run the statement for both; the second changes 0 rows, so the ledger and outbox are written once',
+      'Apply the retry\'s result and discard the webhook, because the retry carries your own key',
+      'Use two separate transactions and let the ledger\'s unique external_ref be the only guard',
+    ],
     answer: 0,
     why: 'The conditional transition is the single gate. Whichever arrives first changes 1 row and writes the ledger entries and outbox event in that transaction. The other changes 0 rows and stops.',
     explain: [
       'Correct. Same pattern as the seat: the state machine is the lock, the row count is the answer.',
-      'Webhooks are legitimate and may arrive first; ignoring them leaves the payment UNKNOWN longer.',
-      'Without a single gate you rely on luck. The unique external_ref helps as a backstop, but the gate should be the state change.',
+      'Webhooks are legitimate and may arrive first; if the retry then finds the state already changed, it has nothing left to do.',
+      'The unique ref stops a second ledger row, but state and outbox writes still run twice. The gate should be the state change.',
     ],
   },
   {
     kind: 'scenario',
     q: 'Your PSP is completely down. What should the payment API do?',
-    options: ['Queue the card charges and retry them for hours', 'Fail fast with a clear error and let the client retry later, because queued card charges surprise customers and complicate reconciliation', 'Mark them SUCCEEDED and fix it tomorrow'],
+    options: [
+      'Queue the card charges and retry them for hours until the PSP is back',
+      'Fail fast with a clear error and let the client retry later',
+      'Mark them SUCCEEDED and reconcile against the PSP report tomorrow',
+    ],
     answer: 1,
     why: 'Correctness beats availability for money. Taking an untracked, delayed charge is worse than saying "try again". Existing UNKNOWN payments are still resolved when the PSP returns.',
     explain: [
       'A charge posted hours later, without the customer present, produces disputes and confusing statements.',
-      'Correct. State it as a deliberate trade-off: refuse rather than take untracked money.',
+      'Correct. Queued card charges surprise customers and complicate reconciliation. State it as a deliberate trade-off: refuse rather than take untracked money.',
       'Recording money that has not moved is data corruption.',
     ],
   },
@@ -1639,35 +1767,47 @@ SELECT id FROM job_runs
  WHERE due_at <= NOW(3) AND state = 'QUEUED'
  ORDER BY due_at LIMIT 1
    FOR UPDATE SKIP LOCKED;`,
-    options: ['All three claim run 101', 'Each worker locks a different run (101, 102, 103 in some order), none waits', 'One gets 101; the other two wait until it commits'],
+    options: [
+      'All three claim run 101, since each worker evaluates the same ORDER BY first',
+      'Each worker locks a different run (101, 102, 103 in some order), none waits',
+      'One gets 101; the other two wait for its commit, then claim 102 and 103',
+    ],
     answer: 1,
     why: 'SKIP LOCKED makes each worker skip rows another transaction has locked, so they spread across the due runs. Throughput scales with workers instead of queueing behind the first due row.',
     explain: [
       'FOR UPDATE gives each row to one transaction at a time. They cannot all lock 101.',
       'Correct. The index (state, due_at) keeps the scan from locking unrelated rows.',
-      'That would be plain FOR UPDATE without SKIP LOCKED.',
+      'That would be plain FOR UPDATE without SKIP LOCKED. With SKIP LOCKED nobody waits.',
     ],
   },
   {
     kind: 'failure',
     q: 'Worker W1 holds a lease (fence 4) and stalls for 45 s. W2 claims the run (fence 5). W1 wakes and writes its output with `UPDATE results SET ..., fence = 4 WHERE run_id = 9 AND fence <= 4`. W2 has already written with fence 5. What happens to W1\'s write?',
-    options: ['It overwrites W2\'s result: last write wins', 'It changes 0 rows because the stored fence (5) is greater than 4; W1 sees 0 rows and stops', 'MySQL raises a deadlock error'],
+    options: [
+      'It overwrites W2\'s result, because W1\'s UPDATE ran last and the lease only expired',
+      'It changes 0 rows because the stored fence (5) is greater than 4; W1 stops',
+      'MySQL raises a lock wait timeout, since W2\'s row is still locked',
+    ],
     answer: 1,
     why: 'The WHERE compares the writer\'s fence with the stored one. A stale holder can never satisfy it after a newer holder wrote.',
     explain: [
-      'Only without the fence condition. That is exactly the zombie-worker bug.',
+      'Only without the fence condition. With it, the later holder\'s higher fence wins, which is exactly what stops the zombie.',
       'Correct. The storage rejects stale holders, so correctness no longer depends on W1 noticing it lost the lease.',
-      'No locks are in a cycle. It is a plain conditional update.',
+      'W2 already committed, so no lock is held. It is a plain conditional update.',
     ],
   },
   {
     kind: 'scenario',
     q: 'Two scheduler instances both materialise tomorrow\'s midnight run for job 42. Do you need a leader election to prevent two runs?',
-    options: ['Yes: without a leader there will be two runs', 'No for correctness: UNIQUE (job_id, scheduled_at) makes the second insert a no-op. A leader only avoids wasted work', 'Yes, plus a Redis lock around the insert'],
+    options: [
+      'Yes: without a leader, both instances materialise the run and it executes twice',
+      'No: UNIQUE (job_id, scheduled_at) makes the second insert a no-op; a leader only saves work',
+      'Yes, with a Redis lock around the insert so only one instance ever writes',
+    ],
     answer: 1,
     why: 'Making creation idempotent with a deterministic id removes the need for perfect election. Elections overlap during failover, so you want the data to refuse the duplicate.',
     explain: [
-      'Failovers overlap in time, so even with a leader there can briefly be two.',
+      'The unique key makes the second insert a no-op. Failovers also overlap in time, so even with a leader there can briefly be two.',
       'Correct. Optimise with a leader, but guarantee with the key.',
       'The lock fails in exactly the expiry-and-pause case. The key needs no lock.',
     ],
@@ -1791,25 +1931,33 @@ Usually one of three places. "We use a distributed lock" without granularity or 
   {
     kind: 'failure',
     q: 'During an on-sale the MySQL primary fails over, taking about 30 seconds. What should users and the system experience?',
-    options: ['Everything keeps working, because the seat map is cached', 'Browsing continues from the cache; holds and checkouts fail or pause for the failover window while the waiting room keeps people in line; after failover, conditional writes and idempotency keys make retries safe; an invariant check confirms booked seats never exceed capacity', 'Seats are double-sold because the replica is behind'],
+    options: [
+      'Everything keeps working, because the seat map is cached and holds are served from the cache while it fails over',
+      'Browsing works from cache; holds pause for the failover while the waiting room queues; retries are safe',
+      'Seats are double-sold, because the promoted replica is behind the old primary',
+    ],
     answer: 1,
     why: 'Strong consistency on the booking path means writes pause rather than guess. If the new primary is slightly behind (asynchronous replication), recent holds may be lost, which is why confirm requires a live hold and why idempotency keys make client retries safe.',
     explain: [
       'The map is read-only. Holds and confirms are writes and need the primary.',
-      'Correct. Say what degrades (writes), what does not (browsing), and what makes the recovery safe.',
+      'Correct. Say what degrades (writes), what does not (browsing), and what makes recovery safe: conditional writes, idempotency keys, and an invariant check that booked seats never exceed capacity.',
       'Double sale needs two confirms to both succeed, but each confirm is a conditional update on the primary. A lost hold means a retry, not a double sale. Semi-synchronous replication narrows even that.',
     ],
   },
   {
     kind: 'tradeoff',
     q: 'At 10x scale (ten on-sales at once) what is the first thing you shard, and what limit remains?',
-    options: ['Shard seats by seat id so one event spreads across all shards', 'Shard seat data by event id so each event\'s transactions stay on one shard; the single hottest event is still one shard, which the waiting room\'s admission rate keeps within bounds', 'Add read replicas for the seat table'],
+    options: [
+      'Shard seats by seat id so one event spreads across all shards and no single event is ever hot',
+      'Shard by event id, so each event\'s transactions stay on one shard; the hottest event is still one shard',
+      'Shard by user id so each buyer\'s holds stay on one shard no matter the event',
+    ],
     answer: 1,
     why: 'Events are independent, so event id is a natural shard key. Multi-seat holds for one event stay local and transactional. A single mega-event is still bounded by one primary, which is what metering protects.',
     explain: [
       'A multi-seat hold would then span shards, losing single-transaction atomicity.',
-      'Correct. Name the remaining hot spot instead of pretending sharding removed it.',
-      'Holds are writes; replicas do not help.',
+      'Correct. The waiting room\'s admission rate keeps the hottest event within bounds. Name the remaining hot spot instead of pretending sharding removed it.',
+      'Two buyers of one seat can land on different shards, so no single conditional UPDATE serialises them.',
     ],
   },
 ]} />
@@ -1875,19 +2023,27 @@ The PSP does not take part in your transaction protocol (it is an HTTP API, not 
   {
     kind: 'failure',
     q: 'A payment is stuck in UNKNOWN for 2 hours: the PSP status query also fails. What is the right behaviour?',
-    options: ['Mark it FAILED so the user can retry', 'Keep it UNKNOWN, keep retrying the status query with backoff (same key), alert on age, and let reconciliation against the settlement report decide; do not release goods or refund until it is resolved', 'Mark it SUCCEEDED and ship the goods'],
+    options: [
+      'Mark it FAILED after the two hours so the user can retry, and refund if the charge shows up',
+      'Keep it UNKNOWN, retry the status query with backoff, alert on age, and let reconciliation decide',
+      'Mark it SUCCEEDED because most timeouts are slow successes, and ship the goods',
+    ],
     answer: 1,
     why: 'Both FAILED and SUCCEEDED are guesses that can lose money or double charge. The unknown count and age are exactly the metrics to alert on, and reconciliation is the safety net.',
     explain: [
       'If the charge went through, the customer is now charged and may be charged again when they retry.',
-      'Correct. State is an honest record of what you know.',
+      'Correct. State is an honest record of what you know; do not release goods or refund until it is resolved.',
       'If it never went through, you shipped goods for free.',
     ],
   },
   {
     kind: 'tradeoff',
     q: 'Which is the smallest correct shard key for the payment system at 10x, and why?',
-    options: ['Payment id, to spread load evenly', 'Merchant id, so a payment, its idempotency keys, its ledger entries and its outbox rows live on one shard and stay in one local transaction', 'Timestamp, so new data goes to the newest shard'],
+    options: [
+      'Payment id, so load spreads evenly and no merchant is hot on one shard',
+      'Merchant id, so a payment, its keys, its ledger entries and its outbox rows stay in one local transaction',
+      'Timestamp, so each day\'s payments live together and old shards can be archived or dropped whole without touching live data',
+    ],
     answer: 1,
     why: 'The atomicity this design leans on (state + key + ledger + outbox in one commit) needs one shard to own all of them. Merchant is the natural unit.',
     explain: [
@@ -1943,23 +2099,31 @@ The <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs & pipelines</a>
   {
     kind: 'scenario',
     q: 'At midnight 1,000,000 runs are due and capacity is 500 runs/s. What are your options, in order of how much they change?',
-    options: ['Nothing: the last run just starts 33 minutes late', 'Spread flexible jobs across the hour (about 278/s), add priority so payouts beat newsletters, and autoscale workers on the due-but-unclaimed count', 'Remove the lease so workers are faster'],
+    options: [
+      'Nothing: the last run just starts 33 minutes late, and every job type can tolerate that',
+      'Spread flexible jobs, give payouts priority, and autoscale on the unclaimed count',
+      'Remove the lease so workers skip the heartbeat and claim runs faster',
+    ],
     answer: 1,
     why: 'Arrival exceeds capacity, so a backlog is a math fact. Reduce the spike (spreading), order the backlog (priority), or raise capacity (autoscale). Removing leases would trade a lateness problem for duplicate execution.',
     explain: [
       'Acceptable for newsletters, not for payouts, and you should say which jobs may be late.',
-      'Correct. Always compute the drain time first: 1,000,000 ÷ 500 = 2,000 s.',
+      'Correct. Spreading over an hour is about 278/s. Always compute the drain time first: 1,000,000 ÷ 500 = 2,000 s.',
       'Leases are what make crash recovery work. Removing them is not a throughput fix.',
     ],
   },
   {
     kind: 'failure',
     q: 'A worker finishes the job\'s work, then the machine dies before it marks the run DONE. The lease expires and another worker reruns it. What makes this safe?',
-    options: ['Nothing: the job runs twice and the effect repeats', 'The job body is idempotent (for example payouts keyed by organiser and date with a unique key) and writes carry the fence', 'The heartbeat'],
+    options: [
+      'Nothing is needed: a rerun after a lease expiry is just a harmless second attempt',
+      'The job is idempotent (a payout keyed by organiser and date) and its writes carry the fence',
+      'The heartbeat, which stops the second worker from claiming a run that is already done',
+    ],
     answer: 1,
     why: 'Leases guarantee a run eventually executes, not that it executes once. Idempotent effects make the repeat harmless.',
     explain: [
-      'It would, if the job were not idempotent. That is why the job must be.',
+      'It is harmless only if the job is idempotent. Otherwise the effect repeats, which is why the job must be.',
       'Correct. At-least-once execution plus idempotent effect is effectively once.',
       'The heartbeat only extends a lease while a worker is alive. It cannot help after death.',
     ],
@@ -2030,24 +2194,32 @@ Because two overlapping stays can start on different days: 3–6 October and 5�
 INSERT INTO listing_nights VALUES (500,'2026-10-03',1),(500,'2026-10-04',1);
 -- Guest B, one transaction:
 INSERT INTO listing_nights VALUES (500,'2026-10-04',2),(500,'2026-10-05',2);`,
-    options: ['Both succeed, because the check-in dates differ', 'One transaction hits error 1062 on night 4 and rolls back entirely, so exactly one stay wins and the loser holds no nights', 'Both fail with a deadlock'],
+    options: [
+      'Both succeed, because each guest\'s check-in and check-out dates are different',
+      'One transaction hits error 1062 on night 4 and rolls back, so exactly one stay wins',
+      'Both fail with a deadlock, because both transactions touch night 4 at the same time',
+    ],
     answer: 1,
     why: 'Night 4 is the shared key. Whoever inserts it first wins; the other fails on the duplicate and its whole transaction rolls back. Both insert the nights in date order, so the loser simply waits on night 4, then gets the duplicate-key error.',
     explain: [
       'Check-in uniqueness cannot see overlap. Per-night uniqueness can.',
-      'Correct. A range turned into points that a unique key can guard.',
+      'Correct. The loser holds no nights. A range turned into points that a unique key can guard.',
       'Both inserts take the nights in date order, so there is no lock cycle: one waits for the other, then fails on the duplicate key. (If your code inserts nights in different orders, a deadlock becomes possible, and then InnoDB aborts one of them.)',
     ],
   },
   {
     kind: 'scenario',
     q: 'Flash sale: 10,000 units, a million buyers in a minute, stock in one Redis key. First move?',
-    options: ['Add replicas', 'Split the stock into 10 buckets of 1,000 units and have each buyer decrement a random bucket, retrying another when empty; put a waiting room in front', 'Switch to optimistic locking in MySQL'],
+    options: [
+      'Add Redis replicas and spread the decrements across them so no single node takes them all',
+      'Split the stock into 10 buckets of 1,000; each buyer decrements a random bucket',
+      'Move the stock into a MySQL row and use optimistic locking with a version column',
+    ],
     answer: 1,
     why: 'Spread the hot key; each decrement stays atomic per bucket. Replicas do not help writes, and optimistic retries on one row are the quadratic storm.',
     explain: [
       'Replicas serve reads. Every decrement is a write on the one primary for that key.',
-      'Correct. Also create the order asynchronously from the reservation, with a hold TTL for unpaid units.',
+      'Correct. Retry another bucket when one is empty, and put a waiting room in front. Also create the order asynchronously from the reservation, with a hold TTL for unpaid units.',
       'A million contenders on one row with retry loops is the worst case for optimistic locking.',
     ],
   },
@@ -2066,16 +2238,16 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
     kind: 'scenario',
     q: 'Two users click "book seat 17" simultaneously. Cheapest correct mechanism?',
     options: [
-      'Redis distributed lock per seat',
-      'A conditional UPDATE ... WHERE status = \'AVAILABLE\': one atomic statement; exactly one request updates 1 row and wins',
-      'Queue all bookings through one worker',
-      'Optimistic retry loop with version numbers',
+      'A Redis distributed lock per seat, released after the database write',
+      'A conditional UPDATE ... WHERE status = \'AVAILABLE\': one atomic statement, one winner',
+      'Queue all bookings through a single worker that applies them in order',
+      'An optimistic retry loop with version numbers on the seat row',
     ],
     answer: 1,
     why: 'A one-statement critical section needs no lock. Escalate tools only when the critical section grows.',
     explain: [
       'Adds infrastructure and failure modes to do what the database does atomically for free.',
-      'Correct: the row lock inside one statement is the only lock you need.',
+      'Correct: exactly one request updates 1 row and wins. The row lock inside one statement is the only lock you need.',
       'Works, but it is slow and a single point of failure for a problem one statement solves.',
       'Works, but on a hot seat the losers retry into the same conflict.',
     ],
@@ -2083,7 +2255,12 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
   {
     kind: 'failure',
     q: 'A payment service holds a Redis lock (TTL 30 s), GC-pauses for 40 s, wakes and writes while a second holder is working. What was missing?',
-    options: ['A longer TTL', 'Fencing tokens checked by the storage', 'A Redis cluster for lock availability', 'JVM tuning to shorten pauses'],
+    options: [
+      'A longer TTL, such as 120 s, so the pause fits inside it',
+      'Fencing tokens checked by the storage',
+      'A Redis cluster for lock availability',
+      'GC tuning to shorten pauses below the TTL',
+    ],
     answer: 1,
     why: 'TTL expiry plus a zombie holder is the distributed-lock trap. Fencing makes stale holders harmless at the storage layer.',
     explain: [
@@ -2096,40 +2273,55 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
   {
     kind: 'tradeoff',
     q: 'Why must the CLIENT generate the idempotency key?',
-    options: ['Clients have better randomness', 'Only the client knows that two requests are the same attempt; a server-generated key differs per request and catches nothing', 'It reduces server load', 'Servers cannot generate unique keys safely'],
+    options: [
+      'Client-side random sources are stronger, so the keys collide less',
+      'Only the client knows that two requests are the same attempt',
+      'It saves the server one database write on every request',
+      'Servers cannot generate globally unique ids without a coordinator',
+    ],
     answer: 1,
     why: 'The key identifies intent, and intent lives on the client. Server-side fingerprinting is a heuristic that blocks legitimate repeat purchases.',
     explain: [
       'Randomness is not the point; any UUID library works on either side.',
-      'Correct.',
+      'Correct. A server-generated key differs per request and catches nothing.',
       'The server still stores and checks the key. Load is not the reason.',
-      'They can; they just cannot know two requests express one intent.',
+      'They can (UUIDs); they just cannot know two requests express one intent.',
     ],
   },
   {
     kind: 'tradeoff',
     q: 'Interviewer: "Why an append-only ledger instead of updating a balance column?"',
-    options: ['Appends are faster than updates', 'Updates destroy history: no audit, no dispute resolution, no reconciliation. Double-entry appends make every balance a derivable, explainable sum', 'Balance columns cannot be sharded', 'Regulation requires SQL'],
+    options: [
+      'Appends are faster than updates because they never take a row lock',
+      'Updates destroy history; double-entry appends make every balance a derivable, explainable sum',
+      'A balance column cannot be sharded, while ledger rows can be spread freely',
+      'Financial regulators require ledgers to live in a relational database, so updates are disallowed',
+    ],
     answer: 1,
     why: 'Money questions are history questions. Reconciliation against the bank only exists if history exists.',
     explain: [
       'Speed is not the argument, and a derived balance can even cost more to read.',
-      'Correct.',
+      'Correct. Updates destroy history: no audit, no dispute resolution, no reconciliation.',
       'They can be sharded. The problem is what an update forgets.',
-      'No regulation names a query language. Auditability is the requirement.',
+      'No regulation names a query language, and appending is not required by SQL. Auditability is the requirement.',
     ],
   },
   {
     kind: 'failure',
     q: 'Your payment-provider call times out. What do you record, and what do you do next?',
-    options: ['FAILED; ask the customer to pay again', 'UNKNOWN; retry with the same provider idempotency key or query the provider, and let reconciliation settle what remains', 'SUCCEEDED; most timeouts are slow successes', 'Nothing; wait for the customer to complain'],
+    options: [
+      'FAILED; tell the customer it did not go through and ask them to pay again',
+      'UNKNOWN; retry with the same provider key or query it, and let reconciliation settle the rest',
+      'SUCCEEDED; most timeouts are slow successes, so fulfil the order now',
+      'Nothing; wait for the provider\'s webhook and treat silence as no charge',
+    ],
     answer: 1,
     why: 'A timeout means no answer, not no. A new attempt with a new key is how customers get charged twice; the same key makes the retry a replay.',
     explain: [
       'The charge may have gone through; a new attempt could double charge.',
-      'Correct.',
-      'Hoping is not a state.',
-      'Waiting for complaints is an incident, not a design.',
+      'Correct. UNKNOWN is the honest state until the provider or reconciliation tells you more.',
+      'Hoping is not a state; a timeout may also be a real failure.',
+      'Silence is not evidence of no charge. Waiting without a state is an incident, not a design.',
     ],
   },
 ]} />

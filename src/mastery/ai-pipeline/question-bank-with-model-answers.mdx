@@ -29,7 +29,11 @@ Sixty questions in three levels. Each answer is the two-to-four sentences you wo
   {
     kind: 'scenario',
     q: 'Why does the upload return immediately instead of waiting for the analysis?',
-    options: ['The analysis takes about a minute and the upload must return now, so the work is event-driven', 'RabbitMQ guarantees exactly-once delivery so no waiting is needed', 'The browser cannot hold an HTTP connection open'],
+    options: [
+      'The analysis takes about a minute, so the work is event-driven',
+      'RabbitMQ guarantees exactly-once delivery so no waiting is needed',
+      'The browser cannot hold an HTTP connection open for that long',
+    ],
     answer: 0,
     why: 'Latency mismatch between a minute of analysis and an immediate upload response is the first reason for the event-driven design.',
     explain: [
@@ -41,7 +45,11 @@ Sixty questions in three levels. Each answer is the two-to-four sentences you wo
   {
     kind: 'predict',
     q: 'Where does clinical text live, and what does the RabbitMQ message carry?',
-    options: ['Full text in the message so the consumer needs no other call', 'A pointer (S3 key); entity text lives in S3, never in the broker', 'Only a patient id; the consumer queries Postgres for the text'],
+    options: [
+      'Full text in the message so the consumer needs no other call',
+      'An S3 pointer; the text lives in S3, never in the broker',
+      'Only a patient id; the consumer queries Postgres for the text',
+    ],
     answer: 1,
     why: 'Claim-check pattern: the message carries a pointer, so the broker never holds clinical text.',
     explain: [
@@ -246,19 +254,27 @@ Add the cost angle: thought tokens are billed as output, so they also dominated 
   {
     kind: 'tradeoff',
     q: 'Why pgvector instead of a dedicated vector database for this project?',
-    options: ['It is faster than every vector database at any scale', 'Tenancy filters, joins to entities, one backup and credential set already live in Postgres, and the scale is thousands of vectors per patient', 'Dedicated vector databases cannot filter by patient'],
+    options: [
+      'It benchmarks faster than every dedicated vector database at any scale',
+      'Tenancy filters, joins and backups already live in Postgres at this scale',
+      'Dedicated vector databases cannot filter by metadata such as patient',
+    ],
     answer: 1,
     why: 'The reasons are filtering, joins and operations in a HIPAA context; the answer changes at hundreds of millions of vectors.',
     explain: [
       'Wrong: the chapter makes no speed claim and says the answer changes at much larger scale.',
-      'Correct: also fewer systems holding PHI.',
+      'Correct: tenancy filters, joins to entities, one backup and credential set already live in Postgres, and the scale is thousands of vectors per patient. Also fewer systems holding PHI.',
       'Wrong: dedicated vector databases can filter by metadata. The argument is operational: one system instead of two to keep in sync.',
     ],
   },
   {
     kind: 'failure',
     q: 'A rule for "hba1c" never matched a lab group called "Hemoglobin A1c". What is the fix and why?',
-    options: ['Add more spelling variants to the rule', 'Group labs by LOINC code, because names vary by phrasing and codes do not', 'Lower the model temperature'],
+    options: [
+      'Keep adding spelling variants of the lab name to the rule list',
+      'Group labs by LOINC code, since codes do not vary by phrasing',
+      'Lower the model temperature so lab names come out consistent',
+    ],
     answer: 1,
     why: 'Grouping by display name once caused exactly this miss; LOINC grouping fixed it, although the rule file still names analytes by string.',
     explain: [
@@ -467,36 +483,48 @@ Verify data lineage, not just the UI (story 7). Audit dashboards like code (stor
   {
     kind: 'failure',
     q: 'The consumer crashes mid-document. What happens, and why is it safe?',
-    options: ['The document is lost because the broker already acked it', 'The message is unacked so RabbitMQ redelivers it; every write is a replace (delete-by-document, re-insert) and the webhook gets a fresh idempotency key', 'The message goes to the dead-letter queue immediately'],
+    options: [
+      'The document is lost, because the broker acked the message on receipt',
+      'The message is unacked and redelivered; every write is a replace',
+      'The message goes straight to the dead-letter queue as rejected',
+    ],
     answer: 1,
     why: 'At-least-once delivery plus idempotent side effects gives effectively-once outcomes.',
     explain: [
       'Wrong: the ack happens after processing, so a crash leaves it unacked.',
-      'Correct. The key is fresh because the work really was redone; a notifier retry reuses the same key.',
+      'Correct. Writes replace (delete-by-document, re-insert), so a repeat is safe, and the webhook gets a fresh idempotency key because the work really was redone; a notifier retry reuses the same key.',
       'Wrong: dead-lettering applies to rejected messages (exceptions with requeue=False), not to a crash.',
     ],
   },
   {
     kind: 'failure',
     q: 'A document fails once on a transient error and goes straight to the dead-letter queue, although the code allows three tries. Why?',
-    options: ['The retry setting was commented out', 'The code reads x-delivery-count, which only quorum queues set, and the queues are classic', 'RabbitMQ retries are disabled on the dead-letter exchange'],
+    options: [
+      'The retry limit of three is commented out in the consumer code',
+      'The code reads x-delivery-count, which only quorum queues set',
+      'RabbitMQ retries are disabled on the dead-letter exchange',
+    ],
     answer: 1,
     why: 'The header the code checked never exists on classic queues. Repo check: the consumer reads x-delivery-count and no quorum queue is declared.',
     explain: [
       'Wrong: the check exists in the code (x-delivery-count compared with 3). It just never fires.',
-      'Correct. Fix: quorum queues or republish-with-delay, plus a DLQ alert and redrive.',
+      'Correct. The queues are classic, so the header is never set and the check never fires. Fix: quorum queues or republish-with-delay, plus a DLQ alert and redrive.',
       'Wrong: a dead-letter exchange only receives rejected messages. It does not switch off retries; the missing header does.',
     ],
   },
   {
     kind: 'scenario',
     q: 'Two documents for one patient finish in parallel. Is ordering a problem?',
-    options: ['Yes, so a strict per-patient ordering is required', 'No: sections recompute from all entities on every merge, so the final state is the same whichever finishes last', 'Yes, the last writer silently corrupts the entities'],
+    options: [
+      'Yes, so documents for one patient must be merged one at a time',
+      'No: every merge recomputes from all entities, so order is irrelevant',
+      'Yes, the last writer silently overwrites the other document\'s entities',
+    ],
     answer: 1,
     why: 'Q17 answer. The related scale risk (two parallel merges both recomputing the profile row, last writer wins) is a hypothetical improvement area covered in drill 1.',
     explain: [
       'Wrong: ordering is not guaranteed and not needed.',
-      'Correct: nothing a merge writes depends on which document finished first, because every merge reads all of the patient\'s entities.',
+      'Correct: sections recompute from all entities on every merge, so the final state is the same whichever finishes last. The profile row is the one place where parallel merges could collide at higher concurrency (see drill 1).',
       'Wrong for entities; the last-writer concern applies to the profile row at higher concurrency, not to correctness of the merge.',
     ],
   },

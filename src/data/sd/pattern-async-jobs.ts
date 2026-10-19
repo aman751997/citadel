@@ -62,7 +62,7 @@ export const leases = [
   ]),
   step('Why extend the lease in small steps (say 60 seconds, renewed every 20) instead of setting a 2-hour timeout once?', [], 0, [
     ['A crashed worker’s job comes back in about a minute instead of two hours', 'Right. The lease length is how long a crash goes unnoticed. Short leases plus heartbeats give fast recovery without cutting off slow, healthy work.'],
-    ['Long timeouts are not allowed by any broker', 'Many queues allow long visibility timeouts (SQS allows hours — check current docs). The problem is recovery time, not permission.'],
+    ['Long timeouts are not allowed by any broker', 'Many queues allow long visibility timeouts (SQS allows up to 12 hours). The problem is recovery time, not permission.'],
     ['Heartbeats make the job run faster', 'Heartbeats only prove liveness. They do not change the work.'],
   ]),
 ];
@@ -153,7 +153,7 @@ export const pipelines = [
   ]),
   step('A stage hands a 4 GB video to the next stage. What goes in the message?', [], 0, [
     ['The object key and job id — the bytes stay in object storage', 'Right. The claim-check pattern. Messages stay small; workers fetch what they need directly from storage.'],
-    ['The video bytes, base64-encoded', 'Brokers cap message sizes far below this (check current limits), and every hop would copy 4 GB.'],
+    ['The video bytes, base64-encoded', 'Brokers cap message sizes far below this (SQS allows 1 MiB per message), and every hop would copy 4 GB.'],
     ['A path on the previous worker’s local disk', 'That worker may be gone by the time the next stage runs. Local disks are not shared.'],
   ]),
 ];

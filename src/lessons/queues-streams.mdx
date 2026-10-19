@@ -72,16 +72,16 @@ Interviewers rarely ask "what is Kafka?". They ask the follow-ups: what if the c
       kind: 'scenario',
       q: 'An interviewer says: "Add a queue between checkout and the notification service." Which answer shows you understand the hop?',
       options: [
-        'I would use Kafka because it scales horizontally.',
-        'Checkout writes the event durably, order is per order id, delivery is at-least-once with idempotent consumers, bad messages go to a DLQ, and I alert on lag in seconds.',
-        'I would use SQS because it is managed.',
+        'I would use Kafka with 12 partitions and replication factor 3, so it scales out and keeps working if one broker is lost',
+        'Checkout writes durably, order is per order id, delivery is at-least-once with idempotent consumers, bad messages go to a DLQ',
+        'I would use SQS standard with 14-day retention and an alarm on queue depth, so messages are never lost and ops can see problems',
       ],
       answer: 1,
       why: 'The five promises describe behaviour; a product name describes none of it.',
       explain: [
-        'A product and a slogan. It says nothing about order, duplicates, failure or lag, which is what the interviewer probes next.',
-        'Correct: it covers entry, order, delivery count, failure and lag, so the follow-ups are already answered.',
-        'Managed is an operations choice. It does not say what the queue promises.',
+        'A product plus sizing numbers. It says nothing about order, duplicates, failure or lag, which is what the interviewer probes next.',
+        'Correct: it covers entry, order, delivery count and failure, so the follow-ups are already answered. Add a lag alert in seconds.',
+        'Retention and a depth alarm are operations settings. They do not say what order, duplicate or failure behaviour the hop promises.',
       ],
     },
   ]}
@@ -168,9 +168,9 @@ Synchronously, most checkouts would wait or fail. With the queue, every order su
       kind: 'failure',
       q: 'The email consumer is down for two hours and nobody notices. Why did the design hide it, and what would have shown it?',
       options: [
-        'The queue is broken; use a synchronous call so failures are visible',
-        'Async failures do not fail the request, so the backlog grows silently; alert on age of the oldest message',
-        'Nothing could have shown it until users complained',
+        'The queue hides errors by design; calling the email service synchronously would make failures visible at once',
+        'Failures do not reach the request, so the backlog grows silently; alert on age of the oldest message',
+        'Nothing: brokers only report whether they are up, so only user complaints could show it',
       ],
       answer: 1,
       why: 'Decoupling removes the error from the request path, so you must add a signal for it.',
@@ -279,30 +279,30 @@ Longer than the slowest *normal* processing time, with margin. If p99 processing
       kind: 'scenario',
       q: 'Three teams must each react to every order, a fourth team may join next quarter and wants last week of history, and per-order ordering matters. Which fits best?',
       options: [
-        'One RabbitMQ queue with four consumers',
+        'One RabbitMQ queue with a consumer per team, so every team reacts to each order',
         'A log (Kafka topic keyed by order id) with one consumer group per team',
-        'One SQS standard queue per team, filled by hand',
+        'One SQS standard queue per team, with the order service copying each event to all',
       ],
       answer: 1,
       why: 'Independent readers, replay for a late joiner, and per-key order are exactly what a retained, partitioned log gives.',
       explain: [
-        'Competing consumers split the stream, so each team would see a quarter of the orders, and acked messages are gone.',
+        'Competing consumers split the stream, so each team would see only a third of the orders, and acked messages are gone.',
         'Correct: a new team is a new group that starts from an old offset, and the key keeps per-order order.',
-        'Separate queues give fan-out but no replay and no ordering guarantee, and you copy every message by hand.',
+        'Separate queues give fan-out but no replay and no ordering guarantee, and the sender must copy every message.',
       ],
     },
     {
       kind: 'failure',
       q: 'A RabbitMQ consumer uses auto-ack and crashes while processing 20 prefetched messages. What happens to them?',
       options: [
-        'They are redelivered to another consumer',
+        'They are redelivered to another consumer after the connection drops',
         'They are lost, because auto-ack acknowledged them on delivery',
-        'They move to the dead-letter exchange',
+        'They move to the dead-letter exchange when the consumer disconnects',
       ],
       answer: 1,
       why: 'Auto-ack is at-most-once: the broker considers the message handled once it is handed over.',
       explain: [
-        'Redelivery only happens for unacknowledged messages. Auto-ack already acked them.',
+        'Redelivery only happens for unacknowledged messages. Auto-ack already acked them on delivery.',
         'Correct: use manual acks after the work completes to get at-least-once.',
         'Dead-lettering is triggered by rejects, expiry or length limits, not by a crash.',
       ],
@@ -376,25 +376,25 @@ Real systems combine them: every subscriber gets every message, and *within* a s
       kind: 'predict',
       q: 'A topic has 4 partitions. Group A has 6 consumers, group B has 2. Which statement holds?',
       options: [
-        'Group A uses all 6 consumers; B reads half the data',
-        'Group A has 2 idle consumers; each of B reads 2 partitions; both groups read all records',
-        'The topic splits its records between group A and group B',
+        'Group A keeps all 6 consumers busy; group B reads only half the data',
+        'Group A has 2 idle consumers, and each group reads all records',
+        'The 4 partitions are split between group A and group B, 2 each',
       ],
       answer: 1,
       why: 'Within a group a partition has at most one consumer; across groups, each group reads everything.',
       explain: [
         'A partition goes to one consumer per group, so only 4 of the 6 can be busy. B reads all data, split between its two members.',
-        'Correct: groups are independent subscriptions; the partition count caps parallelism inside each group.',
-        'Groups do not share records. Each group gets the full stream.',
+        'Correct: groups are independent subscriptions; the partition count caps parallelism inside each group. Each B member reads 2 partitions.',
+        'Groups do not share partitions or records. Each group gets the full stream.',
       ],
     },
     {
       kind: 'tradeoff',
       q: 'You need fan-out to 3 services on AWS with SQS and want one slow service not to delay the others. What do you do?',
       options: [
-        'All three read one SQS queue',
-        'SNS topic fanning out to one SQS queue per service',
-        'Three producers send each message three times',
+        'Point all three services at one shared SQS queue',
+        'An SNS topic fanning out to one SQS queue per service',
+        'Have the producer send each message to three queues itself',
       ],
       answer: 1,
       why: 'One queue per subscriber isolates their pace and lets each retry independently.',
@@ -473,32 +473,32 @@ Imagine a buyer receives the same receipt email three times. The logs show: the 
       kind: 'failure',
       q: 'A Kafka consumer polls 100 records, processes 60, then is killed. enable.auto.commit is true with a 5 s interval, and the last auto-commit happened after 30 records. What is redelivered on restart?',
       options: [
-        'Nothing; the broker tracked the 60 processed',
-        'Records after the last committed offset: possibly some already processed (duplicates), and none lost',
-        'Only the 40 unprocessed records',
+        'Nothing, because the broker tracked the 60 records already processed',
+        'Everything after the last committed offset, so some processed records repeat',
+        'Only the 40 records never processed, because the consumer saved its position on poll',
       ],
       answer: 1,
       why: 'Kafka only knows the committed offset; it replays from there, so already-processed records repeat.',
       explain: [
         'Kafka does not track per-record processing, only the committed offset.',
-        'Correct: restart resumes at the committed offset, so the processed-but-uncommitted records come again. Auto-commit can also commit offsets for records you have not finished, so check what it commits.',
-        'The broker cannot know which 40 were unprocessed; it replays from the committed offset.',
+        'Correct: restart resumes at the committed offset, so the processed-but-uncommitted records come again. Auto-commit can also commit records you have not finished, so check what it commits.',
+        'The in-memory position is lost with the process; the broker replays from the committed offset, not from the 60.',
       ],
     },
     {
       kind: 'tradeoff',
       q: 'A consumer sends an SMS for each event. Which order is the better default, and why?',
       options: [
-        'Ack first, then send: no duplicate SMS ever',
+        'Ack first, then send: a crash can never produce a duplicate SMS',
         'Send, then ack: a rare duplicate SMS is better than a lost one',
-        'Either; they are equivalent',
+        'Send inside a transaction with the ack, so both succeed or neither does',
       ],
       answer: 1,
       why: 'Pick the failure you can live with. For a notification, a duplicate is usually less harmful than a silent loss.',
       explain: [
         'Ack-first makes a crash silently drop the SMS, which is at-most-once.',
         'Correct for notifications, ideally with the provider\'s idempotency key to remove most duplicates too.',
-        'They fail differently: one loses, one duplicates.',
+        'An SMS provider cannot join a broker transaction. A crash between send and ack still duplicates or loses.',
       ],
     },
   ]}
@@ -577,7 +577,7 @@ while True:
     consumer.commit(message=msg, asynchronous=False)   # only after the DB commit
 ```
 
-Use `ON DUPLICATE KEY UPDATE consumer = consumer` rather than `INSERT IGNORE`: `IGNORE` also downgrades truncation and NOT NULL errors to warnings and stores a changed value. (If your driver sets the `CLIENT_FOUND_ROWS` flag, a no-op upsert reports 1 instead of 0; PyMySQL and MySQL Connector/Python leave it off by default, but check your driver or use a plain INSERT and catch 1062.) The marker and the effect commit together or not at all. If the process dies before `db.commit()`, neither happened and the redelivery does the work. If it dies after the commit but before `consumer.commit`, the redelivery finds the id and skips.
+Use `ON DUPLICATE KEY UPDATE consumer = consumer` rather than `INSERT IGNORE`: `IGNORE` also downgrades truncation and NOT NULL errors to warnings and stores a changed value. (If your driver sets the `CLIENT_FOUND_ROWS` flag, a no-op upsert reports 1 instead of 0; PyMySQL, MySQL Connector/Python and Go's `go-sql-driver/mysql` leave it off, so a no-op upsert reports 0; Connector/J and Node `mysql2` turn it on by default, so it reports 1. Check your driver, or use a plain INSERT and catch 1062.) The marker and the effect commit together or not at all. If the process dies before `db.commit()`, neither happened and the redelivery does the work. If it dies after the commit but before `consumer.commit`, the redelivery finds the id and skips.
 
 <Figure caption="One event, delivered twice. The second delivery is a no-op because the primary key rejects the marker.">
   <Mermaid code={`sequenceDiagram
@@ -632,14 +632,14 @@ Yes, if it's enforced by a unique key inside the transaction. Both transactions 
       q: 'Delivery order: evt-9 arrives, commits, then evt-9 arrives again. What do the two statements return on the second delivery?',
       code: "INSERT INTO processed_events (consumer, event_id) VALUES ('c', 'evt-9')\n  ON DUPLICATE KEY UPDATE consumer = consumer;\n-- affected rows?\nUPDATE photos SET likes = likes + 1 WHERE id = 5;  -- executed?",
       options: [
-        '1 affected row; the UPDATE runs, so likes double-count',
+        '1 affected row, so the UPDATE runs and the like is counted twice',
         '0 affected rows; the code rolls back and skips the UPDATE',
-        'An error is thrown for the duplicate key',
+        'A duplicate-key error is raised, so the consumer fails and retries',
       ],
       answer: 1,
-      why: 'The no-op upsert swallows the duplicate-key conflict and reports 0 rows (run on MySQL 8.0; a driver that sets CLIENT_FOUND_ROWS reports 1). The consumer checks rowcount and stops.',
+      why: 'The no-op upsert swallows the duplicate-key conflict and reports 0 rows (run on MySQL 8.0; a driver that sets CLIENT_FOUND_ROWS, such as Connector/J or mysql2 by default, reports 1). The consumer checks rowcount and stops.',
       explain: [
-        'The primary key already holds (c, evt-9), so nothing is inserted.',
+        'The primary key already holds (c, evt-9), so nothing is inserted and the count is 0.',
         'Correct: rowcount 0 means duplicate. Skip the effect, then ack so it is not redelivered again.',
         'The no-op upsert reports 0 rows instead of raising 1062. Plain INSERT would raise it, which also works if you catch it. Avoid INSERT IGNORE here: it also turns data-truncation and NULL errors into silently stored bad values.',
       ],
@@ -648,14 +648,14 @@ Yes, if it's enforced by a unique key inside the transaction. Both transactions 
       kind: 'failure',
       q: 'The consumer inserts the dedup row and commits, then in a second transaction applies the update, and the process dies between them. Outcome?',
       options: [
-        'The effect happens twice',
-        'The effect is lost: the retry sees the marker and skips',
-        'MySQL rolls both back automatically',
+        'The effect happens twice, once on retry and once from the first run',
+        'The effect is lost, because the retry finds the marker and skips it',
+        'MySQL rolls both back when the connection dies, so the retry starts clean',
       ],
       answer: 1,
       why: 'Marking before doing is at-most-once in disguise. The marker and effect need one transaction.',
       explain: [
-        'The retry finds the marker and skips, so it is not applied twice.',
+        'The first run never applied it, and the retry finds the marker and skips, so it is not applied twice.',
         'Correct: nothing ever applies the update.',
         'They were two separate commits. The first is durable.',
       ],
@@ -777,9 +777,9 @@ It's the same insight with a different relay. The database row is the truth; the
       kind: 'failure',
       q: 'The outbox relay publishes 100 rows, then crashes before marking them published. What do consumers see after the relay restarts?',
       options: [
-        'Nothing: the rows were published',
+        'Nothing: the 100 rows were already published, so the relay skips them on restart',
         'The same 100 events again, which idempotent consumers drop by event id',
-        'The 100 events are lost',
+        'The 100 events are lost, because the relay never confirmed them to the broker',
       ],
       answer: 1,
       why: 'Publish-then-mark is at-least-once by design. Duplicates are expected and handled downstream.',
@@ -793,9 +793,9 @@ It's the same insight with a different relay. The database row is the truth; the
       kind: 'tradeoff',
       q: 'Why choose CDC (binlog tailing) over a polling relay, and what does it cost?',
       options: [
-        'It gives exactly-once publishing with no duplicates',
-        'Lower latency and no polling query load, at the cost of running another system',
-        'It removes the need for an outbox table',
+        'It gives exactly-once publishing, so consumers no longer need any deduplication',
+        'Lower latency and no polling load, at the cost of running another system',
+        'It removes the need for the outbox table, so the schema stays simpler and smaller',
       ],
       answer: 1,
       why: 'CDC reads the log the database already writes, but it is still at-least-once and needs operating.',
@@ -879,30 +879,30 @@ Ask what the dashboard does with order. A chart of orders per minute doesn't nee
       kind: 'scenario',
       q: 'Account balance events (credit, debit) are keyed by account_id on 12 partitions. Throughput doubles; ops proposes going to 24 partitions in place. What is the risk?',
       options: [
-        'None: Kafka rebalances keys automatically',
-        'New events for an account may map to a different partition than its older events, so the two can be consumed out of order',
-        'Kafka refuses to add partitions to a keyed topic',
+        'None: Kafka re-hashes the existing records onto the new partitions in the background',
+        'New events for an account can map to a different partition than older ones, so they may be read out of order',
+        'Kafka refuses to add partitions to a topic that is already keyed, so it needs a new topic',
       ],
       answer: 1,
       why: 'Partition = hash(key) mod count, and the count changed. Old data does not move.',
       explain: [
         'Kafka never moves existing records, and the mapping changes for new ones.',
         'Correct: drain the old topic first, or migrate to a new topic with the larger count.',
-        'Adding partitions is allowed; it just does not preserve key placement.',
+        'Adding partitions is allowed on keyed topics; it just does not preserve key placement.',
       ],
     },
     {
       kind: 'tradeoff',
       q: 'One tenant is 40% of events and the topic is keyed by tenant_id. Events must stay ordered per user, not per tenant. Best fix?',
       options: [
-        'Add partitions',
-        'Re-key by user_id',
-        'Salt tenant_id with a random suffix',
+        'Double the partition count so the hot tenant spreads out',
+        'Re-key by user_id: ordered per user, and load spreads out',
+        'Salt tenant_id with a random suffix to spread the hot tenant',
       ],
       answer: 1,
       why: 'The key must be the smallest entity that needs ordering. A finer key spreads load and keeps the ordering that matters.',
       explain: [
-        'A key maps to one partition regardless of the partition count, so the hot tenant stays hot.',
+        'A key maps to one partition whatever the partition count, so the hot tenant stays hot.',
         'Correct: user ids spread evenly, and each user keeps their order.',
         'Random salt scatters one user\'s events across partitions and breaks per-user order.',
       ],
@@ -992,9 +992,9 @@ def handle(msg):
       kind: 'failure',
       q: 'The pricing service returns 503 for ten minutes. Your workers retry each message immediately, five times, then dead-letter it. What goes wrong?',
       options: [
-        'Nothing; five retries is the standard',
-        'The retries hammer the struggling service, and a ten-minute outage dead-letters thousands of good messages',
-        'Workers are blocked for ten minutes',
+        'Nothing: five retries then a DLQ is the standard pattern for a dependency that is temporarily down',
+        'Immediate retries hammer the struggling service, and the outage dead-letters thousands of good messages',
+        'Workers are blocked for ten minutes, so throughput drops to zero until the service returns',
       ],
       answer: 1,
       why: 'Immediate retries multiply load on a failing dependency and exhaust the attempt budget before it recovers.',
@@ -1008,16 +1008,16 @@ def handle(msg):
       kind: 'scenario',
       q: 'A Kafka consumer must not lose a payment event but one record at offset 5,012 can never be parsed. What do you do?',
       options: [
-        'Retry forever so nothing is lost',
-        'Retry a bounded number of times, publish the record to a DLQ topic with the error, commit past it, alert',
-        'Commit past it silently and move on',
+        'Retry forever with a backoff, so the record is never skipped and nothing is lost',
+        'Retry a few times, publish the record and error to a DLQ topic, commit past it, and alert',
+        'Commit past it and write a warning line to the application log, then move on',
       ],
       answer: 1,
       why: 'You keep the record (in the DLQ) and unblock the partition.',
       explain: [
         'The partition is stuck and everything behind it waits.',
         'Correct: nothing is lost, the partition keeps flowing, and a human can fix and redrive.',
-        'Silent skipping loses the event with no trace.',
+        'A log line is not a recoverable copy. The payment event is lost for good and nobody is alerted.',
       ],
     },
   ]}
@@ -1066,8 +1066,8 @@ Imagine a deploy breaks the analytics consumers for twenty minutes. Nobody notic
 
 **Two lag failures that hurt for real:**
 
-- **Lag longer than retention means data loss.** Kafka deletes old segments on schedule, read or not. A consumer whose committed offset falls off the end is reset by `auto.offset.reset`; with the default `latest` it jumps to the newest record without an error. Alert on lag in time long before it nears retention.
-- **Rebalance storms.** If one poll's records take longer than the maximum poll interval (`max.poll.interval.ms`, 5 minutes by default in the Java client; check your version), the group decides the consumer is dead, reassigns its partitions, and uncommitted work is redelivered to someone who may also be too slow. Process smaller batches, or move slow work off the poll loop.
+- **Lag longer than retention means data loss.** Kafka deletes old segments on schedule, read or not. A consumer whose committed offset falls off the end is reset by `auto.offset.reset`; with the default `latest` it jumps to the newest record without an error (tested: it also skipped records that were still on disk), `earliest` restarts at the oldest record that still exists, and `none` raises an out-of-range error. The lag shown for the group still counts the deleted records. Alert on lag in time long before it nears retention.
+- **Rebalance storms.** If one poll's records take longer than the maximum poll interval (`max.poll.interval.ms`, 300,000 ms, 5 minutes, by default in the Java client), the group decides the consumer is dead, reassigns its partitions, and uncommitted work is redelivered to someone who may also be too slow. (Tested with a 6 s limit: the slow consumer's next commit failed with "Unknown member", its partition was reassigned, and the uncommitted record came back.) Process smaller batches, or move slow work off the poll loop.
 
 <Trace title="Read the lag" steps={lag} takeaway="Drain time = backlog ÷ (capacity − input). Consumers past the partition count are idle. Lag beyond retention is silent loss. Alert in seconds, not messages." />
 
@@ -1100,16 +1100,16 @@ Serial processing means one partition delivers at most 1 ÷ 0.020 s = 50 events/
       kind: 'failure',
       q: 'A group was off for 9 days; retention is 7 days; auto.offset.reset is the default. After restart the dashboard shows no errors but days of data are missing. Why?',
       options: [
-        'Kafka rebuilt the missing data from replicas',
-        'The offset was out of range, so the consumer jumped to the latest record silently',
-        'The consumer crashed and was restarted',
+        'Kafka restored the missing days from replicas on other brokers',
+        'The committed offset was out of range, so the consumer jumped to the latest',
+        'The consumer restarted in the middle of a batch, so it skipped the records in flight',
       ],
       answer: 1,
       why: 'With `latest`, an out-of-range offset resets to the end of the log and nothing is raised.',
       explain: [
         'Retention deletes data on every replica.',
         'Correct: with `latest` the consumer skips even the 7 days still on disk. `earliest` would have lost only the 2 days that retention deleted. Alert on lag in time long before retention, and consider `earliest` or `none` for consumers that must not skip.',
-        'A crash would show an error; this failure is silent.',
+        'A restart in the middle of a batch replays from the committed offset. It cannot skip days of data.',
       ],
     },
   ]}
@@ -1172,7 +1172,7 @@ Two adjustments to say aloud: **compression** (producers compress batches; text-
 
 **Durability settings that go with those numbers.** Replication factor 3, `acks=all`, `min.insync.replicas=2`: an acknowledged write exists on at least two brokers, and the topic keeps accepting writes with one broker down.
 
-**Why not ten thousand partitions "to be safe"?** Each partition is files, memory, replication traffic and leader-election work, and more partitions mean longer failovers and rebalances. The ceiling varies by version and hardware (check current guidance), but size from the formula, not from fear.
+**Why not ten thousand partitions "to be safe"?** Each partition is files, memory, replication traffic and leader-election work, and more partitions mean longer failovers and rebalances. Older Kafka guidance (the ZooKeeper era) was up to about 4,000 partitions per broker and 200,000 per cluster, mostly so that a hard controller failure would not take too long to recover from. KRaft clusters are designed for many more (Confluent has run 2 million in a lab), but a per-node limit and a cluster-wide limit still exist and depend on version and hardware. Treat these as guidance, not fixed rules, and size from the formula, not from fear.
 
 | Choice | Too few | Too many |
 |---|---|---|
@@ -1205,16 +1205,16 @@ Two adjustments to say aloud: **compression** (producers compress batches; text-
       kind: 'tradeoff',
       q: 'A team wants 30-day retention so analysts can replay. Average 20 MB/s, replication 3. What do you weigh?',
       options: [
-        'Nothing: retention is free',
-        'About 155 TB of disk (20 MB/s × 86,400 × 30 × 3) versus tiered storage or a data lake for long-term history',
-        'Use peak rate so it is safe',
+        'About 52 TB of disk (20 MB/s × 86,400 s × 30), so plain disks per broker are enough',
+        'About 155 TB of disk (20 MB/s × 86,400 s × 30 × 3), so weigh tiered storage or a lake',
+        'About 155 GB of disk (20 MB/s × 86,400 s × 30 × 3), so one broker\'s disk is enough',
       ],
       answer: 1,
       why: 'Retention cost scales linearly with days; long history is often cheaper in object storage.',
       explain: [
-        'Disk, recovery time and cost all grow with retention.',
+        'That is 52 TB for one copy. Replication 3 triples it to about 155 TB.',
         'Correct: 20 × 86,400 × 30 × 3 ≈ 155 TB. Weigh tiered storage or a lake for old data, and privacy rules.',
-        'Using peak overbuys by the peak-to-average ratio.',
+        'The same product is 155 million MB, which is 155 TB, not GB. That is far more than one disk.',
       ],
     },
   ]}
@@ -1227,7 +1227,7 @@ Two adjustments to say aloud: **compression** (producers compress batches; text-
     { front: 'Disk formula?', back: 'Average rate × size × 86,400 × retention days × replication factor.' },
     { front: 'Which rate for which?', back: 'Peak for partitions and consumers; average for storage.' },
     { front: 'Durability settings?', back: 'Replication factor 3, acks=all, min.insync.replicas=2.' },
-    { front: 'Why not thousands of partitions?', back: 'Broker overhead, slower failover and rebalances; check current guidance for limits.' },
+    { front: 'Why not thousands of partitions?', back: 'Broker overhead, slower failover and rebalances. Older guidance: about 4,000 per broker and 200,000 per cluster; KRaft allows more.' },
   ]}
 />
 
@@ -1280,15 +1280,15 @@ On abandonment, insert the row with `due_at = NOW() + INTERVAL 3 DAY`. The sched
       kind: 'scenario',
       q: 'You need to expire an unpaid order after 15 minutes, cancelling it if payment arrives. What is the simplest correct design?',
       options: [
-        'A consumer that sleeps 15 minutes then checks',
-        'Store expires_at on the order; a sweeper or delayed message checks "still unpaid" before cancelling, and payment sets the state first',
-        'A Kafka message with a 15-minute delivery delay',
+        'A consumer that sleeps 15 minutes, then cancels the order if it is still unpaid',
+        'Store expires_at on the order; a sweeper or delayed message cancels only if still unpaid',
+        'A Kafka message with a 15-minute per-message delivery delay set by the producer',
       ],
       answer: 1,
       why: 'The state in the database is the source of truth; the delayed trigger only re-checks it.',
       explain: [
         'It blocks a worker (or a partition) for 15 minutes and loses state on every deploy.',
-        'Correct: the trigger can fire twice or late and still be safe, because the cancel is a conditional update on state.',
+        'Correct: the trigger can fire twice or late and still be safe, because the cancel is a conditional update on state, and payment sets the state first.',
         'Kafka has no per-message delivery delay.',
       ],
     },
@@ -1337,14 +1337,14 @@ These are Confluent Schema Registry's rules; other registries are similar. Use *
       kind: 'scenario',
       q: 'The registry enforces BACKWARD compatibility. You add a required field `currency` with no default. What happens, and what should you do?',
       options: [
-        'It passes; backward compatibility only checks producers',
-        'It is rejected: new consumers could not read old records lacking it. Add it as optional with a default',
-        'It passes if you upgrade producers first',
+        'It passes: backward compatibility means old consumers can still read the new records',
+        'It is rejected: new readers cannot fill the field on old records. Add a default',
+        'It passes if you upgrade producers first, since old data is then never read',
       ],
       answer: 1,
       why: 'Backward compatibility means a reader on the new schema can read old data, so a new required field with no default breaks it.',
       explain: [
-        'The mode is about new readers reading old data.',
+        'That is forward compatibility. BACKWARD means new readers can read old data.',
         'Correct: an optional field with a default lets new readers fill the gap on old records.',
         'Upgrade order matters only after the schema is compatible in that direction.',
       ],
@@ -1402,9 +1402,9 @@ Either way, there is no single transaction across services. If step 3 fails, ear
       kind: 'failure',
       q: 'Payment succeeded, stock reservation then fails, and shipping never starts. In a choreographed order flow, what must exist?',
       options: [
-        'Nothing; events retry until stock exists',
-        'A compensating action (refund or hold release) triggered by the failure event, with the flow visible somewhere you can query',
-        'A distributed transaction across all services',
+        'Nothing extra: the reservation retries until stock appears, then shipping starts',
+        'A compensating action such as a refund, triggered by the failure event and tracked per order',
+        'A distributed transaction across payment, stock and shipping that rolls back together',
       ],
       answer: 1,
       why: 'No cross-service transaction exists, so each step needs an undo and the process needs observability.',
@@ -1444,17 +1444,17 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
       kind: 'scenario',
       q: 'Order events must be processed in order per order, at high throughput. Design?',
       options: [
-        'Single Kafka partition, the only way to guarantee order',
-        'Key messages by order_id: per-order ordering within partitions, parallelism across orders',
-        'SQS with FIFO disabled for speed',
-        'Timestamps plus consumer-side reordering',
+        'One Kafka partition for the whole topic, the only way to guarantee order',
+        'Key messages by order_id: ordered per order, parallel across orders',
+        'Use a standard SQS queue and raise the batch size for throughput',
+        'Timestamps on each event, with consumers reordering by timestamp',
       ],
       answer: 1,
       why: 'Order-per-entity is almost always the real requirement, and keying delivers it with parallelism.',
       explain: [
         'Global ordering gives up all throughput for a guarantee nobody asked for.',
         'Correct: ordering per order, parallelism across orders.',
-        'Disabling FIFO removes the ordering you needed.',
+        'Standard queues give best-effort ordering, so the order you needed is gone.',
         'Reordering needs buffering and still guesses about late arrivals.',
       ],
     },
@@ -1462,16 +1462,16 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
       kind: 'tradeoff',
       q: 'Asked "can you guarantee each payment event is processed exactly once?", which answer is strongest?',
       options: [
-        '"Yes, Kafka has an exactly-once mode"',
-        '"Delivery is at-least-once; a consumer can crash between processing and acking. I make processing idempotent by deduping on event id in the same transaction"',
-        '"SQS FIFO deduplicates"',
-        '"Process synchronously instead"',
+        '"Yes: Kafka has an exactly-once mode, so every payment event is processed exactly once end to end"',
+        'Delivery is at-least-once, so I make processing idempotent: dedupe on event id in the same transaction',
+        '"Yes: SQS FIFO queues deduplicate messages, so a payment is never delivered or processed twice"',
+        '"Yes, if I handle each payment synchronously in the request instead of using a queue"',
       ],
       answer: 1,
       why: 'It names why duplicates are unavoidable and gives the standard fix.',
       explain: [
         'Kafka exactly-once covers Kafka-to-Kafka, not an external payment write.',
-        'Correct: reason plus mechanism survives the follow-up.',
+        'Correct: a consumer can crash between processing and acking, so reason plus mechanism survives the follow-up.',
         'FIFO dedupes producer sends in a short window, not a crashed consumer\'s side effect.',
         'Synchronous calls have the same retry-and-timeout duplicate problem.',
       ],
@@ -1480,16 +1480,16 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
       kind: 'failure',
       q: 'Email consumers keep crashing on one malformed message and the queue backs up. What was missing?',
       options: [
-        'More consumers',
-        'A DLQ: after N retries the message parks aside with an alert and the queue keeps flowing',
-        'A shorter visibility timeout',
-        'At-most-once delivery',
+        'Scale to more consumers so others can take over from the crashing ones',
+        'A DLQ: after N retries the message is parked aside and the queue keeps flowing',
+        'A shorter visibility timeout so the failed message returns sooner',
+        'Switch to at-most-once delivery so a failing message is not retried',
       ],
       answer: 1,
       why: 'The poison-message scenario is the standard DLQ probe.',
       explain: [
         'More consumers just crash on it in turn.',
-        'Correct, plus classification of permanent errors and a redrive plan.',
+        'Correct, plus classification of permanent errors, an alert and a redrive plan.',
         'A shorter timeout makes the retry loop faster, not smaller.',
         'At-most-once "fixes" it by silently losing real messages.',
       ],
@@ -1498,15 +1498,15 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
       kind: 'tradeoff',
       q: 'When is a log (Kafka) clearly right over a queue (SQS)?',
       options: [
-        'Whenever throughput is high',
-        'When email, analytics and fraud must independently react to the same events, and you may replay history',
-        'When messages must be encrypted',
-        'When ordering does not matter',
+        'Whenever throughput is high, since a log scales further than any queue',
+        'When several teams react to the same events and may replay history',
+        'When messages must be encrypted, because queues cannot do it',
+        'When ordering does not matter, because logs are cheaper to run',
       ],
       answer: 1,
       why: 'Independent consumer groups plus replay are the log model\'s reason to exist.',
       explain: [
-        'A queue fan-out via SNS to SQS also scales; throughput alone does not decide.',
+        'SNS to SQS fan-out also scales; throughput alone does not decide.',
         'Correct: separate bookmarks per group and retained history.',
         'Both support encryption.',
         'If order does not matter, a plain queue is often simpler.',

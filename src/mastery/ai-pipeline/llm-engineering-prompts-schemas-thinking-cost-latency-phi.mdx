@@ -40,7 +40,7 @@ response = await client.aio.models.generate_content(
 )
 ```
 
-Why it matters: a prompt that says "return JSON" gets JSON 97% of the time; a _schema_ gets it 100% of the time and gets the field names right. Parsing failures were our most common LLM error before the schema. The schema also lets you say _no_ to fields — the enrichment schema has no free-text "notes" field, so there is nowhere for prose to leak into.
+Why it matters: a prompt that only says "return JSON" can still produce prose, code fences or wrong field names, and a response schema constrains the output to the shape you declare (Google's structured-output docs describe it as syntactically valid JSON matching the schema; the values can still be wrong). In our pipeline, parsing failures were the most common LLM error before the schema (no rate was measured). The schema also lets you say _no_ to fields — the enrichment schema has no free-text "notes" field, so there is nowhere for prose to leak into.
 
 **Prompt design rules we follow** (each learned the hard way):
 
@@ -52,13 +52,15 @@ Why it matters: a prompt that says "return JSON" gets JSON 97% of the time; a _s
 
 ## 3. Thinking budgets — the 4× latency story
 
-Gemini 2.5 Flash "thinks" by default: it generates hidden reasoning tokens before the answer. Those tokens are **billed as output and waited for, but never returned**. On the discovery prompt for one demo note: default → 40.3 s with 7,004 thought tokens; `thinking_budget=0` → 10.2 s, same schema, comparable output. Structured extraction is not reasoning; there is nothing to think about. So thinking is off for extraction and configurable for the one call that is reasoning (alerts): 23 s / 9 concerns on, 6–8 s / 7–9 concerns off. I left it on by default and made it a setting (`GEMINI_REASONING_THINKING_BUDGET`), because that trade is a clinical judgement, not an engineering one.
+Gemini 2.5 Flash "thinks" by default: it generates hidden reasoning tokens before the answer. Those tokens are **billed as output and waited for, but never returned**. On the discovery prompt for one demo note: default → 40.3 s with 7,004 thought tokens; `thinking_budget=0` → 10.2 s, same schema, comparable output. (Google's current thinking page documents a `thinking_level` setting and does not mention `thinking_budget`; the budget was the 2.5-era control. Check the current docs before copying the setting for a newer model.) Structured extraction is not reasoning; there is nothing to think about. So thinking is off for extraction and configurable for the one call that is reasoning (alerts): 23 s / 9 concerns on, 6–8 s / 7–9 concerns off. I left it on by default and made it a setting (`GEMINI_REASONING_THINKING_BUDGET`), because that trade is a clinical judgement, not an engineering one.
 
 The cost angle: thought tokens are output tokens at $2.50 per million on 2.5 Flash. 7,000 hidden tokens per call is real money at volume. The dashboard now counts them separately (`gemini_tokens_total{direction="thought"}`).
 
 ## 4. Model choice — measured, not guessed
 
 ### 4.1 Gemini 2.5 Flash vs 3.8 Flash, five demo notes, type discovery over all seven types, thinking off
+
+Model status check (Google's model page, 2026-10-19): 3.8 Flash is listed as stable, and 2.5 Flash is not deprecated but its access is limited to past users. Re-check before relying on either name.
 
 | Note | Ground truth labs / current meds | 2.5-flash | 3.8-flash |
 | --- | --- | --- | --- |
@@ -105,21 +107,21 @@ Story: the table had been two model generations stale (0.15/0.60), so the cost p
 
 ## 7. PHI, BAA, and what "compliant" means here
 
-* The Gemini AI Studio key is a developer key with **no Business Associate Agreement**. Under HIPAA that means no real patient text may go to it. All local runs use synthetic demo notes. The production choices are Vertex AI with a BAA (the `llm_backend=vertex_ai` switch exists) or on-prem MedGemma.
+* The Gemini AI Studio key is a developer key with **no Business Associate Agreement**. Under HIPAA that means no real patient text may go to it. All local runs use synthetic demo notes. The production choices are Vertex AI with a BAA (Google signs BAAs, but its HIPAA page lists covered products under names like "Generative AI on Agent Platform", so confirm that the exact Gemini service you use is covered) (the `llm_backend=vertex_ai` switch exists) or on-prem MedGemma.
 * What leaves the pipeline today, per call: for enrichment, the span plus a window of context; for discovery, the note; for reasoning, structured meds/labs. Minimising that surface is why MedCAT/GLiNER run first.
 * Entity text lives in S3 (SSE), Postgres holds pointers; the broker carries pointers; logs never print bodies. That is the PHI isolation rule, and it constrains design choices (page 5, page 10).
 
 ## 8. Likely follow-ups
 
 * _"Why not fine-tune a small model instead of prompting?"_ — We would, once the gold set exists: MetaCAT for assertion status first (cheap, in-domain), then a 4B extraction model on our annotated notes. Prompting is what you do before you have labels.
-* _"Temperature?"_ — Low (0.1–0.2) for extraction; the schema does more for consistency than temperature does.
+* _"Temperature?"_ — Low for extraction (commonly a value such as 0.1 to 0.2; this is a rule of thumb, not a vendor figure); the schema does more for consistency than temperature does.
 * _"Prompt injection?"_ — A note could contain "ignore previous instructions". The schema limits the blast radius (it cannot return arbitrary shapes), the models never call tools, and the reasoning pass never sees free text — only structured fields. Not a full answer; content-level defences are on the list.
 * _"How do you evaluate a prompt change?"_ — Today: the five-note comparison harness (per-note timing, entity counts by type). Tomorrow: the gold set with P/R per entity type, run in CI.
 
 ## 9. Read more
 
 * [Gemini thinking budgets](https://ai.google.dev/gemini-api/docs/thinking) · [structured output](https://ai.google.dev/gemini-api/docs/structured-output) · [pricing](https://ai.google.dev/gemini-api/docs/pricing)
-* [Vertex AI and HIPAA](https://cloud.google.com/security/compliance/hipaa) — what a BAA covers
+* [Google Cloud and HIPAA](https://docs.cloud.google.com/docs/security/compliance/hipaa) — what a BAA covers
 * [MedGemma model card](https://developers.google.com/health-ai-developer-foundations/medgemma) · [llama.cpp / Ollama performance notes](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md) — bandwidth-bound decode explained
 * ["Fast Inference from Transformers via Speculative Decoding"](https://arxiv.org/abs/2211.17192) — why tok/s is bounded by weights streamed per token
 * [Prompt Engineering Guide](https://www.promptingguide.ai/) — the structured-output and few-shot sections
@@ -182,25 +184,33 @@ The 27B model is memory-bandwidth-bound: an L4 has about 300 GB/s and each token
   {
     kind: 'failure',
     q: 'A discovery call takes 40 s and returns thousands of tokens you never see. What is the most likely cause, and the fix?',
-    options: ['The schema is too strict', 'Default thinking mode generates hidden reasoning tokens', 'The prompt is too short'],
+    options: [
+      'The structured-output schema is too strict for the model to fill',
+      'Default thinking mode spends hidden reasoning tokens per call',
+      'The prompt is too short, so the model pads its answer with tokens',
+    ],
     answer: 1,
     why: 'Default thinking tokens are billed as output and waited for but never returned; extraction does not need them.',
     explain: [
       'A schema constrains shape; it does not add 30 s of latency.',
       'Correct: set the thinking budget to 0 for structured extraction (40.3 s to 10.2 s on the measured note).',
-      'A short prompt is not slow; the hidden thought tokens are.'
+      'A short prompt is not slow; the hidden thought tokens are.',
     ]
   },
   {
     kind: 'tradeoff',
     q: 'Why was MedGemma 27B parked?',
-    options: ['It returned invalid JSON', 'Decode is about 8 tok/s on an L4, so about 154 s per document', 'It needed a BAA'],
+    options: [
+      'Its structured output failed schema validation too often to use',
+      'Decode is about 8 tok/s on an L4, about 154 s per document',
+      'It needed a BAA with the provider before PHI could be sent',
+    ],
     answer: 1,
     why: 'Memory-bandwidth-bound decode: each token streams about 18 GB of weights.',
     explain: [
       'Output validity was not the reported problem.',
       'Correct: 100% on GPU, so it is bandwidth, not misconfiguration.',
-      'On-prem is the way to avoid needing a BAA, not the reason it was parked.'
+      'On-prem is the way to avoid needing a BAA, not the reason it was parked.',
     ]
   }
 ]} />

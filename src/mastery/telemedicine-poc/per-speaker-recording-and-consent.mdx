@@ -27,7 +27,7 @@ We chose **one LiveKit TrackEgress per participant microphone**. Each speaker's 
 | Extra models | pyannote / WhisperX alignment, GPU time | None |
 | Files | One | One per speaker, plus a manifest |
 | Hard part moves to | Diarization quality | Time alignment of independent files (page 3) and half-silent tracks confusing Whisper (page 3) |
-| Cost at record time | Mixing/encoding | Zero: Opus pass-through, no transcode |
+| Cost at record time | Mixing/encoding | Small: a per-track decode and Opus re-encode, no mixing |
 
 ## How a recording starts
 
@@ -49,7 +49,7 @@ activeRecordings.set(room, { session, entries });        // 409 on a second star
 
 * **File name includes the track SID**, so a participant who re-publishes their mic gets a second file, never an overwrite.
 * `sanitize()` keeps only `[A-Za-z0-9_-]`; combined with `path.basename()` on the session segment, no `../` can escape `recordings/`.
-* **Format** (verified with ffprobe): Ogg container, Opus codec, 48 kHz, 2 channels, VBR. LiveKit writes the packets it already has; nothing is re-encoded.
+* **Format** (verified with ffprobe): Ogg container, Opus codec, 48 kHz, 2 channels, VBR. LiveKit's track egress docs say audio is always decoded and re-encoded as stereo Opus (so a mono mic still gives a 2-channel file) and written to Ogg.
 
 <AnswerModes id="per-track-egress" q="Why record one file per microphone instead of a mixed room plus diarization?">
 <Fragment slot="short">
@@ -71,7 +71,7 @@ Add the file naming (identity plus track SID so a republished mic never overwrit
 
 ## Who is who: identity carries the role
 
-The LiveKit identity string is `"<role>:<name>"`, e.g. `doctor:Asha`, chosen so the token server needed no schema change. At finalise time the manifest records `{identity, role, name, file, startedAtNs}` per track, and the transcriber copies `role` and `name` onto every segment. That is the whole "diarization".
+The LiveKit identity string is `"<role>:<name>"`, e.g. `doctor:Asha`, chosen so the token server needed no schema change. At finalise time the manifest records `{identity, role, name, file, startedAtNs}` per track, and the transcriber copies `role` and `name` onto every segment. That is the whole "diarization". LiveKit's token docs advise an opaque ID for identity, because identities show up in logs; a real name in the identity is a PoC shortcut.
 
 ```json
 { "identity": "doctor:Asha", "role": "doctor", "name": "Asha",
@@ -107,7 +107,7 @@ Interview line: "Consent is a set that must empty, not a boolean that must be tr
 
 ## Dual-path signalling (the subtle bug)
 
-Consent messages first went over LiveKit's data channel. A patient who joined **without mic or camera** never received them. Root cause: a participant who publishes nothing has no WebRTC _publisher_ peer connection, and data-channel sends from that side time out. Fix: every control message is sent **both** over the data channel **and** via HTTP to the server, which relays it with `roomService.sendData(..., RELIABLE, {topic:"rec"})` so it arrives on everyone's _subscriber_ connection. Receivers de-duplicate: the `pendingConsents.size > 0` guard ensures only the first copy of the last accept can start the recording, and your own revoke echo is suppressed.
+Consent messages first went over LiveKit's data channel. A patient who joined **without mic or camera** never received them. Root cause as we diagnosed it (the LiveKit data-message docs do not describe this case): a participant who publishes nothing seems to have no WebRTC _publisher_ peer connection, and data-channel sends from that side time out. Fix: every control message is sent **both** over the data channel **and** via HTTP to the server, which relays it with `roomService.sendData(..., RELIABLE, {topic:"rec"})` so it arrives on everyone's _subscriber_ connection. Receivers de-duplicate: the `pendingConsents.size > 0` guard ensures only the first copy of the last accept can start the recording, and your own revoke echo is suppressed.
 
 Second-order detail: a server-relayed message has the _server_ as `msg.from`, so the sender's identity is carried inside the payload and read as `data.from || msg.from?.identity`.
 
@@ -128,7 +128,7 @@ Second-order detail: a server-relayed message has the _server_ as `msg.from`, so
 
 <Reveal q="A patient joins with no mic and no camera. Why does the consent request never reach them, and what is the fix?">
 
-A participant who publishes nothing has no WebRTC publisher peer connection, and data-channel sends from that side time out. The fix is to send every control message both over the data channel and through an HTTP relay that calls sendData, so it arrives on the subscriber connection. Receivers de-duplicate.
+Our diagnosis is that a participant who publishes nothing has no WebRTC publisher peer connection, so data-channel sends from that side time out. The fix is to send every control message both over the data channel and through an HTTP relay that calls sendData, so it arrives on the subscriber connection. Receivers de-duplicate.
 
 </Reveal>
 
@@ -154,7 +154,7 @@ A participant who publishes nothing has no WebRTC publisher peer connection, and
 * [Telemedicine Practice Guidelines (India, 2020)](https://www.mohfw.gov.in/pdf/Telemedicine.pdf) — patient consent and record-keeping duties for teleconsultations.
 
 <RevisionCards id="poc-recording-consent" cards={[
-  { front: 'Why per-track egress?', back: 'Exact speaker labels by construction, no diarization model, Opus pass-through. Difficulty moves to alignment and half-silent tracks.' },
+  { front: 'Why per-track egress?', back: 'Exact speaker labels by construction, no diarization model, no mixing step. Difficulty moves to alignment and half-silent tracks.' },
   { front: 'How is a track file named, and why?', back: 'sanitized identity plus the track SID, so a republished mic gets a second file. sanitize keeps only A-Za-z0-9_- to block path escape.' },
   { front: 'How does identity carry the role?', back: 'Identity is role:name, for example doctor:Asha. The manifest and every transcript segment copy role and name. Gap: the browser asserts it, so production binds role to an authenticated user.' },
   { front: 'Why does finalise poll the egress?', back: 'Stopping is asynchronous and startedAt appears later. Polling up to 20 x 500 ms avoids a manifest without startedAtNs. Measured skew was 29-74 ms.' },

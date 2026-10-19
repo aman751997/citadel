@@ -20,16 +20,21 @@ Closed on 2026-10-19 (evidence in `docs/qa/`):
 - [x] **"check current docs" claims** checked against official docs by three agents; many hedges replaced by dated facts and 32 errors corrected (`docs-claims-A.md`, `-B.md`, `-C.md`).
 - [x] **External links:** all 889 external URLs fetched; 8 dead ones replaced; all 400 LeetCode slugs confirmed to exist.
 
-Still open:
-- [ ] **Quiz design:** the correct option is still often the longest and most specific (shuffling fixed position bias only). Fixing it means writing better wrong options.
-- [ ] **Could not verify** (hedges kept; see the evidence files): Elasticsearch RRF subscription tier wording, OpenSearch k-NN details, GLiNER silent truncation, HIPAA Safe Harbor list (HHS blocks automated fetches), SQS visibility timeout (no SQS to test), Kafka behaviour after `max.poll.interval.ms` is exceeded, Kafka partition ceiling, ALB pre-warming, DNS TTL 0 and JVM DNS cache default, CloudFront/Fastly invalidation details, Glacier price ratio, papers cited from memory (Splitwise 2024, Chen 2023, Earlybird, Koren 2009, Linden 2003).
-- [ ] **Not run:** the two Cassandra CQL blocks, the Postgres-style SQL in the Mastery chapters, other MySQL drivers (JDBC, mysql2, Go) for `CLIENT_FOUND_ROWS`, cluster failover with replicas under load, the "9,000 threads then OutOfMemoryError" story.
-- [ ] **Code sketches left as they are** (noted by the Python check): single-flight waiters get `None` if the leader raises; a SIGTERM sketch calls `server.shutdown()` in a signal handler (would deadlock with stdlib servers); the circuit-breaker text says "a few probes" but the code decides on the first result; `reserve` returns a non-zero wait even when the request is admitted; the facet snippets assume `material` and `category` are keyword fields.
+Closed on 2026-10-19 (second pass):
+- [x] **Quiz design:** the correct option was the single longest in 79% of questions (ratio 2.67x). About 1,000 questions were rewritten so wrong options are realistic, parallel mistakes. Now longest 23% / shortest 22% / ratio 1.00 (`node scripts/quiz-balance-src.mjs src/lessons src/dsa-lessons src/lld-lessons src/mastery`). Every rewritten question was then solved blind again (about 75 more fixes, including 4 answer indices that pointed at the wrong option). `node scripts/check-quiz-integrity.mjs` guards the structure (0 problems). Evidence: `docs/qa/quiz-balance-*.md`, `docs/qa/quiz-recheck-*.md`.
+- [x] **Docs and spec claims** (`docs/qa/spec-claims-1.md`, `spec-claims-2.md`, `live-tests-2.md`): HIPAA Safe Harbor wording, GLiNER truncation, FDA link, five papers, LiveKit/WebRTC, Gemini naming, Elasticsearch RRF licence, OpenSearch k-NN, Kafka partition guidance and poll interval, ALB, DNS/JVM cache, CloudFront, Fastly, Glacier, SQS, browser connection limits; Cassandra CQL, MySQL drivers (`CLIENT_FOUND_ROWS`), Kafka after `max.poll.interval.ms` and retention, thread-limit failure, Redis Cluster failover, LRU vs LFU.
+
+Still open (hedges kept; reasons in the evidence files):
+- [ ] The Java client's `CommitFailedException` by name (Kafka was tested with the Python client); LFU being slow to adapt to a changed hot set; the "fourth node moves 25%" figure (arithmetic only).
+- [ ] LiveKit egress and Redis; OpenSearch HNSW `m` default; Splitwise ISCA edition number; paper venue details taken from abstract pages.
+- [ ] Apache's own Kafka partition-limit page (Confluent sources used); Glacier Deep Archive $/GB (ratio is approximate); default CDN cache-key and cookie behaviour (vendor-specific); Fastly purge timing.
+- [ ] `innodb_flush_log_at_trx_commit=2` behaviour on power loss (needs a real power loss).
+- [ ] **Not run:** the Postgres-style SQL in the Mastery chapters (no schema), other languages' drivers beyond Connector/J, mysql2, Go and the two Python drivers, RabbitMQ 4.x classic-queue `consumer_timeout`.
+- [ ] **Code sketches left as they are:** single-flight waiters get `None` if the leader raises; the SIGTERM sketch calls `server.shutdown()` in a signal handler (deadlocks with stdlib servers); the circuit-breaker text says "a few probes" but the code decides on the first result; `reserve` returns a non-zero wait even when admitted; the facet snippets assume `material` and `category` are keyword fields.
+- [ ] **Quiz balance leftovers:** creational-patterns correct-is-longest is 47%; stacks and prefix-sum correct-is-shortest is 0% and 11%; llm-gateway and recsys shortest 4%. Lengthen or shorten a few options if you care.
 - [ ] **Dry-run captions** have no tests (only final answers do). Read a few for wording.
 - [ ] **Diagram readability**: all 522 Mermaid diagrams render, but nobody has looked at them for clarity on a phone.
 - [ ] **Type errors**: `src/lib/dryrun.ts` has two strict-mode type errors (around lines 105 and 401). They do not affect the build.
-- [ ] **Two Mastery lines with no source:** "temperature 0.1-0.2" and "97% JSON without a schema".
-- [ ] **FDA clinical decision support link** has no verified stable URL (now plain text).
 
 ## Facts you must confirm yourself (Mastery)
 - [ ] **Your ownership and contribution** on each project (the notes mark this unverified; git shows other authors on the reporting engine).

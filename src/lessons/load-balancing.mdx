@@ -171,7 +171,7 @@ A deploy is a smaller, planned version of the same loss. Rolling 10% of 84 serve
     q: 'Assumption: 84 servers in three zones of 28, 50,000 req/s, 1,000 req/s capacity each. A zone dies while 8 servers in the other two zones are out of rotation for a deploy. Roughly how loaded are the servers still serving?',
     options: [
       'About 60%: the fleet was sized for this',
-      'About 100%: 50,000 over about 48 servers',
+      'Over 100%: 50,000 over 48 servers is about 1,042 req/s each',
       'About 89%: 50,000 over 56 servers',
     ],
     answer: 1,
@@ -553,7 +553,7 @@ A larger α reacts faster and jitters more. "**Peak EWMA**" variants (Twitter's 
 
 <h2 id="two-choices">Chapter 6 · Pick two, keep the better</h2>
 
-**What is it?** **The power of two random choices:** for each request, pick **two** servers at random and send the request to the less loaded of the two (fewer requests in flight, or a lower EWMA score). Envoy's least-request balancer samples two servers by default (check current docs for details), and nginx offers `random two least_conn`.
+**What is it?** **The power of two random choices:** for each request, pick **two** servers at random and send the request to the less loaded of the two (fewer requests in flight, or a lower EWMA score). Envoy's least-request balancer samples two servers by default (when weights are equal), and nginx offers `random two least_conn`.
 
 ```python
 import random
@@ -875,7 +875,7 @@ Active checks cost something at scale too. In a mesh where 1,000 sidecars each c
 
 **Flapping.** A server under garbage-collection pressure passes, fails, passes, fails. With thresholds of 1 and 1 it is added and removed every few seconds, and each re-entry floods it again. **Hysteresis** fixes it: require several failures to eject and *more* passes to return (say 3 down, 5 up). Then only a steadily sick server leaves and only a steadily well one returns, eased in with slow start.
 
-**Fail open.** If every server looks unhealthy, the likelier explanation is that the *check* is wrong. Many balancers then **ignore health and route to everyone**. Envoy calls this the **panic threshold** (by default, with fewer than half the hosts healthy it balances across all; check current docs). Serving something beats serving nothing.
+**Fail open.** If every server looks unhealthy, the likelier explanation is that the *check* is wrong. Many balancers then **ignore health and route to everyone**. Envoy calls this the **panic threshold** (by default, with fewer than half the hosts healthy it balances across all). Serving something beats serving nothing.
 
 <Figure caption="A health-checked server's life. Different thresholds in each direction (hysteresis) stop flapping; slow start eases a returning server back in.">
   <Mermaid code={`stateDiagram-v2
@@ -932,7 +932,7 @@ Active checks cost something at scale too. In a mesh where 1,000 sidecars each c
 - **Consecutive errors.** Eject a server after, say, five `5xx` responses or connection failures in a row.
 - **Error-rate or latency outliers.** Eject a server whose success rate or latency is far worse than the rest of the fleet's.
 - **Ejection time grows.** The first ejection lasts, say, 30 s; a server ejected again stays out longer. A briefly sick server returns quickly; a chronically sick one stays out.
-- **Ejection is capped.** Never eject more than a set fraction of the pool (Envoy defaults to 10%; check current docs). If *everything* fails, the problem is not one server, and ejecting all of them turns "every request errors" into "no request is answered".
+- **Ejection is capped.** Never eject more than a set fraction of the pool (Envoy defaults to 10%). If *everything* fails, the problem is not one server, and ejecting all of them turns "every request errors" into "no request is answered".
 
 Outlier ejection is a **circuit breaker per backend**: stop sending to the one that is failing, probe it later. The gateway's circuit breaker (Chapter 15) is the same idea per *dependency*.
 
@@ -1016,7 +1016,7 @@ signal.signal(signal.SIGTERM, on_sigterm)
 
 **Long-lived connections do not drain on their own.** A WebSocket server holding 40,000 connections might wait forever. Set a drain deadline, close connections deliberately (a WebSocket close frame), and have clients **reconnect with jitter** so 40,000 reconnects do not arrive in the same second.
 
-**Slow start.** A new or returning server starts with a small fraction of its normal weight and ramps up over a window (say 60 s). Envoy, HAProxy and AWS's application balancers offer this (check current docs for exact options). Without it, least-connections and least-response-time balancing *especially* flood a newcomer: it has zero connections and no latency history. Cold JIT, empty caches and unopened pools make a server's first seconds its slowest, exactly when it receives the most traffic.
+**Slow start.** A new or returning server starts with a small fraction of its normal weight and ramps up over a window (say 60 s). Envoy, HAProxy (`slowstart`) and AWS's application balancers offer this. On an AWS ALB, slow start mode works with round robin only, not with least outstanding requests. Without it, least-connections and least-response-time balancing *especially* flood a newcomer: it has zero connections and no latency history. Cold JIT, empty caches and unopened pools make a server's first seconds its slowest, exactly when it receives the most traffic.
 
 **How deploys use the balancer:**
 
@@ -1392,7 +1392,7 @@ It is the same answer as Chapter 12, applied to a fleet: the gateway runs as man
 
 **How it works, and the fixes:**
 
-1. **Retry only what is safe.** A request that never reached a server (connection refused) is safe. A `GET` or other idempotent request is safe. A `POST` that may have run is not, unless it carries an **idempotency key** the server uses to ignore duplicates. nginx, for example, does not retry non-idempotent requests on another server by default (check current docs).
+1. **Retry only what is safe.** A request that never reached a server (connection refused) is safe. A `GET` or other idempotent request is safe. A `POST` that may have run is not, unless it carries an **idempotency key** the server uses to ignore duplicates. nginx, for example, does not pass a POST, LOCK or PATCH to the next server once it has been sent to one, unless you add `non_idempotent` to `proxy_next_upstream`.
 2. **Retry on a different server.** The next attempt should not go back to the instance that just failed.
 3. **Limit attempts, and use a retry budget.** Allow retries only up to a fraction of normal traffic (say 10%) per client or per proxy. When the budget is spent, fail instead of retrying.
 4. **Back off with jitter.** Wait longer after each failure and randomise the wait so clients do not retry in lockstep.

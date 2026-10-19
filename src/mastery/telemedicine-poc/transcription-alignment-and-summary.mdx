@@ -33,7 +33,7 @@ After the call we have two audio files, one per speaker, each half silence (whil
 ## 1. Speech to text: Whisper on Apple Silicon
 
 * **Engine:** `mlx-whisper`, Apple's MLX port, running on the Mac's GPU via Metal. Not faster-whisper (CUDA/CPU), not openai-whisper (PyTorch).
-* **Model:** `mlx-community/whisper-turbo` = large-v3-turbo, a distilled large-v3 with 4 decoder layers (\~809 M params). Near large-v3 accuracy, several times faster. Good fit for "under a minute after hang-up".
+* **Model:** `mlx-community/whisper-turbo` = large-v3-turbo, large-v3 with the decoder cut from 32 to 4 layers and then fine-tuned (not distilled; \~809 M params). Near large-v3 accuracy, several times faster. Good fit for "under a minute after hang-up".
 * **Language:** autodetect by default; `--language hi` is the documented example because the target market is India.
 * **Chunking / VAD:** none of our own. Whisper's 30-second windows are used as-is; there is no VAD model in front of it. Instead we filter _after_ (next section).
 * **Word timestamps:** not enabled; segment-level `start`/`end` only. Enough for turn ordering.
@@ -69,7 +69,7 @@ for seg in result["segments"]:
 
 | # | Gate | What it catches | Why the threshold |
 | --- | --- | --- | --- |
-| 1 | `no_speech_prob > 0.5` | Whisper itself thinks this window is probably silence | Whisper's own default |
+| 1 | `no_speech_prob > 0.5` | Whisper itself thinks this window is probably silence | Slightly stricter than the mlx-whisper default of 0.6 (checked in the installed library) |
 | 2 | `compression_ratio > 2.4` | Degenerate repetition ("Doctor Doctor Doctor…") compresses too well | Whisper's own default for temperature fallback |
 | 3 | `avg_logprob < −1.0` | Low average token probability = the decoder was guessing | Whisper's default; typical of filler hallucinations |
 | 4 | duration &lt; 0.2 s | Sub-word blips | Nothing clinically meaningful is said in 200 ms |
@@ -92,7 +92,7 @@ The first four gates use Whisper's own signals, but its confidence often looks n
 </Fragment>
 <Fragment slot="deep">
 
-Add the thresholds and why: 0.5, 2.4 and -1.0 are Whisper defaults, 0.2 s because nothing clinical is said in 200 ms, -35 dBFS because speech peaks well above it. Known next steps are Silero VAD in front of Whisper, a cross-segment repetition filter and a per-tenant language lock. <StatusBadge kind="planned" label="Next steps named, not built" /> There is no VAD and no word timestamps today.
+Add the thresholds and why: 2.4 and -1.0 are the Whisper defaults and 0.5 is a little stricter than the default 0.6 (I checked the installed mlx-whisper), 0.2 s because nothing clinical is said in 200 ms, -35 dBFS because speech peaks well above it. Known next steps are Silero VAD in front of Whisper, a cross-segment repetition filter and a per-tenant language lock. <StatusBadge kind="planned" label="Next steps named, not built" /> There is no VAD and no word timestamps today.
 
 </Fragment>
 </AnswerModes>
@@ -128,9 +128,9 @@ else:
 
 Whisper emits many short segments. Merging same-speaker segments separated by under 1.5 s turns "I have had. A headache. Since Tuesday." into one line. Output: `transcript.json` (`ensure_ascii=False` so Devanagari survives) and `transcript.md` as `**[MM:SS] Doctor (Asha)**: text`.
 
-<Reveal q="The doctor's egress started 74 ms before the patient's. The doctor's question ends at 1.000 s in the doctor file. The patient's answer starts at 0.930 s in the patient file. Who speaks first after alignment?">
+<Reveal q="The doctor's egress started 74 ms before the patient's. The doctor's question ends at 1.000 s in the doctor file. The patient's answer starts at 0.930 s in the patient file. On the shared clock, does the answer start before or after the question ends?">
 
-The doctor. Add each track's start offset: the patient's file began 74 ms later, so its answer starts at 0.930 + 0.074 = 1.004 s on the shared clock, after the doctor's 1.000 s. Comparing raw file times (0.930 vs 1.000) would put the patient first, which reads wrong.
+After, by 4 ms. Add each track's start offset: the patient's file began 74 ms later, so its answer starts at 0.930 + 0.074 = 1.004 s, just after the doctor's 1.000 s. Comparing raw file times (0.930 vs 1.000) would make the answer look like it began 70 ms before the question ended, an overlap that never happened.
 
 </Reveal>
 

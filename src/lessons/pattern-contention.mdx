@@ -202,7 +202,7 @@ The shortest form interviewers like is `UPDATE seats SET held_by = ? WHERE id = 
 
 Two MySQL details matter here:
 
-- **Affected rows means changed rows.** By default MySQL reports rows whose values actually changed, not rows that matched. Here the statement always changes a matched row (status goes to `HELD`), so 1 or 0 is reliable. If an UPDATE could set a column to the value it already has, a matched row would report 0. Drivers have a "found rows" flag (`CLIENT_FOUND_ROWS`) that switches to counting matches; check what your driver does before relying on the count.
+- **Affected rows means changed rows.** By default MySQL reports rows whose values actually changed, not rows that matched. Here the statement always changes a matched row (status goes to `HELD`), so 1 or 0 is reliable. If an UPDATE could set a column to the value it already has, a matched row would report 0. Drivers have a "found rows" flag (`CLIENT_FOUND_ROWS`) that switches to counting matches; PyMySQL and MySQL Connector/Python leave it off by default, and with it on a no-op UPDATE reports 1. Check what your driver does before relying on the count.
 - **Use the database's clock** (`NOW(3)`), not the application server's. App servers drift apart. One clock gives one answer to "has this hold expired?".
 
 **Several seats at once, all or nothing.** A buyer picks four seats together. Hold them in one statement and compare the count:
@@ -1135,7 +1135,7 @@ Never "check if it exists, then insert". Both checks can pass.
 | `IN_PROGRESS`, lock still valid | Yes | **`409 Conflict`**: "still processing, retry shortly" |
 | `IN_PROGRESS`, `locked_until` passed | Yes | The first attempt died mid-flight: **recover** it (see step 5) |
 
-(The IETF draft Idempotency-Key header spec suggests similar status codes, and Stripe's public API errors on a reused key with different parameters. Check current docs for exact codes.)
+(The IETF draft Idempotency-Key header spec suggests the same codes (400 for a missing key, 422 for a reused key with a different payload, 409 for a request still in flight); it has expired as a draft, so treat it as a guide. Stripe's API also errors on a reused key with different parameters.)
 
 A Python sketch of the handler. It shows the decision table in code and where the effect and the record meet:
 
@@ -1166,7 +1166,7 @@ def handle(client_id, key, body, do_charge):
 
 **5 · When the effect is outside your database, chain the keys.** You cannot put the card network inside your transaction. So: record the attempt, then call the provider **with your own idempotency key** (derived from the client's, for example `charge:a1b2`), then record the result. If you crash between the call and the record, the recovery path calls the provider **again with the same key**, and the provider dedupes it and returns the original result. Idempotency is only end to end if every hop that can repeat is keyed. Stripe's engineering blog describes this style ("atomic phases" and "recovery points") for exactly this reason.
 
-**6 · Keys expire.** Keep them longer than any client will retry. 24 hours is a common choice (Stripe documents pruning keys after at least 24 hours; check current docs). Delete old rows in batches (`DELETE ... WHERE created_at < ... LIMIT 5000`) or partition by day, so the table does not grow forever. A retry after expiry is a new request, so the client's retry policy must give up before then.
+**6 · Keys expire.** Keep them longer than any client will retry. 24 hours is a common choice (Stripe's API v1 docs say keys can be pruned once they are at least 24 hours old). Delete old rows in batches (`DELETE ... WHERE created_at < ... LIMIT 5000`) or partition by day, so the table does not grow forever. A retry after expiry is a new request, so the client's retry policy must give up before then.
 
 **Retries, the client's half.** Retry only what can succeed next time: timeouts, connection resets, `503`, `429` (honour `Retry-After`), `409` in-progress. Never retry a `400` or "card declined". Use **exponential backoff with full jitter** and a cap, at **one layer** (three layers each retrying three times is 27 attempts), always with **the same key**. The <a href={`${BASE}sd/lessons/core-concepts/#retries`}>Core concepts lesson, Chapter 12</a> has the arithmetic.
 
@@ -2032,11 +2032,11 @@ INSERT INTO listing_nights VALUES (500,'2026-10-03',1),(500,'2026-10-04',1);
 INSERT INTO listing_nights VALUES (500,'2026-10-04',2),(500,'2026-10-05',2);`,
     options: ['Both succeed, because the check-in dates differ', 'One transaction hits error 1062 on night 4 and rolls back entirely, so exactly one stay wins and the loser holds no nights', 'Both fail with a deadlock'],
     answer: 1,
-    why: 'Night 4 is the shared key. Whoever inserts it first wins; the other fails on the duplicate and its whole transaction rolls back. A possible deadlock between the two multi-row inserts is also resolved by retry, but the typical outcome is one winner.',
+    why: 'Night 4 is the shared key. Whoever inserts it first wins; the other fails on the duplicate and its whole transaction rolls back. Both insert the nights in date order, so the loser simply waits on night 4, then gets the duplicate-key error.',
     explain: [
       'Check-in uniqueness cannot see overlap. Per-night uniqueness can.',
       'Correct. A range turned into points that a unique key can guard.',
-      'A deadlock is possible when the inserts interleave, and InnoDB aborts one, so at most one stay is ever created. Either way you never get both.',
+      'Both inserts take the nights in date order, so there is no lock cycle: one waits for the other, then fails on the duplicate key. (If your code inserts nights in different orders, a deadlock becomes possible, and then InnoDB aborts one of them.)',
     ],
   },
   {
@@ -2076,7 +2076,7 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
     explain: [
       'Adds infrastructure and failure modes to do what the database does atomically for free.',
       'Correct: the row lock inside one statement is the only lock you need.',
-      'Correct but slow and a single point of failure for a problem one statement solves.',
+      'Works, but it is slow and a single point of failure for a problem one statement solves.',
       'Works, but on a hot seat the losers retry into the same conflict.',
     ],
   },

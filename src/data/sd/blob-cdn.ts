@@ -19,7 +19,7 @@ export const objectModel = [
   step('A user edits one caption word inside a 4 MB document stored as one object. What does the object store let you do?', [], 0, [
     ['Write a whole new object (same key or a new one); there is no in-place byte edit', 'Right. Objects are written whole. Change one byte and you PUT the whole object again — which is why big mutable files get chunked (Chapter 7).'],
     ['Seek to the byte offset and overwrite it, like a file', 'That is a file system or block device. The classic object API replaces whole objects.'],
-    ['Append the change to the end of the object', 'Standard object stores don’t append in place. (A few newer storage classes add append — treat it as a special case and check the docs.)'],
+    ['Append the change to the end of the object', 'Standard object stores don’t append in place. (S3 Express One Zone directory buckets do allow append, up to 10,000 appends per object. Treat it as a special case.)'],
   ]),
   step('Your service PUTs a new object to S3, gets 200 OK, and immediately GETs the same key from another server. Since December 2020, what does S3 guarantee?', [], 1, [
     ['The GET may return 404 for a while — S3 is eventually consistent', 'That was the old rule for some cases. S3 has provided strong read-after-write consistency for object PUTs, overwrites, deletes and LISTs since December 2020.'],

@@ -77,31 +77,31 @@ A common slip is to name a many-to-many relationship and index only one side. Ch
     kind: 'scenario',
     q: 'A design review proposes "one NoSQL cluster for everything because it scales". You have 10 minutes to respond. What do you do first?',
     options: [
-      'Ask for each screen and API: the query, its rate, its latency budget and whether it needs a transaction. Choose stores after that.',
       'Propose MySQL instead, since relational databases are the safe default.',
       'Benchmark three databases with random data and pick the fastest.',
+      'Ask for each screen and API: the query, its rate, its latency budget and whether it needs a transaction. Choose stores after that.',
     ],
-    answer: 0,
+    answer: 2,
     why: 'Decision 1 is access patterns. Only with the list can you say which pattern, if any, the default store serves badly.',
     explain: [
-      'Correct. Without the queries and numbers, any store choice is a guess. With them, the choice usually becomes obvious.',
       'MySQL is a good default, but swapping one logo for another repeats the mistake. You still have not said why.',
       'A benchmark on random data measures nothing about your queries. Write the real access patterns first.',
+      'Correct. Without the queries and numbers, any store choice is a guess. With them, the choice usually becomes obvious.',
     ],
   },
   {
     kind: 'tradeoff',
     q: 'Which one-sentence reason for a store survives the follow-up "why exactly?"',
     options: [
-      '"It scales horizontally."',
       '"Messages are append-heavy and always read as the latest page of one conversation, which fits a store partitioned by conversation and sorted by time."',
+      '"It scales horizontally."',
       '"A big company uses it."',
     ],
-    answer: 1,
+    answer: 0,
     why: 'A good reason names the data, its access pattern, and why the store fits it.',
     explain: [
-      'Relational databases can shard too, so this does not separate the options.',
       'Correct. It names the data, the access path and the match, so the follow-up has an answer.',
+      'Relational databases can shard too, so this does not separate the options.',
       'Another company has different data and different queries. This is the logo-dropping trap.',
     ],
   },
@@ -205,15 +205,15 @@ For most data, scale is not the scarce resource. Flexibility is. Orders at 120 w
     kind: 'failure',
     q: 'The search index (Elasticsearch) is lost in an outage. Listings were only ever written to MySQL and copied by CDC. What is the right recovery?',
     options: [
-      'Restore from the index\'s last snapshot and accept lost listings.',
       'Rebuild the index from MySQL, the source of truth, and replay the change stream from that point.',
+      'Restore from the index\'s last snapshot and accept lost listings.',
       'Fail over to a read replica of the index.',
     ],
-    answer: 1,
+    answer: 0,
     why: 'Derived stores are rebuildable by design. That is why you keep one source of truth.',
     explain: [
-      'Nothing needs to be lost: the source of truth still has every listing.',
       'Correct. A derived copy can always be rebuilt, which is the reason it is allowed to be less durable.',
+      'Nothing needs to be lost: the source of truth still has every listing.',
       'A replica of a broken derived copy does not help if the data is gone.',
     ],
   },
@@ -261,7 +261,7 @@ CREATE TABLE listings (
   id           BIGINT PRIMARY KEY,
   seller_id    BIGINT NOT NULL,
   title        VARCHAR(200) NOT NULL,
-  price_cents  BIGINT NOT NULL CHECK (price_cents > 0),     -- CHECK is enforced from MySQL 8.0.16
+  price_cents  BIGINT NOT NULL CHECK (price_cents > 0),     -- enforced from MySQL 8.0.16; 8.0.15 and older accept it and ignore it
   status       ENUM('active', 'sold', 'removed') NOT NULL,
   created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (seller_id) REFERENCES users(id),
@@ -327,18 +327,18 @@ No. A join on indexed keys that returns a handful of rows costs well under a mil
   },
   {
     kind: 'failure',
-    q: 'A user is deleted in a table where listings.seller_id has a foreign key but, in another database engine, no index on it. What happens on a large listings table?',
+    q: 'A user is deleted. listings.seller_id is a foreign key, and the database engine does not create an index on it for you. What happens on a large listings table?',
     options: [
       'Nothing; foreign keys are checked using the primary key.',
-      'Each delete must scan listings to check for referencing rows, which gets slow. InnoDB avoids this by requiring an index on the foreign-key column.',
       'The foreign key is ignored until the index exists.',
+      'Each delete must scan listings to check for referencing rows, which gets slow. InnoDB avoids this by creating an index on the foreign-key column if you did not.',
     ],
-    answer: 1,
+    answer: 2,
     why: 'The reference check is a lookup by the foreign-key value. Without an index it is a scan.',
     explain: [
       'The check looks up the child column, not the parent primary key.',
-      'Correct. This is also why "listings of seller 42" needs that index anyway.',
       'The constraint is enforced; the cost is a scan, not a skipped check.',
+      'Correct. This is also why "listings of seller 42" needs that index anyway.',
     ],
   },
 ]} />
@@ -469,7 +469,7 @@ WHERE f1.follower_id = 42;
 The *Google Calendar* interview question is this chapter plus time.
 
 - **Attendance is the many-to-many above**, with RSVP on the join row.
-- **Single events** store instants in UTC plus the event's IANA zone name for display. (MySQL's `TIMESTAMP` converts through the session time zone and stops at 2038; many teams store UTC in `DATETIME` instead. Check the docs for your version.)
+- **Single events** store instants in UTC plus the event's IANA zone name for display. (MySQL's `TIMESTAMP` converts through the session time zone and stops at 2038-01-19 03:14:07 UTC; `DATETIME` runs to year 9999 and is stored as given; MySQL 8.0 manual, checked 2026-10-19. Many teams store UTC in `DATETIME` instead.)
 - **Recurring events store the rule, not the instances.** A series row holds an iCalendar recurrence rule (RFC 5545 `RRULE`, for example `FREQ=WEEKLY;BYDAY=MO`), the local start time and the zone. Either **expand on read** for the window being viewed, or **materialise instances** for a rolling horizon (say, the next year) so free/busy and clash checks become plain index range queries. That costs storage and a background job to extend the horizon, in exchange for simple reads.
 - **Exceptions** (one meeting moved, one cancelled) are override rows keyed by `(series_id, original_start)`, or excluded dates.
 - **Clashes** use the overlap rule from query 5: intervals `[s1, e1)` and `[s2, e2)` overlap exactly when `s1 < e2` and `s2 < e1`.
@@ -511,15 +511,15 @@ Daylight saving. 9:00 in New York is 13:00 UTC in summer (UTC−4) and 14:00 UTC
     kind: 'scenario',
     q: 'You must make double-booking a meeting room impossible in MySQL, with bookings of arbitrary start and end times. Which design is correct?',
     options: [
-      'A CHECK constraint comparing the new booking with existing rows.',
       'Lock the room row with SELECT ... FOR UPDATE, check for an overlapping booking, then insert, all in one transaction. Or model fixed slots with a primary key (room_id, slot_start).',
+      'A CHECK constraint comparing the new booking with existing rows.',
       'Check for overlap in the application, then insert. Transactions make it safe.',
     ],
-    answer: 1,
+    answer: 0,
     why: 'MySQL has no exclusion constraint, and a CHECK cannot see other rows. You need a lock to serialise the check, or a unique key on a slot.',
     explain: [
-      'A CHECK constraint only sees the row being written, not other rows.',
       'Correct. The lock turns "check then insert" into a critical section per room; the slot table moves the rule into a unique key.',
+      'A CHECK constraint only sees the row being written, not other rows.',
       'Two concurrent transactions can both find no overlap and both insert. Under REPEATABLE READ a plain SELECT cannot see the other one. This is write skew (Chapter 7).',
     ],
   },
@@ -627,7 +627,7 @@ The LSM-tree (log-structured merge-tree) never updates in place.
 
 **Write amplification** is the bytes the engine writes to disk divided by the bytes you asked it to write. Both families pay it, at different times:
 
-- **B+tree**: change a 100-byte row and the engine eventually writes its whole 16 KB page (up to 160 times the data, if nothing else on the page changed before flush), plus the redo log record and the doublewrite copy. InnoDB's *change buffer* softens this for non-unique secondary-index changes by batching them. Check the docs for details.
+- **B+tree**: change a 100-byte row and the engine eventually writes its whole 16 KB page (up to 160 times the data, if nothing else on the page changed before flush), plus the redo log record and the doublewrite copy. InnoDB's *change buffer* softens this for secondary-index changes by batching them (MySQL 8.0 manual, "Change Buffer"; it does not apply to the clustered index, and unique indexes need a duplicate check, so the benefit is for non-unique ones).
 - **LSM**: each byte goes to the commit log, then to a flushed SSTable, then is rewritten every time compaction merges it into a larger file. Over a key's life that can be **ten times or more**, depending on the strategy and workload. The difference is that these are large sequential writes, done in the background.
 
 | | B+tree (InnoDB) | LSM-tree |
@@ -656,6 +656,7 @@ Reads may consult several files, compaction competes with foreground traffic and
     q: 'InnoDB table: orders(id BIGINT PRIMARY KEY, user_id BIGINT, total INT, note TEXT) with INDEX (user_id). Which statement needs the second B+tree walk into the clustered index?',
     code: "-- A\nSELECT id FROM orders WHERE user_id = 7;\n-- B\nSELECT total FROM orders WHERE user_id = 7;",
     options: ['Only A', 'Only B', 'Both A and B', 'Neither'],
+    fixed: true,
     answer: 1,
     why: 'The secondary index on user_id already contains the primary key id, so A is covered. B needs total, which lives only in the clustered row.',
     explain: [
@@ -670,15 +671,15 @@ Reads may consult several files, compaction competes with foreground traffic and
     q: 'A 1-billion-row table has five secondary indexes. Someone proposes a random 16-byte UUID primary key in place of an 8-byte BIGINT. What are the two main costs in InnoDB?',
     options: [
       'Slower COMMIT, and larger redo logs.',
-      'Every secondary index entry grows by the key difference, and inserts scatter across random leaf pages with splits and cold-cache misses.',
       'The table can no longer have foreign keys.',
+      'Every secondary index entry grows by the key difference, and inserts scatter across random leaf pages with splits and cold-cache misses.',
     ],
-    answer: 1,
+    answer: 2,
     why: 'The clustered key is copied into every secondary index, and random keys destroy insert locality.',
     explain: [
       'Commit latency is not the main effect of the key choice.',
-      'Correct. Hence time-ordered IDs (UUIDv7, Snowflake) or UUID_TO_BIN with the swap flag, which reorders the time bits.',
       'Foreign keys work with UUIDs. The issue is size and locality, not capability.',
+      'Correct. Hence time-ordered IDs (UUIDv7, Snowflake), or version-1 UUIDs with UUID_TO_BIN(uuid, 1), which moves the time bits to the front.',
     ],
   },
 ]} />
@@ -745,7 +746,7 @@ CREATE INDEX listings_by_seller_cov
   ON listings (seller_id, status, created_at DESC, price_cents, title);
 ```
 
-The trade: the extra columns sit at the end of the key, so they do not change the seek, but they make the index bigger, make every write to those columns touch the index, and there is a maximum key length (check the docs for your page size and row format). Covering pays off for hot, read-heavy queries over a few narrow columns. Do not append a long `TEXT` column.
+The trade: the extra columns sit at the end of the key, so they do not change the seek, but they make the index bigger, make every write to those columns touch the index, and there is a maximum key length (MySQL 8.0 manual, checked 2026-10-19: 3,072 bytes with the default 16 KB page and DYNAMIC row format, less for smaller pages or older row formats; at most 16 columns). Covering pays off for hot, read-heavy queries over a few narrow columns. Do not append a long `TEXT` column.
 
 ### Reading EXPLAIN
 
@@ -806,18 +807,18 @@ No. Through the leftmost-prefix rule, `(a, b)` already serves queries on `a` alo
 <Quiz id="databases-composite" title="Chapter 5 checkpoint" questions={[
   {
     kind: 'predict',
-    q: 'You have INDEX (seller_id, status, created_at). The plan for the query below shows type: ref, key: the index, rows: 3100000, Extra: Using where; Using filesort. What is the most likely cause?',
+    q: 'You have INDEX (seller_id, status, created_at). The plan for the query below shows type: range, key: the index, rows: 3100000, Extra: Using where; Using index; Using filesort. What is the most likely cause?',
     code: "SELECT id FROM listings\nWHERE seller_id = 42 AND status <> 'removed'\nORDER BY created_at DESC LIMIT 20;",
     options: [
-      'The index is missing.',
       'status <> is a range-like condition, so created_at no longer follows an equality prefix. The engine reads many rows and sorts them.',
+      'The index is missing.',
       'LIMIT 20 forces a filesort.',
     ],
-    answer: 1,
+    answer: 0,
     why: 'Equality columns must come first for the sort column to be in index order. A not-equal on status breaks the order, so the engine reads all non-removed rows for the seller and sorts them.',
     explain: [
+      'Correct. Reorder the columns to (seller_id, created_at, status): the sort now follows only the equality column and status is checked inside the index. Rewriting as status IN (...) does not help, because the sort still spans several status values.',
       'The index exists and is used (key is set). The issue is how it is used.',
-      'Correct. Rewrite as status IN (\'active\', \'sold\') for an equality-style plan, or reorder columns so the sort column follows only equalities.',
       'LIMIT does not force a sort; the missing index order does.',
     ],
   },
@@ -945,15 +946,15 @@ Yes. Outside an explicit `START TRANSACTION ... COMMIT`, each statement runs as 
     q: 'Checkout writes an order in MySQL, then calls a payment provider, then updates the order status. A deploy kills the process between the call and the update. What guards against a double charge on retry?',
     options: [
       'ACID atomicity, because it is all one transaction.',
-      'An idempotency key (unique) sent to the provider and stored with the order, because a database transaction cannot undo an external call.',
       'Wrapping the provider call inside the database transaction.',
+      'An idempotency key (unique) sent to the provider and stored with the order, because a database transaction cannot undo an external call.',
     ],
-    answer: 1,
+    answer: 2,
     why: 'Atomicity applies inside one database. The provider is outside it.',
     explain: [
       'The provider call is not part of the MySQL transaction, so rollback cannot undo the charge.',
-      'Correct. The retry sends the same key, and the provider (and your table) return the earlier result.',
       'Holding a transaction open across a network call keeps locks for the call\'s duration and still cannot roll back the charge.',
+      'Correct. The retry sends the same key, and the provider (and your table) return the earlier result.',
     ],
   },
 ]} />
@@ -1089,12 +1090,12 @@ On InnoDB I would keep the default or use READ COMMITTED, *with the statements e
     kind: 'predict',
     q: 'MySQL 8, InnoDB, default isolation. wallets.balance = 100 for user 7. Session A reads, session B writes, session A writes back. What is the final balance?',
     code: "-- A: START TRANSACTION;\n-- A: SELECT balance FROM wallets WHERE user_id = 7;   -- 100\n-- B: UPDATE wallets SET balance = balance + 20 WHERE user_id = 7; COMMIT;  -- now 120\n-- A: (app computes 100 + 50)\n-- A: UPDATE wallets SET balance = 150 WHERE user_id = 7;\n-- A: COMMIT;",
-    options: ['170', '150', '120', 'A gets a serialisation error'],
-    answer: 1,
+    options: ['150', '170', '120', 'A gets a serialisation error'],
+    answer: 0,
     why: 'A wrote an absolute value computed from a stale snapshot read. InnoDB REPEATABLE READ does not detect this lost update.',
     explain: [
-      '170 is what a correct run produces. A wrote 150, not "current + 50".',
       'Correct. B\'s +20 is lost. Fix with SET balance = balance + 50, or SELECT ... FOR UPDATE, or a version column.',
+      '170 is what a correct run produces. A wrote 150, not "current + 50".',
       '120 would be the result if A\'s write failed. It did not; the UPDATE succeeded.',
       'That is PostgreSQL REPEATABLE READ behaviour. InnoDB does not raise it.',
     ],
@@ -1103,14 +1104,14 @@ On InnoDB I would keep the default or use READ COMMITTED, *with the statements e
     kind: 'predict',
     q: 'Same setup, but A\'s last statement is the atomic form. What does A\'s UPDATE do and what is the final balance?',
     code: "-- A: START TRANSACTION;\n-- A: SELECT balance FROM wallets WHERE user_id = 7;   -- 100\n-- B: UPDATE wallets SET balance = balance + 20 WHERE user_id = 7; COMMIT;  -- now 120\n-- A: UPDATE wallets SET balance = balance + 50 WHERE user_id = 7;\n-- A: COMMIT;",
-    options: ['150', '170', '120', 'A\'s UPDATE waits forever'],
-    answer: 1,
+    options: ['150', '120', 'A\'s UPDATE waits forever', '170'],
+    answer: 3,
     why: 'UPDATE is a current read: it applies to the latest committed value (120), not A\'s snapshot (100).',
     explain: [
       '150 would mean A applied +50 to its stale snapshot value. UPDATE does not read the snapshot.',
-      'Correct. The atomic increment is the cheapest fix for lost updates.',
       '120 would mean A\'s +50 was lost. It was applied.',
       'B has already committed, so there is no lock to wait for.',
+      'Correct. The atomic increment is the cheapest fix for lost updates.',
     ],
   },
   {
@@ -1118,15 +1119,15 @@ On InnoDB I would keep the default or use READ COMMITTED, *with the statements e
     q: 'After moving checkout to SERIALIZABLE on InnoDB, error 1213 (deadlock) appears under load. What is the right response?',
     options: [
       'Treat it as a bug and switch back to READ UNCOMMITTED.',
-      'Catch the error, retry the whole transaction, keep transactions short, and access rows in a consistent order.',
       'Increase innodb_lock_wait_timeout.',
+      'Catch the error, retry the whole transaction, keep transactions short, and access rows in a consistent order.',
     ],
-    answer: 1,
+    answer: 2,
     why: 'Deadlocks are a normal outcome of locking concurrency. InnoDB picks a victim and rolls it back; the application retries.',
     explain: [
       'READ UNCOMMITTED would let dirty reads through and does not fix the logic.',
-      'Correct. Retry whole transactions, not single statements, and lock in a consistent order to reduce deadlocks.',
       'That timeout governs waits, not deadlocks. InnoDB detects deadlocks immediately and does not wait for the timeout.',
+      'Correct. Retry whole transactions, not single statements, and lock in a consistent order to reduce deadlocks.',
     ],
   },
 ]} />
@@ -1219,12 +1220,12 @@ The <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and r
     kind: 'predict',
     q: 'InnoDB, default isolation. stock = 1 for item 7. Session B decremented it to 0 and committed after session A\'s first SELECT. What does A\'s UPDATE report?',
     code: "-- A: START TRANSACTION;\n-- A: SELECT stock FROM inventory WHERE item_id = 7;  -- 1\n-- B: UPDATE inventory SET stock = 0 WHERE item_id = 7; COMMIT;\n-- A: UPDATE inventory SET stock = stock - 1\n--     WHERE item_id = 7 AND stock > 0;\n-- A: SELECT ROW_COUNT();",
-    options: ['1 row affected; stock becomes -1', '0 rows affected', 'A waits for B', 'An error'],
-    answer: 1,
+    options: ['0 rows affected', '1 row affected; stock becomes -1', 'A waits for B', 'An error'],
+    answer: 0,
     why: 'The UPDATE is a current read. It sees stock = 0, the condition stock > 0 fails, and nothing changes.',
     explain: [
-      'That would happen if the check ran against A\'s old snapshot. The WHERE of an UPDATE evaluates against the latest committed data.',
       'Correct. This is why the conditional UPDATE is safe even under REPEATABLE READ.',
+      'That would happen if the check ran against A\'s old snapshot. The WHERE of an UPDATE evaluates against the latest committed data.',
       'B has already committed and released its lock.',
       'There is no error: zero matching rows is a normal result.',
     ],
@@ -1249,15 +1250,15 @@ The <a href={`${BASE}sd/war/concurrency-and-races/`}>War Room: concurrency and r
     kind: 'failure',
     q: 'A worker runs SELECT * FROM jobs WHERE status = \'new\' LIMIT 1 FOR UPDATE and many workers do the same. Throughput is one job at a time. What is the fix?',
     options: [
-      'Add more workers.',
       'Use FOR UPDATE SKIP LOCKED so each worker locks a different unlocked row (MySQL 8.0+), and index status.',
+      'Add more workers.',
       'Switch to READ UNCOMMITTED.',
     ],
-    answer: 1,
+    answer: 0,
     why: 'Without SKIP LOCKED every worker queues on the same first row.',
     explain: [
-      'More workers just join the same queue behind the same locked row.',
       'Correct. SKIP LOCKED turns the table into a queue where workers do not block each other.',
+      'More workers just join the same queue behind the same locked row.',
       'Isolation level does not change that locking reads wait for each other.',
     ],
   },
@@ -1289,7 +1290,7 @@ A seller changes a price from €400 to €350, saves, and the page comes back s
 
 1. The source writes every committed change to its **binary log** (binlog). Use `binlog_format = ROW`: it logs the changed rows, which is the safe, deterministic format.
 2. Each replica's **I/O (receiver) thread** copies binlog events into a local **relay log**.
-3. The replica's **applier (SQL) threads** replay the relay log. Applying can be multi-threaded (`replica_parallel_workers`); defaults differ by version, so check the docs.
+3. The replica's **applier (SQL) threads** replay the relay log. Applying can be multi-threaded (`replica_parallel_workers`). Before MySQL 8.0.27 the default was 0 (one applier thread); from 8.0.27 it is 4 (MySQL 8.0 manual, checked 2026-10-19).
 4. **GTIDs** (global transaction ids, `gtid_mode = ON`) label every transaction `source_uuid:n`, so a replica can say exactly which transactions it has, which makes failover and re-pointing safe.
 
 <Figure caption="MySQL replication. Replication is asynchronous by default: the source does not wait for the replica.">
@@ -1309,7 +1310,7 @@ A seller changes a price from €400 to €350, saves, and the page comes back s
 | **Semi-synchronous** | at least one replica has *received* it (written to its relay log) | Nothing acknowledged is lost, if that replica is promoted | One extra round trip |
 | **Fully synchronous** (a general concept, not a standard MySQL mode) | every replica has it | Nothing lost | Highest; one slow replica stalls every write |
 
-Two precise points on semi-synchronous replication in MySQL. With `AFTER_SYNC` wait point (the default in 8.0), the source waits for the replica's acknowledgement *before* making the commit visible to other sessions, so a failover does not lose data a client already saw. And the acknowledgement means "received", not "applied", so **a semi-sync replica can still serve stale reads**. If no replica acknowledges within the timeout, the source silently falls back to asynchronous. MySQL **Group Replication** and InnoDB Cluster go further (a consensus protocol among members); check the docs for their exact guarantees.
+Two precise points on semi-synchronous replication in MySQL. With `AFTER_SYNC` wait point (the default; MySQL 8.0 manual, checked 2026-10-19), the source waits for the replica's acknowledgement *before* making the commit visible to other sessions, so a failover does not lose data a client already saw. And the acknowledgement means "received", not "applied", so **a semi-sync replica can still serve stale reads**. If no replica acknowledges within the timeout, the source silently falls back to asynchronous. MySQL **Group Replication** and InnoDB Cluster go further (a consensus protocol among members); check the docs for their exact guarantees.
 
 Whatever you choose, *say* what you accept: *"async, so a failover can lose the last second of writes."*
 
@@ -1323,7 +1324,7 @@ Whatever you choose, *say* what you accept: *"async, so a failover can lose the 
 | **Monotonic reads** | A comment appears, vanishes, reappears | Pin each user to one replica (hash the user id) |
 | **Consistent prefix** | An answer appears before its question | Keep causally related writes in the same partition, or track causality |
 
-Waiting for a position is concrete in MySQL: `SELECT WAIT_FOR_EXECUTED_GTID_SET('uuid:1-12345', 1)` on the replica blocks until that GTID set has been applied (or the timeout, in seconds, expires). To learn a write's GTID, the client can read it from the OK packet using `session_track_gtids = OWN_GTID`, or the application can query `@@gtid_executed` on the source; driver support varies, so check yours. A simpler alternative is a short "read from the source" window after each write.
+Waiting for a position is concrete in MySQL: `SELECT WAIT_FOR_EXECUTED_GTID_SET('uuid:1-12345', 1)` on the replica blocks until that GTID set has been applied (or the timeout, in seconds, expires). To learn a write's GTID, the client can read it from the OK packet using `session_track_gtids = OWN_GTID`, or the application can query `@@gtid_executed` on the source; driver support varies (PyMySQL 1.2 and MySQL Connector/Python 9.4 do not expose it), so check yours. A simpler alternative is a short "read from the source" window after each write.
 
 **Measuring lag.** `SHOW REPLICA STATUS` (`SHOW SLAVE STATUS` before 8.0.22) reports `Seconds_Behind_Source`. It is only a rough guide: it is based on timestamps, can read 0 while the replica is stuck waiting for events, and can jump. A heartbeat row updated on the source every second (the technique behind `pt-heartbeat`) and compared on the replica is more trustworthy.
 
@@ -1363,30 +1364,30 @@ No. That would make the source the bottleneck again. Send only reads of what the
     q: 'Reads are load-balanced across three replicas with different lag. A user sees a new comment, refreshes, and it is gone; refreshes again and it is back. Which fix is correct?',
     options: [
       'Make all replicas semi-synchronous.',
-      'Pin each user to one replica (for example by hashing the user id) so their reads never go backwards in time.',
       'Increase the buffer pool.',
+      'Pin each user to one replica (for example by hashing the user id) so their reads never go backwards in time.',
     ],
-    answer: 1,
+    answer: 2,
     why: 'This is a monotonic-reads violation. Each replica is internally consistent but they are at different points.',
     explain: [
       'Semi-sync acknowledges receipt, not application, so replicas can still be at different positions.',
-      'Correct. It holds until that replica fails; then re-pin and accept one possible step back.',
       'Memory does not change which replica is ahead of which.',
+      'Correct. It holds until that replica fails; then re-pin and accept one possible step back.',
     ],
   },
   {
     kind: 'tradeoff',
     q: 'Dashboards show Seconds_Behind_Source = 0 but users see stale reads on one replica. What do you suspect?',
     options: [
-      'Nothing; 0 means fully caught up.',
       'The metric is only approximate and can read 0 while the replica is waiting or stuck. Use a heartbeat table, and check applier thread state.',
+      'Nothing; 0 means fully caught up.',
       'The binlog format is wrong.',
     ],
-    answer: 1,
+    answer: 0,
     why: 'Seconds_Behind_Source is derived from event timestamps and has known blind spots.',
     explain: [
-      'It can show 0 in situations where the replica is not actually current.',
       'Correct. Confirm with a heartbeat comparison and the replica\'s applier status.',
+      'It can show 0 in situations where the replica is not actually current.',
       'ROW format does not cause staleness; it is the recommended setting.',
     ],
   },
@@ -1408,7 +1409,7 @@ A product lead asks for two things: low write latency for users in Brazil and Ja
 
 **Multi-leader replication**: several nodes (one per region, or every offline phone) accept writes and replicate to each other asynchronously. A calendar app that works offline *is* a multi-leader system: every device is a leader until it syncs. The gain is local write latency and writes that survive a partition. **The price is conflicts**: two leaders accept different writes to the same record, and both must eventually agree.
 
-For MySQL, treat multi-source or active-active setups with care. Two sources can both accept writes, but MySQL itself will not resolve conflicts for you (Group Replication in multi-primary mode certifies and rolls back conflicting transactions; check the docs). A single writer with replicas is far simpler.
+For MySQL, treat multi-source or active-active setups with care. Two sources can both accept writes, but MySQL itself will not resolve conflicts for you (Group Replication in multi-primary mode is optimistic: conflicting transactions fail certification and are rolled back; MySQL 8.0 manual, checked 2026-10-19). A single writer with replicas is far simpler.
 
 | Conflict strategy | How | Cost |
 |---|---|---|
@@ -1452,12 +1453,12 @@ For MySQL, treat multi-source or active-active setups with care. Two sources can
   {
     kind: 'scenario',
     q: 'N = 5 and the system must keep reads and writes working with two replicas down, with every read overlapping every write. Choose W and R.',
-    options: ['W = 2, R = 2', 'W = 3, R = 3', 'W = 5, R = 1'],
-    answer: 1,
+    options: ['W = 3, R = 3', 'W = 2, R = 2', 'W = 5, R = 1'],
+    answer: 0,
     why: 'W + R must exceed N (6 > 5), and each operation needs only 3 of 5, so 2 can be down.',
     explain: [
-      '2 + 2 = 4 is not more than 5, so a read can miss the latest write.',
       'Correct. Each side tolerates N − W = N − R = 2 failures.',
+      '2 + 2 = 4 is not more than 5, so a read can miss the latest write.',
       'Overlap holds (6 > 5), but one replica down blocks every write.',
     ],
   },
@@ -1540,15 +1541,15 @@ Because one conversation partition grows forever. An extreme group chat posting 
     q: 'An orders table gets 2M rows/day at ~1 KB with indexes, peak 116 writes/s. A teammate proposes sharding now. What is the right call?',
     options: [
       'Shard now to avoid a painful migration later.',
-      'Run one primary and two replicas: about 730 GB a year and about 116 writes/s are well within one node. Add partitioning and archiving as it grows.',
       'Move to a wide-column store.',
+      'Run one primary and two replicas: about 730 GB a year and about 116 writes/s are well within one node. Add partitioning and archiving as it grows.',
     ],
-    answer: 1,
+    answer: 2,
     why: 'The numbers say it fits. Sharding adds permanent complexity (no cross-shard joins or transactions).',
     explain: [
       'Premature sharding costs you joins, transactions and operations every day to avoid a problem you may never have.',
-      'Correct. Revisit when storage or write rate approaches what one node sustains.',
       'It would trade away the transactions and ad-hoc queries orders need, for scale not needed.',
+      'Correct. Revisit when storage or write rate approaches what one node sustains.',
     ],
   },
   {
@@ -1600,12 +1601,12 @@ PARTITION BY RANGE COLUMNS (created_at) (
 ALTER TABLE messages DROP PARTITION p202610;  -- retention: near-instant, unlike a huge DELETE
 ```
 
-The rules to remember (check the docs for the full list):
+The main rules (MySQL 8.0 manual, checked 2026-10-19; the manual has the full list):
 
 - **Every unique key, including the primary key, must contain all columns of the partitioning expression.** This is why `created_at` appears in the primary key above.
 - **InnoDB partitioned tables cannot have foreign keys**, as parent or child.
 - **Pruning only happens when the query filters on the partitioning column.** `EXPLAIN` shows the touched partitions in its `partitions` column. A query without it checks every partition.
-- There is a maximum number of partitions per table (8,192).
+- There is a maximum number of partitions per table (8,192). Asking for 8,193 fails with error 1499.
 - It is still one server. Partitioning does nothing for write throughput or for losing the machine.
 
 ### Sharding: choosing the key
@@ -1665,15 +1666,15 @@ With a second table, `email → user_id`, sharded by email: a global secondary i
     kind: 'scenario',
     q: 'The audit_log table in MySQL has 3 billion rows and 90% of queries are for the last 7 days. Retention is 13 months. A teammate wants to shard. What is a better first step?',
     options: [
-      'Shard by user_id immediately.',
       'Partition by month on created_at (including created_at in the primary key), so queries on recent dates are pruned and old months are dropped with DROP PARTITION.',
+      'Shard by user_id immediately.',
       'Add a read replica for every query.',
     ],
-    answer: 1,
+    answer: 0,
     why: 'Partitioning inside one server solves retention and pruning. Sharding is for write or size limits one node cannot meet.',
     explain: [
-      'Sharding adds permanent cost, and the problem here is old data, not write throughput.',
       'Correct. Check that queries filter on created_at so pruning works, and note foreign keys are not allowed on partitioned InnoDB tables.',
+      'Sharding adds permanent cost, and the problem here is old data, not write throughput.',
       'Replicas help reads but do not shrink the table or speed up retention.',
     ],
   },
@@ -1697,15 +1698,15 @@ With a second table, `email → user_id`, sharded by email: a global secondary i
     kind: 'tradeoff',
     q: 'Which statement separates partitioning from sharding?',
     options: [
-      'Partitioning is a MySQL feature and sharding is a NoSQL feature.',
       'Partitioning splits a table inside one server and does not add write capacity. Sharding spreads data over several servers and costs you cross-shard joins and transactions.',
+      'Partitioning is a MySQL feature and sharding is a NoSQL feature.',
       'They are two names for the same thing.',
     ],
-    answer: 1,
+    answer: 0,
     why: 'The boundary is the server. Everything else follows from it.',
     explain: [
-      'Relational databases shard too, via application routing, Vitess and similar.',
       'Correct.',
+      'Relational databases shard too, via application routing, Vitess and similar.',
       'They solve different problems, and mixing them up is a common interview slip.',
     ],
   },
@@ -1736,7 +1737,7 @@ Suppose a shard split goes smoothly until someone notices *order 1048577 exists 
 
 **UUIDv4**: 122 random bits in 128; no coordination; collisions are not a practical worry. But random keys **land on random pages of the clustered index**: every insert touches a different leaf, pages split everywhere, they end up partly empty and the buffer pool thrashes. Because InnoDB clusters rows by primary key, the table scatters too, and every secondary index carries the 16-byte key (36 characters if someone stored it as text, which is much worse: store `BINARY(16)`).
 
-**UUIDv7** (RFC 9562, 2024): a 48-bit Unix millisecond timestamp, then version and variant bits, then random bits. Same 128 bits as v4, but **time-ordered**, so inserts append. Order *within* one millisecond depends on the implementation. **ULID** is the same idea in a 26-character string. MySQL's `UUID()` makes a version 1 UUID whose time bits are in the wrong order for indexing; `UUID_TO_BIN(uuid, 1)` (MySQL 8.0) swaps them into a sortable layout and stores `BINARY(16)`. MySQL does not generate v7 natively (as far as I know; check your version), so generate v7 ids in the application.
+**UUIDv7** (RFC 9562, 2024): a 48-bit Unix millisecond timestamp, then version and variant bits, then random bits. Same 128 bits as v4, but **time-ordered**, so inserts append. Order *within* one millisecond depends on the implementation. **ULID** is the same idea in a 26-character string. MySQL's `UUID()` makes a version 1 UUID whose time bits are in the wrong order for indexing; `UUID_TO_BIN(uuid, 1)` (MySQL 8.0) swaps them into a sortable layout and stores `BINARY(16)`. MySQL 8.0 has no built-in v7 generator (manual, checked 2026-10-19), so generate v7 ids in the application.
 
 **Snowflake** (Twitter, 2010): a 64-bit integer built from three fields.
 
@@ -1783,7 +1784,7 @@ Ask: must ids fit in 64 bits? Must they sort by time? What peak rate, and across
     q: 'An InnoDB table with a CHAR(36) UUIDv4 primary key and four secondary indexes is slowing down at 300M rows. What is the best fix?',
     options: [
       'Add more secondary indexes.',
-      'Switch to a time-ordered key stored compactly: BIGINT Snowflake-style, or UUIDv7 / UUID_TO_BIN(uuid, 1) in BINARY(16).',
+      'Switch to a time-ordered key stored compactly: BIGINT Snowflake-style, or UUIDv7 (or a version-1 UUID with UUID_TO_BIN(uuid, 1)) in BINARY(16).',
       'Partition the table by the UUID.',
     ],
     answer: 1,
@@ -1799,15 +1800,15 @@ Ask: must ids fit in 64 bits? Must they sort by time? What peak rate, and across
     q: 'A Snowflake node is restored from a VM snapshot, and its clock is now 40 seconds behind the last timestamps it issued. What should happen?',
     options: [
       'Continue issuing ids with the earlier timestamps.',
-      'Refuse to issue ids (or wait) until the clock passes the last timestamp used.',
       'Pick a new random machine id.',
+      'Refuse to issue ids (or wait) until the clock passes the last timestamp used.',
     ],
-    answer: 1,
+    answer: 2,
     why: 'Reusing earlier timestamps with the same machine id and sequence can reissue ids already handed out.',
     explain: [
       'Same timestamp, machine and sequence means a duplicate id.',
-      'Correct. Alert on it too, because waiting 40 seconds is a visible outage for that node.',
       'Another node may own that machine id, so you would trade one collision for another.',
+      'Correct. Alert on it too, because waiting 40 seconds is a visible outage for that node.',
     ],
   },
 ]} />
@@ -1832,7 +1833,7 @@ The design survives the whiteboard. These three chapters are about surviving Bla
 
 Black Friday, 9:00 a.m. The autoscaler grows the app from forty pods to a hundred and twenty in four minutes. Then every new pod crashes on startup with `Too many connections` (MySQL error 1040). Database CPU: 30%. Memory: fine. Connections: all of them. How many queries can that machine actually run at once, and how many connections did we ask it to hold open?
 
-**A connection is not free.** MySQL runs one thread per connection, each with its own buffers. The default `max_connections` is 151; check yours. A database can only *execute* as many queries at once as it has cores and I/O to run them. Thousands of mostly idle connections add memory and scheduling overhead and buy nothing. (PostgreSQL is heavier still: a process per connection.)
+**A connection is not free.** MySQL runs one thread per connection, each with its own buffers. The default `max_connections` is 151 (MySQL 8.0 manual, checked 2026-10-19); your server may set another value. A database can only *execute* as many queries at once as it has cores and I/O to run them. Thousands of mostly idle connections add memory and scheduling overhead and buy nothing. (PostgreSQL is heavier still: a process per connection.)
 
 **Pooling** reuses a small set of connections:
 
@@ -1858,15 +1859,15 @@ Black Friday, 9:00 a.m. The autoscaler grows the app from forty pods to a hundre
     kind: 'failure',
     q: 'A rolling deploy briefly doubles pods, each with a pool of 20, and the database returns error 1040. Raising max_connections to 5,000 "fixes" it but p99 latency rises. Why, and what is better?',
     options: [
-      'More connections always increase throughput; the latency is unrelated.',
       'Thousands of connections add memory and thread contention without more parallelism. Cap pool sizes from rate × hold time and add a proxy to multiplex.',
+      'More connections always increase throughput; the latency is unrelated.',
       'The latency comes from the binlog.',
     ],
-    answer: 1,
+    answer: 0,
     why: 'Parallelism is limited by cores and I/O. Extra connections just queue inside the server.',
     explain: [
-      'Throughput is bounded by what the database can execute at once.',
       'Correct. Size pools from the work (Little\'s law) and let a proxy absorb deploy spikes.',
+      'Throughput is bounded by what the database can execute at once.',
       'Binlog writing is unrelated to connection count.',
     ],
   },
@@ -1930,30 +1931,30 @@ A stale value can be cached right after an invalidation. The writer updates the 
     q: 'The source\'s CPU is at 80%. Profiling shows 70% of load is the same 5,000 product pages. Which do you add first, and what must you plan for?',
     options: [
       'Two read replicas; plan for replication lag.',
-      'A cache for those pages; plan invalidation, TTL, and what happens on a cold start or a cache outage.',
       'Shard the database.',
+      'A cache for those pages; plan invalidation, TTL, and what happens on a cold start or a cache outage.',
     ],
-    answer: 1,
+    answer: 2,
     why: 'A small hot repeated set is the cache\'s best case. Replicas would copy the whole database to serve five thousand pages.',
     explain: [
       'It works but at a much higher cost per read, and lag becomes a user-visible issue.',
-      'Correct. Also decide what the database does when the cache is empty: a stampede can hit it all at once.',
       'Sharding addresses write volume and data size, not read skew.',
+      'Correct. Also decide what the database does when the cache is empty: a stampede can hit it all at once.',
     ],
   },
   {
     kind: 'failure',
     q: 'The cache is flushed during a deploy and the database collapses within seconds. What was missing?',
     options: [
-      'More replicas.',
       'Protection against a stampede: request coalescing or a lock per key, jittered TTLs, and a warm-up or stale-while-revalidate plan.',
+      'More replicas.',
       'A bigger buffer pool.',
     ],
-    answer: 1,
+    answer: 0,
     why: 'When every request misses at once, the database takes the full read load the cache normally hides.',
     explain: [
-      'Replicas share the load but the cold-cache read rate still arrives all at once.',
       'Correct. See the Caching lesson for the mitigations in detail.',
+      'Replicas share the load but the cold-cache read rate still arrives all at once.',
       'Memory helps a little but does not remove the sudden load.',
     ],
   },
@@ -2039,15 +2040,15 @@ One giant transaction holds a lock on every row it touched until it commits, blo
     kind: 'scenario',
     q: 'Rename users.name to display_name with zero downtime. Which is the right plan?',
     options: [
-      'ALTER TABLE users RENAME COLUMN name TO display_name during the deploy.',
       'Add display_name, dual-write, backfill in batches, switch reads, stop writing name, then drop it.',
+      'ALTER TABLE users RENAME COLUMN name TO display_name during the deploy.',
       'Copy the table at midnight and swap.',
     ],
-    answer: 1,
+    answer: 0,
     why: 'Old code still refers to name while the deploy rolls. Each step must work for both versions of the code.',
     explain: [
-      'The rename itself is quick, but every old pod fails the moment it commits.',
       'Correct. Every step is backward compatible and reversible until the drop.',
+      'The rename itself is quick, but every old pod fails the moment it commits.',
       'Writes during the copy are lost unless captured, and the swap still needs all servers updated at once.',
     ],
   },
@@ -2091,32 +2092,32 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
     q: 'You shard a URL shortener by user_id. What breaks?',
     options: [
       'Nothing; user_id is always a safe key',
-      'The redirect path: GET /{code} has no user_id, so finding the row means asking every shard. Shard by short code instead; the hot query must stay single-shard',
       'Writes become slower',
+      'The redirect path: GET /{code} has no user_id, so finding the row means asking every shard. Shard by short code instead; the hot query must stay single-shard',
       'IDs collide across shards'
     ],
-    answer: 1,
+    answer: 2,
     why: 'The dominant query (redirect, 100:1 read-heavy) must resolve on one shard. Scatter-gather on your hottest path is a failed design.',
     explain: [
       'The key must carry the hottest query.',
-      'Correct.',
       'Writes are not the problem here; reads are.',
+      'Correct.',
       'Collisions come from code generation, not the shard key.',
     ],
   },
   {
     q: 'A user posts a comment, the page refreshes, and the comment is gone. It reappears seconds later. Diagnosis and cheapest fix?',
     options: [
-      'The write failed and retried; add stronger transactions',
       'Async replica lag: the read hit a replica. Apply read-your-own-writes: pin that user\'s reads to the source briefly',
+      'The write failed and retried; add stronger transactions',
       'Cache invalidation bug; flush the cache',
       'Eventual consistency; nothing can be done'
     ],
-    answer: 1,
+    answer: 0,
     why: 'The classic replication-lag symptom. Naming the cause and the targeted fix (not "make everything strongly consistent") is the senior answer.',
     explain: [
-      'The write succeeded; it just is not visible on that replica yet.',
       'Correct.',
+      'The write succeeded; it just is not visible on that replica yet.',
       'It may also be a cache issue, but the replica explanation is the one that fits the symptom with async replication.',
       'Something can be done: targeted read-your-writes.',
     ],
@@ -2126,33 +2127,33 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
     options: [
       'v7 is more unique',
       'v7 is shorter',
-      'Time-ordered ids append to the right edge of the clustered index; random v4 inserts scatter across pages, split them and thrash the cache',
-      'v4 can collide across shards'
+      'v4 can collide across shards',
+      'Time-ordered ids append to the right edge of the clustered index; random v4 inserts scatter across pages, split them and thrash the cache'
     ],
-    answer: 2,
+    answer: 3,
     why: 'Index locality. Random keys turn every insert into a random-page write; time-ordered keys make inserts sequential.',
     explain: [
       'Both are unique for practical purposes.',
       'Both are 128 bits. Snowflake is 64, but that is not the main reason for v7.',
-      'Correct.',
       'Random v4 collisions are negligible.',
+      'Correct.',
     ],
   },
   {
     kind: 'scenario',
     q: 'MySQL InnoDB, default settings. Two transactions each read a balance of 100 with a plain SELECT, compute in the app, and write it back. What protects you?',
     options: [
-      'Nothing at the default level: REPEATABLE READ allows the lost update. Use an atomic UPDATE ... SET balance = balance + :delta, SELECT ... FOR UPDATE, or a version column',
       'The default SERIALIZABLE level aborts one of them',
       'MVCC makes lost updates impossible',
+      'Nothing at the default level: REPEATABLE READ allows the lost update. Use an atomic UPDATE ... SET balance = balance + :delta, SELECT ... FOR UPDATE, or a version column',
       'The primary key on wallets prevents it'
     ],
-    answer: 0,
+    answer: 2,
     why: 'InnoDB\'s default REPEATABLE READ reads a snapshot for plain SELECTs, so read-then-write code still loses updates. Fix it in the statement, with a lock, or with a version.',
     explain: [
-      'Correct.',
       'SERIALIZABLE is not the default in InnoDB.',
       'MVCC gives consistent reads, not protection against writes based on stale reads.',
+      'Correct.',
       'A primary key only prevents duplicates.',
     ],
   },

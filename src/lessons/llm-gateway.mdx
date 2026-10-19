@@ -452,6 +452,7 @@ class Breaker:
         if self.state == "half-open":
             self.state = "closed" if ok else "open"
             self.opened_at = now
+            self.events = []              # forget the old failures, or the next call re-opens at once
             return
         fails = sum(1 for _, o in self.events if not o)
         if len(self.events) >= self.min_calls and fails / len(self.events) >= self.error_rate:
@@ -494,7 +495,7 @@ This sketch is single-process and not thread-safe. A real fleet usually keeps br
 
 <Reveal q="Provider A rate-limits you at 2 million tokens a minute across your whole organisation. Your fifty tenants' limits add up to 5 million. Is that a bug?">
 
-Not necessarily. Oversubscription is normal because tenants rarely peak together. But the gateway then needs a **second layer of buckets per provider key and model**, shared by all tenants, and a priority order when it runs short: interactive traffic first, batch jobs queued or moved to another provider (or to a provider's discounted asynchronous batch interface where one exists; check current docs). Without the provider-level bucket, the first sign of contention is a wall of 429s from the provider.
+Not necessarily. Oversubscription is normal because tenants rarely peak together. But the gateway then needs a **second layer of buckets per provider key and model**, shared by all tenants, and a priority order when it runs short: interactive traffic first, batch jobs queued or moved to another provider (or to a provider's discounted asynchronous batch interface: Anthropic's Message Batches API and OpenAI's Batch API both list a 50% discount; provider docs, checked 2026-10-19). Without the provider-level bucket, the first sign of contention is a wall of 429s from the provider.
 
 </Reveal>
 
@@ -807,7 +808,7 @@ Production caveats: if the same Redis serves other keys, load-test the script. I
 
 The simulator above uses requests, but tokens work the same way: capacity is the burst, refill is the sustained rate.
 
-**Two levels of buckets.** Tenant buckets protect tenants from each other and enforce what they paid for. **Provider buckets** (per provider key × model) protect you from the provider's own limits, which are shared by every tenant (Chapter 4's Reveal). A request needs both. Where the provider's response headers report remaining quota, feed them back into the provider bucket instead of guessing. The header names differ by provider, so check current docs.
+**Two levels of buckets.** Tenant buckets protect tenants from each other and enforce what they paid for. **Provider buckets** (per provider key × model) protect you from the provider's own limits, which are shared by every tenant (Chapter 4's Reveal). A request needs both. Where the provider's response headers report remaining quota, feed them back into the provider bucket instead of guessing. The header names differ by provider: Anthropic sends `anthropic-ratelimit-requests-remaining` and `anthropic-ratelimit-input-tokens-remaining` (with matching `-reset` headers), while OpenAI sends `x-ratelimit-remaining-requests` and `x-ratelimit-remaining-tokens` (provider docs, checked 2026-10-19).
 
 **If Redis is unreachable,** decide in advance. Fail open for interactive traffic with a local per-instance limit as a backstop, and fail closed for batch. The rate-limiter lesson's failure chapter works through the options.
 
@@ -1051,7 +1052,7 @@ The precise difference: the first two **replace** the model call and can therefo
 - Embedding cost for the 92% that miss exact-match: 1.84M × ~50 tokens = 92M tokens × an illustrative $0.02/M ≈ **$2/day**. Each miss pays about 10 to 20 ms more for the embedding and vector lookup.
 - Net ≈ **$1,240/day** saved, and 23% of users get an answer in tens of milliseconds instead of seconds.
 
-**Worked numbers, prefix caching.** If 1,200 of the 1,500 input tokens are a stable prefix and cached input were billed at 10% of the normal price (illustrative, check your provider), effective input becomes 300 + 1,200 × 0.1 = 420 tokens: **72% less input cost**. The call drops from $0.0027 to 420 × $1/M + 300 × $4/M = **$0.00162**, which is 40% cheaper on every call with no correctness risk. On many workloads this beats the semantic cache, so say it first.
+**Worked numbers, prefix caching.** If 1,200 of the 1,500 input tokens are a stable prefix and cached input were billed at 10% of the normal price (Anthropic's docs list 0.1x for most models and lower for some, and OpenAI's list 0.1x for most newer models; checked 2026-10-19, but your model may differ), effective input becomes 300 + 1,200 × 0.1 = 420 tokens: **72% less input cost**. The call drops from $0.0027 to 420 × $1/M + 300 × $4/M = **$0.00162**, which is 40% cheaper on every call with no correctness risk. On many workloads this beats the semantic cache, so say it first.
 
 **Streaming and caches.** A cache hit must still look like a stream to a client that asked for one. The gateway replays the stored answer as events, usually in a few big chunks. Record `served_by_cache=true` in the ledger with zero provider tokens, so savings are visible rather than assumed.
 
@@ -1134,7 +1135,7 @@ def luhn_ok(digits: str) -> bool:
         total, flip = total + d, not flip
     return total % 10 == 0
 
-CARD = re.compile(r"\b(?:\d[ -]?){13,19}\b")
+CARD = re.compile(r"\b\d(?:[ -]?\d){12,18}\b")   # must end on a digit, or it eats the space after the number
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 
 def redact(text: str):
@@ -1352,7 +1353,7 @@ Imagine a page: "support bot slow". Total latency p50 is flat. Error rate is fla
     L --> E["Evaluation sets\nincident review"]`} />
 </Figure>
 
-**Traces.** One trace per request (and one per agent task, Chapter 15), with a span per stage: auth, limit check, cache lookup, redaction, each provider attempt, output filtering. LLM spans carry model, provider, tokens, cost, TTFT and finish reason as attributes. OpenTelemetry has generative-AI semantic conventions for these attributes (still evolving, so check the current spec). Using them lets standard tools read your spans. Debugging "the agent did something odd at step 7" without a trace is archaeology. With one, it is reading. This section is also the core of the **distributed tracing** question in the question bank.
+**Traces.** One trace per request (and one per agent task, Chapter 15), with a span per stage: auth, limit check, cache lookup, redaction, each provider attempt, output filtering. LLM spans carry model, provider, tokens, cost, TTFT and finish reason as attributes. OpenTelemetry has generative-AI semantic conventions for these attributes (still evolving, so read the current spec; as of 2026-10-19 the spec has moved to the open-telemetry/semantic-conventions-genai repository). Using them lets standard tools read your spans. Debugging "the agent did something odd at step 7" without a trace is archaeology. With one, it is reading. This section is also the core of the **distributed tracing** question in the question bank.
 
 **Sampling and span ingest, worked numbers.** 20M requests a day × ~5 spans × ~1 KB ≈ **100 GB/day** of spans at 100% sampling. That is too much to keep for little value. Use **head sampling** at 10% for routine traffic (about 10 GB/day), and **tail sampling** (decided after the trace completes, in a collector that buffers spans briefly) to keep 100% of errors, fallbacks, slow requests and budget rejections. Metrics, not traces, carry the totals, so sampling never distorts cost or error rates. Span storage is a time-series workload: partition by time, roll up, expire.
 
@@ -1698,15 +1699,15 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
       'In the model\'s system prompt, marked confidential',
       'The model only proposes typed tool calls. The platform executes them with its credentials, checks the team\'s allowlist, and gates destructive tools behind approval',
       'Encrypted in the conversation context',
-      'The agent gets a scoped token per task',
+      'The agent runtime holds one long-lived admin token, and the model decides when to use it',
     ],
     answer: 1,
-    why: 'Anything in model context can leak into output, and prompt injection makes that adversarial. Option 4 is a refinement of the execution side, not a substitute.',
+    why: 'Anything in model context can leak into output, and prompt injection makes that adversarial. The executor can also use short-lived, scoped tokens per task.',
     explain: [
       'Context text can be echoed back. A confidentiality label does not stop that.',
       'Correct: propose versus execute is the load-bearing security boundary.',
       'Anything the model can read it can repeat. Encryption the model can undo protects nothing.',
-      'A scoped token is good, but it belongs to the executor, not the model. It does not replace propose versus execute.',
+      'Broad standing access with the model in control: one injected instruction can use all of it. Scoped tokens are good, but they belong to the executor, not the model.',
     ],
   },
   {
@@ -1816,7 +1817,7 @@ If it fails before the first token, nothing: the gateway fails over inside the T
 
 <Reveal q="3 · How would you cut the LLM bill by half?">
 
-Measure first: cost per team, feature and model from the ledger. Then route simple requests to a cheaper tier after evaluating quality (at our numbers, moving 60% of calls to a model a fifth of the price cuts the bill about 48%). Turn on prefix caching by stabilising prompt prefixes (up to about 40% per call in our example). Trim prompts and cap `max_tokens`. Exact-match cache deterministic routes. Move batch work to discounted batch interfaces (check current docs) or self-hosted models. Set budgets with hard caps on batch jobs.
+Measure first: cost per team, feature and model from the ledger. Then route simple requests to a cheaper tier after evaluating quality (at our numbers, moving 60% of calls to a model a fifth of the price cuts the bill about 48%). Turn on prefix caching by stabilising prompt prefixes (up to about 40% per call in our example). Trim prompts and cap `max_tokens`. Exact-match cache deterministic routes. Move batch work to discounted batch interfaces (50% off at Anthropic and OpenAI, checked 2026-10-19) or self-hosted models. Set budgets with hard caps on batch jobs.
 
 </Reveal>
 
@@ -1876,7 +1877,7 @@ Related: <a href={`${BASE}sd/lessons/llm-inference/`}>LLM inference serving</a> 
 **Further study**
 
 - *Designing Data-Intensive Applications* (Martin Kleppmann), chapter 11 (stream processing, idempotence and exactly-once-ish pipelines) is the theory behind the usage ledger.
-- [OpenTelemetry semantic conventions for generative AI](https://opentelemetry.io/docs/specs/semconv/gen-ai/): the span attributes for model calls. Still evolving, so read the current version.
+- [OpenTelemetry semantic conventions for generative AI](https://github.com/open-telemetry/semantic-conventions-genai): the span attributes for model calls. Still evolving, so read the current version. (The older opentelemetry.io/docs/specs/semconv/gen-ai/ page now only points here.)
 - [OWASP Top 10 for Large Language Model Applications](https://owasp.org/www-project-top-10-for-large-language-model-applications/): prompt injection, sensitive-information disclosure, excessive agency. The threat list behind Chapters 10, 11 and 15.
 - [Server-sent events (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events): the wire format most LLM streaming APIs build on.
 - [vLLM documentation](https://docs.vllm.ai/): an OpenAI-compatible self-hosted server, and how prefix caching works on your own GPUs.

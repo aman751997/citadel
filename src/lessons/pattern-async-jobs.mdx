@@ -555,9 +555,9 @@ Workers crash, deploy, get pre-empted, pause. The template survives all of it wi
 | How it works | A received message is hidden or unacknowledged. SQS hides it for N seconds (delete = ack, `ChangeMessageVisibility` = extend). RabbitMQ requeues an unacked message when the consumer's channel closes | Row has `lease_until`; heartbeat extends it; a reconciler moves `running` rows with `lease_until` in the past to `retrying` | `SET lease:job:42 workerA NX PX 60000`; heartbeat extends only if the value is still yours |
 | Who notices a crash | The broker | A sweeper | The key simply expires; someone must then re-offer the job |
 | Fencing token? | No | Yes: `attempt` | No, still need `attempt` in the DB |
-| Watch out for | Visibility caps (SQS allows up to 12 hours; check current docs) and ack timeouts on long jobs | Sweeper lag; clock source (use the DB's `NOW()`) | A lease key is not a fence; a paused worker can still write |
+| Watch out for | Visibility caps (SQS allows at most 12 hours from first receive, and extending does not reset it) and ack timeouts on long jobs | Sweeper lag; clock source (use the DB's `NOW()`) | A lease key is not a fence; a paused worker can still write |
 
-**Subtle difference: RabbitMQ's ack vs SQS's visibility timeout.** In RabbitMQ the message stays assigned to a consumer until it acks, nacks, or the connection drops, so a stuck-but-connected consumer holds it indefinitely (RabbitMQ has a delivery acknowledgement timeout for this; check the current default). In SQS the message reappears after the visibility timeout whatever the consumer is doing, so there is no "stuck consumer holds it" case, but a slow healthy worker gets a duplicate unless it extends the timeout.
+**Subtle difference: RabbitMQ's ack vs SQS's visibility timeout.** In RabbitMQ the message stays assigned to a consumer until it acks, nacks, or the connection drops, so a stuck-but-connected consumer holds it until RabbitMQ's delivery acknowledgement timeout (`consumer_timeout`, 30 minutes by default). After that the broker closes the channel or cancels the consumer and the message goes back to the queue. A job longer than the timeout needs a higher setting or a design that acks early. In SQS the message reappears after the visibility timeout whatever the consumer is doing, so there is no "stuck consumer holds it" case, but a slow healthy worker gets a duplicate unless it extends the timeout.
 
 **Sizing the lease.** The lease length is how long a crash goes unnoticed. Too short and healthy slow jobs get handed out twice. Too long and a crashed job sits idle. **Short lease plus heartbeat** gives both: a 60-second lease renewed every 20 seconds. A crash is noticed within a minute; a healthy two-hour job keeps renewing.
 
@@ -793,7 +793,7 @@ channel.queue_declare("jobs.wait.30s", durable=True, arguments={
 channel.queue_declare("jobs.dead", durable=True)                  # the DLQ, bound to jobs.dlx
 ```
 
-Use one wait queue per delay step (30 s, 2 min, 10 min). A per-queue TTL works because every message waits the same time, so the oldest is always at the head. Mixing per-message TTLs in one queue can leave a short-TTL message stuck behind a long one (check the current RabbitMQ docs on TTL and head-of-queue expiry). If the database is your truth, the simpler path is `run_after` in the row and no wait queues at all.
+Use one wait queue per delay step (30 s, 2 min, 10 min). A per-queue TTL works because every message waits the same time, so the oldest is always at the head. Mixing per-message TTLs in one queue can leave a short-TTL message stuck behind a long one: in classic queues an expired message is only removed once it reaches the head of the queue, so until then it still counts as in the queue. If the database is your truth, the simpler path is `run_after` in the row and no wait queues at all.
 
 **Subtle difference: DLQ vs redrive vs retry.**
 
@@ -807,7 +807,7 @@ Use one wait queue per delay step (30 s, 2 min, 10 min). A per-queue TTL works b
 
 *How it differs from a transient failure:* a transient failure may succeed on a later attempt; a poison message never will. You can't know in advance, so the defences are structural:
 
-- **Count deliveries, and count them before the work starts.** Incrementing `attempt` on claim (not after failure) means a worker that crashes still burns an attempt. After `max_attempts`, the job goes `dead`. Brokers have equivalents: RabbitMQ quorum queues track a delivery count and support a delivery limit after which the message is dead-lettered (check the current docs and defaults); classic queues only mark a message `redelivered`. Redis Streams keep a per-message delivery count visible via `XPENDING`.
+- **Count deliveries, and count them before the work starts.** Incrementing `attempt` on claim (not after failure) means a worker that crashes still burns an attempt. After `max_attempts`, the job goes `dead`. Brokers have equivalents: RabbitMQ quorum queues track a delivery count and support a delivery limit (20 by default in RabbitMQ 4.x, no limit in 3.13). After the limit the message goes to the dead-letter exchange, or is dropped if the queue has none. The limit counts returns from a crashed or disconnected consumer; a plain `nack` with requeue did not count in a 4.3 test, so a consumer that keeps nacking can loop forever. Classic queues only mark a message `redelivered`. Redis Streams keep a per-message delivery count visible via `XPENDING`.
 - **Validate at the boundary.** Parse and sanity-check the payload (size, schema, format) before the expensive step, and fail permanently on garbage.
 - **Isolate the blast radius.** Run risky parsing (codecs, PDFs, archives) in a subprocess or sandbox so a crash kills the child, not the worker, and the parent records a permanent failure.
 - **Quarantine, don't discard.** Dead-letter the message with its last error and alert. Someone must be able to inspect and replay it.
@@ -1799,7 +1799,7 @@ return h[1]
 ```
 
 ```python
-host = r.evalsha(pop_host_sha, 1, "hosts:ready", now_ms, 60_000)
+host = r.evalsha(pop_host_sha, 1, "hosts:ready", now_ms(), 60_000)
 if host:
     url = r.lpop(f"backq:{host}")                       # one URL for this host
     fetch_and_store(url)
@@ -1849,7 +1849,7 @@ Without the Lua script, two fetchers could both read the same due host before ei
     answer: 2,
     why: 'Each host yields 0.5 pages/s, so 1,000 ÷ 0.5 = 2,000 hosts.',
     explain: [
-      'That would be a 1-second gap with one request per host.',
+      'That would need each host to give 2 pages per second, a 0.5-second gap.',
       'That assumes each host can give one page per second, which the 2-second gap forbids.',
       'Correct. If the frontier is dominated by a few big sites, adding fetchers does not help.'
     ]

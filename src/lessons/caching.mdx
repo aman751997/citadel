@@ -380,7 +380,7 @@ The pair people confuse most is **cache-aside vs read-through**. In both, a miss
     explain: [
       'Correct: batching protects MySQL. You accept losing unflushed increments if Redis dies.',
       'Synchronous writes to MySQL at 50,000/s is the exact load you are trying to avoid.',
-      'Same problem: one database write per view, plus a cache miss after each.',
+      'One database write per view is the exact load you want to avoid, plus a cache miss after each.',
     ],
   },
   {
@@ -957,7 +957,7 @@ The 3 AM incident from the prologue needed two of these: **jitter** (the whole w
 <Quiz id="caching-stampede" title="Chapter 7 checkpoint" questions={[
   {
     kind: 'scenario',
-    q: 'A popular key expires on a fleet of 200 app servers. You added single-flight inside each process. How many MySQL queries can the expiry still cause?',
+    q: 'A popular key expires while 10,000 requests for it arrive across a fleet of 200 app servers. You added single-flight inside each process. How many MySQL queries can the expiry still cause?',
     options: [
       '1',
       'Up to 200, one per app server',
@@ -998,7 +998,7 @@ The 3 AM incident from the prologue needed two of these: **jitter** (the whole w
     answer: 1,
     why: 'SWR keeps serving until the hard expiry. After minute 15 the key is gone and you are back to a normal miss, so the hard expiry bounds how stale you can ever be.',
     explain: [
-      'With a single TTL that would hurt only after the TTL. With SWR the stale value is still in Redis.',
+      'Errors would only happen if the entry were gone. It stays in Redis until minute 15, and the outage ends at minute 14.',
       'Correct: the failed background refresh does not remove the entry. Past 15 minutes it ends.',
       'Nothing in this design reads a replica.',
     ],
@@ -1052,7 +1052,7 @@ def invalidate_hot(user_id):
 ```
 
 - **Request coalescing** (the Chapter 7 single-flight) so concurrent requests in one server share one fetch.
-- **Detect it.** Find hot keys by sampling (`redis-cli --hotkeys` works when an LFU policy is set. Check current docs) or client-side counters. Say you would monitor for them rather than assume.
+- **Detect it.** Find hot keys by sampling (`redis-cli --hotkeys` only works when `maxmemory-policy` is an LFU policy) or client-side counters. Say you would monitor for them rather than assume.
 - **Client-side caching with server tracking** (Redis 6+): the server tells clients when their locally held keys change. Look it up if you need L1 without waiting out the TTL.
 
 | | L1 in-process | Key splitting |
@@ -1086,7 +1086,7 @@ def invalidate_hot(user_id):
   },
   {
     kind: 'tradeoff',
-    q: 'A product price key is hot but must never be more than a moment stale. Which fix suits better: 1 s in-process L1 on every app server, or key splitting into 8 copies?',
+    q: 'A product price key is hot, and after a price change its cache delete must take effect at once, with no extra stale window. Which fix suits better: 1 s in-process L1 on every app server, or key splitting into 8 copies?',
     options: [
       'In-process L1: it is the simplest',
       'Key splitting: copies live in Redis, so a delete clears all 8 immediately and staleness is not extended',
@@ -1107,7 +1107,7 @@ def invalidate_hot(user_id):
   { front: 'Why does adding shards not help a hot key?', back: 'A key lives on exactly one shard. More shards spread other keys.' },
   { front: 'Fix 1: in-process L1?', back: 'About 1 s TTL on each app server. 200 servers means about 200 Redis reads/s. Staleness up to the L1 TTL.' },
   { front: 'Fix 2: key splitting?', back: 'Copies key#0..N-1, read a random one, write and delete all N. Fresh, but costs N writes and N copies.' },
-  { front: 'How do you find hot keys?', back: 'Sampling (redis-cli --hotkeys needs an LFU policy; check docs) or client-side counters. Monitor, do not assume.' },
+  { front: 'How do you find hot keys?', back: 'Sampling (redis-cli --hotkeys needs an LFU policy) or client-side counters. Monitor, do not assume.' },
 ]} />
 
 <ChapterDone id="hot-keys" />
@@ -1355,7 +1355,7 @@ Redis starts evicting when memory reaches `maxmemory`. The `maxmemory-policy` se
 | `allkeys-random` / `volatile-random` | Random key | All / TTL keys |
 | `volatile-ttl` | Key closest to expiry | Only keys with a TTL |
 
-For a pure cache, `allkeys-lru` or `allkeys-lfu` is the usual choice. `volatile-*` policies only touch keys with a TTL, so if none have one, they behave like `noeviction`. Redis's own default is `noeviction` (check the docs for your version). Its LRU and LFU are approximations based on sampling a few keys, which is good enough and cheap.
+For a pure cache, `allkeys-lru` or `allkeys-lfu` is the usual choice. `volatile-*` policies only touch keys with a TTL, so if none have one, they behave like `noeviction`. Redis's own default is `noeviction`. Its LRU and LFU are approximations based on sampling a few keys, which is good enough and cheap.
 
 **LRU vs LFU.**
 
@@ -1381,7 +1381,7 @@ The scan touches millions of cold keys once each, and each one becomes "most rec
 <Quiz id="caching-eviction" title="Chapter 11 checkpoint" questions={[
   {
     kind: 'predict',
-    q: 'A Redis instance used as a cache reaches maxmemory under its default maxmemory-policy. What happens to new writes? (Check the docs for your version.)',
+    q: 'A Redis instance used as a cache reaches maxmemory under its default maxmemory-policy. What happens to new writes?',
     options: [
       'Redis evicts the least recently used keys and keeps accepting writes',
       'Writes that need more memory fail with an out-of-memory error, while reads keep working (policy noeviction)',
@@ -1450,10 +1450,10 @@ Try it: start with `mod`, add a shard, and count the keys that move. Then switch
 
 Each primary has one or more replicas. If a primary fails, a replica is promoted. Caveats to say aloud:
 
-- **Replication is asynchronous.** The primary acknowledges a write before replicas have it. If it fails at that moment, the promoted replica is missing the last few writes. That can include a recent `DEL`, which brings a stale value back. Fine for a cache, worth saying. (`WAIT` can ask for replica acknowledgement, but it does not make Redis strongly consistent.)
+- **Replication is asynchronous.** The primary acknowledges a write before replicas have it. If it fails at that moment, the promoted replica is missing the last few writes. That can include a recent `DEL`, which brings a stale value back. Fine for a cache, worth saying. (`WAIT 1 100` blocks up to 100 ms and returns how many replicas have the write, 0 if none do, for example when the replica is down. It does not undo the write on the primary, so it does not make Redis strongly consistent.)
 - **Failover takes time.** There is a detection timeout (`cluster-node-timeout` in Redis Cluster, or Sentinel's equivalent) plus election. During it, that shard's keys are unavailable. Your fail-open path from Chapter 10 handles it.
 - **Reads from replicas can be stale** by the replication lag. Use them only for data that tolerates it.
-- **A shard with no replica to promote** loses its slots. By default Redis Cluster stops serving when slots are uncovered (`cluster-require-full-coverage`, check docs). Decide whether you want that or partial service.
+- **A shard with no replica to promote** loses its slots. By default Redis Cluster stops serving when slots are uncovered (`cluster-require-full-coverage` is `yes` by default). Decide whether you want that or partial service.
 - **After failover the promoted node's hit ratio is fine**, but a primary that restarts empty means a cold shard. Warm it before sending traffic.
 
 ### Redis vs Memcached
@@ -1508,7 +1508,7 @@ Each primary has one or more replicas. If a primary fails, a replica is promoted
   { front: 'Why not hash(key) mod N?', back: 'Changing N remaps nearly every key. Consistent hashing or slots move about 1/N.' },
   { front: 'Hash tags?', back: 'Only the part inside {...} is hashed, so related keys share a slot and multi-key commands or Lua work. Overuse makes a hot slot.' },
   { front: 'Replication caveat?', back: 'Asynchronous: a failover can lose the last writes, including a DEL. WAIT helps but is not strong consistency.' },
-  { front: 'What if a shard has no replica to promote?', back: 'Its slots are uncovered. By default Redis Cluster stops serving (cluster-require-full-coverage, check docs).' },
+  { front: 'What if a shard has no replica to promote?', back: 'Its slots are uncovered. By default Redis Cluster stops serving (cluster-require-full-coverage is yes by default).' },
 ]} />
 
 <ChapterDone id="clusters" />

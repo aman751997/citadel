@@ -476,7 +476,7 @@ Three limits. **KV capacity:** every sequence in the batch holds its cache (Chap
         'Correct: decode time follows bytes moved. Only the weight part halves.',
         'Decode at these batch sizes is memory-bound, so fewer bytes means a faster step.',
         'Off by a factor of 10: 200 GB ÷ 12,000 GB/s is about 0.017 s, not 0.0017 s.',
-        'Also off by a factor of 10. Check units: 12 TB/s is 12,000 GB/s.',
+        'Off by a factor of 10: 200 GB ÷ 12,000 GB/s is about 17 ms, not 170 ms. Check units: 12 TB/s is 12,000 GB/s.',
       ],
     },
     {
@@ -585,7 +585,7 @@ C waits for four steps. When A finishes, its three blocks go back to the pool an
 
 **Admission is a memory budget.** The scheduler admits a request when there is **KV memory** for its prompt now and room for its output as it grows, not when a request count is below some number. "Our concurrency limit is a memory budget, not a QPS number" is the senior signal of this whole topic.
 
-**What if memory runs out mid-flight?** Sequences grow every step. If the KV pool fills, the scheduler **preempts** someone. It either **swaps** their KV blocks to CPU memory and back later, or **drops** them and **recomputes** the KV from the tokens so far when they resume (vLLM documents both modes; check your engine). Preemptions show up as ITL stalls. A rising preemption rate means admission is too greedy.
+**What if memory runs out mid-flight?** Sequences grow every step. If the KV pool fills, the scheduler **preempts** someone. It either **swaps** their KV blocks to CPU memory and back later, or **drops** them and **recomputes** the KV from the tokens so far when they resume. Older vLLM versions offered both; current vLLM (V1) defaults to **recompute** because it has lower overhead there (vLLM docs, checked 2026-10-19). Check what your engine does. Preemptions show up as ITL stalls. A rising preemption rate means admission is too greedy.
 
 | Approach | Utilisation | TTFT under mixed lengths | Notes |
 |---|---|---|---|
@@ -634,7 +634,7 @@ You can, and many early servers did, but it wastes most of the memory. A request
   cards={[
     { front: 'Static vs continuous batching', back: 'Static: fixed group runs until all finish (convoy). Continuous: batch re-formed every decode step; finished sequences leave, waiting ones join.' },
     { front: 'What does the scheduler check before admitting?', back: 'Free KV blocks for the prompt plus room to grow output (and tenant budgets), not a request count.' },
-    { front: 'What happens when the KV pool fills mid-flight?', back: 'Preempt a sequence: swap its KV to CPU memory, or drop it and recompute later. Preemption shows as ITL stalls.' },
+    { front: 'What happens when the KV pool fills mid-flight?', back: 'Preempt a sequence: swap its KV to CPU memory, or drop it and recompute later (current vLLM recomputes). Preemption shows as ITL stalls.' },
   ]}
 />
 
@@ -642,9 +642,9 @@ You can, and many early servers did, but it wastes most of the memory. A request
 
 <h2 id="paging">Chapter 6 · Paged KV memory</h2>
 
-**What is the problem?** If each sequence's KV cache must be one contiguous region, you must reserve for the worst-case length up front (wasted space inside each reservation: **internal fragmentation**), and freed regions of odd sizes cannot be reused well (**external fragmentation**). The vLLM paper (Kwon et al., SOSP 2023) measured earlier systems wasting most of their KV memory this way. Wasted memory means smaller batches, which means less throughput (Chapter 4).
+**What is the problem?** If each sequence's KV cache must be one contiguous region, you must reserve for the worst-case length up front (wasted space inside each reservation: **internal fragmentation**), and freed regions of odd sizes cannot be reused well (**external fragmentation**). The vLLM paper (Kwon et al., SOSP 2023) measured earlier systems storing real token data in only 20.4% to 38.2% of their KV memory (the rest was lost to fragmentation and reservation). Wasted memory means smaller batches, which means less throughput (Chapter 4).
 
-**PagedAttention (vLLM's idea).** Operating systems solved this with virtual memory. Split the KV cache into fixed-size **blocks** of a few tokens each (vLLM's default has been 16 tokens; check your version). Each sequence has a **block table** that maps its logical positions to physical blocks anywhere in GPU memory. The attention kernel follows the table.
+**PagedAttention (vLLM's idea).** Operating systems solved this with virtual memory. Split the KV cache into fixed-size **blocks** of a few tokens each (vLLM's default block size is 16 tokens in recent versions; older versions and some hardware platforms pick another value; vLLM docs and source, checked 2026-10-19). Each sequence has a **block table** that maps its logical positions to physical blocks anywhere in GPU memory. The attention kernel follows the table.
 
 - **Allocate on demand:** a new block only when the last one fills. Waste is at most one partly filled block per sequence.
 - **No external fragmentation:** any free block fits any sequence.
@@ -726,9 +726,9 @@ Decode is limited by how many sequences fit in memory (batch size), not by a sma
 **Why?** Imagine every request starts with the same 1,000 tokens (persona, safety rules, tool schemas) and 50 requests arrive per second. Without caching, the server recomputes those 1,000 tokens 50 times a second.
 
 - **What hits:** system prompts, tool schemas, few-shot examples, RAG documents reused across questions, and, the big one for chat, **earlier turns of the same conversation**, since every turn resends the whole history.
-- **How engines find matches:** vLLM's automatic prefix caching hashes full KV blocks by their token content (and everything before them). SGLang's RadixAttention keeps a radix tree of cached prefixes. Details vary; check your engine's docs.
+- **How engines find matches:** vLLM's automatic prefix caching hashes full KV blocks by their token content and the hash of the block before them (vLLM docs, checked 2026-10-19). SGLang's RadixAttention keeps a radix tree of cached prefixes. Details vary; check your engine's docs.
 - **Eviction:** cached blocks are reclaimable. Under memory pressure, LRU-style eviction drops the coldest prefixes.
-- **Public APIs** expose the same idea as prompt caching: several providers bill cached input tokens at a discount and document a minimum prefix length and a cache lifetime (check current pricing docs).
+- **Public APIs** expose the same idea as prompt caching: several providers bill cached input tokens at a discount and document a minimum prefix length and a cache lifetime. For example, Anthropic's docs list a minimum cacheable length per model (512 to 4,096 tokens), a 5-minute default lifetime, and cache reads at 0.1x the base input price or lower; OpenAI's docs list 1,024 tokens minimum for its newest models and cached reads at 0.1x or lower (both checked 2026-10-19). Prices and limits change, so read the page for your model.
 
 **Worked numbers.** Prompt of 1,000 tokens, of which 600 are a cached prefix. Prefill work per request drops from 1,000 to **400** tokens: 400 × 140 GFLOP = 56 TFLOP instead of 140 TFLOP. At 2,000 TFLOP/s effective, prefill time goes from **70 ms to 28 ms**. At 100 requests/s the fleet needs 5.6 PFLOP/s instead of 14 PFLOP/s. Chapter 15 shows what that does to the GPU count.
 
@@ -1044,7 +1044,7 @@ Gain: each GPU holds 17.5 GB of weights instead of 35, so per-token latency drop
         'Data parallelism with one GPU per copy',
       ],
       answer: 1,
-      why: '400 GB of weights fit in one 8-GPU server (640 GB), leaving about 176 GB for KV and reserve. Keep the chatty all-reduce on the fast link.',
+      why: '400 GB of weights fit in one 8-GPU server (640 GB), leaving about 240 GB for KV and reserve. Keep the chatty all-reduce on the fast link.',
       explain: [
         'TP across servers pushes an all-reduce at every layer over the slower network, which hurts per-token latency.',
         'Correct: stay inside one server, then scale out with replicas.',
@@ -1427,7 +1427,7 @@ Agree, and say how you would replace the assumptions: **benchmark one replica** 
       q: 'Traffic changes: prompts grow from 1,000 to 32,000 tokens (no prefix hits) while outputs stay at 300 tokens. Which resource now most likely decides replica count first, and why?',
       options: [
         'Network bandwidth',
-        'KV memory and prefill FLOPs: each request holds about 10.7 GB of KV, so about 14 fit per replica, and prefill of 32K tokens is expensive',
+        'KV memory and prefill FLOPs: each request holds about 10.6 GB of KV, so about 14 fit per replica, and prefill of 32K tokens is expensive',
         'CPU for tokenisation',
         'Nothing changes; output length is the same',
       ],
@@ -1830,7 +1830,7 @@ Related: <a href={`${BASE}sd/lessons/llm-gateway/`}>LLM gateway</a> (the control
 - [Attention Is All You Need](https://arxiv.org/abs/1706.03762) (Vaswani et al., 2017): the transformer, keys, values and the attention you are caching.
 - [Orca: A Distributed Serving System for Transformer-Based Generative Models](https://www.usenix.org/conference/osdi22/presentation/yu) (OSDI 2022): iteration-level scheduling, the origin of continuous batching.
 - [Efficient Memory Management for LLM Serving with PagedAttention](https://arxiv.org/abs/2309.06180) (Kwon et al., SOSP 2023): the vLLM paper (KV blocks, block tables, sharing).
-- [vLLM documentation](https://docs.vllm.ai/): prefix caching, preemption modes, chunked prefill and quantisation options as one engine implements them.
+- [vLLM documentation](https://docs.vllm.ai/): prefix caching, preemption, chunked prefill and quantisation options as one engine implements them.
 - [Efficiently Scaling Transformer Inference](https://arxiv.org/abs/2211.05102) (Pope et al., 2022): the memory-bound vs compute-bound analysis and partitioning strategies, rigorously.
 - [GQA: Training Generalized Multi-Query Transformer Models](https://arxiv.org/abs/2305.13245) (Ainslie et al., 2023): why KV heads are fewer than query heads.
 - [Fast Inference from Transformers via Speculative Decoding](https://arxiv.org/abs/2211.17192) (Leviathan et al., 2022): the draft-and-verify scheme and its exactness proof.

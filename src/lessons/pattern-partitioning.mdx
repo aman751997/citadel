@@ -206,7 +206,7 @@ Try it below. Change the shard count and watch how many keys change owner under 
     answer: 1,
     why: 'Going from 4 to 8 nodes is a doubling. In every block of 8 values, h mod 4 equals h mod 8 for 4 of them (0 to 3), so half stay and half move.',
     explain: [
-      '0.25 would be the ideal for adding 25%-sized shares; mod N does not achieve it.',
+      '0.25 is not what the arithmetic gives: a key stays only when h mod 8 is 0 to 3, which is half of all keys.',
       'Correct: doubling moves exactly half, because each key either keeps its remainder or gains N.',
       '0.875 is 7/8, which is the cost of going from 7 to 8 nodes, not 4 to 8.',
     ],
@@ -298,7 +298,7 @@ Two, really. **Unequal arcs**: three random points on a circle almost never divi
     q: 'Ring positions 0 to 99. Nodes: A at 10, B at 40, C at 80. Node B crashes and is removed. Where does the key at position 30 go, and what is the risk?',
     options: [
       'To A, because A is nearest',
-      'To C, which now owns (10, 80] and carries nearly double the load',
+      'To C, which now owns (10, 80] and carries 1.75 times its old load',
       'It is spread evenly over A and C',
     ],
     answer: 1,
@@ -313,6 +313,7 @@ Two, really. **Unequal arcs**: three random points on a circle almost never divi
     kind: 'predict',
     q: 'Nodes A at 10, B at 40, C at 80. Keys at 5, 25, 45, 85, 95. Node D joins at 50. Which keys change owner?',
     options: ['Only 45 (from C to D)', '45 and 85', '25 and 45', 'All of them'],
+    fixed: true,
     answer: 0,
     why: 'D takes over the arc (40, 50] from C. Key 45 sits in that arc. 85 and 95 wrap to A, 5 goes to A, 25 goes to B, none change.',
     explain: [
@@ -365,7 +366,7 @@ Drag the vnode count in the simulator below and watch the load bars even out. Th
 
 <ShardingSim mode="ring" shards={10} keys={5000} vnodes={64} />
 
-**The price of vnodes.** A bigger ring to store and gossip (10 nodes × 256 = 2,560 tokens). More, smaller ranges to repair and stream. And with replication, a node's replicas are spread over many peers, so *more* combinations of two simultaneous failures touch some key. Cassandra used 256 tokens per node by default for years; newer versions default to far fewer, paired with a token allocator that places tokens deliberately instead of randomly (check current docs). The Dynamo paper's later "strategy 3" cuts the ring into Q equal fixed partitions and hands those out, which is Chapter 6.
+**The price of vnodes.** A bigger ring to store and gossip (10 nodes × 256 = 2,560 tokens). More, smaller ranges to repair and stream. And with replication, a node's replicas are spread over many peers, so *more* combinations of two simultaneous failures touch some key. Cassandra used 256 tokens per node by default for years; newer versions default to far fewer (the current docs show 16), paired with a token allocator that places tokens deliberately instead of randomly. The Dynamo paper's later "strategy 3" cuts the ring into Q equal fixed partitions and hands those out, which is Chapter 6.
 
 **The ring in code.** A sorted map from token to node *is* the ring: `ceilingEntry(hash)` finds the next token clockwise, and `firstEntry()` is the wrap-around. (Java is used here because `TreeMap` is the natural ring, and this block is compiled and tested.)
 
@@ -666,7 +667,7 @@ Switch the simulator below to slots mode and compare movement against mod N.
     answer: 1,
     why: '16,384 ÷ 5 ≈ 3,277 slots for the newcomer, taken from the other four. Keys never change slot, so about 20% of the keys move, the minimum.',
     explain: [
-      '4,096 would be the share for a 4th node of 4 (25%), not a 5th of 5.',
+      '4,096 is each node\'s share in the old 4-node cluster (25%), not the 5th node\'s share.',
       'Correct: 1/5 of the slots, so 20% of keys.',
       'Slots are never renumbered. Only the slot-to-node table changes.',
     ],
@@ -1162,7 +1163,7 @@ print(always_overlaps(5, 3, 3))   # True
     A-->>D: ack, D drops its copy`} />
 </Figure>
 
-**The catch, which interviewers love:** with a sloppy quorum, the W acknowledgements may come from outside the home set, so **W + R > N no longer guarantees overlap**. A reader that reaches A and B (back up, but before handoff) gets R = 2 replies without the new value. Sloppy quorums trade the overlap guarantee for write availability. And hints are kept only for a window (Cassandra's default is three hours; check current docs). A node down longer needs full repair (Chapter 13).
+**The catch, which interviewers love:** with a sloppy quorum, the W acknowledgements may come from outside the home set, so **W + R > N no longer guarantees overlap**. A reader that reaches A and B (back up, but before handoff) gets R = 2 replies without the new value. Sloppy quorums trade the overlap guarantee for write availability. And hints are kept only for a window (Cassandra's default is three hours, `max_hint_window`). A node down longer needs full repair (Chapter 13).
 
 **Read repair.** On a read, the coordinator asks R replicas (often with a digest from some of them). If the replicas disagree, it picks the newest version and writes it back to the stale replicas. This fixes hot keys quickly and does nothing for keys nobody reads.
 
@@ -1203,7 +1204,7 @@ No, and saying so is a senior signal. Sloppy quorums break the overlap. Concurre
   },
   {
     kind: 'failure',
-    q: 'N = 3, W = 2, strict quorum. Two of a key\'s three replicas are down. What happens to writes and reads for that key?',
+    q: 'N = 3, W = 2, R = 2, strict quorum. Two of a key\'s three replicas are down. What happens to writes and reads for that key?',
     options: [
       'Writes and reads both fail for that key',
       'Writes succeed on the one live replica',
@@ -1229,7 +1230,7 @@ No, and saying so is a senior signal. Sloppy quorums break the overlap. Concurre
     why: 'Always-writable means accepting writes on stand-in nodes. A reader may reach home replicas that have not received the hint yet.',
     explain: [
       'A strict quorum refuses the write when two home replicas are unreachable.',
-      'Correct. Also say hints expire (about three hours by default in Cassandra, check docs) and anti-entropy repairs the rest.',
+      'Correct. Also say hints expire (about three hours by default in Cassandra, `max_hint_window`) and anti-entropy repairs the rest.',
       'W = 3 blocks writes on any single failure, the opposite of the requirement.',
     ],
   },
@@ -1594,7 +1595,7 @@ static final class MerkleTree {
 - For the current silence, compute **φ = −log₁₀(probability that a live node would be this late)**. φ = 1 means a 10% chance it is just late; φ = 2, 1%; φ = 3, 0.1%.
 - Each consumer picks its own threshold.
 
-**Worked numbers.** Model gaps as exponential with mean m (a simplification Cassandra uses): P(silence > t) = e^(−t/m), so **φ = 0.434 × t/m**. With 1-second heartbeats, 5 s of silence gives φ ≈ 2.2. Cassandra's default conviction threshold is **φ = 8** (check current docs), reached at t = 8 ÷ 0.434 ≈ **18.4 seconds** of silence. The adaptive part: when the network gets jittery, observed gaps grow, the mean grows, and the conviction deadline stretches by itself instead of a fixed timeout firing on every blip.
+**Worked numbers.** Model gaps as exponential with mean m (a simplification Cassandra uses): P(silence > t) = e^(−t/m), so **φ = 0.434 × t/m**. With 1-second heartbeats, 5 s of silence gives φ ≈ 2.2. Cassandra's default conviction threshold is **φ = 8** (`phi_convict_threshold`), reached at t = 8 ÷ 0.434 ≈ **18.4 seconds** of silence. The adaptive part: when the network gets jittery, observed gaps grow, the mean grows, and the conviction deadline stretches by itself instead of a fixed timeout firing on every blip.
 
 ```python
 import math
@@ -1657,7 +1658,7 @@ No. "Down" in gossip means *route around it*: coordinators stop sending to it, s
 
 <RevisionCards id="pp-gossip-cards" cards={[
   { front: 'How long does gossip take to reach N nodes?', back: 'About log2 N + ln N rounds with push gossip. For 1,000 nodes: about 17 to 18 rounds, so under 20 seconds at one round per second. Push-pull is about half.' },
-  { front: 'What is phi accrual?', back: 'A suspicion level phi = -log10(P(live node would be this late)). Consumers pick a threshold (Cassandra default 8, check docs). It adapts to heartbeat jitter.' },
+  { front: 'What is phi accrual?', back: 'A suspicion level phi = -log10(P(live node would be this late)). Consumers pick a threshold (Cassandra default 8). It adapts to heartbeat jitter.' },
   { front: 'Does "suspected down" mean "remove"?', back: 'No. It means route around: stand-ins, hints. Data movement is a separate, deliberate decision.' },
   { front: 'Why not a central registry?', back: 'It becomes a single point of failure at the worst moment. Gossip has no centre; seed nodes only help joining nodes.' },
 ]} />
@@ -1762,7 +1763,7 @@ How a request finds its node, what that node writes to disk, and how many nodes 
 **Three ways the engine meets this lesson:**
 
 - **Streaming is cheap.** SSTables are immutable sorted files, so rebalancing can ship whole files (or slices) instead of re-inserting rows.
-- **Deletes are tombstones**, which compaction eventually purges. If a replica missed the delete and repair does not run before the tombstone is purged, the next repair sees the old value on the lagging replica, treats it as missing elsewhere, and copies it everywhere: **zombie data**. Rule: run full repair more often than tombstones are kept (Cassandra's `gc_grace_seconds`, ten days by default; check current docs).
+- **Deletes are tombstones**, which compaction eventually purges. If a replica missed the delete and repair does not run before the tombstone is purged, the next repair sees the old value on the lagging replica, treats it as missing elsewhere, and copies it everywhere: **zombie data**. Rule: run full repair more often than tombstones are kept (Cassandra's `gc_grace_seconds`, ten days by default).
 - **LWW timestamps live here.** Compaction keeps the version with the highest timestamp, so LWW is the engine's natural merge. That is why it is the default and why Chapter 12 matters.
 
 **Worked numbers.** In Chapter 17's cluster, each node holds 2 billion × 3 ÷ 30 = **200 million** items. Bloom filters at about 10 bits per key give about a 1% false-positive rate: 200 million × 10 bits = **250 MB of memory per node**, which is why Bloom-filter memory belongs in node sizing.

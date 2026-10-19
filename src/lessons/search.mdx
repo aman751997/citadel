@@ -169,6 +169,7 @@ Both are legitimate first answers: one system, transactionally consistent, no sy
     q: 'Table listings has a B-tree index on title. Which of these can use it for a seek?',
     code: "-- A\nWHERE title LIKE 'lamp%'\n-- B\nWHERE title LIKE '%lamp'\n-- C\nWHERE lower(title) LIKE 'lamp%'",
     options: ['Only A', 'A and C', 'All three'],
+    fixed: true,
     answer: 0,
     why: 'Only a prefix pattern on the indexed expression is a contiguous range. A trailing-only match (B) needs a reversed index. C needs an expression index on lower(title).',
     explain: [
@@ -318,7 +319,7 @@ Without positions you can answer "contains both words" but not "contains this ph
     why: 'Query and index must use the same analysis. A keyword field is one untokenised, case-sensitive term; it never meets the stemmed, lowercased terms of a text field.',
     explain: [
       'Correct. Keyword is exact-match and case-sensitive. Query the analysed text field for free text, the keyword field for exact values.',
-      'The query is not analysed at all against a keyword field, so there is nothing to drop. The cause is the missing shared analysis.',
+      '"running shoes" contains no stop words, and a keyword field keeps the whole string as one term. The cause is the missing shared analysis.',
       'Refresh lag lasts about a second, and would not make an old listing vanish.',
     ],
   },
@@ -351,7 +352,7 @@ Without positions you can answer "contains both words" but not "contains this ph
 | lamp | 20,000 | ln(50) ≈ 3.91 |
 | the | 900,000 | ln(1.11) ≈ 0.11 |
 
-**TF-IDF vs BM25.** **TF-IDF** multiplies the first two ideas, so a term repeated 100 times scores about 100 times higher: keyword stuffing wins. **BM25** (from the Okapi system) is the refinement and the **default similarity in Lucene-based engines** (check your version's docs). It makes TF **saturate** and adds length normalisation. For each query term it multiplies a smoothed idf by:
+**TF-IDF vs BM25.** **TF-IDF** multiplies the first two ideas, so a term repeated 100 times scores about 100 times higher: keyword stuffing wins. **BM25** (from the Okapi system) is the refinement and the **default similarity in Elasticsearch** (k1 = 1.2 and b = 0.75 by default; Elastic docs, checked 2026-10-19). It makes TF **saturate** and adds length normalisation. For each query term it multiplies a smoothed idf by:
 
 ```text
 tf part = tf × (k1 + 1) / (tf + k1 × (1 − b + b × docLength / avgDocLength))
@@ -408,7 +409,7 @@ query = {"function_score": {
 }}
 ```
 
-`gauss` with `scale: 30d, decay: 0.5` means a listing 30 days old gets half the recency factor. `log2p` is log10(2 + sales); it keeps the factor above zero for a listing with no sales (`log1p` of 0 would multiply the whole score by 0). Check current docs for modifiers.
+`gauss` with `scale: 30d, decay: 0.5` means a listing 30 days old gets half the recency factor. `log2p` is log10(2 + sales); it keeps the factor above zero for a listing with no sales (`log1p` of 0 would multiply the whole score by 0). The `field_value_factor` modifiers are none, log, log1p, log2p, ln, ln1p, ln2p, square, sqrt and reciprocal (Elastic docs, checked 2026-10-19).
 
 **Two-stage ranking.** At larger scale, cheap BM25 retrieves the top few hundred candidates per shard, and a learned model (learning to rank) reorders the top 100 using many features. It is the same two-stage shape as <a href={`${BASE}sd/lessons/recsys/`}>recommendations</a>.
 
@@ -454,7 +455,7 @@ News and tweets weight ranking freshness heavily; a furniture catalogue barely d
     answer: 1,
     why: 'A sort is all-or-nothing; a decay multiplies the text score by a factor between 0 and 1, so a much better match can still win.',
     explain: [
-      'Same problem: any single sort key ignores whether the result matches.',
+      'Popularity as a single sort key ignores whether the result matches the query.',
       'Correct. Relevance stays the base. Recency becomes a bounded factor you can tune with scale and decay.',
       'Some products need recency (news, listings). Removing it trades one problem for another; the fix is blending, not deleting.',
     ],
@@ -465,7 +466,7 @@ News and tweets weight ranking freshness heavily; a furniture catalogue barely d
     code: "tf part = tf * (k1 + 1) / (tf + k1 * (1 - b + b * len/avg))\nA: tf = 2, len = avg  -> ?\nB: tf = 100, len = avg -> ?",
     options: ['B is about 50 times A', 'B is about 1.6 times A (2.17 vs 1.38)', 'They are equal'],
     answer: 1,
-    why: 'TF saturates at k1 + 1 = 2.2, so 100 mentions score only about 57% more than 2.',
+    why: 'TF saturates at k1 + 1 = 2.2, so 100 mentions score only about 58% more than 2.',
     explain: [
       'That is raw TF-IDF behaviour without saturation: the keyword-stuffing hole BM25 closes.',
       'Correct. A = 2 × 2.2 / (2 + 1.2) = 1.38 and B = 100 × 2.2 / (100 + 1.2) = 2.17.',
@@ -527,8 +528,8 @@ es.indices.create(index="listings_v1",
     SEG -->|"flush: fsync segments,\ntrim translog"| DISK[("committed\nto disk")]`} />
 </Figure>
 
-1. The document lands in an in-memory buffer and is appended to the **translog** (a write-ahead log). By default the translog is fsynced before the write is acknowledged, so an acknowledged write survives a crash.
-2. A **refresh** turns the buffer into a new, small segment that searches can see. Elasticsearch refreshes **every second by default**, on indices that received a search in the last 30 seconds (check current docs). That is where "searchable within about a second" comes from. A get-by-id can see the document sooner; a *search* cannot.
+1. The document lands in an in-memory buffer and is appended to the **translog** (a write-ahead log). By default (`index.translog.durability: request`; Elastic docs, checked 2026-10-19) the translog is fsynced before the write is acknowledged, so an acknowledged write survives a crash.
+2. A **refresh** turns the buffer into a new, small segment that searches can see. Elasticsearch refreshes **every second by default**, on indices that received a search in the last 30 seconds (Elastic docs, checked 2026-10-19). That is where "searchable within about a second" comes from. A get-by-id can see the document sooner; a *search* cannot.
 3. Segments never change. A **delete** marks the document as deleted; an **update** is a delete plus a new document. Background **merges** combine small segments and finally drop deleted documents.
 4. A **flush** fsyncs segments to disk (a Lucene commit) and trims the translog.
 
@@ -572,7 +573,7 @@ One subtlety: each shard computes IDF from **its own** documents, so one listing
 | 20 | 1 − 0.99²⁰ ≈ 18% |
 | 100 | 1 − 0.99¹⁰⁰ ≈ 63% |
 
-So: **keep shard counts modest** (each shard also costs memory and coordination). Let the engine pick the fastest copy (adaptive replica selection; check your version). Set **timeouts with partial results** where a slightly incomplete ranking is acceptable. Use **custom routing** when a query concerns one slice: "search my own listings" routed by `seller_id` hits one shard instead of all of them. The general slow-shard story is in <a href={`${BASE}sd/lessons/core-concepts/#tail-latency`}>Core concepts · The slowest of a hundred</a>.
+So: **keep shard counts modest** (each shard also costs memory and coordination). Let the engine pick the fastest copy (Elasticsearch uses adaptive replica selection by default; Elastic docs, checked 2026-10-19). Set **timeouts with partial results** where a slightly incomplete ranking is acceptable. Use **custom routing** when a query concerns one slice: "search my own listings" routed by `seller_id` hits one shard instead of all of them. The general slow-shard story is in <a href={`${BASE}sd/lessons/core-concepts/#tail-latency`}>Core concepts · The slowest of a hundred</a>.
 
 ```python
 # index with routing, search with the same routing: one shard, not all three
@@ -584,7 +585,7 @@ es.search(index="listings", routing="seller_42", size=20,
 
 A very large seller can make one shard hot. Routing buys speed for small tenants and costs balance for big ones.
 
-**Sizing a cluster, with numbers.** Assumptions: one copy ≈ 70 GB (Chapter 2); 2,000 searches/s at peak; about 10 ms of CPU per search per shard; nodes with 16 cores; Elastic's guidance of shards between roughly 10 GB and 50 GB (check current docs).
+**Sizing a cluster, with numbers.** Assumptions: one copy ≈ 70 GB (Chapter 2); 2,000 searches/s at peak; about 10 ms of CPU per search per shard; nodes with 16 cores; Elastic's guidance of shards between 10 GB and 50 GB (Elastic docs, checked 2026-10-19).
 
 1. **Primaries:** 70 GB ÷ 3 ≈ **23 GB per shard**: inside the guideline, and only 3 shards to fan out to.
 2. **CPU:** 2,000 searches/s × 3 shards = 6,000 shard-searches/s × 10 ms = **60 cores** busy. At about 60% utilisation → **100 cores**.
@@ -779,7 +780,7 @@ You can, if the service publishes them through a transactional outbox, so the ev
     explain: [
       'You cannot change an existing field\'s analyzer in place, and even if you could, old postings would still reflect the old analysis.',
       'Correct. The recorded offset closes the gap between backfill and live traffic; external versions deduplicate the overlap.',
-      'About 42 minutes of empty or partial search, for something that can be done with zero downtime.',
+      'About 42 minutes of empty or partial search (50M listings at 20,000 docs/s), for something that can be done with zero downtime.',
     ],
   },
 ]} />
@@ -805,7 +806,7 @@ You can, if the service publishes them through a transactional outbox, so the ev
 | 500 | 10,000 | 30,000 | 20 |
 | 501 | 10,020 | refused | none |
 
-Page 501 fails because Elasticsearch, by default, refuses `from + size` beyond **10,000** (`index.max_result_window`; check current docs). It is a safety limit, not a bug. Raising it only lets one bored scraper hurt everyone.
+Page 501 fails because Elasticsearch, by default, refuses `from + size` beyond **10,000** (`index.max_result_window`; Elastic docs, checked 2026-10-19). It is a safety limit, not a bug. Raising it only lets one bored scraper hurt everyone.
 
 ```python
 # page 500 the expensive way: every shard sorts and returns 10,000
@@ -828,7 +829,7 @@ page2 = es.search(**body, search_after=last)     # next 20, constant cost
 es.close_point_in_time(id=pit)
 ```
 
-Elastic now recommends `search_after` with a PIT over the older scroll API for deep paging (check current docs for your version). A PIT also adds an implicit tiebreaker if you omit one.
+Elastic now recommends `search_after` with a PIT over the older scroll API for deep paging (Elastic docs, checked 2026-10-19: scroll is no longer recommended for deep paging, and is kept for batch jobs such as reindexing). A search with a PIT also adds an implicit tiebreaker (`_shard_doc`) if you omit one.
 
 | | from/size | search_after (+ PIT) |
 |---|---|---|
@@ -882,7 +883,7 @@ The product answer matters as much as the API: **nobody reads page 500.** Cap br
 
 <RevisionCards id="search-pagination" cards={[
   { front: 'Why is page 500 slower than page 1 with from/size?', back: 'Each shard must produce its top from + size entries, and the coordinator merges shards × (from + size) to return 20.' },
-  { front: 'What is the default depth limit and why?', back: 'index.max_result_window = 10,000 hits (check docs). A guard against expensive deep sorts.' },
+  { front: 'What is the default depth limit and why?', back: 'index.max_result_window = 10,000 hits (Elasticsearch default). A guard against expensive deep sorts.' },
   { front: 'What does search_after need?', back: 'A sort with a unique tiebreaker (score or date plus id), and ideally a point-in-time for a stable view.' },
   { front: 'What can search_after not do?', back: 'Jump to an arbitrary page. It supports next (and previous with reversed sorts) only.' },
 ]} />
@@ -1152,7 +1153,7 @@ es.search(index="listings", size=8, query={"bool": {
     "filter": [{"term": {"seller_id": "seller_42"}}, {"term": {"category": "lighting"}}]}})
 ```
 
-The index cost is real: a 6-word title of 6-letter words becomes about 36 indexed grams instead of 6. For 50 million titles that is about 1.8 billion postings for that one field instead of 0.3 billion. Usually fine, but say it. (Engines also ship purpose-built suggesters, such as Elasticsearch's completion suggester with an in-memory FST. Check current docs for what yours offers.)
+The index cost is real: a 6-word title of 6-letter words becomes about 36 indexed grams instead of 6. For 50 million titles that is about 1.8 billion postings for that one field instead of 0.3 billion. Usually fine, but say it. (Engines also ship purpose-built suggesters, such as Elasticsearch's completion suggester, which keeps its lookup structure in memory (Elastic docs, checked 2026-10-19). Check what your engine offers.)
 
 **So for the seller:** global suggestions from the trie (or prefix table); "search my listings" from an edge n-gram field, filtered by `seller_id` and routed to the seller's shard (Chapter 4). Two systems, each in the shape its data needs.
 
@@ -1165,7 +1166,7 @@ The index cost is real: a 6-word title of 6-letter words becomes about 36 indexe
 <Quiz id="search-prefix" title="Prefix machines checkpoint" questions={[
   {
     kind: 'predict',
-    q: 'A title field uses an edge_ngram analyzer (min 1, max 10) for both index and search. A user types "lam". Which titles match?',
+    q: 'A title field uses an edge_ngram analyzer (min 1, max 10) for both index and search. A user types "lam", and the match query uses its default OR between terms. Which titles match?',
     code: "analyzer (index + search) = edge_ngram(1..10)\nquery 'lam' -> terms: l, la, lam\n\ntitles: 'lamp', 'lantern', 'ladder', 'table'",
     options: ['Only "lamp"', '"lamp", "lantern" and "ladder"', 'None'],
     answer: 1,
@@ -1215,7 +1216,7 @@ es.search(index="listings", size=20, query={"bool": {"should": [
 ]}})
 ```
 
-**How engines avoid comparing against every word.** Lucene compiles the misspelt term into a **Levenshtein automaton**, a machine that accepts exactly the strings within distance n, and walks the sorted term dictionary with it, skipping whole regions that cannot match. Elasticsearch's `fuzziness: AUTO` allows exact match for terms of 1 to 2 characters, one edit for 3 to 5, two edits for longer; it counts transpositions by default (check current docs). Requiring an exact `prefix_length` cuts the work sharply and costs little, since people mistype the first letter less than the rest.
+**How engines avoid comparing against every word.** Lucene compiles the misspelt term into a **Levenshtein automaton**, a machine that accepts exactly the strings within distance n, and walks the sorted term dictionary with it, skipping whole regions that cannot match. Elasticsearch's `fuzziness: AUTO` allows exact match only for terms of up to 2 characters, one edit for 3 to 5, two edits for longer; the fuzzy query counts transpositions by default (Elastic docs, checked 2026-10-19). Requiring an exact `prefix_length` cuts the work sharply and costs little, since people mistype the first letter less than the rest.
 
 **N-grams: the other road.** Break words into overlapping character n-grams and compare the sets. With trigrams:
 
@@ -1399,7 +1400,7 @@ vec  = [h["_id"] for h in es.search(index="listings", size=50,
 final = rrf(bm25, vec)[:20]
 ```
 
-The `embedding` field is a `dense_vector` mapping with a vector index (Elasticsearch 8.x). Some engines also offer RRF built in, sometimes on paid tiers, so check current docs; fusing in application code as above is always possible and easy to reason about.
+The `embedding` field is a `dense_vector` mapping with a vector index (Elasticsearch 8.x). Elasticsearch also has a built-in RRF retriever, but it is a paid-licence feature: on the free Basic licence (8.19) the request is refused with a 403 "license is non-compliant" error. Other engines vary, so check current docs. Fusing in application code as above is always possible and easy to reason about.
 
 **Filters meet vectors.** "Semantic search, but only in-stock items under 50" is harder than it sounds: an ANN index returns the nearest k overall, and filtering afterwards can leave three results instead of twenty. Engines offer filtered ANN search (the `filter` inside `knn` above applies during the search); know the problem exists and name it.
 
@@ -1458,7 +1459,7 @@ Close the lesson and answer from memory. Each wrong choice tells you what it wou
     explain: [
       'Which index? A B-tree cannot serve a leading wildcard, so this is the hand-wave.',
       'Correct: failure, fix, sync, lag in four clauses.',
-      'Defensible only if you name Postgres full-text search or a trigram index. Plain LIKE is never the answer.',
+      'Defensible only if you name Postgres full-text search or a trigram index. Plain LIKE on a big table is not the answer.',
       'A cache helps repeat queries, but search queries are long-tailed with a poor hit ratio, and the first of each still scans.',
     ],
   },

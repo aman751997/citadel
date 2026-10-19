@@ -179,7 +179,7 @@ export const sizing = [
 
 export const delay = [
   step('Product wants a “still thinking about it?” email 3 days after a cart is abandoned. Where does the 3-day wait live?', [], 1, [
-    ['A queue message with a 3-day delivery delay', 'Queue delays are short — SQS, for example, caps per-message delay at minutes (check current docs). And a message cannot be cancelled when the buyer checks out.'],
+    ['A queue message with a 3-day delivery delay', 'Queue delays are short — SQS, for example, caps delay at 15 minutes. And a message cannot be cancelled when the buyer checks out.'],
     ['A durable row with a due time, polled by a scheduler that enqueues when it is due', 'Right. A table indexed on due time handles days or months, can be cancelled or rescheduled, and survives restarts. The queue only carries the work once it is due.'],
     ['A consumer that sleeps for 3 days before processing', 'A sleeping consumer holds the message (and, on a log, the whole partition) hostage. The first deploy loses or redelivers everything.'],
   ]),

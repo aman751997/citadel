@@ -177,7 +177,7 @@ Synchronously, most checkouts would wait or fail. With the queue, every order su
       explain: [
         'That brings back the original outage: checkout then fails whenever email does.',
         'Correct: checkout is healthy while the backlog grows, so the signal has to be lag in time.',
-        'Lag and oldest-message-age are standard metrics on every broker.',
+        'Brokers expose lag or message age. SQS has ApproximateAgeOfOldestMessage, and for Kafka you watch consumer lag, ideally converted to time.',
       ],
     },
   ]}
@@ -203,7 +203,7 @@ Imagine two requests on one ticket. "Make a thumbnail for every uploaded photo."
 **A message queue** (RabbitMQ, SQS, ActiveMQ) is a to-do list shared by workers. In a line at a counter, each person is served once and leaves.
 
 - A producer **sends** a message. Any idle consumer **receives** it. Consumers *compete*, and each message goes to one of them.
-- While a consumer works on it, the message is **in flight**: hidden from others but not gone. In SQS this is the **visibility timeout** (30 seconds by default; check current docs). In RabbitMQ the message stays **unacknowledged** until the consumer acks or nacks it, or its channel closes.
+- While a consumer works on it, the message is **in flight**: hidden from others but not gone. In SQS this is the **visibility timeout** (30 seconds by default, adjustable up to 12 hours). In RabbitMQ the message stays **unacknowledged** until the consumer acks or nacks it, or its channel closes.
 - When the work succeeds, the consumer **acks** (SQS: deletes the message). Now it is gone for good.
 - If the consumer **nacks**, crashes, or the timeout expires, the message becomes **visible again** and someone retries it.
 - After too many receives, it is moved to a **dead-letter queue** (Chapter 8).
@@ -222,7 +222,7 @@ Imagine two requests on one ticket. "Make a thumbnail for every uploaded photo."
 
 - A **topic** is split into **partitions**. Each partition is an ordered, append-only sequence; every record gets the next **offset** (0, 1, 2…).
 - Reading does not delete. Each **consumer group** keeps its own committed offset per partition: "the next record I will read".
-- Records are kept for a **retention** period (time or size; Kafka's default is 7 days, check your configuration) whether or not anyone has read them. **Log compaction** is the alternative policy: keep only the latest record per key.
+- Records are kept for a **retention** period (time or size; Kafka's default is 7 days, and your cluster may override it) whether or not anyone has read them. **Log compaction** is the alternative policy: keep only the latest record per key.
 - Because data stays, a consumer can **replay**: reset its offset to yesterday and read again. A new consumer group can start from the beginning.
 - Within one group, each partition is read by **at most one consumer**. Groups divide partitions among members; different groups each read everything.
 
@@ -259,7 +259,7 @@ Say exactly this much and no more. Defaults and limits change between versions, 
 | Dead-lettering | Built in: dead-letter exchange | A pattern you build (DLQ topic) |
 | Exactly-once | No. At-least-once plus idempotent consumers | Kafka-to-Kafka only (Chapter 4) |
 
-The lines are blurring: RabbitMQ has streams, Pulsar offers both models, and Kafka has been adding queue-style "share groups" (check current status). In an interview, name the *model* you need, then the product.
+The lines are blurring: RabbitMQ has streams, Pulsar offers both models, and Kafka has been adding queue-style "share groups" (marked production-ready in Kafka 4.2). In an interview, name the *model* you need, then the product.
 
 <Trace title="Which line?" steps={queueOrLog} takeaway="Queue: each task done once by whoever is free, deleted on ack, retried on timeout. Log: retained, ordered per partition, read independently by each group, replayable." />
 
@@ -452,7 +452,7 @@ Imagine a buyer receives the same receipt email three times. The logs show: the 
 | What is redelivered | Only the unacked messages | Everything after the last committed offset |
 | Skipping one bad message | Reject it (to a DLQ) | Impossible without committing past it |
 
-**At-least-once starts at the producer.** A producer that sends without waiting for confirmation is at-most-once before the consumer gets a chance. In RabbitMQ use publisher confirms with durable queues and persistent messages. In Kafka use `acks=all` with a replication factor of 3 and `min.insync.replicas=2`, so an acknowledged write survives losing a broker, plus retries. Retries can duplicate, which is why Kafka's **idempotent producer** (default in recent versions, check yours) tags each send with a producer id and sequence number so the broker drops retried copies within a partition.
+**At-least-once starts at the producer.** A producer that sends without waiting for confirmation is at-most-once before the consumer gets a chance. In RabbitMQ use publisher confirms with durable queues and persistent messages. In Kafka use `acks=all` with a replication factor of 3 and `min.insync.replicas=2`, so an acknowledged write survives losing a broker, plus retries. Retries can duplicate, which is why Kafka's **idempotent producer** (on by default since Kafka 3.0) tags each send with a producer id and sequence number so the broker drops retried copies within a partition.
 
 **What Kafka's "exactly-once" actually covers:**
 
@@ -577,7 +577,7 @@ while True:
     consumer.commit(message=msg, asynchronous=False)   # only after the DB commit
 ```
 
-Use `ON DUPLICATE KEY UPDATE consumer = consumer` rather than `INSERT IGNORE`: `IGNORE` also downgrades truncation and NOT NULL errors to warnings and stores a changed value. (If your driver sets the `CLIENT_FOUND_ROWS` flag, a no-op upsert reports 1 instead of 0, so check your driver or use a plain INSERT and catch 1062.) The marker and the effect commit together or not at all. If the process dies before `db.commit()`, neither happened and the redelivery does the work. If it dies after the commit but before `consumer.commit`, the redelivery finds the id and skips.
+Use `ON DUPLICATE KEY UPDATE consumer = consumer` rather than `INSERT IGNORE`: `IGNORE` also downgrades truncation and NOT NULL errors to warnings and stores a changed value. (If your driver sets the `CLIENT_FOUND_ROWS` flag, a no-op upsert reports 1 instead of 0; PyMySQL and MySQL Connector/Python leave it off by default, but check your driver or use a plain INSERT and catch 1062.) The marker and the effect commit together or not at all. If the process dies before `db.commit()`, neither happened and the redelivery does the work. If it dies after the commit but before `consumer.commit`, the redelivery finds the id and skips.
 
 <Figure caption="One event, delivered twice. The second delivery is a no-op because the primary key rejects the marker.">
   <Mermaid code={`sequenceDiagram
@@ -610,7 +610,7 @@ This sketch is not production-ready. A real consumer also needs: batching (commi
 **Details interviewers poke:**
 
 - **Which id?** A producer-assigned **event id** (a UUID created when the event is first written). Not the broker's offset or message id: if the producer republishes the same event (Chapter 6), it gets a *new* offset but is the same event.
-- **How long to remember?** Longer than the longest possible redelivery: retention, plus DLQ redrive, plus replays you might run. A few days is common; expire old rows by date, ideally by dropping a partition of the table. (SQS FIFO's built-in deduplication covers only a short window of producer sends, 5 minutes at the time of writing; check current docs.)
+- **How long to remember?** Longer than the longest possible redelivery: retention, plus DLQ redrive, plus replays you might run. A few days is common; expire old rows by date, ideally by dropping a partition of the table. (SQS FIFO's built-in deduplication covers only a short window of producer sends, 5 minutes in the SQS docs.)
 - **Effects you can't put in a transaction.** An email or a third-party call can't join your database transaction. *Record, then send* risks a lost email if you crash in between (at-most-once); *send, then record* risks a duplicate (at-least-once). For a receipt, a duplicate is better than a lost one. If the provider accepts an idempotency key, pass your event id.
 
 <Trace title="Where does the marker go?" steps={idempotency} takeaway="The ‘I did it’ record must commit atomically with the effect. Before it is at-most-once; after it, in a separate step, is at-least-once with a gap." />
@@ -637,7 +637,7 @@ Yes, if it's enforced by a unique key inside the transaction. Both transactions 
         'An error is thrown for the duplicate key',
       ],
       answer: 1,
-      why: 'The no-op upsert swallows the duplicate-key conflict and reports 0 rows. The consumer checks rowcount and stops.',
+      why: 'The no-op upsert swallows the duplicate-key conflict and reports 0 rows (run on MySQL 8.0; a driver that sets CLIENT_FOUND_ROWS reports 1). The consumer checks rowcount and stops.',
       explain: [
         'The primary key already holds (c, evt-9), so nothing is inserted.',
         'Correct: rowcount 0 means duplicate. Skip the effect, then ack so it is not redelivered again.',
@@ -945,7 +945,7 @@ A **poison message** fails every time, however often you retry: malformed data, 
 | | Retry | Dead-lettering |
 |---|---|---|
 | **SQS** | Reappears after the visibility timeout; back off by changing its timeout | Redrive policy: after `maxReceiveCount` receives, move to the DLQ; DLQ redrive moves messages back |
-| **RabbitMQ** | `nack` with requeue (immediate) or delay via a TTL'd retry queue | Dead-letter exchange on reject-without-requeue, TTL expiry or length limit; quorum queues can cap redeliveries (check current docs) |
+| **RabbitMQ** | `nack` with requeue (immediate) or delay via a TTL'd retry queue | Dead-letter exchange on reject-without-requeue, TTL expiry or length limit; quorum queues cap redeliveries with a delivery limit (default 20 since RabbitMQ 4.0) |
 | **Kafka** | No per-record retry: retry in place, or republish to retry topics | A pattern, not a broker feature: publish to a DLQ topic, then commit past it |
 
 **Kafka's special problem: head-of-line blocking.** A partition has one committed offset. If record 5,012 can't be processed, the consumer can't commit 5,013 without declaring 5,012 done. Retry forever and the partition stops; skip silently and it's lost. The answer: a bounded number of in-place retries, then publish to a retry or dead-letter topic and commit past it.
@@ -1098,7 +1098,7 @@ Serial processing means one partition delivers at most 1 ÷ 0.020 s = 50 events/
     },
     {
       kind: 'failure',
-      q: 'A group was off for 9 days; retention is 7 days; auto.offset.reset is the default. After restart the dashboard shows no errors but is missing two days of data. Why?',
+      q: 'A group was off for 9 days; retention is 7 days; auto.offset.reset is the default. After restart the dashboard shows no errors but days of data are missing. Why?',
       options: [
         'Kafka rebuilt the missing data from replicas',
         'The offset was out of range, so the consumer jumped to the latest record silently',
@@ -1108,7 +1108,7 @@ Serial processing means one partition delivers at most 1 ÷ 0.020 s = 50 events/
       why: 'With `latest`, an out-of-range offset resets to the end of the log and nothing is raised.',
       explain: [
         'Retention deletes data on every replica.',
-        'Correct: alert on lag in time long before retention, and consider `earliest` or `none` for consumers that must not skip.',
+        'Correct: with `latest` the consumer skips even the 7 days still on disk. `earliest` would have lost only the 2 days that retention deleted. Alert on lag in time long before retention, and consider `earliest` or `none` for consumers that must not skip.',
         'A crash would show an error; this failure is silent.',
       ],
     },
@@ -1239,7 +1239,7 @@ Say product wants a "still thinking about it?" email 3 days after a cart is aban
 
 | Delay | Tool | Notes |
 |---|---|---|
-| Seconds to minutes, fixed | **Delay queue / message timer** | SQS supports a per-queue or per-message delay of up to 15 minutes (check current docs). RabbitMQ: a delayed-message plugin (check status) or a TTL'd queue that dead-letters into the real queue |
+| Seconds to minutes, fixed | **Delay queue / message timer** | SQS supports a per-queue delay of up to 15 minutes, and standard queues also allow a per-message timer up to 15 minutes (FIFO queues do not support per-message timers). RabbitMQ: the community delayed-message plugin (no longer maintained; its README points to native delivery delay in quorum queues from RabbitMQ 4.4) or a TTL'd queue that dead-letters into the real queue |
 | Retry backoff | **Visibility timeout** (queue) or **retry topics** (log) | Push the next visibility into the future; on Kafka, tiered retry topics whose consumers wait until each record is due. Kafka has no per-message delivery delay |
 | Hours to months, or cancellable | **A durable schedule in a database** | A row with a due time, indexed on it; a scheduler enqueues work when due. Cancel by deleting or flagging the row |
 
@@ -1323,7 +1323,7 @@ These are Confluent Schema Registry's rules; other registries are similar. Use *
     B --> C["3 · Contract\nstop writing amount"]`} />
 </Figure>
 
-**What goes in the message.** A *thin* event (`OrderPlaced 123`) makes every consumer call back for details: coupling and load on the source. A *fat* event (event-carried state) includes what consumers need: larger, and every field is now contract. Most designs land between: the facts of the change plus ids for the rest. Very large payloads (an image, a document) don't go through the broker: store them in blob storage and send a reference (the **claim-check** pattern). Brokers cap message size (Kafka's default is around 1 MB; check current docs).
+**What goes in the message.** A *thin* event (`OrderPlaced 123`) makes every consumer call back for details: coupling and load on the source. A *fat* event (event-carried state) includes what consumers need: larger, and every field is now contract. Most designs land between: the facts of the change plus ids for the rest. Very large payloads (an image, a document) don't go through the broker: store them in blob storage and send a reference (the **claim-check** pattern). Brokers cap message size (Kafka's default is about 1 MB per record batch, `message.max.bytes`. SQS allows 1 MiB).
 
 <Trace title="Evolve the contract" steps={schemas} takeaway="Events are a public API with old versions still in the log. Add optional fields; never reuse one; rename by expand → migrate → contract; the compatibility mode tells you who upgrades first." />
 
@@ -1607,7 +1607,7 @@ Related: <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs & pipeline
 **Further study**
 
 - *Designing Data-Intensive Applications* (Martin Kleppmann): chapter 11 "Stream Processing" and chapter 4 "Encoding and Evolution".
-- Jay Kreps, [The Log: What every software engineer should know about real-time data’s unifying abstraction](https://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying).
+- Jay Kreps, [The Log: What every software engineer should know about real-time data’s unifying abstraction](https://web.archive.org/web/2023/https://engineering.linkedin.com/distributed-systems/log-what-every-software-engineer-should-know-about-real-time-datas-unifying).
 - Kreps, Narkhede and Rao, *Kafka: a Distributed Messaging System for Log Processing* (NetDB 2011).
 - [Apache Kafka documentation](https://kafka.apache.org/documentation/) for delivery semantics, configs and transactions. [KIP-98](https://cwiki.apache.org/confluence/display/KAFKA/KIP-98+-+Exactly+Once+Delivery+and+Transactional+Messaging) is the design behind idempotent producers and transactions.
 - [Amazon SQS Developer Guide](https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html): visibility timeout, DLQs, FIFO groups, delay queues; check current limits here.
@@ -1618,7 +1618,7 @@ Related: <a href={`${BASE}sd/lessons/pattern-async-jobs/`}>Async jobs & pipeline
 
 **Look these up yourself**
 
-- **Kafka share groups (KIP-932)**: per-record acknowledgement and more consumers than partitions; check release status.
+- **Kafka share groups (KIP-932)**: per-record acknowledgement and more consumers than partitions; production-ready since Kafka 4.2.
 - **Log compaction**: latest value per key, and why changelog topics and CDC streams rely on it.
 - **Consumer rebalance protocols**: eager versus cooperative, static membership, the newer group protocol.
 - **RabbitMQ quorum queues and streams**: Raft replication, and the log-style stream type.

@@ -209,7 +209,7 @@ Say it as a judgment call: *"Small pastes would fit in the DB, but the tail and 
       q: 'An interviewer hears "I store the image in the database" for a 20M-user app with 200 KB avatars. What is the strongest objection you would raise yourself?',
       options: [
         'SQL cannot store binary data',
-        'The table is about 99.5% avatar bytes, so backups, replica rebuilds, replication and serving all carry terabytes of payload; store the bytes in object storage and keep a metadata row',
+        'With about 1 KB of other columns per row, the table is about 99.5% avatar bytes, so backups, replica rebuilds, replication and serving all carry terabytes of payload; store the bytes in object storage and keep a metadata row',
         'Images must always be stored on the local disk of app servers',
         'Databases are not durable enough for images',
       ],
@@ -277,9 +277,9 @@ One-line rule: **block for a database's own disk, file when software insists on 
 
 **Consistency: know the date.** For years S3 was eventually consistent for some operations: an overwrite or a LIST right after a write could return stale results. **Since December 2020, S3 provides strong read-after-write consistency** for object PUTs (new and overwrite), DELETEs and LISTs, automatically. Bucket-level configuration changes are still eventually consistent. Google Cloud Storage also documents strong consistency for object operations and listings. For any other provider, an older system, or a self-hosted S3-compatible store, **check its documented model**. "S3-compatible" describes the API, not the guarantees.
 
-**Concurrent writes: last writer wins.** Two PUTs to the same key with no conditions: one silently replaces the other. Avoid shared mutable keys: **the server chooses a fresh key per upload** (a random id or hash), so writers never collide. Where you genuinely need "create only if absent" or compare-and-swap, some stores support conditional writes (S3 added them in 2024, for example `If-None-Match: *`; check current docs for what your store supports).
+**Concurrent writes: last writer wins.** Two PUTs to the same key with no conditions: one silently replaces the other. Avoid shared mutable keys: **the server chooses a fresh key per upload** (a random id or hash), so writers never collide. Where you genuinely need "create only if absent" or compare-and-swap, some stores support conditional writes (S3 added `If-None-Match: *` in August 2024, and `If-Match` with an ETag after that; check what your store supports).
 
-**Request rates are per prefix.** Object stores partition the key space by prefix. AWS documents at least 3,500 writes and 5,500 reads per second **per partitioned prefix**, scaling up as load grows (check current docs). A single hot **key** cannot be split, which is one more reason hot objects belong behind a CDN (Chapter 13).
+**Request rates are per prefix.** Object stores partition the key space by prefix. AWS documents at least 3,500 writes and 5,500 reads per second **per partitioned prefix**, scaling up gradually as load grows, and you may see `503 Slow Down` while it does. A single hot **key** cannot be split, which is one more reason hot objects belong behind a CDN (Chapter 13).
 
 <Trace title="Know your object store" steps={objectModel} takeaway="Flat keys, whole-object writes, last writer wins. S3 is strongly read-after-write consistent since December 2020; check anyone else's docs." />
 
@@ -382,7 +382,7 @@ Two different promises hide behind "reliable". Someone reads the product page al
 
 | | 3× replication | RS(10, 4) erasure coding |
 |---|---|---|
-| Raw space for 5.5 PB | 16.4 PB | 7.7 PB |
+| Raw space for 5.5 PB | 16.5 PB | 7.7 PB |
 | Survives | Any 2 losses | Any 4 losses |
 | Repair one lost piece | Copy 1 replica | Read 10 fragments, recompute (network-heavy) |
 | Read latency | Read one copy | Read across fragments (or the data fragments directly, when healthy) |
@@ -437,7 +437,7 @@ If you run the store yourself (Ceph, MinIO, HDFS), the multiplier is yours: ×3 
       q: 'You run your own store for 5.5 PB of logical data. Compared with 3x replication, RS(10, 4) erasure coding is chosen mainly because:',
       options: [
         'It makes reads faster in all cases',
-        'It stores about 7.7 PB raw instead of 16.4 PB and survives more losses, at the cost of heavier repair and read paths',
+        'It stores about 7.7 PB raw instead of 16.5 PB and survives more losses, at the cost of heavier repair and read paths',
         'It removes the need for multiple availability zones',
         'It is simpler to implement',
       ],
@@ -723,7 +723,7 @@ Whole upload     2,000 MB × 8 = 16,000 Mb ÷ 10 Mbps = 1,600 s ≈ 27 min
 Single PUT       drop at 99% → lose ≈ 1,584 s, restart from zero
 8 MB parts       2,000 ÷ 8 = 250 parts; a drop loses one part: 64 Mb ÷ 10 Mbps = 6.4 s
 Part sizing      S3: parts 5 MiB to 5 GiB (last part may be smaller), at most 10,000 parts,
-                 objects up to 5 TB (check current docs)
+                 objects up to 48.8 TiB
                  → part size ≥ object size ÷ 10,000: 100 GB needs parts of at least 10 MB
 ```
 
@@ -972,7 +972,7 @@ All Standard                    16,425 TB × 1                   = 16,425 units
 ### The fees that eat the savings
 
 - **Retrieval.** Cold classes charge per GB read. If old photos are actually viewed (a "this day three years ago" feature), retrieval can cost more than you saved. The **CDN absorbs repeat reads** of the same object, which helps.
-- **Minimum size.** Standard-IA bills each object as at least 128 KB. A 20 KB thumbnail is billed at 6.4× its size, at half the price: **3.2× more** than leaving it in Standard. Keep tiny objects in Standard (or pack them).
+- **Minimum size.** Standard-IA bills each object as at least 128 KB. A 20 KB thumbnail is billed at 6.4× its size, at half the price: **3.2× more** than leaving it in Standard. Keep tiny objects in Standard (or pack them). (Since September 2024, S3 lifecycle rules do not transition objects under 128 KB by default. You need an object size filter to force it.)
 - **Minimum duration.** Delete an IA object after 10 days and you still pay for 30.
 - **Transition requests.** Lifecycle transitions are billed per object. Moving billions of tiny objects costs real money.
 
@@ -1640,8 +1640,8 @@ segment    = position_s // 4`,
       explain: [
         'Correct: floor(603 / 4) = 150.',
         'That would be 604 s or later. Rounding up skips content.',
-        'That is the position in seconds divided by one.',
-        'That is the position in seconds.',
+        'That is the position in seconds minus one. No segment arithmetic gives it.',
+        'That is the position in seconds: the divide by 4 was forgotten.',
       ],
     },
     {
@@ -1746,7 +1746,7 @@ Dedup        if 10% of pastes are exact duplicates: saves ≈ 0.37 TB/year      
 ```text
 Uploads in   5M × 2 MB = 10 TB/day → 100 MB/s avg → 300 MB/s peak = 2.4 Gbps → presigned, multipart for video
 Storage      5M × 3 MB = 15 TB/day → 5.5 PB/year logical
-             self-run: × 3 replicas ≈ 16.4 PB raw  vs  RS(10, 4) × 1.4 ≈ 7.7 PB raw
+             self-run: × 3 replicas ≈ 16.5 PB raw  vs  RS(10, 4) × 1.4 ≈ 7.7 PB raw
 Tiering      after 3 years, Standard → IA → instant archive ≈ 29% of the all-Standard bill
 Egress       1 PB/day → 10 GB/s avg → 30 GB/s (240 Gbps) peak                → CDN, no question
 Origin       hit ratio 95% → 1.5 GB/s peak;  99% → 0.3 GB/s                  → fingerprinted URLs, shield
